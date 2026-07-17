@@ -403,7 +403,9 @@ def test_equivalent_selection_order_produces_identical_plan_and_hash() -> None:
             key=lambda ref: (str(ref.proposal_id), ref.proposal_version),
         )
     )
-    assert tuple(operation.proposal for operation in forward.operations) == forward.proposals
+    assert tuple(operation.id for operation in forward.operations) == tuple(
+        sorted(operation.id for operation in forward.operations)
+    )
 
 
 def test_operation_identity_includes_canonical_operation_content() -> None:
@@ -443,3 +445,143 @@ def test_analysis_binding_changes_operation_and_plan_identity(
     assert original_plan.operations[0].id != rebound_plan.operations[0].id
     assert original_plan.content_hash != rebound_plan.content_hash
     assert original_plan.id != rebound_plan.id
+
+
+def test_proposal_dependencies_are_translated_to_operation_ids() -> None:
+    parent = reviewed_proposal(name="dependency-parent")
+    child = reviewed_proposal(
+        name="dependency-child",
+        entity_type=EntityType.STUDENT,
+        target_source_identifier="student-dependency-child",
+        dependencies=frozenset({parent.proposal.proposal_id}),
+    )
+
+    plan = build(child, parent)
+    operations = {operation.proposal.proposal_id: operation for operation in plan.operations}
+
+    assert operations[child.proposal.proposal_id].dependencies == frozenset(
+        {operations[parent.proposal.proposal_id].id}
+    )
+    assert plan.operations.index(operations[parent.proposal.proposal_id]) < plan.operations.index(
+        operations[child.proposal.proposal_id]
+    )
+
+
+def test_dependency_on_unselected_proposal_is_rejected() -> None:
+    proposal = reviewed_proposal(
+        dependencies=frozenset({uuid5(UUID(int=0), "unselected-proposal")})
+    )
+
+    with pytest.raises(PlanCompilationError, match="unselected proposal"):
+        build(proposal)
+
+
+def test_proposal_cannot_depend_on_itself() -> None:
+    proposal = reviewed_proposal()
+    proposal = proposal.model_copy(
+        update={"dependencies": frozenset({proposal.proposal.proposal_id})}
+    )
+
+    with pytest.raises(PlanCompilationError, match="depend on itself"):
+        build(proposal)
+
+
+def test_proposal_dependency_cycle_is_rejected() -> None:
+    first = reviewed_proposal(name="cycle-first")
+    second = reviewed_proposal(
+        name="cycle-second",
+        entity_type=EntityType.STUDENT,
+        target_source_identifier="student-cycle-second",
+    )
+    first = first.model_copy(
+        update={"dependencies": frozenset({second.proposal.proposal_id})}
+    )
+    second = second.model_copy(
+        update={"dependencies": frozenset({first.proposal.proposal_id})}
+    )
+
+    with pytest.raises(PlanCompilationError, match="cycle"):
+        build(second, first)
+
+
+def test_backend_overwrites_untrusted_risk_and_reversibility() -> None:
+    proposal = reviewed_proposal(risk=RiskLevel.LOW, reversible=False)
+
+    operation = build(proposal).operations[0]
+
+    assert operation.risk is RiskLevel.MEDIUM
+    assert operation.reversible is True
+
+
+def test_create_reversibility_uses_stored_after_facts() -> None:
+    proposal = reviewed_proposal(
+        difference_type=DifferenceType.SEEWO_MISSING,
+        operation_type=OperationType.CREATE,
+        target_entity_id=None,
+        target_source_identifier=None,
+        before=None,
+        after={"name": "New teacher"},
+        changed_fields=frozenset({"name"}),
+        reversible=False,
+        risk=RiskLevel.LOW,
+    )
+
+    operation = build(proposal).operations[0]
+
+    assert operation.risk is RiskLevel.MEDIUM
+    assert operation.reversible is True
+
+
+def test_operation_with_a_selected_dependent_is_escalated_to_high_risk() -> None:
+    parent = reviewed_proposal(name="risk-parent", risk=RiskLevel.LOW)
+    child = reviewed_proposal(
+        name="risk-child",
+        entity_type=EntityType.STUDENT,
+        target_source_identifier="student-risk-child",
+        dependencies=frozenset({parent.proposal.proposal_id}),
+    )
+
+    plan = build(parent, child)
+    operations = {operation.proposal.proposal_id: operation for operation in plan.operations}
+
+    assert operations[parent.proposal.proposal_id].risk is RiskLevel.HIGH
+    assert operations[child.proposal.proposal_id].risk is RiskLevel.MEDIUM
+
+
+def test_disable_without_stored_before_fact_is_not_marked_reversible() -> None:
+    proposal = reviewed_proposal(
+        difference_type=DifferenceType.SEEWO_REDUNDANT,
+        operation_type=OperationType.DISABLE,
+        before={},
+        after={"status": "disabled"},
+        changed_fields=frozenset({"status"}),
+        reversible=True,
+        risk=RiskLevel.LOW,
+    )
+
+    operation = build(proposal).operations[0]
+
+    assert operation.risk is RiskLevel.HIGH
+    assert operation.reversible is False
+
+
+def test_untrusted_policy_fields_do_not_change_operation_or_plan_identity() -> None:
+    proposal = reviewed_proposal(risk=RiskLevel.LOW, reversible=False)
+    untrusted_revision = reviewed_proposal(risk=RiskLevel.HIGH, reversible=True)
+
+    original = build(proposal)
+    revised = build(untrusted_revision)
+
+    assert original == revised
+
+
+def test_dependency_plan_is_stable_across_proposal_input_order() -> None:
+    parent = reviewed_proposal(name="stable-parent")
+    child = reviewed_proposal(
+        name="stable-child",
+        entity_type=EntityType.STUDENT,
+        target_source_identifier="student-stable-child",
+        dependencies=frozenset({parent.proposal.proposal_id}),
+    )
+
+    assert build(parent, child) == build(child, parent)

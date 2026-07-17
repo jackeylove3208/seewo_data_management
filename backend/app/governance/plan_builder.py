@@ -1,13 +1,19 @@
 import hashlib
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from app.governance.dependency_graph import (
+    DependencyGraphError,
+    stable_topological_order,
+)
 from app.governance.operation_policy import (
     PlanPolicyError,
     validate_editable_fields,
     validate_operation,
 )
+from app.governance.risk_policy import assess_operation
 from app.schemas.canonical_entities import EntityType
 from app.schemas.executions import (
     GovernanceOperation,
@@ -40,6 +46,13 @@ _PLAN_NAMESPACE = uuid5(
 TargetAlias = tuple[EntityType, str]
 
 
+@dataclass(frozen=True)
+class _ProposalNode:
+    id: UUID
+    dependencies: frozenset[UUID]
+    proposal: ReviewedProposalSnapshot
+
+
 class GovernancePlanBuilder:
     def build(
         self,
@@ -54,10 +67,9 @@ class GovernancePlanBuilder:
         if not proposals:
             raise PlanCompilationError("at least one proposal must be selected")
 
-        ordered = tuple(sorted(proposals, key=_proposal_sort_key))
-        self._reject_duplicates(ordered)
-        operations: list[GovernanceOperation] = []
-        for proposal in ordered:
+        selected = tuple(sorted(proposals, key=_proposal_sort_key))
+        self._reject_duplicates(selected)
+        for proposal in selected:
             self._validate_context(
                 proposal,
                 task_id=task_id,
@@ -65,11 +77,33 @@ class GovernancePlanBuilder:
                 target_snapshot_id=target_snapshot_id,
                 target_version=target_version,
             )
-            operations.append(self._compile_operation(proposal))
 
-        operation_tuple = tuple(operations)
+        proposal_nodes = self._order_proposals(selected)
+        proposals_with_dependents = {
+            dependency
+            for node in proposal_nodes
+            for dependency in node.dependencies
+        }
+        operations: list[GovernanceOperation] = []
+        operation_ids_by_proposal: dict[UUID, UUID] = {}
+        for node in proposal_nodes:
+            operation = self._compile_operation(
+                node.proposal,
+                dependencies=frozenset(
+                    operation_ids_by_proposal[dependency]
+                    for dependency in node.dependencies
+                ),
+                has_dependents=node.id in proposals_with_dependents,
+            )
+            operations.append(operation)
+            operation_ids_by_proposal[node.id] = operation.id
+
+        try:
+            operation_tuple = stable_topological_order(operations)
+        except DependencyGraphError as exc:
+            raise PlanCompilationError(str(exc)) from exc
         self._reject_conflicts(operation_tuple)
-        proposal_refs = tuple(proposal.proposal for proposal in ordered)
+        proposal_refs = tuple(proposal.proposal for proposal in selected)
         content_hash = _content_hash(
             version=version,
             task_id=task_id,
@@ -102,6 +136,34 @@ class GovernancePlanBuilder:
             seen.add(proposal_id)
 
     @staticmethod
+    def _order_proposals(
+        proposals: Sequence[ReviewedProposalSnapshot],
+    ) -> tuple[_ProposalNode, ...]:
+        selected_ids = {proposal.proposal.proposal_id for proposal in proposals}
+        nodes: list[_ProposalNode] = []
+        for proposal in proposals:
+            proposal_id = proposal.proposal.proposal_id
+            if proposal_id in proposal.dependencies:
+                raise PlanCompilationError(f"proposal {proposal_id} cannot depend on itself")
+            unselected = proposal.dependencies - selected_ids
+            if unselected:
+                dependency = min(unselected)
+                raise PlanCompilationError(
+                    f"proposal {proposal_id} references unselected proposal {dependency}"
+                )
+            nodes.append(
+                _ProposalNode(
+                    id=proposal_id,
+                    dependencies=proposal.dependencies,
+                    proposal=proposal,
+                )
+            )
+        try:
+            return stable_topological_order(nodes)
+        except DependencyGraphError as exc:
+            raise PlanCompilationError(str(exc)) from exc
+
+    @staticmethod
     def _validate_context(
         proposal: ReviewedProposalSnapshot,
         *,
@@ -130,6 +192,9 @@ class GovernancePlanBuilder:
     @staticmethod
     def _compile_operation(
         proposal: ReviewedProposalSnapshot,
+        *,
+        dependencies: frozenset[UUID],
+        has_dependents: bool,
     ) -> GovernanceOperation:
         validate_operation(proposal.difference_type, proposal.operation_type)
         fact_fields = frozenset((proposal.before or {}).keys()) | frozenset(
@@ -144,6 +209,14 @@ class GovernancePlanBuilder:
             raise PlanPolicyError(
                 "changed_fields must exactly match the operation fact changes"
             )
+
+        assessment = assess_operation(
+            operation_type=proposal.operation_type,
+            before=proposal.before,
+            after=proposal.after,
+            changed_fields=proposal.changed_fields,
+            has_dependents=has_dependents,
+        )
 
         provisional = GovernanceOperation(
             id=UUID(int=0),
@@ -160,9 +233,9 @@ class GovernancePlanBuilder:
             before=proposal.before,
             after=proposal.after,
             changed_fields=proposal.changed_fields,
-            dependencies=proposal.dependencies,
-            reversible=proposal.reversible,
-            risk=proposal.risk,
+            dependencies=dependencies,
+            reversible=assessment.reversible,
+            risk=assessment.risk,
             compensation_for=proposal.compensation_for,
             restore_absence=proposal.restore_absence,
         )
