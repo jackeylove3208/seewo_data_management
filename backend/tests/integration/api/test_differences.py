@@ -76,6 +76,41 @@ def seeded(client: TestClient) -> tuple[UUID, tuple[UUID, ...]]:
     return client.portal.call(seed_differences, client)
 
 
+async def seed_snapshot_ready_task(client: TestClient) -> UUID:
+    async with client.app.state.database.session_factory() as session:
+        pair = await create_hierarchy_pair(session)
+        await session.commit()
+        return pair.task_id
+
+
+def snapshot_ready_task(client: TestClient) -> UUID:
+    assert client.portal is not None
+    return client.portal.call(seed_snapshot_ready_task, client)
+
+
+def test_task_can_resolve_then_detect_differences(
+    difference_client: TestClient,
+) -> None:
+    task_id = snapshot_ready_task(difference_client)
+
+    resolution = difference_client.post(f"/api/reconciliation-tasks/{task_id}/resolve")
+    detection = difference_client.post(
+        f"/api/reconciliation-tasks/{task_id}/differences/detect"
+    )
+
+    assert resolution.status_code == 200
+    assert resolution.json()["task_id"] == str(task_id)
+    assert resolution.json()["processed_entity_types"]
+    assert detection.status_code == 200
+
+
+def test_resolve_unknown_task_returns_404(difference_client: TestClient) -> None:
+    response = difference_client.post(f"/api/reconciliation-tasks/{uuid4()}/resolve")
+
+    assert response.status_code == 404
+    assert "reconciliation task not found" in response.json()["detail"]
+
+
 def test_list_filters_and_has_stable_cursor(difference_client: TestClient) -> None:
     task_id, _ = seeded(difference_client)
 

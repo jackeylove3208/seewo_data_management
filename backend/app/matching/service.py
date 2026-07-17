@@ -18,6 +18,7 @@ from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import CanonicalEntityRecord, Snapshot
 from app.normalization.pipeline import NormalizationPipeline
 from app.repositories.mappings import MappingRepository
+from app.repositories.snapshots import SnapshotRepository
 from app.repositories.tasks import TaskRepository
 from app.schemas.canonical_entities import (
     CanonicalEntity,
@@ -67,7 +68,25 @@ class EntityResolutionService:
         self.vector_index = vector_index
         self.top_k = top_k
         self.mappings = mapping_repository or MappingRepository(session)
+        self.snapshots = SnapshotRepository(session)
         self.tasks = TaskRepository(session)
+
+    async def resolve_task(self, task_id: UUID) -> ResolutionSummary:
+        task = await self.tasks.get(task_id)
+        if task is None:
+            raise LookupError(f"reconciliation task not found: {task_id}")
+        source = await self.snapshots.get_for_task_role(task_id, SourceRole.AUTHORITATIVE)
+        target = await self.snapshots.get_for_task_role(task_id, SourceRole.TARGET)
+        if source is None or target is None:
+            raise ValueError("entity resolution requires a published snapshot pair")
+        return await self.resolve(
+            SnapshotPair(
+                task_id=task_id,
+                tenant_id=task.tenant_id,
+                source_snapshot_id=source.id,
+                target_snapshot_id=target.id,
+            )
+        )
 
     async def resolve(self, pair: SnapshotPair) -> ResolutionSummary:
         task, source_snapshot, target_snapshot = await self._validate_pair(pair)
