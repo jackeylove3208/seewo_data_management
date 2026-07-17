@@ -100,6 +100,7 @@ class DifferenceItem(DifferenceDraft):
     created_at: datetime
     analysis_status: str = "pending"
     risk: str | None = None
+    execution_eligible: bool = False
 
 
 class DifferenceFilters(BaseModel):

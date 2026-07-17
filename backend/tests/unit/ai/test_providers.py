@@ -22,6 +22,8 @@ async def test_llm_retries_transient_failure_and_returns_usage() -> None:
             200,
             json={
                 "output": {"cause": "mapping drift"},
+                "provider": "untrusted-provider",
+                "model": "untrusted-model",
                 "usage": {"input_tokens": 10, "output_tokens": 4},
                 "request_id": "model-request-1",
             },
@@ -46,6 +48,8 @@ async def test_llm_retries_transient_failure_and_returns_usage() -> None:
     assert response.usage.input_tokens == 10
     assert response.usage.output_tokens == 4
     assert response.request_id == "model-request-1"
+    assert response.provider == "http"
+    assert response.model == "test-model"
     assert calls == 2
 
 
@@ -77,14 +81,20 @@ async def test_llm_extracts_json_from_openai_compatible_response() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         assert payload["model"] == "test-model"
-        assert payload["response_format"] == {"type": "json_object"}
+        assert "response_schema" not in payload
+        assert payload["response_format"] == {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "governance_response",
+                "strict": True,
+                "schema": {"type": "object"},
+            },
+        }
         return httpx.Response(
             200,
             json={
                 "id": "chatcmpl-1",
-                "choices": [
-                    {"message": {"content": '{"cause":"attribute mismatch"}'}}
-                ],
+                "choices": [{"message": {"content": '{"cause":"attribute mismatch"}'}}],
                 "usage": {"prompt_tokens": 3, "completion_tokens": 2},
             },
             request=request,
@@ -117,6 +127,8 @@ async def test_embedding_provider_returns_vectors_and_usage() -> None:
             200,
             json={
                 "data": [{"embedding": [0.1, 0.2, 0.3]}],
+                "provider": "untrusted-provider",
+                "model": "untrusted-model",
                 "usage": {"total_tokens": 5},
             },
             request=request,
@@ -136,4 +148,96 @@ async def test_embedding_provider_returns_vectors_and_usage() -> None:
 
     assert batch.vectors == [[0.1, 0.2, 0.3]]
     assert batch.usage_tokens == 5
+    assert batch.provider == "http"
     assert batch.model == "test-embedding"
+
+
+@pytest.mark.asyncio
+async def test_embedding_provider_retries_transient_failure() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(429, request=request)
+        return httpx.Response(
+            200,
+            json={"data": [{"embedding": [0.1, 0.2, 0.3]}]},
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = HttpEmbeddingProvider(
+            settings=Settings(
+                embedding_url="https://model.example.test/v1/embeddings",
+                embedding_api_key="secret-token",
+                embedding_dimensions=3,
+                model_retry_wait_seconds=0,
+            ),
+            client=client,
+        )
+        batch = await provider.embed(["teacher 张三"])
+
+    assert batch.vectors == [[0.1, 0.2, 0.3]]
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_llm_normalizes_a_non_json_success_response() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="not-json", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = HttpLLMProvider(
+            settings=Settings(
+                llm_url="https://model.example.test/v1/analyze",
+                llm_api_key="secret-token",
+                model_retry_wait_seconds=0,
+            ),
+            client=client,
+        )
+        with pytest.raises(ModelProviderError, match="invalid JSON"):
+            await provider.complete_json(
+                LLMRequest(messages=(Message(role="user", content="analyze"),))
+            )
+
+
+@pytest.mark.asyncio
+async def test_embedding_normalizes_a_non_json_success_response() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="not-json", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = HttpEmbeddingProvider(
+            settings=Settings(
+                embedding_url="https://model.example.test/v1/embeddings",
+                embedding_api_key="secret-token",
+                model_retry_wait_seconds=0,
+            ),
+            client=client,
+        )
+        with pytest.raises(ModelProviderError, match="invalid JSON"):
+            await provider.embed(["teacher 张三"])
+
+
+@pytest.mark.asyncio
+async def test_embedding_rejects_a_mismatched_vector_dimension() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"data": [{"embedding": [0.1, 0.2]}]},
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = HttpEmbeddingProvider(
+            settings=Settings(
+                embedding_url="https://model.example.test/v1/embeddings",
+                embedding_api_key="secret-token",
+                embedding_dimensions=3,
+            ),
+            client=client,
+        )
+        with pytest.raises(ModelProviderError, match="dimension"):
+            await provider.embed(["teacher 张三"])

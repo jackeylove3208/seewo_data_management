@@ -2,16 +2,19 @@ import base64
 import json
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
+from typing import cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import and_, insert, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.analyses import AnalysisRecord
 from app.models.differences import (
     DifferenceRecord,
     ImmutableDifferenceError,
 )
+from app.repositories.analyses import DEFAULT_ANALYSIS_VERSION
 from app.schemas.canonical_entities import EntityType
 from app.schemas.differences import (
     DifferenceAction,
@@ -78,22 +81,37 @@ class DifferenceRepository:
 
     async def get(self, difference_id: UUID) -> DifferenceItem | None:
         record = await self.session.get(DifferenceRecord, difference_id)
-        return self._item(record) if record is not None else None
+        if record is None:
+            return None
+        analysis = await self._analysis_for(record)
+        return self._item(record, analysis)
 
     async def for_task(self, task_id: UUID) -> tuple[DifferenceItem, ...]:
-        records = await self.session.scalars(
-            select(DifferenceRecord)
-            .where(DifferenceRecord.task_id == task_id)
-            .order_by(DifferenceRecord.created_at, DifferenceRecord.id)
+        records = tuple(
+            await self.session.scalars(
+                select(DifferenceRecord)
+                .where(DifferenceRecord.task_id == task_id)
+                .order_by(DifferenceRecord.created_at, DifferenceRecord.id)
+            )
         )
-        return tuple(self._item(record) for record in records)
+        analyses = await self._analyses_for(records)
+        return tuple(self._item(record, analyses.get(record.id)) for record in records)
 
     async def list_page(
         self,
         task_id: UUID,
         filters: DifferenceFilters,
     ) -> DifferencePage:
-        statement = select(DifferenceRecord).where(DifferenceRecord.task_id == task_id)
+        current_analysis = and_(
+            AnalysisRecord.difference_id == DifferenceRecord.id,
+            AnalysisRecord.difference_version == DifferenceRecord.version,
+            AnalysisRecord.analysis_version == DEFAULT_ANALYSIS_VERSION,
+        )
+        statement = (
+            select(DifferenceRecord)
+            .outerjoin(AnalysisRecord, current_analysis)
+            .where(DifferenceRecord.task_id == task_id)
+        )
         if filters.entity_type is not None:
             statement = statement.where(DifferenceRecord.entity_type == filters.entity_type.value)
         if filters.difference_type is not None:
@@ -101,9 +119,17 @@ class DifferenceRepository:
                 DifferenceRecord.difference_type == filters.difference_type.value
             )
         if filters.analysis_status is not None:
-            statement = statement.where(DifferenceRecord.analysis_status == filters.analysis_status)
+            if filters.analysis_status == "pending":
+                statement = statement.where(
+                    or_(
+                        AnalysisRecord.id.is_(None),
+                        AnalysisRecord.status == "pending",
+                    )
+                )
+            else:
+                statement = statement.where(AnalysisRecord.status == filters.analysis_status)
         if filters.risk is not None:
-            statement = statement.where(DifferenceRecord.risk == filters.risk)
+            statement = statement.where(AnalysisRecord.output["risk"].as_string() == filters.risk)
         if filters.resolution_status is not None:
             statement = statement.where(
                 DifferenceRecord.resolution_status == filters.resolution_status.value
@@ -129,13 +155,14 @@ class DifferenceRepository:
         )
         has_more = len(records) > filters.limit
         page_records = records[: filters.limit]
+        analyses = await self._analyses_for(page_records)
         next_cursor = (
             _encode_cursor(page_records[-1].created_at, page_records[-1].id)
             if has_more and page_records
             else None
         )
         return DifferencePage(
-            items=tuple(self._item(record) for record in page_records),
+            items=tuple(self._item(record, analyses.get(record.id)) for record in page_records),
             next_cursor=next_cursor,
         )
 
@@ -181,8 +208,46 @@ class DifferenceRepository:
             "created_at": datetime.now(UTC),
         }
 
+    async def _analysis_for(self, record: DifferenceRecord) -> AnalysisRecord | None:
+        return cast(
+            AnalysisRecord | None,
+            await self.session.scalar(
+                select(AnalysisRecord).where(
+                    AnalysisRecord.difference_id == record.id,
+                    AnalysisRecord.difference_version == record.version,
+                    AnalysisRecord.analysis_version == DEFAULT_ANALYSIS_VERSION,
+                )
+            ),
+        )
+
+    async def _analyses_for(
+        self,
+        records: Sequence[DifferenceRecord],
+    ) -> dict[UUID, AnalysisRecord]:
+        if not records:
+            return {}
+        versions = {record.id: record.version for record in records}
+        rows = await self.session.scalars(
+            select(AnalysisRecord).where(
+                AnalysisRecord.difference_id.in_(versions),
+                AnalysisRecord.analysis_version == DEFAULT_ANALYSIS_VERSION,
+            )
+        )
+        return {
+            row.difference_id: row
+            for row in rows
+            if row.difference_version == versions[row.difference_id]
+        }
+
     @staticmethod
-    def _item(record: DifferenceRecord) -> DifferenceItem:
+    def _item(
+        record: DifferenceRecord,
+        analysis: AnalysisRecord | None = None,
+    ) -> DifferenceItem:
+        analysis_status = analysis.status if analysis is not None else "pending"
+        output = analysis.output if analysis is not None else None
+        risk = output.get("risk") if isinstance(output, dict) else None
+        recommended_action = output.get("recommended_action") if isinstance(output, dict) else None
         return DifferenceItem(
             id=record.id,
             task_id=record.task_id,
@@ -194,8 +259,11 @@ class DifferenceRepository:
             status=DifferenceStatus(record.resolution_status),
             version=record.version,
             created_at=record.created_at,
-            analysis_status=record.analysis_status,
-            risk=record.risk,
+            analysis_status=analysis_status,
+            risk=str(risk) if risk is not None else None,
+            execution_eligible=(
+                analysis_status == "succeeded" and recommended_action != "manual_review"
+            ),
         )
 
 

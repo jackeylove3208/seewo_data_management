@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     quarantine_root: Path = Path("storage/quarantine")
     max_upload_bytes: PositiveInt = 50 * 1024 * 1024
     demo_operator_id: str = "demo-operator"
+    demo_tenant_id: str = "school-1"
     auto_create_schema: bool = False
     llm_url: str | None = None
     llm_api_key: SecretStr | None = None

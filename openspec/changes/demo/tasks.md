@@ -65,15 +65,15 @@
 
 ## 7. Agent, Skills, MCP, and Mandatory Analysis
 
-- [ ] 7.1 Implement configurable external LLM and Embedding provider adapters with timeout, retry, and usage metadata
+- [x] 7.1 Implement configurable external LLM and Embedding provider adapters with timeout, retry, and usage metadata
 - [ ] 7.2 Define and validate structured Pydantic outputs for cause analysis, ambiguous matching, governance advice, rollback impact, and reports
-- [ ] 7.3 Create concise versioned Skills for difference analysis, ambiguous entity resolution, governance planning, rollback assessment, and reporting
-- [ ] 7.4 Implement a read-oriented MCP server with difference-context, candidate-search, mapping-rule, and execution-context tools
-- [ ] 7.5 Implement the governance Agent so it can use registered Skills and MCP tools but cannot mutate target data
-- [ ] 7.6 Implement mandatory per-difference analysis with deterministic explanations for clear cases and LLM fallback for semantic ambiguity
-- [ ] 7.7 Persist analysis cause, evidence, action, risk, confidence, model, Skill, prompt, tool trace, and timestamp provenance
-- [ ] 7.8 Enforce the backend rule that differences without valid analysis cannot enter an execution batch
-- [ ] 7.9 Add model-stub, invalid-output, retry-limit, MCP authorization, and manual-review tests
+- [x] 7.3 Create concise versioned Skills for difference analysis, ambiguous entity resolution, governance planning, rollback assessment, and reporting
+- [x] 7.4 Implement a read-oriented MCP server with difference-context, candidate-search, mapping-rule, and execution-context tools
+- [x] 7.5 Implement the governance Agent so it can use registered Skills and MCP tools but cannot mutate target data
+- [x] 7.6 Implement mandatory per-difference analysis with deterministic explanations for clear cases and LLM fallback for semantic ambiguity
+- [x] 7.7 Persist analysis cause, evidence, action, risk, confidence, model, Skill, prompt, tool trace, and timestamp provenance
+- [x] 7.8 Enforce the backend rule that differences without valid analysis cannot enter an execution batch
+- [x] 7.9 Add model-stub, invalid-output, retry-limit, MCP authorization, and manual-review tests
 - [ ] 7.10 Extend the difference workbench to display analysis progress, cause, recommendation, risk, confidence, and disabled execution states
 
 ## 8. Governance Planning and Versioned CSV Execution

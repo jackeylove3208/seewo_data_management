@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.ai.providers.base import ModelUsage
 
@@ -38,6 +38,14 @@ class CauseAnalysis(BaseModel):
     risk: RiskLevel
     confidence: float = Field(ge=0, le=1)
 
+    @field_validator("cause", "evidence_summary")
+    @classmethod
+    def reject_blank_explanation(cls, value: str) -> str:
+        stripped = value.strip()
+        if len(stripped) < 3:
+            raise ValueError("analysis explanation must contain at least 3 characters")
+        return stripped
+
 
 class AnalysisProvenance(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -64,3 +72,26 @@ class AnalysisResult(BaseModel):
     failure_code: str | None = Field(default=None, max_length=128)
     attempt_count: int = Field(ge=0)
     provenance: AnalysisProvenance
+
+    @model_validator(mode="after")
+    def validate_status_output(self) -> "AnalysisResult":
+        action = self.output.recommended_action if self.output is not None else None
+        if self.status is AnalysisStatus.SUCCEEDED:
+            if self.output is None or action is RecommendedAction.MANUAL_REVIEW:
+                raise ValueError("succeeded analysis requires an executable output")
+        elif self.status is AnalysisStatus.MANUAL_REVIEW:
+            if self.output is None or action is not RecommendedAction.MANUAL_REVIEW:
+                raise ValueError("manual review requires a manual-review output")
+        elif self.output is not None:
+            raise ValueError("pending or failed analysis cannot contain successful output")
+        return self
+
+
+class AnalysisJobResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    task_id: UUID
+    total: int = Field(ge=0)
+    succeeded: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    manual_review: int = Field(ge=0)

@@ -1,3 +1,4 @@
+from datetime import UTC
 from uuid import UUID
 
 from sqlalchemy import select
@@ -51,6 +52,7 @@ class AnalysisRepository:
         output: CauseAnalysis,
         provenance: AnalysisProvenance,
         *,
+        attempt_count: int = 1,
         analysis_version: str = DEFAULT_ANALYSIS_VERSION,
     ) -> AnalysisResult:
         return await self._save(
@@ -58,7 +60,7 @@ class AnalysisRepository:
             status=AnalysisStatus.SUCCEEDED,
             output=output,
             failure_code=None,
-            attempt_count=1,
+            attempt_count=attempt_count,
             provenance=provenance,
             analysis_version=analysis_version,
         )
@@ -70,13 +72,32 @@ class AnalysisRepository:
         attempt_count: int,
         failure_code: str,
         provenance: AnalysisProvenance,
-        status: AnalysisStatus = AnalysisStatus.FAILED,
         analysis_version: str = DEFAULT_ANALYSIS_VERSION,
     ) -> AnalysisResult:
         return await self._save(
             difference,
-            status=status,
+            status=AnalysisStatus.FAILED,
             output=None,
+            failure_code=failure_code,
+            attempt_count=attempt_count,
+            provenance=provenance,
+            analysis_version=analysis_version,
+        )
+
+    async def save_manual_review(
+        self,
+        difference: DifferenceItem,
+        output: CauseAnalysis,
+        provenance: AnalysisProvenance,
+        *,
+        attempt_count: int,
+        failure_code: str | None = None,
+        analysis_version: str = DEFAULT_ANALYSIS_VERSION,
+    ) -> AnalysisResult:
+        return await self._save(
+            difference,
+            status=AnalysisStatus.MANUAL_REVIEW,
+            output=output,
             failure_code=failure_code,
             attempt_count=attempt_count,
             provenance=provenance,
@@ -132,6 +153,9 @@ class AnalysisRepository:
     @staticmethod
     def _result(record: AnalysisRecord) -> AnalysisResult:
         output = CauseAnalysis.model_validate(record.output) if record.output is not None else None
+        generated_at = record.generated_at
+        if generated_at.tzinfo is None:
+            generated_at = generated_at.replace(tzinfo=UTC)
         return AnalysisResult(
             id=record.id,
             difference_id=record.difference_id,
@@ -149,6 +173,6 @@ class AnalysisRepository:
                 prompt_version=record.prompt_version,
                 tool_trace_ids=tuple(record.tool_trace_ids),
                 usage=record.usage,
-                generated_at=record.generated_at,
+                generated_at=generated_at,
             ),
         )

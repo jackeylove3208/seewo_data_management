@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api.routes.analyses import router as analysis_router
 from app.api.routes.differences import router as difference_router
 from app.api.routes.health import router as health_router
 from app.api.routes.reconciliation_tasks import router as task_router
@@ -30,6 +31,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title=configured.app_name, version="0.1.0", lifespan=lifespan)
     app.include_router(health_router, prefix="/health", tags=["health"])
+    app.include_router(analysis_router)
     app.include_router(difference_router)
     app.include_router(upload_router)
     app.include_router(task_router)

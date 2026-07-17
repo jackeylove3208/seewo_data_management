@@ -118,13 +118,12 @@ def test_detail_returns_field_and_match_evidence(difference_client: TestClient) 
     assert body["analysis_status"] == "pending"
 
 
-def test_list_is_isolated_by_task(difference_client: TestClient) -> None:
+def test_list_rejects_unknown_task(difference_client: TestClient) -> None:
     seeded(difference_client)
 
     response = difference_client.get(f"/api/reconciliation-tasks/{uuid4()}/differences")
 
-    assert response.status_code == 200
-    assert response.json()["items"] == []
+    assert response.status_code == 404
 
 
 def test_unknown_difference_returns_404(difference_client: TestClient) -> None:

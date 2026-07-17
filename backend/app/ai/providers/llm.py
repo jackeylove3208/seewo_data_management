@@ -35,11 +35,12 @@ class HttpLLMProvider(LLMProvider):
     async def complete_json(self, request: LLMRequest) -> LLMResponse:
         url = self.settings.llm_url
         api_key = self.settings.llm_api_key
-        if url is None or api_key is None:
+        api_key_value = api_key.get_secret_value() if api_key is not None else ""
+        if not url or not api_key_value:
             raise ModelProviderError("LLM provider is not configured")
         client = self.client or httpx.AsyncClient()
         try:
-            return await self._complete_with(client, request, url, api_key.get_secret_value())
+            return await self._complete_with(client, request, url, api_key_value)
         finally:
             if self.client is None:
                 await client.aclose()
@@ -61,8 +62,14 @@ class HttpLLMProvider(LLMProvider):
                         "model": self.settings.llm_model,
                         "messages": [message.model_dump() for message in request.messages],
                         "temperature": request.temperature,
-                        "response_format": {"type": "json_object"},
-                        "response_schema": request.response_schema,
+                        "response_format": {
+                            "type": "json_schema",
+                            "json_schema": {
+                                "name": "governance_response",
+                                "strict": True,
+                                "schema": request.response_schema or {"type": "object"},
+                            },
+                        },
                     },
                     timeout=self.settings.llm_timeout_seconds,
                 )
@@ -74,7 +81,13 @@ class HttpLLMProvider(LLMProvider):
                     raise ModelProviderError(
                         f"model request returned status {response.status_code}"
                     )
-                return _parse_response(response.json(), self.settings)
+                try:
+                    payload = response.json()
+                except (json.JSONDecodeError, UnicodeDecodeError) as error:
+                    raise ModelProviderError("model response contained invalid JSON") from error
+                if not isinstance(payload, dict):
+                    raise ModelProviderError("model response must be a JSON object")
+                return _parse_response(payload, self.settings)
             except (httpx.TimeoutException, httpx.TransportError, TransientModelError) as error:
                 last_error = error
                 if attempt == self.settings.model_retry_attempts:
@@ -105,8 +118,8 @@ def _parse_response(payload: dict[str, Any], settings: Settings) -> LLMResponse:
     usage_values = usage if isinstance(usage, dict) else {}
     return LLMResponse(
         output=output,
-        provider=str(payload.get("provider") or HttpLLMProvider.provider_name),
-        model=str(payload.get("model") or settings.llm_model),
+        provider=HttpLLMProvider.provider_name,
+        model=settings.llm_model,
         usage=ModelUsage(
             input_tokens=_token_count(usage_values, "input_tokens", "prompt_tokens"),
             output_tokens=_token_count(usage_values, "output_tokens", "completion_tokens"),

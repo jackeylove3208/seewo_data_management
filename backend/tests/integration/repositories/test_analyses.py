@@ -9,8 +9,10 @@ from app.matching.service import EntityResolutionService
 from app.models.analyses import AnalysisRecord, ImmutableAnalysisError
 from app.repositories.analyses import AnalysisRepository
 from app.repositories.differences import DifferenceRepository
+from app.schemas.differences import DifferenceFilters
 from app.schemas.governance import (
     AnalysisProvenance,
+    AnalysisResult,
     AnalysisStatus,
     CauseAnalysis,
     RecommendedAction,
@@ -61,6 +63,76 @@ def test_analysis_rejects_confidence_outside_range() -> None:
         )
 
 
+def test_analysis_rejects_whitespace_only_explanations() -> None:
+    with pytest.raises(ValidationError):
+        CauseAnalysis(
+            cause="   ",
+            evidence_summary="   ",
+            recommended_action=RecommendedAction.UPDATE,
+            risk=RiskLevel.LOW,
+            confidence=0.8,
+        )
+
+
+def test_succeeded_result_requires_output() -> None:
+    with pytest.raises(ValidationError):
+        AnalysisResult(
+            id=uuid4(),
+            difference_id=uuid4(),
+            difference_version=1,
+            analysis_version="analysis-v1",
+            status=AnalysisStatus.SUCCEEDED,
+            output=None,
+            attempt_count=1,
+            provenance=provenance(),
+        )
+
+
+def test_succeeded_result_rejects_manual_review_action() -> None:
+    with pytest.raises(ValidationError):
+        AnalysisResult(
+            id=uuid4(),
+            difference_id=uuid4(),
+            difference_version=1,
+            analysis_version="analysis-v1",
+            status=AnalysisStatus.SUCCEEDED,
+            output=analysis().model_copy(
+                update={"recommended_action": RecommendedAction.MANUAL_REVIEW}
+            ),
+            attempt_count=1,
+            provenance=provenance(),
+        )
+
+
+def test_manual_review_result_requires_manual_review_output() -> None:
+    with pytest.raises(ValidationError):
+        AnalysisResult(
+            id=uuid4(),
+            difference_id=uuid4(),
+            difference_version=1,
+            analysis_version="analysis-v1",
+            status=AnalysisStatus.MANUAL_REVIEW,
+            output=analysis(),
+            attempt_count=2,
+            provenance=provenance(),
+        )
+
+
+def test_failed_result_rejects_successful_output() -> None:
+    with pytest.raises(ValidationError):
+        AnalysisResult(
+            id=uuid4(),
+            difference_id=uuid4(),
+            difference_version=1,
+            analysis_version="analysis-v1",
+            status=AnalysisStatus.FAILED,
+            output=analysis(),
+            failure_code="invalid_model_output",
+            attempt_count=2,
+            provenance=provenance(),
+        )
+
+
 @pytest.mark.asyncio
 async def test_successful_analysis_is_version_bound_and_idempotent(
     session,
@@ -107,6 +179,33 @@ async def test_failure_history_preserves_attempt_count(session, persisted_differ
 
 
 @pytest.mark.asyncio
+async def test_manual_review_history_preserves_safe_output(
+    session,
+    persisted_difference,
+) -> None:
+    output = analysis().model_copy(
+        update={
+            "recommended_action": RecommendedAction.MANUAL_REVIEW,
+            "risk": RiskLevel.HIGH,
+            "confidence": 0,
+        }
+    )
+
+    result = await AnalysisRepository(session).save_manual_review(
+        persisted_difference,
+        output,
+        provenance(),
+        attempt_count=2,
+        failure_code="analysis_policy_error",
+    )
+
+    assert result.status is AnalysisStatus.MANUAL_REVIEW
+    assert result.output == output
+    assert result.failure_code == "analysis_policy_error"
+    assert result.attempt_count == 2
+
+
+@pytest.mark.asyncio
 async def test_repository_returns_none_for_unknown_difference_version(session) -> None:
     assert (
         await AnalysisRepository(session).get_for_difference(
@@ -115,3 +214,31 @@ async def test_repository_returns_none_for_unknown_difference_version(session) -
         )
         is None
     )
+
+
+@pytest.mark.asyncio
+async def test_difference_page_does_not_duplicate_multiple_analysis_versions(
+    session,
+    persisted_difference,
+) -> None:
+    repository = AnalysisRepository(session)
+    await repository.save_success(
+        persisted_difference,
+        analysis().model_copy(update={"risk": RiskLevel.HIGH}),
+        provenance(),
+        analysis_version="analysis-v2",
+    )
+    await repository.save_success(
+        persisted_difference,
+        analysis(),
+        provenance(),
+    )
+
+    page = await DifferenceRepository(session).list_page(
+        persisted_difference.task_id,
+        DifferenceFilters(),
+    )
+
+    matching = [item for item in page.items if item.id == persisted_difference.id]
+    assert len(matching) == 1
+    assert matching[0].risk == "low"
