@@ -78,7 +78,7 @@
 
 ## 8. Governance Planning and Versioned CSV Execution
 
-- [ ] 8.1 Implement governance operation types for create, update, move, disable, skip, and manual review
+- [x] 8.1 Implement governance operation types for create, update, move, disable, skip, and manual review
 - [ ] 8.2 Implement plan building from selected analyzed differences without allowing model output to bypass field or operation policies
 - [ ] 8.3 Implement risk policy, dependency graph, topological ordering, and reversibility metadata
 - [ ] 8.4 Add batch preview and confirmation APIs that bind the selected difference versions and authenticated operator
