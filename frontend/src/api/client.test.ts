@@ -25,4 +25,11 @@ describe("requestJson", () => {
       new ApiError("后端服务不可用，请确认本地服务已经启动后重试", 0),
     );
   });
+
+  it("preserves request cancellation semantics", async () => {
+    const cancellation = new DOMException("The operation was aborted", "AbortError");
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(cancellation));
+
+    await expect(requestJson("/api/uploads")).rejects.toBe(cancellation);
+  });
 });

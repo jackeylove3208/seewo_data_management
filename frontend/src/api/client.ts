@@ -11,7 +11,8 @@ export async function requestJson<T>(path: string, init?: RequestInit): Promise<
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}${path}`, init);
-  } catch {
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
     throw new ApiError(BACKEND_UNAVAILABLE_MESSAGE, 0);
   }
   if (!response.ok) {
