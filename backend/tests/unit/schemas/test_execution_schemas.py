@@ -96,6 +96,55 @@ def test_governance_operation_preserves_versioned_execution_facts() -> None:
         operation.risk = RiskLevel.HIGH
 
 
+@pytest.mark.parametrize("fact_field", ["before", "after"])
+def test_governance_operation_rejects_top_level_fact_mutation(fact_field: str) -> None:
+    operation = GovernanceOperation(**operation_payload(OperationType.UPDATE))
+    facts = getattr(operation, fact_field)
+
+    assert facts is not None
+    with pytest.raises(TypeError):
+        facts["name"] = "Mutated teacher"
+
+
+def test_governance_operation_rejects_nested_fact_mutation() -> None:
+    payload = operation_payload(OperationType.UPDATE)
+    payload["before"] = {
+        "profile": {"name": "Existing teacher"},
+        "assignments": ["class-a", "class-b"],
+    }
+    payload["after"] = {
+        "profile": {"name": "Corrected teacher"},
+        "assignments": ["class-a", "class-c"],
+    }
+    operation = GovernanceOperation(**payload)
+
+    assert operation.before is not None
+    assert operation.after is not None
+    with pytest.raises(TypeError):
+        operation.before["profile"]["name"] = "Mutated teacher"
+    with pytest.raises(TypeError):
+        operation.after["assignments"][0] = "class-z"
+
+
+def test_governance_operation_dumps_facts_as_json_containers() -> None:
+    payload = operation_payload(OperationType.UPDATE)
+    payload["before"] = {
+        "profile": {"name": "Existing teacher"},
+        "assignments": ["class-a", "class-b"],
+    }
+    payload["after"] = {
+        "profile": {"name": "Corrected teacher"},
+        "assignments": ["class-a", "class-c"],
+    }
+    dumped = GovernanceOperation(**payload).model_dump(mode="json")
+
+    assert dumped["before"] == payload["before"]
+    assert dumped["after"] == payload["after"]
+    assert type(dumped["before"]) is dict
+    assert type(dumped["before"]["profile"]) is dict
+    assert type(dumped["before"]["assignments"]) is list
+
+
 @pytest.mark.parametrize(
     "updates",
     [
