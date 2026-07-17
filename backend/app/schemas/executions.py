@@ -1,5 +1,6 @@
 from collections.abc import Mapping
 from enum import StrEnum
+from math import isfinite
 from types import MappingProxyType
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -15,10 +16,13 @@ from pydantic import (
 )
 
 from app.schemas.canonical_entities import EntityType
+from app.schemas.differences import DifferenceType
 from app.schemas.governance import RiskLevel
 
 
 def _freeze_fact_value(value: Any) -> Any:
+    if isinstance(value, float) and not isfinite(value):
+        raise ValueError("fact numbers must be finite JSON values")
     if isinstance(value, Mapping):
         return MappingProxyType(
             {key: _freeze_fact_value(item) for key, item in value.items()}
@@ -49,11 +53,66 @@ class ProposalSource(StrEnum):
     OPERATOR = "operator"
 
 
+class ProposalStatus(StrEnum):
+    PENDING_EXECUTION = "pending_execution"
+    SUPERSEDED = "superseded"
+    EXECUTED = "executed"
+    REJECTED = "rejected"
+
+
 class ProposalVersionRef(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     proposal_id: UUID
     proposal_version: int = Field(ge=1)
+
+
+class ReviewedProposalSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    proposal: ProposalVersionRef
+    current_proposal_version: int = Field(ge=1)
+    status: ProposalStatus
+    task_id: UUID
+    source_snapshot_id: UUID
+    target_snapshot_id: UUID
+    target_version: str = Field(min_length=1, max_length=128)
+    proposal_source: ProposalSource
+    difference_id: UUID
+    difference_version: int = Field(ge=1)
+    current_difference_version: int = Field(ge=1)
+    analysis_version: str = Field(min_length=1, max_length=64)
+    current_analysis_version: str = Field(min_length=1, max_length=64)
+    difference_type: DifferenceType
+    operation_type: OperationType
+    entity_type: EntityType
+    target_entity_id: UUID | None = None
+    target_source_identifier: str | None = Field(default=None, min_length=1, max_length=255)
+    before: Mapping[str, JsonValue] | None = None
+    after: Mapping[str, JsonValue] | None = None
+    changed_fields: frozenset[str] = Field(default_factory=frozenset)
+    dependencies: frozenset[UUID] = Field(default_factory=frozenset)
+    reversible: bool
+    risk: RiskLevel
+    compensation_for: UUID | None = None
+    restore_absence: bool = False
+
+    @field_validator("before", "after", mode="after")
+    @classmethod
+    def freeze_facts(
+        cls, value: Mapping[str, JsonValue] | None
+    ) -> Mapping[str, JsonValue] | None:
+        if value is None:
+            return None
+        return cast(Mapping[str, JsonValue], _freeze_fact_value(value))
+
+    @field_serializer("before", "after")
+    def serialize_facts(
+        self, value: Mapping[str, JsonValue] | None
+    ) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        return cast(dict[str, Any], _serialize_fact_value(value))
 
 
 class GovernanceOperation(BaseModel):
@@ -86,7 +145,7 @@ class GovernanceOperation(BaseModel):
             return None
         return cast(Mapping[str, JsonValue], _freeze_fact_value(value))
 
-    @field_serializer("before", "after", when_used="json")
+    @field_serializer("before", "after")
     def serialize_facts(
         self, value: Mapping[str, JsonValue] | None
     ) -> dict[str, Any] | None:
@@ -120,3 +179,17 @@ class GovernanceOperation(BaseModel):
             raise ValueError("skip operations must be non-mutating")
 
         return self
+
+
+class GovernancePlan(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    id: UUID
+    version: int = Field(default=1, ge=1)
+    task_id: UUID
+    source_snapshot_id: UUID
+    target_snapshot_id: UUID
+    target_version: str = Field(min_length=1, max_length=128)
+    proposals: tuple[ProposalVersionRef, ...] = Field(min_length=1)
+    operations: tuple[GovernanceOperation, ...] = Field(min_length=1)
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
