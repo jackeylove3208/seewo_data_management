@@ -1,5 +1,6 @@
 .DS_Store
 .idea/
+.worktrees/
 .venv/
 backend/.venv/
 backend/.env
