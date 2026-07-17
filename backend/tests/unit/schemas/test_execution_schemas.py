@@ -1,3 +1,4 @@
+import json
 from uuid import UUID, uuid4
 
 import pytest
@@ -11,6 +12,11 @@ from app.schemas.executions import (
     ProposalVersionRef,
 )
 from app.schemas.governance import RiskLevel
+
+
+class MutableFact:
+    def __init__(self) -> None:
+        self.values: list[str] = []
 
 
 def proposal_ref() -> ProposalVersionRef:
@@ -143,6 +149,75 @@ def test_governance_operation_dumps_facts_as_json_containers() -> None:
     assert type(dumped["before"]) is dict
     assert type(dumped["before"]["profile"]) is dict
     assert type(dumped["before"]["assignments"]) is list
+
+
+@pytest.mark.parametrize("fact_field", ["before", "after"])
+@pytest.mark.parametrize(
+    "invalid_value",
+    [
+        {"unexpected"},
+        bytearray(b"mutable bytes"),
+        MutableFact(),
+    ],
+    ids=["set", "bytearray", "custom-mutable-object"],
+)
+def test_governance_operation_rejects_nested_non_json_facts(
+    fact_field: str,
+    invalid_value: object,
+) -> None:
+    payload = operation_payload(OperationType.UPDATE)
+    payload[fact_field] = {"nested": {"value": invalid_value}}
+
+    with pytest.raises(ValidationError):
+        GovernanceOperation(**payload)
+
+
+def test_governance_operation_json_serialization_is_deterministic() -> None:
+    payload = operation_payload(OperationType.UPDATE)
+    payload["id"] = uuid4()
+    payload["before"] = {
+        "profile": {"name": "Existing teacher", "active": True},
+        "assignments": ["class-b", "class-a"],
+    }
+    payload["after"] = {
+        "assignments": ["class-a", "class-c"],
+        "profile": {"active": True, "name": "Corrected teacher"},
+    }
+    first = GovernanceOperation(**payload)
+    second = GovernanceOperation(**payload)
+
+    first_json = json.dumps(
+        first.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    second_json = json.dumps(
+        second.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+    assert first_json == second_json
+
+
+def test_operator_compensation_fields_are_preserved() -> None:
+    payload = operation_payload(OperationType.UPDATE)
+    compensation_for = uuid4()
+    payload.update(
+        proposal_source=ProposalSource.OPERATOR,
+        compensation_for=compensation_for,
+        restore_absence=True,
+    )
+
+    operation = GovernanceOperation(**payload)
+    dumped = operation.model_dump(mode="json")
+
+    assert operation.proposal_source is ProposalSource.OPERATOR
+    assert operation.compensation_for == compensation_for
+    assert operation.restore_absence is True
+    assert dumped["proposal_source"] == "operator"
+    assert dumped["compensation_for"] == str(compensation_for)
+    assert dumped["restore_absence"] is True
 
 
 @pytest.mark.parametrize(

@@ -1,13 +1,14 @@
 from collections.abc import Mapping
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    JsonValue,
     field_serializer,
     field_validator,
     model_validator,
@@ -22,17 +23,15 @@ def _freeze_fact_value(value: Any) -> Any:
         return MappingProxyType(
             {key: _freeze_fact_value(item) for key, item in value.items()}
         )
-    if isinstance(value, list | tuple):
+    if isinstance(value, list):
         return tuple(_freeze_fact_value(item) for item in value)
-    if isinstance(value, set | frozenset):
-        return frozenset(_freeze_fact_value(item) for item in value)
     return value
 
 
 def _serialize_fact_value(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {key: _serialize_fact_value(item) for key, item in value.items()}
-    if isinstance(value, tuple | frozenset):
+    if isinstance(value, tuple):
         return [_serialize_fact_value(item) for item in value]
     return value
 
@@ -69,8 +68,8 @@ class GovernanceOperation(BaseModel):
     entity_type: EntityType
     target_entity_id: UUID | None = None
     target_source_identifier: str | None = Field(default=None, min_length=1, max_length=255)
-    before: Mapping[str, Any] | None = None
-    after: Mapping[str, Any] | None = None
+    before: Mapping[str, JsonValue] | None = None
+    after: Mapping[str, JsonValue] | None = None
     changed_fields: frozenset[str] = Field(default_factory=frozenset)
     dependencies: frozenset[UUID] = Field(default_factory=frozenset)
     reversible: bool
@@ -80,16 +79,20 @@ class GovernanceOperation(BaseModel):
 
     @field_validator("before", "after", mode="after")
     @classmethod
-    def freeze_facts(cls, value: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    def freeze_facts(
+        cls, value: Mapping[str, JsonValue] | None
+    ) -> Mapping[str, JsonValue] | None:
         if value is None:
             return None
-        return _freeze_fact_value(value)
+        return cast(Mapping[str, JsonValue], _freeze_fact_value(value))
 
     @field_serializer("before", "after", when_used="json")
-    def serialize_facts(self, value: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    def serialize_facts(
+        self, value: Mapping[str, JsonValue] | None
+    ) -> dict[str, Any] | None:
         if value is None:
             return None
-        return _serialize_fact_value(value)
+        return cast(dict[str, Any], _serialize_fact_value(value))
 
     @model_validator(mode="after")
     def validate_operation_shape(self) -> "GovernanceOperation":
