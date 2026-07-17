@@ -1,0 +1,74 @@
+[
+  {
+    "name": "organization_attribute_conflict",
+    "entity_type": "organization_unit",
+    "mode": "full",
+    "mapping_status": "accepted",
+    "source": {"name": "教务处"},
+    "target": {"name": "教学管理处"},
+    "expected": ["attribute_conflict"]
+  },
+  {
+    "name": "class_structure_conflict",
+    "entity_type": "class",
+    "mode": "full",
+    "mapping_status": "accepted",
+    "source": {"name": "高一1班", "parent_mapping_id": "department-1"},
+    "target": {"name": "高一1班", "parent_mapping_id": "department-2"},
+    "expected": ["structure_conflict"]
+  },
+  {
+    "name": "teacher_missing",
+    "entity_type": "teacher",
+    "mode": "full",
+    "mapping_status": "unmatched",
+    "source": {"name": "测试教师"},
+    "target": null,
+    "expected": ["seewo_missing"]
+  },
+  {
+    "name": "student_redundant_in_full_scope",
+    "entity_type": "student",
+    "mode": "full",
+    "mapping_status": null,
+    "source": null,
+    "target": {"name": "测试学生"},
+    "expected": ["seewo_redundant"]
+  },
+  {
+    "name": "membership_mapping_conflict",
+    "entity_type": "membership",
+    "mode": "full",
+    "mapping_status": "conflict",
+    "source": {"member_mapping_id": "member-1", "container_mapping_id": "class-1", "role": "student"},
+    "target": {"member_mapping_id": "member-1", "container_mapping_id": "class-1", "role": "student"},
+    "expected": ["duplicate_conflict"]
+  },
+  {
+    "name": "normalized_equal_teacher",
+    "entity_type": "teacher",
+    "mode": "full",
+    "mapping_status": "accepted",
+    "source": {"name": "张三", "phone": "13800000000"},
+    "target": {"name": " 张三 ", "phone": "+86 138-0000-0000"},
+    "expected": []
+  },
+  {
+    "name": "partial_scope_suppresses_student_redundant",
+    "entity_type": "student",
+    "mode": "partial",
+    "mapping_status": null,
+    "source": null,
+    "target": {"name": "测试学生"},
+    "expected": []
+  },
+  {
+    "name": "manual_review_waits_for_confirmation",
+    "entity_type": "teacher",
+    "mode": "full",
+    "mapping_status": "manual_review",
+    "source": {"name": "王伟"},
+    "target": {"name": "王威"},
+    "expected": []
+  }
+]

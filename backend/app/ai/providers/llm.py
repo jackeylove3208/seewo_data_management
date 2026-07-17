@@ -1,0 +1,127 @@
+import asyncio
+import json
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+import httpx
+
+from app.ai.providers.base import (
+    LLMProvider,
+    LLMRequest,
+    LLMResponse,
+    ModelProviderError,
+    ModelUsage,
+    TransientModelError,
+)
+from app.core.config import Settings
+
+
+class HttpLLMProvider(LLMProvider):
+    """Minimal OpenAI-compatible structured JSON client with bounded retries."""
+
+    provider_name = "http"
+
+    def __init__(
+        self,
+        *,
+        settings: Settings,
+        client: httpx.AsyncClient | None = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        self.settings = settings
+        self.client = client
+        self.sleep = sleep
+
+    async def complete_json(self, request: LLMRequest) -> LLMResponse:
+        url = self.settings.llm_url
+        api_key = self.settings.llm_api_key
+        if url is None or api_key is None:
+            raise ModelProviderError("LLM provider is not configured")
+        client = self.client or httpx.AsyncClient()
+        try:
+            return await self._complete_with(client, request, url, api_key.get_secret_value())
+        finally:
+            if self.client is None:
+                await client.aclose()
+
+    async def _complete_with(
+        self,
+        client: httpx.AsyncClient,
+        request: LLMRequest,
+        url: str,
+        api_key: str,
+    ) -> LLMResponse:
+        last_error: Exception | None = None
+        for attempt in range(1, self.settings.model_retry_attempts + 1):
+            try:
+                response = await client.post(
+                    url,
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json={
+                        "model": self.settings.llm_model,
+                        "messages": [message.model_dump() for message in request.messages],
+                        "temperature": request.temperature,
+                        "response_format": {"type": "json_object"},
+                        "response_schema": request.response_schema,
+                    },
+                    timeout=self.settings.llm_timeout_seconds,
+                )
+                if response.status_code in {429, 500, 502, 503, 504}:
+                    raise TransientModelError(
+                        f"model request returned status {response.status_code}"
+                    )
+                if response.is_error:
+                    raise ModelProviderError(
+                        f"model request returned status {response.status_code}"
+                    )
+                return _parse_response(response.json(), self.settings)
+            except (httpx.TimeoutException, httpx.TransportError, TransientModelError) as error:
+                last_error = error
+                if attempt == self.settings.model_retry_attempts:
+                    break
+                await self.sleep(self.settings.model_retry_wait_seconds * attempt)
+        raise ModelProviderError(
+            f"model request failed after {self.settings.model_retry_attempts} attempts"
+        ) from last_error
+
+
+def _parse_response(payload: dict[str, Any], settings: Settings) -> LLMResponse:
+    output = payload.get("output")
+    if output is None:
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise ModelProviderError("model response did not contain structured output")
+        message = choices[0].get("message") if isinstance(choices[0], dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, str):
+            raise ModelProviderError("model response did not contain JSON content")
+        try:
+            output = json.loads(content)
+        except json.JSONDecodeError as error:
+            raise ModelProviderError("model response contained invalid JSON") from error
+    if not isinstance(output, dict):
+        raise ModelProviderError("model response output must be an object")
+    usage = payload.get("usage")
+    usage_values = usage if isinstance(usage, dict) else {}
+    return LLMResponse(
+        output=output,
+        provider=str(payload.get("provider") or HttpLLMProvider.provider_name),
+        model=str(payload.get("model") or settings.llm_model),
+        usage=ModelUsage(
+            input_tokens=_token_count(usage_values, "input_tokens", "prompt_tokens"),
+            output_tokens=_token_count(usage_values, "output_tokens", "completion_tokens"),
+        ),
+        request_id=_optional_string(payload.get("request_id") or payload.get("id")),
+    )
+
+
+def _optional_string(value: object) -> str | None:
+    return str(value) if value is not None else None
+
+
+def _token_count(values: dict[str, Any], *keys: str) -> int:
+    for key in keys:
+        value = values.get(key)
+        if isinstance(value, int):
+            return value
+    return 0

@@ -1,0 +1,40 @@
+{
+  "version": "comparison-v1",
+  "entities": {
+    "organization_unit": [
+      {"field": "name", "kind": "normalized_scalar"},
+      {"field": "code", "kind": "identifier"},
+      {"field": "campus_id", "kind": "identifier"},
+      {"field": "parent_mapping_id", "kind": "structure_id"}
+    ],
+    "class": [
+      {"field": "name", "kind": "normalized_scalar"},
+      {"field": "grade", "kind": "normalized_scalar"},
+      {"field": "school_year", "kind": "normalized_scalar"},
+      {"field": "parent_mapping_id", "kind": "structure_id"}
+    ],
+    "teacher": [
+      {"field": "name", "kind": "normalized_scalar"},
+      {"field": "employee_number", "kind": "identifier"},
+      {"field": "subject", "kind": "normalized_scalar"},
+      {"field": "phone", "kind": "phone"},
+      {"field": "email", "kind": "email"},
+      {"field": "status", "kind": "normalized_scalar"},
+      {"field": "parent_mapping_id", "kind": "structure_id"}
+    ],
+    "student": [
+      {"field": "name", "kind": "normalized_scalar"},
+      {"field": "student_number", "kind": "identifier"},
+      {"field": "grade", "kind": "normalized_scalar"},
+      {"field": "phone", "kind": "phone"},
+      {"field": "email", "kind": "email"},
+      {"field": "status", "kind": "normalized_scalar"},
+      {"field": "parent_mapping_id", "kind": "structure_id"}
+    ],
+    "membership": [
+      {"field": "member_mapping_id", "kind": "structure_id"},
+      {"field": "container_mapping_id", "kind": "structure_id"},
+      {"field": "role", "kind": "normalized_scalar"}
+    ]
+  }
+}

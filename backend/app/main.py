@@ -1,0 +1,39 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+
+from app.api.routes.differences import router as difference_router
+from app.api.routes.health import router as health_router
+from app.api.routes.reconciliation_tasks import router as task_router
+from app.api.routes.uploads import router as upload_router
+from app.core.config import Settings, get_settings
+from app.core.database import Database
+from app.models import Base
+
+
+def create_app(settings: Settings | None = None) -> FastAPI:
+    configured = settings or get_settings()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        configured.ensure_storage_directories()
+        app.state.settings = configured
+        app.state.database = Database(configured.database_url)
+        if configured.auto_create_schema:
+            async with app.state.database.engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+        try:
+            yield
+        finally:
+            await app.state.database.dispose()
+
+    app = FastAPI(title=configured.app_name, version="0.1.0", lifespan=lifespan)
+    app.include_router(health_router, prefix="/health", tags=["health"])
+    app.include_router(difference_router)
+    app.include_router(upload_router)
+    app.include_router(task_router)
+    return app
+
+
+app = create_app()

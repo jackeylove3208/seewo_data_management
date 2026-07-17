@@ -1,0 +1,365 @@
+from collections import Counter, defaultdict
+from collections.abc import Sequence
+from decimal import Decimal
+from uuid import UUID
+
+from pydantic import TypeAdapter
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.matching.blocking import block_key
+from app.matching.candidate_retriever import CandidateRetriever
+from app.matching.conflict_resolver import ConflictResolver
+from app.matching.exact_matcher import ExactMatcher
+from app.matching.scorer import CandidateScorer
+from app.matching.vector_index import VectorIndex, representation
+from app.models.mappings import EntityMapping
+from app.models.reconciliation import ReconciliationTask
+from app.models.snapshots import CanonicalEntityRecord, Snapshot
+from app.normalization.pipeline import NormalizationPipeline
+from app.repositories.mappings import MappingRepository
+from app.schemas.canonical_entities import (
+    CanonicalEntity,
+    EntityType,
+    SourceRole,
+    member_entity_types_for_role,
+)
+from app.schemas.matching import (
+    MatchDecision,
+    MatchEvidence,
+    MatchMethod,
+    MatchStatus,
+    NormalizedRecord,
+    ResolutionSummary,
+    SnapshotPair,
+)
+
+RESOLUTION_ORDER = (
+    EntityType.ORGANIZATION_UNIT,
+    EntityType.CLASS,
+    EntityType.TEACHER,
+    EntityType.STUDENT,
+    EntityType.MEMBERSHIP,
+)
+
+_CANONICAL_ADAPTER: TypeAdapter[CanonicalEntity] = TypeAdapter(CanonicalEntity)
+
+
+class EntityResolutionService:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        normalization: NormalizationPipeline | None = None,
+        exact_matcher: ExactMatcher | None = None,
+        scorer: CandidateScorer | None = None,
+        conflict_resolver: ConflictResolver | None = None,
+        vector_index: VectorIndex | None = None,
+        mapping_repository: MappingRepository | None = None,
+        top_k: int = 20,
+    ) -> None:
+        self.session = session
+        self.normalization = normalization or NormalizationPipeline()
+        self.exact_matcher = exact_matcher or ExactMatcher()
+        self.scorer = scorer or CandidateScorer()
+        self.conflict_resolver = conflict_resolver or ConflictResolver()
+        self.vector_index = vector_index
+        self.top_k = top_k
+        self.mappings = mapping_repository or MappingRepository(session)
+
+    async def resolve(self, pair: SnapshotPair) -> ResolutionSummary:
+        task, source_snapshot, target_snapshot = await self._validate_pair(pair)
+        task.status = "processing"
+        task.stage = "matching"
+        source_records = await self._load_records(source_snapshot.id, SourceRole.AUTHORITATIVE)
+        target_records = await self._load_records(target_snapshot.id, SourceRole.TARGET)
+        source_by_type = _by_type(source_records)
+        target_by_type = _by_type(target_records)
+        target_ids = {record.record_key: record.entity_id for record in target_records}
+        accepted_targets: dict[str, UUID] = {}
+        decisions: list[MatchDecision] = []
+
+        for entity_type in RESOLUTION_ORDER:
+            type_sources = source_by_type[entity_type]
+            historical_mappings = await self.mappings.find_confirmed_many(
+                pair.tenant_id,
+                [record.record_key for record in type_sources],
+            )
+            target_stage = tuple(
+                _with_context(record, accepted_targets, target_ids, authoritative=False)
+                for record in target_by_type[entity_type]
+            )
+            type_decisions: list[MatchDecision] = []
+            for source_batch in _source_batches(entity_type, type_sources):
+                source_stage = tuple(
+                    _with_context(
+                        record,
+                        accepted_targets,
+                        target_ids,
+                        authoritative=True,
+                    )
+                    for record in source_batch
+                )
+                batch_decisions = await self._resolve_type(
+                    source_stage,
+                    target_stage,
+                    historical_mappings,
+                )
+                type_decisions = self.conflict_resolver.resolve([*type_decisions, *batch_decisions])
+                for source in source_by_type[entity_type]:
+                    accepted_targets.pop(source.record_key, None)
+                for decision in type_decisions:
+                    if (
+                        decision.status is MatchStatus.ACCEPTED
+                        and decision.target_entity_id is not None
+                    ):
+                        accepted_targets[decision.source_key] = decision.target_entity_id
+
+            for decision in type_decisions:
+                await self.mappings.save_decision(
+                    task_id=pair.task_id,
+                    tenant_id=pair.tenant_id,
+                    source_snapshot_id=pair.source_snapshot_id,
+                    target_snapshot_id=pair.target_snapshot_id,
+                    decision=decision,
+                )
+            decisions.extend(type_decisions)
+
+        task.status = "ready"
+        task.stage = "matching"
+        await self.session.flush()
+        counts = Counter(decision.status for decision in decisions)
+        return ResolutionSummary(
+            task_id=pair.task_id,
+            source_snapshot_id=pair.source_snapshot_id,
+            target_snapshot_id=pair.target_snapshot_id,
+            processed_entity_types=RESOLUTION_ORDER,
+            decisions=tuple(decisions),
+            counts={status: counts[status] for status in MatchStatus},
+        )
+
+    async def _validate_pair(
+        self,
+        pair: SnapshotPair,
+    ) -> tuple[ReconciliationTask, Snapshot, Snapshot]:
+        task = await self.session.get(ReconciliationTask, pair.task_id)
+        source = await self.session.get(Snapshot, pair.source_snapshot_id)
+        target = await self.session.get(Snapshot, pair.target_snapshot_id)
+        if task is None or source is None or target is None:
+            raise LookupError("reconciliation task or snapshot pair was not found")
+        if source.state != "published" or target.state != "published":
+            raise ValueError("entity resolution requires published snapshots")
+        if source.task_id != pair.task_id or target.task_id != pair.task_id:
+            raise ValueError("snapshot pair does not belong to the reconciliation task")
+        if source.source_role != SourceRole.AUTHORITATIVE.value:
+            raise ValueError("source snapshot must be authoritative")
+        if target.source_role != SourceRole.TARGET.value:
+            raise ValueError("target snapshot must be the governance target")
+        if task.tenant_id != pair.tenant_id:
+            raise ValueError("snapshot pair tenant does not match the task")
+        return task, source, target
+
+    async def _load_records(
+        self,
+        snapshot_id: UUID,
+        expected_role: SourceRole,
+    ) -> tuple[NormalizedRecord, ...]:
+        rows = await self.session.scalars(
+            select(CanonicalEntityRecord)
+            .where(CanonicalEntityRecord.snapshot_id == snapshot_id)
+            .order_by(CanonicalEntityRecord.entity_type, CanonicalEntityRecord.raw_row_number)
+        )
+        records: list[NormalizedRecord] = []
+        for row in rows:
+            entity = _CANONICAL_ADAPTER.validate_python(row.canonical_payload)
+            if entity.source_role is not expected_role:
+                raise ValueError("canonical entity source role does not match its snapshot")
+            normalized = self.normalization.normalize(entity)
+            normalized_source_id = normalized.normalized.get("source_id")
+            if normalized_source_id is None:
+                raise ValueError("normalized canonical entity is missing source_id")
+            records.append(
+                NormalizedRecord(
+                    entity_id=row.id,
+                    snapshot_id=snapshot_id,
+                    tenant_id=entity.tenant_id,
+                    entity_type=entity.entity_type,
+                    source_id=normalized_source_id,
+                    values=normalized.normalized,
+                    rule_version=normalized.rule_version,
+                )
+            )
+        return tuple(records)
+
+    async def _resolve_type(
+        self,
+        sources: Sequence[NormalizedRecord],
+        targets: Sequence[NormalizedRecord],
+        historical_mappings: dict[str, EntityMapping],
+    ) -> list[MatchDecision]:
+        retriever = CandidateRetriever(targets)
+        if self.vector_index is not None:
+            await self.vector_index.upsert_targets(targets)
+        decisions: list[MatchDecision] = []
+        targets_by_key = {record.record_key: record for record in targets}
+        target_snapshot_id = targets[0].snapshot_id if targets else None
+        exact_index = self.exact_matcher.build_index(targets)
+        for source in sources:
+            historical = historical_mappings.get(source.record_key)
+            decision = _historical_decision(source, historical, targets_by_key)
+            if decision is None:
+                decision = self.exact_matcher.match(source, exact_index)
+            if decision is None:
+                candidates = retriever.lexical(source, top_k=self.top_k)
+                if self.vector_index is not None and target_snapshot_id is not None:
+                    candidates.extend(
+                        await self.vector_index.search(
+                            representation(source),
+                            block_key(source),
+                            target_snapshot_id=target_snapshot_id,
+                            top_k=self.top_k,
+                        )
+                    )
+                decision = self.scorer.decide(source, candidates)
+            decisions.append(decision)
+        return decisions
+
+
+def _by_type(
+    records: Sequence[NormalizedRecord],
+) -> dict[EntityType, tuple[NormalizedRecord, ...]]:
+    grouped: dict[EntityType, list[NormalizedRecord]] = defaultdict(list)
+    for record in records:
+        grouped[record.entity_type].append(record)
+    return {entity_type: tuple(grouped[entity_type]) for entity_type in EntityType}
+
+
+def _source_batches(
+    entity_type: EntityType,
+    records: Sequence[NormalizedRecord],
+) -> tuple[tuple[NormalizedRecord, ...], ...]:
+    if entity_type is not EntityType.ORGANIZATION_UNIT:
+        return (tuple(records),)
+    by_source_id = {record.source_id: record for record in records}
+    remaining = dict(by_source_id)
+    resolved: set[str] = set()
+    batches: list[tuple[NormalizedRecord, ...]] = []
+    while remaining:
+        ready = tuple(
+            record
+            for source_id, record in sorted(remaining.items())
+            if (parent_id := record.values.get("parent_source_id")) is None
+            or parent_id in resolved
+            or parent_id not in by_source_id
+        )
+        if not ready:
+            raise ValueError(
+                "organization hierarchy cannot be resolved because it contains a cycle"
+            )
+        batches.append(ready)
+        for record in ready:
+            remaining.pop(record.source_id)
+            resolved.add(record.source_id)
+    return tuple(batches)
+
+
+def _with_context(
+    record: NormalizedRecord,
+    accepted_targets: dict[str, UUID],
+    target_ids: dict[str, UUID],
+    *,
+    authoritative: bool,
+) -> NormalizedRecord:
+    values = dict(record.values)
+    lookup = accepted_targets if authoritative else target_ids
+    parent_type = _parent_type(record.entity_type)
+    parent_source_id = values.get("parent_source_id")
+    parent_mapping_id = (
+        lookup.get(f"{parent_type.value}:{parent_source_id}")
+        if parent_type is not None and parent_source_id is not None
+        else None
+    )
+    if record.entity_type is EntityType.MEMBERSHIP:
+        member_id = _related_target(
+            values.get("member_source_id"),
+            member_entity_types_for_role(values.get("role")),
+            lookup,
+        )
+        container_id = _related_target(
+            values.get("container_source_id"),
+            (EntityType.ORGANIZATION_UNIT, EntityType.CLASS),
+            lookup,
+        )
+        values["member_mapping_id"] = str(member_id) if member_id else None
+        values["container_mapping_id"] = str(container_id) if container_id else None
+        parent_mapping_id = container_id
+    return record.model_copy(update={"values": values, "parent_mapping_id": parent_mapping_id})
+
+
+def _parent_type(entity_type: EntityType) -> EntityType | None:
+    return {
+        EntityType.ORGANIZATION_UNIT: EntityType.ORGANIZATION_UNIT,
+        EntityType.CLASS: EntityType.ORGANIZATION_UNIT,
+        EntityType.TEACHER: EntityType.ORGANIZATION_UNIT,
+        EntityType.STUDENT: EntityType.CLASS,
+    }.get(entity_type)
+
+
+def _related_target(
+    source_id: str | None,
+    entity_types: Sequence[EntityType],
+    lookup: dict[str, UUID],
+) -> UUID | None:
+    if source_id is None:
+        return None
+    matches: list[UUID] = []
+    for entity_type in entity_types:
+        target = lookup.get(f"{entity_type.value}:{source_id}")
+        if target is not None:
+            matches.append(target)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _historical_decision(
+    source: NormalizedRecord,
+    mapping: EntityMapping | None,
+    targets_by_key: dict[str, NormalizedRecord],
+) -> MatchDecision | None:
+    if mapping is None or mapping.target_key is None:
+        return None
+    target = targets_by_key.get(mapping.target_key)
+    if target is None:
+        return None
+    evidence = (
+        MatchEvidence(
+            feature="historical_mapping",
+            source_value=str(mapping.id),
+            target_value=mapping.target_key,
+            score=1,
+        ),
+        MatchEvidence(
+            feature="confirmed_by",
+            source_value=mapping.confirmed_by,
+            target_value=None,
+            score=1,
+        ),
+        MatchEvidence(
+            feature="original_rule_version",
+            source_value=mapping.rule_version,
+            target_value=None,
+            score=1,
+        ),
+    )
+    return MatchDecision(
+        entity_type=source.entity_type,
+        source_entity_id=source.entity_id,
+        source_key=source.record_key,
+        target_entity_id=target.entity_id,
+        target_key=target.record_key,
+        method=MatchMethod.HISTORICAL,
+        status=MatchStatus.ACCEPTED,
+        confidence=float(Decimal(mapping.confidence)),
+        evidence=evidence,
+        rule_version="historical-reuse-v1",
+        confirmed_by=mapping.confirmed_by,
+    )
