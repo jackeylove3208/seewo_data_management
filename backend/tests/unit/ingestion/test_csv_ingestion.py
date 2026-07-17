@@ -1,10 +1,11 @@
 from pathlib import Path
 from uuid import uuid4
 
+import polars as pl
 import pytest
 
 from app.ingestion.csv_reader import CsvFormatError, inspect_csv, read_csv_frame
-from app.ingestion.field_mapping import default_mapping_registry
+from app.ingestion.field_mapping import FieldMappingProfile, default_mapping_registry
 from app.ingestion.schema_validation import validate_frame
 from app.schemas.canonical_entities import (
     ClassEntity,
@@ -156,6 +157,32 @@ def test_missing_required_mapping_blocks_ingestion(tmp_path: Path) -> None:
 
     assert result.summary.accepted == 0
     assert result.fatal_errors[0].code == "missing_required_column"
+    assert result.fatal_errors[0].field == "name"
+
+
+def test_missing_required_profile_mapping_is_fatal() -> None:
+    base = default_mapping_registry().get("mofa-v1")
+    columns = dict(base.columns)
+    columns.pop("name")
+    profile = FieldMappingProfile(
+        version="broken-v1",
+        name="broken",
+        source_role=SourceRole.TARGET,
+        columns=columns,
+        entity_type_values=base.entity_type_values,
+    )
+    frame = pl.DataFrame({"entity_type": ["教师"], "id": ["T1"], "name": ["A"]})
+
+    result = validate_frame(
+        frame,
+        profile=profile,
+        tenant_id="school-1",
+        snapshot_id=uuid4(),
+        source_role=SourceRole.TARGET,
+    )
+
+    assert result.summary.accepted == 0
+    assert result.fatal_errors[0].code == "missing_required_mapping"
     assert result.fatal_errors[0].field == "name"
 
 

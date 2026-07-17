@@ -42,6 +42,24 @@ def validate_frame(
     source_role: SourceRole,
     validate_relationships: bool = True,
 ) -> ValidationResult:
+    missing_mappings = profile.missing_required_mappings()
+    if missing_mappings:
+        errors = tuple(
+            IngestionIssue(
+                code="missing_required_mapping",
+                field=canonical,
+                message=f"required canonical field has no source column mapping: {canonical}",
+            )
+            for canonical in missing_mappings
+        )
+        return ValidationResult(
+            entities=(),
+            raw_rows=(),
+            warnings=(),
+            quarantined=(),
+            fatal_errors=errors,
+            summary=IngestionSummary(rejected=frame.height),
+        )
     missing = [
         (canonical, source)
         for canonical, source in profile.required_source_columns.items()
