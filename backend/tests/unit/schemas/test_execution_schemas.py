@@ -29,6 +29,8 @@ def operation_payload(operation_type: OperationType) -> dict[str, object]:
         "proposal_source": ProposalSource.AI,
         "difference_id": uuid4(),
         "difference_version": 2,
+        "analysis_id": uuid4(),
+        "analysis_version": "analysis-v1",
         "operation_type": operation_type,
         "entity_type": EntityType.TEACHER,
         "changed_fields": frozenset({"name"}),
@@ -90,6 +92,8 @@ def test_governance_operation_preserves_versioned_execution_facts() -> None:
     assert operation.proposal_source is ProposalSource.AI
     assert operation.difference_id == payload["difference_id"]
     assert operation.difference_version == 2
+    assert operation.analysis_id == payload["analysis_id"]
+    assert operation.analysis_version == "analysis-v1"
     assert operation.target_entity_id == payload["target_entity_id"]
     assert operation.target_source_identifier == "teacher-17"
     assert operation.before == {"name": "Existing teacher"}
@@ -274,6 +278,14 @@ def test_target_mutation_can_use_connector_identifier_without_internal_uuid() ->
 def test_skip_is_non_mutating(updates: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
         GovernanceOperation(**{**operation_payload(OperationType.SKIP), **updates})
+
+
+def test_skip_rejects_json_value_type_changes() -> None:
+    payload = operation_payload(OperationType.SKIP)
+    payload.update(before={"active": 1}, after={"active": True})
+
+    with pytest.raises(ValidationError):
+        GovernanceOperation(**payload)
 
 
 def test_governance_operation_rejects_invalid_versions_and_extra_fields() -> None:

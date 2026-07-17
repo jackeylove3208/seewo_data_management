@@ -1,3 +1,4 @@
+import json
 from collections.abc import Mapping
 from enum import StrEnum
 from math import isfinite
@@ -38,6 +39,20 @@ def _serialize_fact_value(value: Any) -> Any:
     if isinstance(value, tuple):
         return [_serialize_fact_value(item) for item in value]
     return value
+
+
+def canonical_json(value: Any) -> str:
+    return json.dumps(
+        _serialize_fact_value(value),
+        allow_nan=False,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def json_values_equal(left: Any, right: Any) -> bool:
+    return canonical_json(left) == canonical_json(right)
 
 
 class OperationType(StrEnum):
@@ -81,6 +96,7 @@ class ReviewedProposalSnapshot(BaseModel):
     difference_id: UUID
     difference_version: int = Field(ge=1)
     current_difference_version: int = Field(ge=1)
+    analysis_id: UUID
     analysis_version: str = Field(min_length=1, max_length=64)
     current_analysis_version: str = Field(min_length=1, max_length=64)
     difference_type: DifferenceType
@@ -123,6 +139,8 @@ class GovernanceOperation(BaseModel):
     proposal_source: ProposalSource
     difference_id: UUID
     difference_version: int = Field(ge=1)
+    analysis_id: UUID
+    analysis_version: str = Field(min_length=1, max_length=64)
     operation_type: OperationType
     entity_type: EntityType
     target_entity_id: UUID | None = None
@@ -174,7 +192,7 @@ class GovernanceOperation(BaseModel):
             if self.before is None or self.after is None:
                 raise ValueError("target mutations require expected before and after facts")
         elif self.changed_fields or (
-            self.after is not None and self.after != self.before
+            self.after is not None and not json_values_equal(self.after, self.before)
         ):
             raise ValueError("skip operations must be non-mutating")
 

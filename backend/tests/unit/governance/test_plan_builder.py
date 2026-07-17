@@ -52,6 +52,7 @@ def reviewed_proposal(
         "difference_id": uuid5(UUID(int=0), f"difference-{name}"),
         "difference_version": 2,
         "current_difference_version": 2,
+        "analysis_id": uuid5(UUID(int=0), f"analysis-{name}"),
         "analysis_version": "analysis-v1",
         "current_analysis_version": "analysis-v1",
         "difference_type": DifferenceType.ATTRIBUTE_CONFLICT,
@@ -316,6 +317,32 @@ def test_conflict_detection_uses_all_available_target_identifiers() -> None:
         build(first, second)
 
 
+def test_conflict_detection_unifies_target_aliases_transitively() -> None:
+    shared_entity_id = uuid5(UUID(int=0), "transitive-target")
+    shared_source_identifier = "teacher-transitive"
+    by_id = reviewed_proposal(
+        name="by-id",
+        target_entity_id=shared_entity_id,
+        target_source_identifier="teacher-by-id",
+    )
+    bridge = reviewed_proposal(
+        name="bridge",
+        target_entity_id=shared_entity_id,
+        target_source_identifier=shared_source_identifier,
+        before={"email": "old@example.test"},
+        after={"email": "new@example.test"},
+        changed_fields=frozenset({"email"}),
+    )
+    by_source = reviewed_proposal(
+        name="by-source",
+        target_entity_id=None,
+        target_source_identifier=shared_source_identifier,
+    )
+
+    with pytest.raises(PlanConflictError, match="name"):
+        build(by_id, bridge, by_source)
+
+
 @pytest.mark.parametrize(
     ("before", "after"),
     [
@@ -335,6 +362,18 @@ def test_missing_and_explicit_null_are_different_fact_values(
 
     with pytest.raises(PlanPolicyError, match="changed_fields"):
         build(proposal)
+
+
+def test_json_fact_changes_are_type_sensitive() -> None:
+    proposal = reviewed_proposal(
+        before={"name": 1},
+        after={"name": True},
+        changed_fields=frozenset({"name"}),
+    )
+
+    operation = build(proposal).operations[0]
+
+    assert operation.changed_fields == frozenset({"name"})
 
 
 @pytest.mark.parametrize("invalid_number", [float("nan"), float("inf"), float("-inf")])
@@ -378,3 +417,29 @@ def test_operation_identity_includes_canonical_operation_content() -> None:
     assert original_plan.operations[0].id == repeated_plan.operations[0].id
     assert original_plan.operations[0].id != revised_plan.operations[0].id
     assert original_plan.content_hash != revised_plan.content_hash
+
+
+@pytest.mark.parametrize(
+    "binding_updates",
+    [
+        {"analysis_id": uuid5(UUID(int=0), "replacement-analysis")},
+        {
+            "analysis_version": "analysis-v2",
+            "current_analysis_version": "analysis-v2",
+        },
+    ],
+)
+def test_analysis_binding_changes_operation_and_plan_identity(
+    binding_updates: dict[str, object],
+) -> None:
+    original = reviewed_proposal()
+    rebound = reviewed_proposal(**binding_updates)
+
+    original_plan = build(original)
+    rebound_plan = build(rebound)
+
+    assert original_plan.operations[0].analysis_id == original.analysis_id
+    assert original_plan.operations[0].analysis_version == original.analysis_version
+    assert original_plan.operations[0].id != rebound_plan.operations[0].id
+    assert original_plan.content_hash != rebound_plan.content_hash
+    assert original_plan.id != rebound_plan.id

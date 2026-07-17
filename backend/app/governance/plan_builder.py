@@ -1,5 +1,4 @@
 import hashlib
-import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -16,6 +15,8 @@ from app.schemas.executions import (
     ProposalStatus,
     ProposalVersionRef,
     ReviewedProposalSnapshot,
+    canonical_json,
+    json_values_equal,
 )
 
 
@@ -35,6 +36,8 @@ _PLAN_NAMESPACE = uuid5(
     NAMESPACE_URL,
     "organization-reconciliation/governance-plan",
 )
+
+TargetAlias = tuple[EntityType, str]
 
 
 class GovernancePlanBuilder:
@@ -148,6 +151,8 @@ class GovernancePlanBuilder:
             proposal_source=proposal.proposal_source,
             difference_id=proposal.difference_id,
             difference_version=proposal.difference_version,
+            analysis_id=proposal.analysis_id,
+            analysis_version=proposal.analysis_version,
             operation_type=proposal.operation_type,
             entity_type=proposal.entity_type,
             target_entity_id=proposal.target_entity_id,
@@ -173,23 +178,21 @@ class GovernancePlanBuilder:
 
     @staticmethod
     def _reject_conflicts(operations: Sequence[GovernanceOperation]) -> None:
-        owners: dict[tuple[EntityType, str, str], UUID] = {}
+        components = _target_components(operations)
+        owners: dict[tuple[TargetAlias, str], UUID] = {}
         for operation in operations:
-            target_keys = _target_keys(operation)
-            if not target_keys:
+            aliases = _target_aliases(operation)
+            if not aliases:
                 continue
+            component = components[aliases[0]]
             for field in operation.changed_fields:
-                keys = tuple(
-                    (operation.entity_type, target_key, field)
-                    for target_key in target_keys
-                )
-                prior = next((owners[key] for key in keys if key in owners), None)
+                key = (component, field)
+                prior = owners.get(key)
                 if prior is not None:
                     raise PlanConflictError(
                         f"operations {prior} and {operation.id} conflict on target field {field}"
                     )
-                for key in keys:
-                    owners[key] = operation.id
+                owners[key] = operation.id
 
 
 def _proposal_sort_key(
@@ -209,17 +212,63 @@ def _changed_fact_fields(
         for field in before_facts.keys() | after_facts.keys()
         if field not in before_facts
         or field not in after_facts
-        or before_facts[field] != after_facts[field]
+        or not json_values_equal(before_facts[field], after_facts[field])
     )
 
 
-def _target_keys(operation: GovernanceOperation) -> tuple[str, ...]:
-    keys: list[str] = []
+def _target_aliases(operation: GovernanceOperation) -> tuple[TargetAlias, ...]:
+    aliases: list[TargetAlias] = []
     if operation.target_entity_id is not None:
-        keys.append(f"id:{operation.target_entity_id}")
+        aliases.append((operation.entity_type, f"id:{operation.target_entity_id}"))
     if operation.target_source_identifier is not None:
-        keys.append(f"source:{operation.target_source_identifier}")
-    return tuple(keys)
+        aliases.append(
+            (operation.entity_type, f"source:{operation.target_source_identifier}")
+        )
+    return tuple(aliases)
+
+
+def _target_components(
+    operations: Sequence[GovernanceOperation],
+) -> dict[TargetAlias, TargetAlias]:
+    parents: dict[TargetAlias, TargetAlias] = {}
+    for operation in operations:
+        aliases = _target_aliases(operation)
+        for alias in aliases:
+            parents.setdefault(alias, alias)
+        for alias in aliases[1:]:
+            _union_aliases(parents, aliases[0], alias)
+    return {alias: _find_alias(parents, alias) for alias in parents}
+
+
+def _find_alias(
+    parents: dict[TargetAlias, TargetAlias],
+    alias: TargetAlias,
+) -> TargetAlias:
+    root = alias
+    while parents[root] != root:
+        root = parents[root]
+    while parents[alias] != alias:
+        parent = parents[alias]
+        parents[alias] = root
+        alias = parent
+    return root
+
+
+def _union_aliases(
+    parents: dict[TargetAlias, TargetAlias],
+    left: TargetAlias,
+    right: TargetAlias,
+) -> None:
+    left_root = _find_alias(parents, left)
+    right_root = _find_alias(parents, right)
+    if left_root == right_root:
+        return
+    first, second = sorted((left_root, right_root), key=_alias_sort_key)
+    parents[second] = first
+
+
+def _alias_sort_key(alias: TargetAlias) -> tuple[str, str]:
+    return (alias[0].value, alias[1])
 
 
 def _canonical_operation_payload(operation: GovernanceOperation) -> dict[str, Any]:
@@ -230,7 +279,7 @@ def _canonical_operation_payload(operation: GovernanceOperation) -> dict[str, An
 
 
 def _canonical_operation_json(operation: GovernanceOperation) -> str:
-    return _canonical_json(_canonical_operation_payload(operation))
+    return canonical_json(_canonical_operation_payload(operation))
 
 
 def _content_hash(
@@ -255,16 +304,7 @@ def _content_hash(
             for operation in operations
         ],
     }
-    return _sha256(_canonical_json(payload))
-
-
-def _canonical_json(payload: object) -> str:
-    return json.dumps(
-        payload,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    return _sha256(canonical_json(payload))
 
 
 def _sha256(value: str) -> str:
