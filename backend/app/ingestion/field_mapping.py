@@ -2,6 +2,15 @@ from dataclasses import dataclass
 
 from app.schemas.canonical_entities import EntityType, SourceRole
 
+REQUIRED_CANONICAL_MAPPINGS = (
+    "entity_type",
+    "source_id",
+    "name",
+    "member_source_id",
+    "container_source_id",
+    "role",
+)
+
 
 @dataclass(frozen=True)
 class FieldMappingProfile:
@@ -14,8 +23,17 @@ class FieldMappingProfile:
     @property
     def required_source_columns(self) -> dict[str, str]:
         return {
-            canonical: self.columns[canonical] for canonical in ("entity_type", "source_id", "name")
+            canonical: source
+            for canonical in ("entity_type", "source_id", "name")
+            if (source := self.columns.get(canonical))
         }
+
+    def missing_required_mappings(self) -> tuple[str, ...]:
+        return tuple(
+            canonical
+            for canonical in REQUIRED_CANONICAL_MAPPINGS
+            if not self.columns.get(canonical)
+        )
 
 
 class FieldMappingRegistry:

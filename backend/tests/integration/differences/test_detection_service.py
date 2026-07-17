@@ -57,6 +57,21 @@ async def test_retry_does_not_duplicate_differences(session) -> None:
 
 
 @pytest.mark.asyncio
+async def test_resolution_and_detection_retry_do_not_append_differences(session) -> None:
+    pair = await create_hierarchy_pair(session)
+    resolution = EntityResolutionService(session)
+    detection = DifferenceDetectionService(session)
+
+    await resolution.resolve(pair)
+    first = await detection.detect(pair.task_id)
+    await resolution.resolve(pair)
+    second = await detection.detect(pair.task_id)
+
+    assert second.difference_ids == first.difference_ids
+    assert second.counts == first.counts
+
+
+@pytest.mark.asyncio
 async def test_manual_review_is_not_reported_as_missing(session) -> None:
     pair = await create_hierarchy_pair(session)
     resolution = await EntityResolutionService(session).resolve(pair)

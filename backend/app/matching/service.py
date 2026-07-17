@@ -18,6 +18,8 @@ from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import CanonicalEntityRecord, Snapshot
 from app.normalization.pipeline import NormalizationPipeline
 from app.repositories.mappings import MappingRepository
+from app.repositories.snapshots import SnapshotRepository
+from app.repositories.tasks import TaskRepository
 from app.schemas.canonical_entities import (
     CanonicalEntity,
     EntityType,
@@ -66,13 +68,40 @@ class EntityResolutionService:
         self.vector_index = vector_index
         self.top_k = top_k
         self.mappings = mapping_repository or MappingRepository(session)
+        self.snapshots = SnapshotRepository(session)
+        self.tasks = TaskRepository(session)
+
+    async def resolve_task(self, task_id: UUID) -> ResolutionSummary:
+        task = await self.tasks.get(task_id)
+        if task is None:
+            raise LookupError(f"reconciliation task not found: {task_id}")
+        source = await self.snapshots.get_for_task_role(task_id, SourceRole.AUTHORITATIVE)
+        target = await self.snapshots.get_for_task_role(task_id, SourceRole.TARGET)
+        if source is None or target is None:
+            raise ValueError("entity resolution requires a published snapshot pair")
+        return await self.resolve(
+            SnapshotPair(
+                task_id=task_id,
+                tenant_id=task.tenant_id,
+                source_snapshot_id=source.id,
+                target_snapshot_id=target.id,
+            )
+        )
 
     async def resolve(self, pair: SnapshotPair) -> ResolutionSummary:
         task, source_snapshot, target_snapshot = await self._validate_pair(pair)
-        task.status = "processing"
-        task.stage = "matching"
         source_records = await self._load_records(source_snapshot.id, SourceRole.AUTHORITATIVE)
         target_records = await self._load_records(target_snapshot.id, SourceRole.TARGET)
+        persisted = await self._latest_decisions(pair)
+        if task.stage in {"matching", "differences_ready"}:
+            source_ids = {record.entity_id for record in source_records}
+            decision_ids = {decision.source_entity_id for decision in persisted}
+            if decision_ids != source_ids:
+                raise ValueError("persisted entity resolution decision set is incomplete")
+            return _resolution_summary(pair, persisted)
+
+        task.status = "processing"
+        task.stage = "matching"
         source_by_type = _by_type(source_records)
         target_by_type = _by_type(target_records)
         target_ids = {record.record_key: record.entity_id for record in target_records}
@@ -128,21 +157,13 @@ class EntityResolutionService:
         task.status = "ready"
         task.stage = "matching"
         await self.session.flush()
-        counts = Counter(decision.status for decision in decisions)
-        return ResolutionSummary(
-            task_id=pair.task_id,
-            source_snapshot_id=pair.source_snapshot_id,
-            target_snapshot_id=pair.target_snapshot_id,
-            processed_entity_types=RESOLUTION_ORDER,
-            decisions=tuple(decisions),
-            counts={status: counts[status] for status in MatchStatus},
-        )
+        return _resolution_summary(pair, decisions)
 
     async def _validate_pair(
         self,
         pair: SnapshotPair,
     ) -> tuple[ReconciliationTask, Snapshot, Snapshot]:
-        task = await self.session.get(ReconciliationTask, pair.task_id)
+        task = await self.tasks.get_for_update(pair.task_id)
         source = await self.session.get(Snapshot, pair.source_snapshot_id)
         target = await self.session.get(Snapshot, pair.target_snapshot_id)
         if task is None or source is None or target is None:
@@ -158,6 +179,21 @@ class EntityResolutionService:
         if task.tenant_id != pair.tenant_id:
             raise ValueError("snapshot pair tenant does not match the task")
         return task, source, target
+
+    async def _latest_decisions(self, pair: SnapshotPair) -> tuple[MatchDecision, ...]:
+        rows = await self.session.scalars(
+            select(EntityMapping)
+            .where(
+                EntityMapping.task_id == pair.task_id,
+                EntityMapping.source_snapshot_id == pair.source_snapshot_id,
+                EntityMapping.target_snapshot_id == pair.target_snapshot_id,
+            )
+            .order_by(EntityMapping.created_at, EntityMapping.id)
+        )
+        latest: dict[UUID, MatchDecision] = {}
+        for row in rows:
+            latest[row.source_entity_id] = _decision_from_record(row)
+        return tuple(latest.values())
 
     async def _load_records(
         self,
@@ -362,4 +398,46 @@ def _historical_decision(
         evidence=evidence,
         rule_version="historical-reuse-v1",
         confirmed_by=mapping.confirmed_by,
+    )
+
+
+def _decision_from_record(record: EntityMapping) -> MatchDecision:
+    evidence = tuple(MatchEvidence.model_validate(item) for item in record.evidence)
+    confirmed_by = record.confirmed_by
+    if confirmed_by is None and record.method == MatchMethod.HISTORICAL.value:
+        confirmed_by = next(
+            (
+                item.source_value
+                for item in evidence
+                if item.feature == "confirmed_by" and item.source_value is not None
+            ),
+            None,
+        )
+    return MatchDecision(
+        entity_type=EntityType(record.entity_type),
+        source_entity_id=record.source_entity_id,
+        source_key=record.source_key,
+        target_entity_id=record.target_entity_id,
+        target_key=record.target_key,
+        method=MatchMethod(record.method) if record.method else None,
+        status=MatchStatus(record.status),
+        confidence=float(record.confidence),
+        evidence=evidence,
+        rule_version=record.rule_version,
+        confirmed_by=confirmed_by,
+    )
+
+
+def _resolution_summary(
+    pair: SnapshotPair,
+    decisions: Sequence[MatchDecision],
+) -> ResolutionSummary:
+    counts = Counter(decision.status for decision in decisions)
+    return ResolutionSummary(
+        task_id=pair.task_id,
+        source_snapshot_id=pair.source_snapshot_id,
+        target_snapshot_id=pair.target_snapshot_id,
+        processed_entity_types=RESOLUTION_ORDER,
+        decisions=tuple(decisions),
+        counts={status: counts[status] for status in MatchStatus},
     )
