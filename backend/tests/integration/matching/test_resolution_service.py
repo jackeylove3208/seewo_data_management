@@ -45,6 +45,20 @@ async def test_parent_mapping_becomes_teacher_evidence(session) -> None:
 
 
 @pytest.mark.asyncio
+async def test_resolution_retry_reuses_complete_decision_set(session) -> None:
+    pair = await create_hierarchy_pair(session)
+    service = EntityResolutionService(session)
+
+    first = await service.resolve(pair)
+    first_count = await session.scalar(select(func.count()).select_from(EntityMapping))
+    second = await service.resolve(pair)
+    second_count = await session.scalar(select(func.count()).select_from(EntityMapping))
+
+    assert second_count == first_count
+    assert second.decisions == first.decisions
+
+
+@pytest.mark.asyncio
 async def test_resolution_rejects_unpublished_snapshot(session) -> None:
     pair = await create_hierarchy_pair(session)
     from app.models.snapshots import Snapshot
