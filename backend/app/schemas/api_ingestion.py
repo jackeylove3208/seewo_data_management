@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.canonical_entities import EntityType, SourceRole
 from app.schemas.ingestion import IngestionSummary, SnapshotMode
+from app.schemas.workflow import WorkflowState
 
 
 class UploadResponse(BaseModel):
@@ -38,7 +39,6 @@ class CreateReconciliationTaskRequest(BaseModel):
 
     authoritative_upload_id: UUID
     target_upload_id: UUID
-    tenant_id: str = Field(min_length=1)
     scope_id: str = Field(min_length=1)
     snapshot_mode: SnapshotMode
     entity_types: frozenset[EntityType] = Field(default_factory=lambda: frozenset(EntityType))
@@ -65,4 +65,5 @@ class ReconciliationTaskResponse(BaseModel):
     status: str
     stage: str
     snapshots: dict[SourceRole, SnapshotSummaryResponse]
+    workflow: WorkflowState
     error: dict[str, Any] | None = None

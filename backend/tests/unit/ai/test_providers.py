@@ -2,6 +2,7 @@ import json
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from app.ai.providers.base import LLMRequest, Message, ModelProviderError
 from app.ai.providers.embeddings import HttpEmbeddingProvider
@@ -116,6 +117,78 @@ async def test_llm_extracts_json_from_openai_compatible_response() -> None:
     assert response.output == {"cause": "attribute mismatch"}
     assert response.usage.input_tokens == 3
     assert response.usage.output_tokens == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "expected_response_format"),
+    [
+        ("json_object", {"type": "json_object"}),
+        ("prompt_json", None),
+    ],
+)
+async def test_llm_supports_enterprise_response_modes(
+    mode: str,
+    expected_response_format: dict | None,
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload.get("response_format") == expected_response_format
+        return httpx.Response(200, json={"output": {"cause": "ok"}}, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = HttpLLMProvider(
+            settings=Settings(
+                llm_url="https://gateway.example.test/v1/chat/completions",
+                llm_api_key="secret-token",
+                llm_response_mode=mode,
+            ),
+            client=client,
+        )
+        response = await provider.complete_json(
+            LLMRequest(messages=(Message(role="user", content="analyze"),))
+        )
+
+    assert response.output == {"cause": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_llm_merges_validated_enterprise_headers_and_body() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert request.headers["X-API-Key"] == "secret-token"
+        assert request.headers["X-Gateway-App"] == "reconciliation"
+        assert payload["top_p"] == 0.8
+        assert payload["model"] == "enterprise-model"
+        return httpx.Response(200, json={"output": {"cause": "ok"}}, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = HttpLLMProvider(
+            settings=Settings(
+                llm_url="https://gateway.example.test/v1/chat/completions",
+                llm_api_key="secret-token",
+                llm_model="enterprise-model",
+                llm_auth_header="X-API-Key",
+                llm_auth_scheme="",
+                llm_extra_headers_json={"X-Gateway-App": "reconciliation"},
+                llm_extra_body_json={"top_p": 0.8},
+            ),
+            client=client,
+        )
+        await provider.complete_json(
+            LLMRequest(messages=(Message(role="user", content="analyze"),))
+        )
+
+
+@pytest.mark.parametrize("reserved", ["model", "messages", "response_format", "stream"])
+def test_settings_rejects_reserved_extra_body_fields(reserved: str) -> None:
+    with pytest.raises(ValidationError, match="reserved LLM body field"):
+        Settings(llm_extra_body_json={reserved: "override"})
+
+
+def test_settings_rejects_auth_header_override() -> None:
+    with pytest.raises(ValidationError, match="reserved LLM header"):
+        Settings(llm_extra_headers_json={"authorization": "spoofed"})
 
 
 @pytest.mark.asyncio

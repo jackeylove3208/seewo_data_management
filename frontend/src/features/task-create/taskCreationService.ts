@@ -28,7 +28,6 @@ export async function createTaskFromDraft(
   const task = await api.createTask({
     authoritative_upload_id: sourceUpload.id,
     target_upload_id: targetUpload.id,
-    tenant_id: "demo-school",
     scope_id: draft.scopeLabel,
     snapshot_mode: draft.snapshotMode,
     entity_types: draft.entityTypes,

@@ -12,24 +12,22 @@ from app.ai.agent import (
     AgentRequest,
     AgentResult,
 )
-from app.ai.analysis_policy import AnalysisPolicyError, validate_analysis_action
+from app.ai.analysis_policy import AnalysisPolicyError, validate_analysis_options
 from app.ai.deterministic_analysis import DeterministicAnalysis
 from app.ai.mcp.authorization import ToolAuthorizationError, ToolContext
-from app.ai.prompting import PROMPT_VERSION
 from app.ai.providers.base import ModelProviderError, ModelUsage
 from app.ai.skills.registry import SkillNotFound
 from app.core.security import OperatorContext
-from app.repositories.analyses import AnalysisRepository
+from app.repositories.analyses import CURRENT_ANALYSIS_VERSION, AnalysisRepository
 from app.repositories.differences import DifferenceRepository
 from app.repositories.tasks import TaskRepository
 from app.schemas.governance import (
+    AnalysisBatchResponse,
     AnalysisJobResponse,
     AnalysisProvenance,
     AnalysisResult,
     AnalysisStatus,
-    CauseAnalysis,
-    RecommendedAction,
-    RiskLevel,
+    CauseAnalysisV2,
 )
 
 
@@ -73,18 +71,28 @@ class AnalysisService:
         difference = await self.differences.get(difference_id)
         if difference is None or difference.tenant_id != self.operator.tenant_id:
             raise LookupError(f"difference not found: {difference_id}")
-        existing = await self.analyses.get_for_difference(difference.id, difference.version)
+        existing = await self.analyses.get_for_difference(
+            difference.id,
+            difference.version,
+            CURRENT_ANALYSIS_VERSION,
+        )
         if existing is not None:
             return existing
 
         deterministic_output = self.deterministic.for_difference(difference)
         if deterministic_output is not None:
-            validate_analysis_action(difference, deterministic_output)
-            return await self.analyses.save_success(
+            validate_analysis_options(difference, deterministic_output)
+            save = (
+                self.analyses.save_manual_review
+                if deterministic_output.manual_only
+                else self.analyses.save_success
+            )
+            return await save(
                 difference,
                 deterministic_output,
                 _deterministic_provenance(),
                 attempt_count=0,
+                analysis_version=CURRENT_ANALYSIS_VERSION,
             )
 
         last_error: Exception | None = None
@@ -102,22 +110,27 @@ class AnalysisService:
                             task_id=difference.task_id,
                             allowed_difference_ids=frozenset({difference.id}),
                         ),
+                        analysis_version=CURRENT_ANALYSIS_VERSION,
                     )
                 )
                 aggregate_provenance = _merge_provenance(aggregate_provenance, result.provenance)
-                validate_analysis_action(difference, result.output)
-                if result.output.recommended_action is RecommendedAction.MANUAL_REVIEW:
+                if not isinstance(result.output, CauseAnalysisV2):
+                    raise AnalysisPolicyError("analysis-v2 requires CauseAnalysisV2 output")
+                validate_analysis_options(difference, result.output)
+                if result.output.manual_only:
                     return await self.analyses.save_manual_review(
                         difference,
                         result.output,
                         aggregate_provenance,
                         attempt_count=attempt,
+                        analysis_version=CURRENT_ANALYSIS_VERSION,
                     )
                 return await self.analyses.save_success(
                     difference,
                     result.output,
                     aggregate_provenance,
                     attempt_count=attempt,
+                    analysis_version=CURRENT_ANALYSIS_VERSION,
                 )
             except ANALYSIS_FAILURES as error:
                 last_error = error
@@ -131,6 +144,7 @@ class AnalysisService:
             aggregate_provenance or _failure_provenance(),
             attempt_count=2,
             failure_code=failure_code,
+            analysis_version=CURRENT_ANALYSIS_VERSION,
         )
 
     async def analyze_task(self, task_id: UUID) -> AnalysisJobResponse:
@@ -138,24 +152,65 @@ class AnalysisService:
         if task is None or task.tenant_id != self.operator.tenant_id:
             raise LookupError(f"reconciliation task not found: {task_id}")
         differences = await self.differences.for_task(task_id)
-        results = [await self.analyze(difference.id) for difference in differences]
-        counts = Counter(result.status for result in results)
+        result = await self.analyze_batch(task_id, limit=max(1, len(differences)))
         return AnalysisJobResponse(
             task_id=task_id,
-            total=len(results),
+            total=result.total,
+            succeeded=result.succeeded,
+            failed=result.failed,
+            manual_review=result.manual_review,
+        )
+
+    async def analyze_batch(self, task_id: UUID, *, limit: int) -> AnalysisBatchResponse:
+        task = await self.tasks.get(task_id)
+        if task is None or task.tenant_id != self.operator.tenant_id:
+            raise LookupError(f"reconciliation task not found: {task_id}")
+        if limit < 1:
+            raise ValueError("analysis batch limit must be positive")
+        differences = await self.differences.for_task(task_id)
+        pending = []
+        for difference in differences:
+            existing = await self.analyses.get_for_difference(
+                difference.id,
+                difference.version,
+                CURRENT_ANALYSIS_VERSION,
+            )
+            if existing is None:
+                pending.append(difference)
+        for difference in pending[:limit]:
+            await self.analyze(difference.id)
+        results = [
+            result
+            for difference in differences
+            if (
+                result := await self.analyses.get_for_difference(
+                    difference.id,
+                    difference.version,
+                    CURRENT_ANALYSIS_VERSION,
+                )
+            )
+            is not None
+        ]
+        counts = Counter(result.status for result in results)
+        completed = len(results)
+        return AnalysisBatchResponse(
+            task_id=task_id,
+            total=len(differences),
             succeeded=counts[AnalysisStatus.SUCCEEDED],
             failed=counts[AnalysisStatus.FAILED],
             manual_review=counts[AnalysisStatus.MANUAL_REVIEW],
+            completed=completed,
+            remaining=len(differences) - completed,
         )
 
 
 def _deterministic_provenance() -> AnalysisProvenance:
     return AnalysisProvenance(
         provider="deterministic",
-        model="deterministic-analysis-v1",
+        model="deterministic-analysis-v2",
         skill_name="analyze-data-difference",
         skill_version="1.0.0",
-        prompt_version=PROMPT_VERSION,
+        prompt_version="analysis-prompt-v2",
         usage=ModelUsage(),
         generated_at=datetime.now(UTC),
     )
@@ -167,19 +222,18 @@ def _failure_provenance() -> AnalysisProvenance:
         model="unavailable",
         skill_name="analyze-data-difference",
         skill_version="1.0.0",
-        prompt_version=PROMPT_VERSION,
+        prompt_version="analysis-prompt-v2",
         usage=ModelUsage(),
         generated_at=datetime.now(UTC),
     )
 
 
-def _manual_review_fallback(failure_code: str) -> CauseAnalysis:
-    return CauseAnalysis(
+def _manual_review_fallback(failure_code: str) -> CauseAnalysisV2:
+    return CauseAnalysisV2(
         cause="Automatic analysis did not produce a policy-compliant recommendation",
         evidence_summary=(f"Analysis stopped after 2 attempts with failure code: {failure_code}"),
-        recommended_action=RecommendedAction.MANUAL_REVIEW,
-        risk=RiskLevel.HIGH,
-        confidence=0,
+        manual_only=True,
+        manual_reason="A human must review the evidence and author an explicit proposal",
     )
 
 
@@ -207,6 +261,9 @@ def _merge_provenance(
         skill_version=attempt.skill_version,
         prompt_version=attempt.prompt_version,
         tool_trace_ids=tuple(dict.fromkeys((*current.tool_trace_ids, *attempt.tool_trace_ids))),
+        gateway_request_ids=tuple(
+            dict.fromkeys((*current.gateway_request_ids, *attempt.gateway_request_ids))
+        ),
         usage=ModelUsage(
             input_tokens=(current.usage.input_tokens + attempt.usage.input_tokens),
             output_tokens=(current.usage.output_tokens + attempt.usage.output_tokens),

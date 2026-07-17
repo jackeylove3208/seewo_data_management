@@ -32,6 +32,7 @@ class AnalysisRecord(Base):
     skill_version: Mapped[str] = mapped_column(String(64))
     prompt_version: Mapped[str] = mapped_column(String(64))
     tool_trace_ids: Mapped[list[str]] = mapped_column(JSON)
+    gateway_request_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
     usage: Mapped[dict[str, Any]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 

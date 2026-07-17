@@ -164,3 +164,77 @@ async def test_agent_rejects_invalid_structured_output() -> None:
     assert caught.value.provenance.model == "model-v1"
     assert caught.value.provenance.usage.input_tokens == 5
     assert caught.value.provenance.usage.output_tokens == 3
+
+
+@pytest.mark.asyncio
+async def test_agent_tokenizes_initial_and_tool_payloads_before_model_calls() -> None:
+    difference_id = uuid4()
+    model = ModelStub(
+        [
+            response(
+                {
+                    "tool_call": {
+                        "name": "candidate_search",
+                        "arguments": {
+                            "difference_id": str(difference_id),
+                            "query": "teacher candidate",
+                            "top_k": 2,
+                        },
+                    }
+                }
+            ),
+            response(valid_output()),
+        ]
+    )
+
+    class SensitiveToolGateway(ToolGatewayStub):
+        async def call(self, name, arguments, context):
+            self.calls.append((name, arguments, context))
+            return ToolResult(
+                payload={
+                    "items": [
+                        {
+                            "entity_type": "teacher",
+                            "name": "张三",
+                            "phone": "13100000000",
+                            "source_id": "T-001",
+                        }
+                    ]
+                },
+                trace_id="trace-sensitive",
+            )
+
+    tools = SensitiveToolGateway()
+    request_value = AgentRequest(
+        skill_name="analyze-data-difference",
+        skill_version="1.0.0",
+        input_payload={
+            "difference_id": str(difference_id),
+            "entity_type": "teacher",
+            "name": "张三",
+            "phone": "13100000000",
+            "source_id": "T-001",
+        },
+        tool_context=ToolContext(
+            operator_id="operator-1",
+            tenant_id="school-1",
+            task_id=uuid4(),
+            allowed_difference_ids=frozenset({difference_id}),
+        ),
+    )
+
+    await GovernanceAgent(
+        model,
+        tools,
+        tokenization_secret="enterprise-tokenization-secret",
+    ).analyze(request_value)
+
+    messages = " ".join(
+        message.content for model_request in model.requests for message in model_request.messages
+    )
+    assert "张三" not in messages
+    assert "13100000000" not in messages
+    assert "T-001" not in messages
+    assert "PERSON_NAME_" in messages
+    assert "PHONE_" in messages
+    assert "EXTERNAL_ID_" in messages

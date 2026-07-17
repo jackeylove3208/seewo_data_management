@@ -78,29 +78,31 @@
 
 ## 8. Governance Planning and Versioned CSV Execution
 
-- [ ] 8.1 Implement governance operation types for create, update, move, disable, skip, and manual review
-- [ ] 8.2 Implement plan building from selected analyzed differences without allowing model output to bypass field or operation policies
+- [ ] 8.1 Implement governance operation types for create, update, move, disable, and skip while treating unresolved manual review as execution-ineligible
+- [ ] 8.2 Implement deterministic plan building from selected current `pending_execution` proposal versions, preserving AI/operator source and rejecting stale difference, analysis, proposal, or target versions
 - [ ] 8.3 Implement risk policy, dependency graph, topological ordering, and reversibility metadata
-- [ ] 8.4 Add batch preview and confirmation APIs that bind the selected difference versions and authenticated operator
-- [ ] 8.5 Implement preflight checks for target hash/version drift, expected before-values, dependencies, conflicts, and execution eligibility
-- [ ] 8.6 Implement CSV target versioning that derives a new file and never overwrites the uploaded target
-- [ ] 8.7 Implement per-operation execution, idempotency, partial failure, eligible retry, and append-only audit records
-- [ ] 8.8 Implement target reload and expected-versus-actual verification after every applied operation
-- [ ] 8.9 Add execution tests for dependency ordering, drift conflicts, partial failure, retries, failed verification, and original-file preservation
+- [ ] 8.4 Add batch preview and confirmation APIs that bind proposal versions and record backend-owned proposal creator, batch confirmer, optional independent reviewer, and high-risk acknowledgement
+- [ ] 8.5 Add optional tokenized plan explanation through the existing enterprise model provider and a separate read-only Skill without making it an execution gate
+- [ ] 8.6 Implement preflight checks for proposal/difference/target drift, expected before-values, dependencies, conflicts, and execution eligibility
+- [ ] 8.7 Implement CSV target versioning that derives a new file and never overwrites the uploaded target
+- [ ] 8.8 Implement per-operation execution, idempotency, partial failure, eligible retry, and append-only audit records
+- [ ] 8.9 Implement target reload and expected-versus-actual verification after every applied operation
+- [ ] 8.10 Add execution tests for proposal sources, dependency ordering, drift conflicts, non-blocking explanation failure, partial failure, retries, failed verification, and original-file preservation
 
 ## 9. Batch Confirmation and Execution Frontend
 
-- [ ] 9.1 Implement stable selection across paginated and filtered difference results
-- [ ] 9.2 Build the batch confirmation view with exact create, update, move, disable, skip, and high-risk counts
-- [ ] 9.3 Display preflight conflicts and require a fresh confirmation when the validated plan version changes
-- [ ] 9.4 Build execution monitoring with per-operation state, partial failure, verification failure, and retry eligibility
-- [ ] 9.5 Provide download access to derived Seewo CSV versions from successful or partially successful batches
-- [ ] 9.6 Add frontend tests for disabled unanalyzed rows, stable selection, high-risk confirmation, partial failure, and retry actions
+- [ ] 9.1 Implement stable selection of current `pending_execution` proposals across paginated and filtered difference results
+- [ ] 9.2 Build the batch confirmation view with AI/operator source, exact create, update, move, disable, skip, excluded-item, and high-risk counts
+- [ ] 9.3 Display deterministic before/after preview, optional plan explanation, and an unavailable explanation state that does not disable confirmation
+- [ ] 9.4 Display preflight conflicts and require a fresh confirmation when a proposal, difference, target, or validated plan version changes
+- [ ] 9.5 Build execution monitoring with per-operation state, partial failure, verification failure, and retry eligibility
+- [ ] 9.6 Provide download access to derived Seewo CSV versions from successful or partially successful batches
+- [ ] 9.7 Add frontend tests for unresolved manual-review exclusion, stable proposal selection, high-risk confirmation, explanation failure, partial failure, and retry actions
 
 ## 10. Execution History and Audit Views
 
 - [ ] 10.1 Add execution history and execution-detail REST endpoints with stable pagination and immutable audit data
-- [ ] 10.2 Return operator identity, task and snapshot references, plan version, before/after values, errors, retries, and verification results
+- [ ] 10.2 Return proposal ID/version/source, proposal creator, batch confirmer, optional reviewer, task and snapshot references, plan version, before/after values, errors, retries, and verification results
 - [ ] 10.3 Build execution history filters for task, operator, date, status, and rollback state
 - [ ] 10.4 Build execution detail with operation table, audit timeline, source and output CSV versions, and permitted actions
 - [ ] 10.5 Add API and UI tests proving client-supplied operator IDs cannot replace backend audit identity
@@ -132,6 +134,6 @@
 - [ ] 13.2 Add shared connector contract tests that run against CSV connectors and API test doubles
 - [x] 13.3 Document how future API connectors must handle authentication, pagination, rate limits, source versions, mutation idempotency, and verification
 - [ ] 13.4 Add representative synthetic CSV files covering all entity and difference types without real teacher or student data
-- [ ] 13.5 Add end-to-end tests for the complete upload, reconcile, analyze, approve, execute, report, and rollback chain
+- [ ] 13.5 Add end-to-end tests for upload, reconciliation, analysis, AI/manual proposal review, batch confirmation, execution, report, and rollback
 - [ ] 13.6 Run backend tests, frontend tests, type checks, lint, production builds, OpenSpec validation, and desktop/mobile Playwright screenshots
 - [ ] 13.7 Update `AGENTS.md` and developer documentation with the final real build, test, run, and data-fixture commands

@@ -101,6 +101,8 @@ class DifferenceItem(DifferenceDraft):
     analysis_status: str = "pending"
     risk: str | None = None
     execution_eligible: bool = False
+    proposal_status: str | None = None
+    current_proposal_version: int | None = Field(default=None, ge=1)
 
 
 class DifferenceFilters(BaseModel):

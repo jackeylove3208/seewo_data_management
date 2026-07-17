@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This repository implements an AI-assisted organization-data reconciliation system. `backend/` now contains the Python data-source-ingestion module, migrations, and tests. `frontend/` is reserved for the later Web workbench module. `infra/` contains local services, `docs/sample-data/` documents synthetic fixtures, and `openspec/changes/demo/` remains the implementation contract.
+This repository implements an AI-assisted organization-data reconciliation system. `backend/` contains FastAPI domain services, SQLAlchemy models, Alembic migrations, and pytest suites. `frontend/` contains the React reconciliation workbench and Playwright tests. `infra/` contains local services, and `openspec/changes/` contains implementation contracts.
 
 ## Build, Test, and Development Commands
 
@@ -18,7 +18,16 @@ docker compose -f ../infra/docker-compose.yml up -d
 .venv/bin/pytest
 .venv/bin/ruff check .
 .venv/bin/mypy app
-openspec validate demo
+cd ../frontend
+npm install
+npm run dev
+npm test
+npm run lint
+npm run typecheck
+npm run build
+npm run test:e2e
+cd ..
+openspec validate ai-new-ui
 ```
 
 The API is served at `http://127.0.0.1:8000`; interactive OpenAPI documentation is at `/docs`.

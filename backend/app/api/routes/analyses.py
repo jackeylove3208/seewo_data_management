@@ -10,7 +10,7 @@ from app.ai.mcp.server import MCPToolGateway
 from app.ai.providers.llm import HttpLLMProvider
 from app.api.dependencies import get_operator_context, get_session
 from app.core.security import OperatorContext
-from app.repositories.analyses import AnalysisRepository
+from app.repositories.analyses import CURRENT_ANALYSIS_VERSION, AnalysisRepository
 from app.repositories.differences import DifferenceRepository
 from app.schemas.governance import AnalysisJobResponse, AnalysisResult
 
@@ -23,9 +23,15 @@ def service_for(
     operator: OperatorContext,
 ) -> AnalysisService:
     settings = request.app.state.settings
+    tokenization_secret = (
+        settings.tokenization_secret.get_secret_value()
+        if settings.tokenization_secret is not None
+        else None
+    )
     agent = GovernanceAgent(
         HttpLLMProvider(settings=settings),
         MCPToolGateway(session),
+        tokenization_secret=tokenization_secret,
     )
     return AnalysisService(
         session,
@@ -63,6 +69,7 @@ async def get_analysis(
     result = await AnalysisRepository(session).get_for_difference(
         difference.id,
         difference.version,
+        CURRENT_ANALYSIS_VERSION,
     )
     if result is None:
         raise HTTPException(404, detail="analysis not found")

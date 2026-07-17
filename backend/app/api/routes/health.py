@@ -19,4 +19,10 @@ async def readiness(request: Request) -> JSONResponse:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content={"status": "unavailable"},
         )
-    return JSONResponse(content={"status": "ready"})
+    settings = request.app.state.settings
+    return JSONResponse(
+        content={
+            "status": "ready",
+            "model_provider": {"configured": settings.model_gateway_configured},
+        }
+    )

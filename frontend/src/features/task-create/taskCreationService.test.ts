@@ -19,6 +19,15 @@ describe("task creation service", () => {
         authoritative: { accepted: 1, normalized_with_warning: 0, quarantined: 0, rejected: 0, quarantine_available: false },
         target: { accepted: 1, normalized_with_warning: 0, quarantined: 0, rejected: 0, quarantine_available: false },
       },
+      workflow: {
+        stage: "complete",
+        status: "succeeded",
+        attempt: 1,
+        processed: 1,
+        total: 1,
+        analysis: { total: 1, completed: 1, succeeded: 1, manual_review: 0, failed: 0 },
+        error: null,
+      },
       error: null,
     } satisfies ReconciliationTaskResponse;
     const api = {
@@ -48,6 +57,7 @@ describe("task creation service", () => {
       snapshot_mode: "partial",
       scope_id: "七年级",
     }), "stable-key");
+    expect(api.createTask.mock.calls[0]?.[0]).not.toHaveProperty("tenant_id");
     expect(saveTask).toHaveBeenCalledWith(expect.objectContaining({ title: "七年级教师核对" }));
     expect(result.id).toBe("task-001");
   });

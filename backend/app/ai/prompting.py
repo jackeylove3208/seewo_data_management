@@ -5,6 +5,7 @@ from app.ai.providers.base import Message
 from app.ai.skills.registry import SkillDefinition
 
 PROMPT_VERSION = "analysis-prompt-v1"
+PROMPT_VERSION_V2 = "analysis-prompt-v2"
 
 _DIFFERENCE_ID_SCHEMA = {"type": "string", "format": "uuid"}
 TOOL_ARGUMENT_SCHEMAS: dict[str, dict[str, Any]] = {

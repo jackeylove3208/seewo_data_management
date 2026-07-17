@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -47,6 +48,82 @@ class CauseAnalysis(BaseModel):
         return stripped
 
 
+class ProposedFieldChange(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    field: str = Field(min_length=1, max_length=128)
+    before: Any = None
+    after: Any = None
+
+
+class GovernanceOption(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    option_id: str = Field(min_length=1, max_length=64)
+    operation_type: RecommendedAction
+    target_entity_id: UUID | None = None
+    proposed_changes: tuple[ProposedFieldChange, ...] = Field(default=(), max_length=64)
+    rationale: str = Field(min_length=3, max_length=2000)
+    evidence_refs: tuple[str, ...] = Field(default=(), max_length=64)
+    risk: RiskLevel
+    confidence: float = Field(ge=0, le=1)
+    preconditions: tuple[str, ...] = Field(default=(), max_length=32)
+    recommended: bool = False
+
+    @field_validator("rationale")
+    @classmethod
+    def reject_blank_rationale(cls, value: str) -> str:
+        stripped = value.strip()
+        if len(stripped) < 3:
+            raise ValueError("option rationale must contain at least 3 characters")
+        return stripped
+
+    @model_validator(mode="after")
+    def reject_manual_review(self) -> "GovernanceOption":
+        if self.operation_type is RecommendedAction.MANUAL_REVIEW:
+            raise ValueError("manual review is not an executable option")
+        return self
+
+
+class CauseAnalysisV2(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    cause: str = Field(min_length=3, max_length=1000)
+    evidence_summary: str = Field(min_length=3, max_length=2000)
+    manual_only: bool
+    manual_reason: str | None = Field(default=None, max_length=2000)
+    options: tuple[GovernanceOption, ...] = Field(default=(), max_length=3)
+
+    @field_validator("cause", "evidence_summary")
+    @classmethod
+    def reject_blank_analysis_text(cls, value: str) -> str:
+        stripped = value.strip()
+        if len(stripped) < 3:
+            raise ValueError("analysis explanation must contain at least 3 characters")
+        return stripped
+
+    @field_validator("manual_reason")
+    @classmethod
+    def normalize_manual_reason(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @model_validator(mode="after")
+    def validate_option_mode(self) -> "CauseAnalysisV2":
+        if self.manual_only:
+            if self.options:
+                raise ValueError("manual-only analysis cannot contain options")
+            if self.manual_reason is None or len(self.manual_reason) < 3:
+                raise ValueError("manual reason is required for manual-only analysis")
+            return self
+        if not self.options:
+            raise ValueError("non-manual analysis requires at least one option")
+        if sum(option.recommended for option in self.options) != 1:
+            raise ValueError("exactly one option must be recommended")
+        if self.manual_reason is not None:
+            raise ValueError("manual reason is only valid for manual-only analysis")
+        return self
+
+
 class AnalysisProvenance(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -56,6 +133,7 @@ class AnalysisProvenance(BaseModel):
     skill_version: str = Field(min_length=1, max_length=64)
     prompt_version: str = Field(min_length=1, max_length=64)
     tool_trace_ids: tuple[str, ...] = ()
+    gateway_request_ids: tuple[str, ...] = ()
     usage: ModelUsage = Field(default_factory=ModelUsage)
     generated_at: datetime
 
@@ -68,19 +146,35 @@ class AnalysisResult(BaseModel):
     difference_version: int = Field(ge=1)
     analysis_version: str = Field(min_length=1, max_length=64)
     status: AnalysisStatus
-    output: CauseAnalysis | None = None
+    output: CauseAnalysis | CauseAnalysisV2 | None = None
     failure_code: str | None = Field(default=None, max_length=128)
     attempt_count: int = Field(ge=0)
     provenance: AnalysisProvenance
 
     @model_validator(mode="after")
     def validate_status_output(self) -> "AnalysisResult":
-        action = self.output.recommended_action if self.output is not None else None
+        if self.analysis_version == "analysis-v2":
+            if self.status is AnalysisStatus.SUCCEEDED:
+                if not isinstance(self.output, CauseAnalysisV2) or self.output.manual_only:
+                    raise ValueError("succeeded v2 analysis requires executable options")
+            elif self.status is AnalysisStatus.MANUAL_REVIEW:
+                if not isinstance(self.output, CauseAnalysisV2) or not self.output.manual_only:
+                    raise ValueError("manual review v2 analysis requires manual-only output")
+            elif self.output is not None:
+                raise ValueError("pending or failed analysis cannot contain successful output")
+            return self
+        action = self.output.recommended_action if isinstance(self.output, CauseAnalysis) else None
         if self.status is AnalysisStatus.SUCCEEDED:
-            if self.output is None or action is RecommendedAction.MANUAL_REVIEW:
+            if (
+                not isinstance(self.output, CauseAnalysis)
+                or action is RecommendedAction.MANUAL_REVIEW
+            ):
                 raise ValueError("succeeded analysis requires an executable output")
         elif self.status is AnalysisStatus.MANUAL_REVIEW:
-            if self.output is None or action is not RecommendedAction.MANUAL_REVIEW:
+            if (
+                not isinstance(self.output, CauseAnalysis)
+                or action is not RecommendedAction.MANUAL_REVIEW
+            ):
                 raise ValueError("manual review requires a manual-review output")
         elif self.output is not None:
             raise ValueError("pending or failed analysis cannot contain successful output")
@@ -95,3 +189,8 @@ class AnalysisJobResponse(BaseModel):
     succeeded: int = Field(ge=0)
     failed: int = Field(ge=0)
     manual_review: int = Field(ge=0)
+
+
+class AnalysisBatchResponse(AnalysisJobResponse):
+    completed: int = Field(ge=0)
+    remaining: int = Field(ge=0)

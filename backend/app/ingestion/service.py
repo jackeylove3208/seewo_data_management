@@ -19,6 +19,7 @@ from app.models.snapshots import Snapshot, SourceFile
 from app.repositories.files import FileRepository
 from app.repositories.snapshots import SnapshotDraft, SnapshotRepository
 from app.repositories.tasks import TaskRepository
+from app.repositories.workflow import WorkflowRunRepository
 from app.schemas.api_ingestion import (
     CreateReconciliationTaskRequest,
     FieldMappingPreviewResponse,
@@ -28,6 +29,7 @@ from app.schemas.api_ingestion import (
 )
 from app.schemas.canonical_entities import EntityType, SourceRole
 from app.schemas.ingestion import IngestionIssue, SnapshotScope
+from app.schemas.workflow import WorkflowState
 
 
 class IngestionServiceError(RuntimeError):
@@ -136,13 +138,15 @@ class ReconciliationIngestionService:
         self.tasks = TaskRepository(session)
         self.files = FileRepository(session)
         self.snapshots = SnapshotRepository(session)
+        self.workflow_runs = WorkflowRunRepository(session)
 
     async def create_task(
         self,
         request: CreateReconciliationTaskRequest,
         idempotency_key: str,
+        tenant_id: str,
     ) -> ReconciliationTaskResponse:
-        request_hash = _request_hash(request)
+        request_hash = _request_hash(request, tenant_id)
         existing = await self.tasks.find_by_idempotency_key(idempotency_key)
         if existing is not None:
             if existing.request_hash != request_hash:
@@ -151,7 +155,7 @@ class ReconciliationIngestionService:
                     "idempotency_conflict",
                     "idempotency key was already used for a different request",
                 )
-            return await self.get_task(existing.id)
+            return await self.get_task(existing.id, tenant_id)
         source_file = await self._required_file(
             request.authoritative_upload_id,
             SourceRole.AUTHORITATIVE,
@@ -175,7 +179,7 @@ class ReconciliationIngestionService:
             SourceRole.TARGET,
         )
         scope = SnapshotScope(
-            tenant_id=request.tenant_id,
+            tenant_id=tenant_id,
             scope_id=request.scope_id,
             mode=request.snapshot_mode,
             entity_types=request.entity_types,
@@ -192,13 +196,13 @@ class ReconciliationIngestionService:
         source_connector = ThirdPartyCsvConnector(
             path=Path(source_file.storage_path),
             profile=source_profile,
-            tenant_id=request.tenant_id,
+            tenant_id=tenant_id,
             snapshot_id=source_snapshot_id,
         )
         target_connector = MofaCsvConnector(
             path=Path(target_file.storage_path),
             profile=target_profile,
-            tenant_id=request.tenant_id,
+            tenant_id=tenant_id,
             snapshot_id=target_snapshot_id,
         )
         try:
@@ -261,16 +265,25 @@ class ReconciliationIngestionService:
         )
         await self.tasks.mark_ready(task)
         await self.session.flush()
-        return await self.get_task(task.id)
+        return await self.get_task(task.id, tenant_id)
 
-    async def get_task(self, task_id: UUID) -> ReconciliationTaskResponse:
+    async def get_task(self, task_id: UUID, tenant_id: str) -> ReconciliationTaskResponse:
         task = await self.tasks.get(task_id)
-        if task is None:
+        if task is None or task.tenant_id != tenant_id:
             raise IngestionServiceError(404, "task_not_found", "task does not exist")
         snapshots = await self.snapshots.list_published(task.id)
-        return _task_response(task, snapshots)
+        workflow = await self.workflow_runs.state(task)
+        return _task_response(task, snapshots, workflow)
 
-    async def quarantine_path(self, task_id: UUID, source_role: SourceRole) -> Path:
+    async def quarantine_path(
+        self,
+        task_id: UUID,
+        source_role: SourceRole,
+        tenant_id: str,
+    ) -> Path:
+        task = await self.tasks.get(task_id)
+        if task is None or task.tenant_id != tenant_id:
+            raise IngestionServiceError(404, "task_not_found", "task does not exist")
         snapshot = await self.snapshots.get_for_task_role(task_id, source_role)
         if snapshot is None or snapshot.quarantine_path is None:
             raise IngestionServiceError(
@@ -324,9 +337,9 @@ class ReconciliationIngestionService:
         )
 
 
-def _request_hash(request: CreateReconciliationTaskRequest) -> str:
+def _request_hash(request: CreateReconciliationTaskRequest, tenant_id: str) -> str:
     payload = json.dumps(
-        request.model_dump(mode="json"),
+        {"tenant_id": tenant_id, **request.model_dump(mode="json")},
         sort_keys=True,
         separators=(",", ":"),
     ).encode()
@@ -336,6 +349,7 @@ def _request_hash(request: CreateReconciliationTaskRequest) -> str:
 def _task_response(
     task: ReconciliationTask,
     snapshots: tuple[Snapshot, ...],
+    workflow: WorkflowState,
 ) -> ReconciliationTaskResponse:
     snapshot_responses = {
         SourceRole(snapshot.source_role): SnapshotSummaryResponse(
@@ -358,5 +372,6 @@ def _task_response(
         status=task.status,
         stage=task.stage,
         snapshots=snapshot_responses,
+        workflow=workflow,
         error=task.error,
     )

@@ -15,11 +15,19 @@ The Web application SHALL display authoritative and target values side by side w
 - **THEN** its execution checkbox is disabled and the current analysis state is visible
 
 ### Requirement: Confirm batch scope
-The Web application SHALL present the exact selected operation counts and high-risk items before creating an execution batch.
+The Web application SHALL let users select current `pending_execution` proposals and present their AI or operator source, exact operation counts, before/after values, excluded items, and high-risk items before creating an execution batch.
 
 #### Scenario: User submits a filtered selection
-- **WHEN** a user confirms selected differences across paginated results
-- **THEN** the confirmation view shows the stable selection count, included operations, excluded items, and risk summary
+- **WHEN** a user confirms selected proposal versions across paginated results
+- **THEN** the confirmation view shows the stable selection count, included operations, proposal sources, excluded unresolved items, and risk summary
+
+#### Scenario: High-risk proposal is included
+- **WHEN** the deterministic preview contains one or more high-risk operations
+- **THEN** the UI requires a separate high-risk acknowledgement before enabling final batch confirmation
+
+#### Scenario: Optional plan explanation fails
+- **WHEN** the model-backed plan explanation is unavailable
+- **THEN** the UI retains the deterministic counts and before/after preview and allows confirmation under the same backend policy
 
 ### Requirement: Monitor execution outcomes
 The Web application SHALL show batch progress, successful operations, failed operations, verification failures, and retry eligibility.

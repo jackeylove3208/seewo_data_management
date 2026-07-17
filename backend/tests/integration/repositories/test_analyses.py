@@ -15,6 +15,9 @@ from app.schemas.governance import (
     AnalysisResult,
     AnalysisStatus,
     CauseAnalysis,
+    CauseAnalysisV2,
+    GovernanceOption,
+    ProposedFieldChange,
     RecommendedAction,
     RiskLevel,
 )
@@ -40,6 +43,33 @@ def provenance() -> AnalysisProvenance:
         prompt_version="analysis-prompt-v1",
         tool_trace_ids=("trace-1",),
         generated_at=datetime.now(UTC),
+    )
+
+
+def analysis_v2(target_entity_id) -> CauseAnalysisV2:
+    return CauseAnalysisV2(
+        cause="The authoritative value differs from the Seewo value",
+        evidence_summary="The normalized phone fields are not equivalent",
+        manual_only=False,
+        options=(
+            GovernanceOption(
+                option_id="option-1",
+                operation_type=RecommendedAction.UPDATE,
+                target_entity_id=target_entity_id,
+                proposed_changes=(
+                    ProposedFieldChange(
+                        field="phone",
+                        before="13900000000",
+                        after="13800000000",
+                    ),
+                ),
+                rationale="Use the authoritative phone value",
+                evidence_refs=("field:phone",),
+                risk=RiskLevel.HIGH,
+                confidence=0.9,
+                recommended=True,
+            ),
+        ),
     )
 
 
@@ -224,7 +254,7 @@ async def test_difference_page_does_not_duplicate_multiple_analysis_versions(
     repository = AnalysisRepository(session)
     await repository.save_success(
         persisted_difference,
-        analysis().model_copy(update={"risk": RiskLevel.HIGH}),
+        analysis_v2(persisted_difference.evidence.target_entity_id),
         provenance(),
         analysis_version="analysis-v2",
     )
@@ -241,4 +271,4 @@ async def test_difference_page_does_not_duplicate_multiple_analysis_versions(
 
     matching = [item for item in page.items if item.id == persisted_difference.id]
     assert len(matching) == 1
-    assert matching[0].risk == "low"
+    assert matching[0].risk == "high"
