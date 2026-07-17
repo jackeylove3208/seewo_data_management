@@ -100,6 +100,17 @@ def test_removing_a_field_is_reversible_when_its_before_value_is_stored() -> Non
     assert assessment.reversible is True
 
 
+def test_assessment_rejects_changed_fields_that_omit_an_actual_change() -> None:
+    with pytest.raises(ValueError, match="changed_fields"):
+        assess_operation(
+            operation_type=OperationType.UPDATE,
+            before={"name": "Before"},
+            after={"name": "After", "email": "new@example.test"},
+            changed_fields=frozenset({"name"}),
+            has_dependents=False,
+        )
+
+
 def test_create_is_reversible_when_created_state_is_stored() -> None:
     assessment = assess_operation(
         operation_type=OperationType.CREATE,

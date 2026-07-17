@@ -3,7 +3,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from app.schemas.executions import OperationType
+from app.schemas.executions import OperationType, json_values_equal
 from app.schemas.governance import RiskLevel
 
 
@@ -29,6 +29,9 @@ def assess_operation(
     changed_fields: frozenset[str],
     has_dependents: bool,
 ) -> RiskAssessment:
+    if _changed_fact_fields(before, after) != changed_fields:
+        raise ValueError("changed_fields must exactly match the operation fact changes")
+
     if operation_type in {OperationType.MOVE, OperationType.DISABLE} or has_dependents:
         risk = RiskLevel.HIGH
     elif operation_type is OperationType.SKIP:
@@ -63,3 +66,18 @@ def _is_reversible(
     if before is None or after is None or not changed_fields:
         return False
     return changed_fields <= before.keys()
+
+
+def _changed_fact_fields(
+    before: Mapping[str, Any] | None,
+    after: Mapping[str, Any] | None,
+) -> frozenset[str]:
+    before_facts = before or {}
+    after_facts = after or {}
+    return frozenset(
+        field
+        for field in before_facts.keys() | after_facts.keys()
+        if field not in before_facts
+        or field not in after_facts
+        or not json_values_equal(before_facts[field], after_facts[field])
+    )
