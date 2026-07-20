@@ -13,7 +13,7 @@ describe("workspace sidebar", () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  it("separates the future conversation from external data sync", () => {
+  it("separates the future conversation from external data sync", async () => {
     render(
       <MemoryRouter initialEntries={["/tasks/new"]}>
         <WorkspaceSidebar mobileOpen={false} onMobileClose={() => undefined} />
@@ -24,6 +24,7 @@ describe("workspace sidebar", () => {
     expect(screen.getByRole("link", { name: "外部数据同步" })).toHaveAttribute("href", "/tasks/new");
     expect(screen.getByRole("link", { name: "外部数据同步" })).toHaveAttribute("aria-current", "page");
     expect(screen.queryByRole("link", { name: "新建对账" })).not.toBeInTheDocument();
+    expect(await screen.findByText("后端未连接")).toBeInTheDocument();
   });
 
   it("shows recent task summaries and highlights the current task", async () => {

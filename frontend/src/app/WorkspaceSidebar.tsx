@@ -100,7 +100,7 @@ export function WorkspaceSidebar({
               <small>即将开放</small>
             </span>
           </button>
-          <NavLink className="workspace-new-task" to="/tasks/new" onClick={onMobileClose}>
+          <NavLink className="workspace-new-task" to="/tasks/new" aria-label="外部数据同步" title="外部数据同步" onClick={onMobileClose}>
             <RefreshCw size={18} />
             <span className="workspace-label">外部数据同步</span>
           </NavLink>

@@ -117,7 +117,7 @@ test("opens history, returns, and selects one issue independently", async ({ pag
   await expect(page.getByLabel("选择张三的手机号")).not.toBeChecked();
 });
 
-test("creates a task from an explicit conversational draft", async ({ page }, testInfo) => {
+test("creates a task from manual external data sync", async ({ page }, testInfo) => {
   await page.route("**/health/ready", async (route) => route.fulfill({ json: { status: "ok" } }));
   let uploadCount = 0;
   await page.route("**/api/uploads", async (route) => {
@@ -152,14 +152,41 @@ test("creates a task from an explicit conversational draft", async ({ page }, te
   }));
 
   await page.goto("/tasks/new");
-  await page.getByRole("textbox", { name: "对账要求" }).fill("只核对七年级的老师和学生");
-  await page.getByRole("button", { name: "发送" }).click();
-  await expect(page.getByLabel("核对范围")).toHaveValue("七年级");
+  await expect(page.getByRole("heading", { name: "外部数据同步" })).toBeVisible();
+  await expect(page.locator(".sync-method-grid")).toHaveCSS("display", "grid");
+  await expect(page.getByLabel("选择三方系统 CSV")).toHaveCount(0);
+  await page.getByRole("button", { name: "手动同步" }).click();
+  await page.getByLabel("同步任务名称").fill("七年级教师、学生核对");
+  await page.getByLabel("核对范围").fill("七年级");
+  await page.getByRole("button", { name: "指定范围" }).click();
+  await page.getByLabel("部门").uncheck();
+  await page.getByLabel("班级").uncheck();
 
   await page.getByLabel("选择三方系统 CSV").setInputFiles({ name: "third-party.csv", mimeType: "text/csv", buffer: csv });
   await page.getByLabel("选择希沃魔方 CSV").setInputFiles({ name: "mofa.csv", mimeType: "text/csv", buffer: csv });
-  await expect(page.getByRole("button", { name: "创建对账" })).toBeEnabled();
-  await page.getByRole("button", { name: "创建对账" }).click();
+  await expect(page.getByRole("button", { name: "开始同步" })).toBeEnabled();
+
+  const viewportWidth = page.viewportSize()!.width;
+  if (testInfo.project.name === "desktop") {
+    const formBox = await page.locator(".manual-sync-form").boundingBox();
+    expect(formBox).not.toBeNull();
+    expect(formBox!.x).toBeGreaterThanOrEqual(0);
+    expect(formBox!.x + formBox!.width).toBeLessThanOrEqual(viewportWidth + 1);
+  } else {
+    for (const locator of [page.locator(".sync-method"), page.locator(".sync-attachment")]) {
+      const boxes = await locator.evaluateAll((elements) => elements.map((element) => {
+        const rect = element.getBoundingClientRect();
+        return { left: rect.left, right: rect.right };
+      }));
+      expect(boxes.length).toBeGreaterThan(0);
+      for (const box of boxes) {
+        expect(box.left).toBeGreaterThanOrEqual(0);
+        expect(box.right).toBeLessThanOrEqual(viewportWidth + 1);
+      }
+    }
+  }
+
+  await page.getByRole("button", { name: "开始同步" }).click();
 
   await expect(page).toHaveURL(/\/tasks\/task-created$/);
   if (testInfo.project.name === "mobile") {
@@ -180,6 +207,7 @@ test("collapses the desktop workspace without hiding the main task", async ({ pa
 
 test("uses a drawer for workspace navigation on mobile", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile");
+  await page.addInitScript(() => localStorage.setItem("mofa-workspace-collapsed", "true"));
   await page.goto("/tasks");
 
   const sidebar = page.locator(".workspace-sidebar");
@@ -187,6 +215,11 @@ test("uses a drawer for workspace navigation on mobile", async ({ page }, testIn
   await page.getByRole("button", { name: "打开导航" }).click();
   await expect(sidebar).not.toHaveAttribute("aria-hidden", "true");
   await expect(sidebar).toHaveClass(/is-mobile-open/);
+  for (const command of [page.locator(".workspace-agent-entry"), page.locator(".workspace-new-task")]) {
+    const commandBox = await command.boundingBox();
+    expect(commandBox).not.toBeNull();
+    expect(commandBox!.width).toBeGreaterThan(180);
+  }
   await page.getByRole("link", { name: /三方全校数据核对，已完成，9 个问题/ }).click();
 
   await expect(page).toHaveURL(/\/tasks\/demo-001$/);

@@ -110,8 +110,8 @@ export function TaskCreatePage() {
   const ready = isDraftReady(draft);
 
   return (
-    <main className="page-shell assistant-create-page">
-      <header className="assistant-page-heading">
+    <main className="page-shell external-sync-page">
+      <header className="sync-page-heading">
         <div>
           <h1>外部数据同步</h1>
           <p>通过手动文件同步创建对账任务，后续处理流程保持不变。</p>
@@ -145,42 +145,44 @@ export function TaskCreatePage() {
 
       {syncMethod === "manual" && (
         <section className="manual-sync-form" aria-label="手动同步配置">
-          <div className="conversation-attachments" aria-label="任务数据">
+          <div className="sync-attachments" aria-label="任务数据">
             <AttachmentPicker label="三方系统数据" inputLabel="选择三方系统 CSV" tone="source" attachment={draft.source} onChange={(file) => void prepareFile("source", file)} />
             <AttachmentPicker label="希沃魔方数据" inputLabel="选择希沃魔方 CSV" tone="target" attachment={draft.target} onChange={(file) => void prepareFile("target", file)} />
           </div>
 
-          <label className="draft-field">
-            <span>任务名称</span>
-            <input aria-label="同步任务名称" value={draft.title} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} />
-          </label>
-          <label className="draft-field">
-            <span>核对范围</span>
-            <input aria-label="核对范围" value={draft.scopeLabel} onChange={(event) => setDraft((current) => ({ ...current, scopeLabel: event.target.value }))} />
-          </label>
+          <div className="sync-settings-grid">
+            <label className="draft-field">
+              <span>任务名称</span>
+              <input aria-label="同步任务名称" value={draft.title} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} />
+            </label>
+            <label className="draft-field">
+              <span>核对范围</span>
+              <input aria-label="核对范围" value={draft.scopeLabel} onChange={(event) => setDraft((current) => ({ ...current, scopeLabel: event.target.value }))} />
+            </label>
 
-          <fieldset className="draft-fieldset">
-            <legend>处理模式</legend>
-            <div className="draft-segmented">
-              <button className={draft.snapshotMode === "full" ? "active" : ""} type="button" onClick={() => setDraft((current) => ({ ...current, snapshotMode: "full" }))}>全量对账</button>
-              <button className={draft.snapshotMode === "partial" ? "active" : ""} type="button" onClick={() => setDraft((current) => ({ ...current, snapshotMode: "partial" }))}>指定范围</button>
-            </div>
-          </fieldset>
+            <fieldset className="draft-fieldset">
+              <legend>处理模式</legend>
+              <div className="draft-segmented">
+                <button className={draft.snapshotMode === "full" ? "active" : ""} type="button" onClick={() => setDraft((current) => ({ ...current, snapshotMode: "full" }))}>全量对账</button>
+                <button className={draft.snapshotMode === "partial" ? "active" : ""} type="button" onClick={() => setDraft((current) => ({ ...current, snapshotMode: "partial" }))}>指定范围</button>
+              </div>
+            </fieldset>
 
-          <fieldset className="draft-fieldset entity-checks">
-            <legend>实体类型</legend>
-            <div className="draft-entity-grid">
-              {entityTypes.map((entityType) => (
-                <Checkbox
-                  key={entityType}
-                  aria-label={entityLabels[entityType]}
-                  checked={draft.entityTypes.includes(entityType)}
-                  onChange={(event) => toggleType(entityType, event.target.checked)}
-                >{entityLabels[entityType]}</Checkbox>
-              ))}
-            </div>
-            <button className="text-button" type="button" onClick={() => setDraft((current) => ({ ...current, entityTypes: [] }))}>清空选择</button>
-          </fieldset>
+            <fieldset className="draft-fieldset entity-checks">
+              <legend>实体类型</legend>
+              <div className="draft-entity-grid">
+                {entityTypes.map((entityType) => (
+                  <Checkbox
+                    key={entityType}
+                    aria-label={entityLabels[entityType]}
+                    checked={draft.entityTypes.includes(entityType)}
+                    onChange={(event) => toggleType(entityType, event.target.checked)}
+                  >{entityLabels[entityType]}</Checkbox>
+                ))}
+              </div>
+              <button className="text-button" type="button" onClick={() => setDraft((current) => ({ ...current, entityTypes: [] }))}>清空选择</button>
+            </fieldset>
+          </div>
 
           <div className="draft-data-summary">
             <span>数据状态</span>
