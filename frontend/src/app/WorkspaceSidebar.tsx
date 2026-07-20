@@ -4,8 +4,9 @@ import {
   ChevronRight,
   DatabaseZap,
   History,
+  MessageSquarePlus,
   PanelLeftClose,
-  Plus,
+  RefreshCw,
   X,
 } from "lucide-react";
 import { useEffect, useState, type RefObject } from "react";
@@ -85,9 +86,25 @@ export function WorkspaceSidebar({
           <button ref={closeButtonRef} className="workspace-mobile-close" type="button" aria-label="关闭导航" onClick={onMobileClose}><X size={19} /></button>
         </div>
 
-        <NavLink className="workspace-new-task" to="/tasks/new" onClick={onMobileClose}>
-          <Plus size={18} /><span className="workspace-label">新建对账</span>
-        </NavLink>
+        <div className="workspace-primary-actions" aria-label="主要操作">
+          <button
+            className="workspace-agent-entry"
+            type="button"
+            aria-label="新建对话，即将开放"
+            title="新建对话，即将开放"
+            disabled
+          >
+            <MessageSquarePlus size={18} />
+            <span className="workspace-label workspace-command-copy">
+              <strong>新建对话</strong>
+              <small>即将开放</small>
+            </span>
+          </button>
+          <NavLink className="workspace-new-task" to="/tasks/new" onClick={onMobileClose}>
+            <RefreshCw size={18} />
+            <span className="workspace-label">外部数据同步</span>
+          </NavLink>
+        </div>
 
         <section className="workspace-history" aria-label="最近任务">
           <div className="workspace-section-title">

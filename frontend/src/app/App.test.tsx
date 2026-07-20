@@ -19,7 +19,7 @@ describe("application shell", () => {
     expect(screen.getByRole("link", { name: /三方全校数据核对/ })).toHaveAttribute("aria-current", "page");
     expect(await screen.findByText("后端未连接")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("link", { name: "新建对账" }));
+    await user.click(screen.getByRole("link", { name: "外部数据同步" }));
     expect(screen.getByRole("heading", { name: "和 AI 一起新建对账" })).toBeInTheDocument();
   });
 

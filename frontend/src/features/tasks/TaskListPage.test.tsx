@@ -9,6 +9,21 @@ function LocationProbe() {
 }
 
 describe("task history", () => {
+  it("opens external data sync from the task list", async () => {
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={["/tasks"]}>
+        <Routes>
+          <Route path="/tasks" element={<TaskListPage />} />
+          <Route path="/tasks/new" element={<LocationProbe />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "外部数据同步" }));
+    expect(screen.getByText("/tasks/new")).toBeInTheDocument();
+  });
+
   it("opens a historical task when its row body is clicked", async () => {
     const user = userEvent.setup();
     render(

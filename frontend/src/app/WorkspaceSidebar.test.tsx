@@ -13,6 +13,19 @@ describe("workspace sidebar", () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
+  it("separates the future conversation from external data sync", () => {
+    render(
+      <MemoryRouter initialEntries={["/tasks/new"]}>
+        <WorkspaceSidebar mobileOpen={false} onMobileClose={() => undefined} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("button", { name: "新建对话，即将开放" })).toBeDisabled();
+    expect(screen.getByRole("link", { name: "外部数据同步" })).toHaveAttribute("href", "/tasks/new");
+    expect(screen.getByRole("link", { name: "外部数据同步" })).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByRole("link", { name: "新建对账" })).not.toBeInTheDocument();
+  });
+
   it("shows recent task summaries and highlights the current task", async () => {
     render(
       <MemoryRouter initialEntries={["/tasks/demo-001"]}>
