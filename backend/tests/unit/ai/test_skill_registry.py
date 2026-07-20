@@ -9,7 +9,7 @@ def test_analysis_skill_loads_a_pinned_read_only_contract() -> None:
     skill = SkillRegistry().load("analyze-data-difference", "1.0.0")
 
     assert skill.name == "analyze-data-difference"
-    assert skill.output_schema == "CauseAnalysis"
+    assert skill.output_schema == "CauseAnalysisV2"
     assert set(skill.allowed_tools) == {
         "difference_context",
         "candidate_search",

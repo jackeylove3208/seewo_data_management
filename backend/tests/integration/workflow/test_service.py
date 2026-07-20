@@ -1,0 +1,162 @@
+from uuid import uuid4
+
+import pytest
+
+from app.core.security import OperatorContext
+from app.models.reconciliation import ReconciliationTask
+from app.schemas.governance import AnalysisBatchResponse
+from app.workflow.service import ReconciliationWorkflowService
+
+
+class ResolverStub:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def resolve_task(self, _task_id):
+        self.calls += 1
+
+
+class DetectorStub:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def detect(self, task_id):
+        self.calls += 1
+        values = {"difference_ids": (uuid4(), uuid4()), "task_id": task_id}
+        return type("DifferenceResult", (), values)()
+
+
+class AnalyzerStub:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def analyze_batch(self, task_id, *, limit):
+        self.calls += 1
+        assert limit > 0
+        return AnalysisBatchResponse(
+            task_id=task_id,
+            total=2,
+            succeeded=1,
+            failed=0,
+            manual_review=1,
+            completed=2,
+            remaining=0,
+        )
+
+
+class TimeoutOnceDetector(DetectorStub):
+    async def detect(self, task_id):
+        self.calls += 1
+        if self.calls == 1:
+            raise TimeoutError("temporary detector timeout")
+        values = {"difference_ids": (uuid4(),), "task_id": task_id}
+        return type("DifferenceResult", (), values)()
+
+
+async def create_task(session, *, stage: str = "snapshots", tenant_id: str = "school-1"):
+    record = ReconciliationTask(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        scope_id="all",
+        snapshot_mode="full",
+        entity_types=["teacher"],
+        status="ready",
+        stage=stage,
+        idempotency_key=f"workflow-service-{uuid4()}",
+        request_hash="hash",
+    )
+    session.add(record)
+    await session.flush()
+    return record
+
+
+@pytest.mark.asyncio
+async def test_workflow_advances_matching_differences_and_analysis(session) -> None:
+    record = await create_task(session)
+    resolver, detector, analyzer = ResolverStub(), DetectorStub(), AnalyzerStub()
+    service = ReconciliationWorkflowService(
+        session,
+        operator=OperatorContext(operator_id="operator-1", tenant_id="school-1"),
+        resolver=resolver,
+        detector=detector,
+        analyzer=analyzer,
+    )
+
+    matching = await service.advance(record.id)
+    differences = await service.advance(record.id)
+    analysis = await service.advance(record.id)
+
+    assert matching.workflow.stage.value == "differences"
+    assert differences.workflow.stage.value == "analysis"
+    assert analysis.workflow.stage.value == "complete"
+    assert analysis.workflow.analysis.completed == 2
+    assert (resolver.calls, detector.calls, analyzer.calls) == (1, 1, 1)
+
+
+@pytest.mark.asyncio
+async def test_workflow_resumes_from_first_incomplete_stage(session) -> None:
+    record = await create_task(session, stage="matching")
+    resolver, detector, analyzer = ResolverStub(), DetectorStub(), AnalyzerStub()
+    service = ReconciliationWorkflowService(
+        session,
+        operator=OperatorContext(operator_id="operator-1", tenant_id="school-1"),
+        resolver=resolver,
+        detector=detector,
+        analyzer=analyzer,
+    )
+
+    result = await service.advance(record.id)
+
+    assert result.workflow.stage.value == "analysis"
+    assert (resolver.calls, detector.calls, analyzer.calls) == (0, 1, 0)
+
+
+@pytest.mark.asyncio
+async def test_workflow_hides_cross_tenant_task(session) -> None:
+    record = await create_task(session, tenant_id="other-school")
+    service = ReconciliationWorkflowService(
+        session,
+        operator=OperatorContext(operator_id="operator-1", tenant_id="school-1"),
+        resolver=ResolverStub(),
+        detector=DetectorStub(),
+        analyzer=AnalyzerStub(),
+    )
+
+    with pytest.raises(LookupError, match="not found"):
+        await service.advance(record.id)
+
+
+@pytest.mark.asyncio
+async def test_workflow_retries_only_retryable_failure(session) -> None:
+    record = await create_task(session, stage="matching")
+    detector = TimeoutOnceDetector()
+    service = ReconciliationWorkflowService(
+        session,
+        operator=OperatorContext(operator_id="operator-1", tenant_id="school-1"),
+        resolver=ResolverStub(),
+        detector=detector,
+        analyzer=AnalyzerStub(),
+    )
+
+    failed = await service.advance(record.id)
+    retried = await service.retry(record.id)
+
+    assert failed.workflow.can_retry is True
+    assert retried.workflow.stage.value == "analysis"
+    attempts = await service.runs.list_attempts(record.id, failed.workflow.stage)
+    assert [attempt.attempt for attempt in attempts] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_workflow_rejects_unknown_task_stage(session) -> None:
+    record = await create_task(session, stage="unknown-stage")
+    service = ReconciliationWorkflowService(
+        session,
+        operator=OperatorContext(operator_id="operator-1", tenant_id="school-1"),
+        resolver=ResolverStub(),
+        detector=DetectorStub(),
+        analyzer=AnalyzerStub(),
+    )
+
+    with pytest.raises(ValueError, match="cannot advance task stage"):
+        await service.advance(record.id)

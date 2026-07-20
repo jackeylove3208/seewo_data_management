@@ -1,0 +1,292 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Alert, Button, Input, Modal, Select, Spin, Tag } from "antd";
+import { ArrowRight, CheckCircle2, ShieldAlert, Sparkles, UserRound } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+
+import { queryKeys } from "../../api/queryKeys";
+import { ApiError } from "../../api/client";
+import {
+  reconciliationApi,
+  type AIProposalRequest,
+  type DifferenceItem,
+  type GovernanceOption,
+  type GovernanceProposalPreview,
+  type ManualProposalRequest,
+  type OperationType,
+} from "../../api/reconciliation";
+
+type View = "analysis" | "manual" | "preview" | "success";
+
+const riskLabels = { low: "低风险", medium: "中风险", high: "高风险" } as const;
+const riskColors = { low: "success", medium: "warning", high: "error" } as const;
+
+function displayValue(value: unknown) {
+  if (value === null || value === undefined || value === "") return "未设置";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function executableOperation(value: OperationType): OperationType {
+  return value === "manual_review" || value === "skip" ? "update" : value;
+}
+
+function AnalysisAnimation() {
+  return (
+    <div className="analysis-animation" data-testid="analysis-animation" role="status">
+      <span className="analysis-animation-icon"><Sparkles size={24} /></span>
+      <div><strong>AI 正在分析这条差异</strong><p>正在核对层级证据、字段变化和可执行风险。</p></div>
+      <span className="analysis-dots" aria-hidden="true"><i /><i /><i /></span>
+    </div>
+  );
+}
+
+function ChangePreview({ preview }: { preview: GovernanceProposalPreview }) {
+  return (
+    <div className="proposal-preview">
+      <div className="proposal-preview-heading">
+        <div><span>方案修改预览</span><strong>{preview.proposal_source === "ai" ? "AI 方案" : "人工方案"}</strong></div>
+        <Tag color={riskColors[preview.risk]}>{riskLabels[preview.risk]}</Tag>
+      </div>
+      <div className="proposal-change-list">
+        {preview.changes.map((change) => (
+          <div className="proposal-change" key={change.field}>
+            <strong>{change.field}</strong>
+            <span>{displayValue(change.before)}</span>
+            <ArrowRight size={15} />
+            <span>{displayValue(change.after)}</span>
+          </div>
+        ))}
+      </div>
+      <p className="proposal-rationale">{preview.rationale}</p>
+      <Alert type="info" showIcon message="确认后仅生成待执行方案，不会直接修改希沃数据。" />
+    </div>
+  );
+}
+
+function OptionCard({ option, onPreview, loading }: {
+  option: GovernanceOption;
+  onPreview: () => void;
+  loading: boolean;
+}) {
+  return (
+    <article className={option.recommended ? "analysis-option recommended" : "analysis-option"}>
+      <header>
+        <span>{option.recommended && <Tag color="success">推荐</Tag>}<strong>{option.rationale}</strong></span>
+        <Tag color={riskColors[option.risk]}>{riskLabels[option.risk]}</Tag>
+      </header>
+      <div className="option-metrics"><span>置信度 {Math.round(option.confidence * 100)}%</span><span>{option.operation_type}</span></div>
+      {option.preconditions.length > 0 && <p>前置条件：{option.preconditions.join("；")}</p>}
+      <Button loading={loading} onClick={onPreview}>采用并预览</Button>
+    </article>
+  );
+}
+
+export function AnalysisModal({ open, difference, onClose, onProposalSaved }: {
+  open: boolean;
+  difference: DifferenceItem;
+  onClose: () => void;
+  onProposalSaved?: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [view, setView] = useState<View>("analysis");
+  const [preview, setPreview] = useState<GovernanceProposalPreview>();
+  const [pendingAI, setPendingAI] = useState<AIProposalRequest>();
+  const [pendingManual, setPendingManual] = useState<ManualProposalRequest>();
+  const [manualValues, setManualValues] = useState<Record<string, string>>({});
+  const [rationale, setRationale] = useState("");
+  const [conflictMessage, setConflictMessage] = useState<string>();
+
+  useEffect(() => {
+    setView("analysis");
+    setPreview(undefined);
+    setPendingAI(undefined);
+    setPendingManual(undefined);
+    setManualValues({});
+    setRationale("");
+    setConflictMessage(undefined);
+  }, [difference.id, open]);
+
+  function handleProposalError(error: Error) {
+    if (!(error instanceof ApiError) || error.status !== 409) return;
+    setConflictMessage("数据版本已变化，请重新打开分析后确认。");
+    setPreview(undefined);
+    setPendingAI(undefined);
+    setPendingManual(undefined);
+    setView("analysis");
+    void queryClient.invalidateQueries({ queryKey: ["differences", difference.task_id] });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.analysis(difference.id) });
+  }
+
+  const analysis = useQuery({
+    queryKey: queryKeys.analysis(difference.id),
+    queryFn: ({ signal }) => reconciliationApi.getAnalysis(difference.id, signal),
+    enabled: open && difference.analysis_status !== "pending",
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  const editorSchema = useQuery({
+    queryKey: queryKeys.editorSchema(difference.entity_type),
+    queryFn: ({ signal }) => reconciliationApi.getEditorSchema(difference.entity_type, signal),
+    enabled: open && view === "manual",
+  });
+
+  useEffect(() => {
+    if (!editorSchema.data) return;
+    setManualValues((current) => {
+      if (Object.keys(current).length > 0) return current;
+      return Object.fromEntries(editorSchema.data.fields.map((field) => [
+        field.name,
+        displayValue(difference.evidence.target_payload?.[field.name] ?? "") === "未设置"
+          ? ""
+          : String(difference.evidence.target_payload?.[field.name] ?? ""),
+      ]));
+    });
+  }, [difference.evidence.target_payload, editorSchema.data]);
+
+  const aiPreview = useMutation({
+    mutationFn: (request: AIProposalRequest) => reconciliationApi.previewAIProposal(difference.id, request),
+    onSuccess: (result, request) => {
+      setPendingAI(request);
+      setPendingManual(undefined);
+      setPreview(result);
+      setView("preview");
+    },
+    onError: handleProposalError,
+  });
+  const manualPreview = useMutation({
+    mutationFn: (request: ManualProposalRequest) => reconciliationApi.previewManualProposal(difference.id, request),
+    onSuccess: (result, request) => {
+      setPendingManual(request);
+      setPendingAI(undefined);
+      setPreview(result);
+      setView("preview");
+    },
+    onError: handleProposalError,
+  });
+  const confirm = useMutation({
+    mutationFn: () => {
+      if (pendingAI) return reconciliationApi.confirmAIProposal(difference.id, pendingAI);
+      if (pendingManual) return reconciliationApi.confirmManualProposal(difference.id, pendingManual);
+      throw new Error("没有可确认的治理方案");
+    },
+    onSuccess: () => {
+      setView("success");
+      void queryClient.invalidateQueries({ queryKey: ["differences", difference.task_id] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.proposals(difference.id) });
+      onProposalSaved?.();
+    },
+    onError: handleProposalError,
+  });
+
+  const manualChanges = useMemo(() => Object.fromEntries(
+    Object.entries(manualValues).filter(([field, value]) => {
+      const before = difference.evidence.target_payload?.[field];
+      return value !== "" && value !== String(before ?? "");
+    }),
+  ), [difference.evidence.target_payload, manualValues]);
+
+  function previewOption(option: GovernanceOption) {
+    aiPreview.mutate({
+      analysis_id: analysis.data!.id,
+      option_id: option.option_id,
+      expected_difference_version: difference.version,
+    });
+  }
+
+  function previewManual() {
+    manualPreview.mutate({
+      expected_difference_version: difference.version,
+      operation_type: executableOperation(difference.proposed_action),
+      target_entity_id: difference.evidence.target_entity_id,
+      changes: manualChanges,
+      rationale,
+    });
+  }
+
+  const error = aiPreview.error ?? manualPreview.error ?? confirm.error;
+  const output = analysis.data?.output;
+
+  return (
+    <Modal
+      className="analysis-modal"
+      width={760}
+      open={open}
+      title="差异治理分析"
+      footer={null}
+      onCancel={onClose}
+      destroyOnHidden
+    >
+      {difference.analysis_status === "pending" && <AnalysisAnimation />}
+
+      {difference.analysis_status !== "pending" && analysis.isLoading && <div className="modal-loading"><Spin /><span>正在读取分析结果</span></div>}
+      {analysis.isError && <Alert type="error" showIcon message="分析结果读取失败" description={analysis.error.message} />}
+
+      {view === "analysis" && output && (
+        <div className="analysis-result">
+          <section className="analysis-explanation">
+            <span className="analysis-result-icon"><Sparkles size={18} /></span>
+            <div><small>成因分析</small><h3>{output.cause}</h3><p>{output.evidence_summary}</p></div>
+          </section>
+          <div className="analysis-context">
+            {difference.evidence.fields.map((field) => (
+              <div key={field.field}><strong>{field.field}</strong><span>{displayValue(field.source_value)}</span><ArrowRight size={14} /><span>{displayValue(field.target_value)}</span></div>
+            ))}
+          </div>
+          <div className="analysis-provenance">{analysis.data?.provenance.provider === "deterministic" ? "规则分析" : `企业模型 · ${analysis.data?.provenance.model}`}</div>
+
+          {output.manual_only ? (
+            <Alert className="manual-only-alert" type="warning" showIcon icon={<ShieldAlert size={17} />} message="仅支持人工处理" description={output.manual_reason} />
+          ) : (
+            <div className="analysis-options">
+              {output.options.map((option) => <OptionCard key={option.option_id} option={option} loading={aiPreview.isPending} onPreview={() => previewOption(option)} />)}
+            </div>
+          )}
+          <div className="modal-command-row">
+            <Button icon={<UserRound size={15} />} onClick={() => setView("manual")}>人工修改</Button>
+          </div>
+        </div>
+      )}
+
+      {view === "manual" && (
+        <div className="manual-editor">
+          <header><UserRound size={18} /><div><h3>人工修改</h3><p>只开放后端字段策略允许的属性。</p></div></header>
+          {editorSchema.isLoading && <div className="modal-loading"><Spin /><span>正在读取可编辑字段</span></div>}
+          {editorSchema.data?.fields.map((field) => (
+            <label className="manual-field" key={field.name}>
+              <span>{field.label}</span>
+              {field.field_type === "status" ? (
+                <Select aria-label={field.label} value={manualValues[field.name]} options={[{ value: "active", label: "启用" }, { value: "inactive", label: "停用" }]} onChange={(value) => setManualValues((current) => ({ ...current, [field.name]: value }))} />
+              ) : (
+                <Input aria-label={field.label} type={field.field_type === "email" ? "email" : "text"} value={manualValues[field.name] ?? ""} onChange={(event) => setManualValues((current) => ({ ...current, [field.name]: event.target.value }))} />
+              )}
+            </label>
+          ))}
+          <label className="manual-field manual-rationale"><span>修改原因</span><Input.TextArea aria-label="修改原因" rows={3} value={rationale} onChange={(event) => setRationale(event.target.value)} /></label>
+          <div className="modal-command-row">
+            <Button onClick={() => setView("analysis")}>返回分析</Button>
+            <Button type="primary" loading={manualPreview.isPending} disabled={Object.keys(manualChanges).length === 0 || rationale.trim().length < 3} onClick={previewManual}>预览人工方案</Button>
+          </div>
+        </div>
+      )}
+
+      {view === "preview" && preview && (
+        <div>
+          <ChangePreview preview={preview} />
+          <div className="modal-command-row">
+            <Button onClick={() => setView(pendingManual ? "manual" : "analysis")}>返回修改</Button>
+            <Button type="primary" loading={confirm.isPending} onClick={() => confirm.mutate()}>确认生成待执行方案</Button>
+          </div>
+        </div>
+      )}
+
+      {view === "success" && (
+        <div className="proposal-success">
+          <CheckCircle2 size={34} />
+          <h3>已进入待治理执行</h3>
+          <p>后续治理执行会读取这份确定版本的方案，完成预检、审核和写入。</p>
+          <Button type="primary" onClick={onClose}>完成</Button>
+        </div>
+      )}
+      {(conflictMessage || error) && <Alert className="modal-error" type="error" showIcon message={conflictMessage ?? error?.message} />}
+    </Modal>
+  );
+}

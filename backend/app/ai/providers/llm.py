@@ -20,6 +20,7 @@ class HttpLLMProvider(LLMProvider):
     """Minimal OpenAI-compatible structured JSON client with bounded retries."""
 
     provider_name = "http"
+    requires_tokenization = True
 
     def __init__(
         self,
@@ -57,20 +58,8 @@ class HttpLLMProvider(LLMProvider):
             try:
                 response = await client.post(
                     url,
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    json={
-                        "model": self.settings.llm_model,
-                        "messages": [message.model_dump() for message in request.messages],
-                        "temperature": request.temperature,
-                        "response_format": {
-                            "type": "json_schema",
-                            "json_schema": {
-                                "name": "governance_response",
-                                "strict": True,
-                                "schema": request.response_schema or {"type": "object"},
-                            },
-                        },
-                    },
+                    headers=_request_headers(self.settings, api_key),
+                    json=_request_body(self.settings, request),
                     timeout=self.settings.llm_timeout_seconds,
                 )
                 if response.status_code in {429, 500, 502, 503, 504}:
@@ -96,6 +85,35 @@ class HttpLLMProvider(LLMProvider):
         raise ModelProviderError(
             f"model request failed after {self.settings.model_retry_attempts} attempts"
         ) from last_error
+
+
+def _request_headers(settings: Settings, api_key: str) -> dict[str, str]:
+    authentication = f"{settings.llm_auth_scheme} {api_key}".strip()
+    return {
+        **settings.llm_extra_headers_json,
+        settings.llm_auth_header: authentication,
+    }
+
+
+def _request_body(settings: Settings, request: LLMRequest) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "model": settings.llm_model,
+        "messages": [message.model_dump() for message in request.messages],
+        "temperature": request.temperature,
+        **settings.llm_extra_body_json,
+    }
+    if settings.llm_response_mode.value == "json_schema":
+        body["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "governance_response",
+                "strict": True,
+                "schema": request.response_schema or {"type": "object"},
+            },
+        }
+    elif settings.llm_response_mode.value == "json_object":
+        body["response_format"] = {"type": "json_object"}
+    return body
 
 
 def _parse_response(payload: dict[str, Any], settings: Settings) -> LLMResponse:

@@ -18,6 +18,7 @@ from app.schemas.differences import (
     DifferenceEvidence,
     DifferenceType,
 )
+from app.schemas.governance import CauseAnalysis, RecommendedAction, RiskLevel
 from tests.fixtures.organization_factory import create_hierarchy_pair
 
 
@@ -89,7 +90,9 @@ def test_analysis_trigger_exposes_output_and_execution_eligibility(
 
     fetched = analysis_client.get(f"/api/differences/{difference_id}/analysis")
     assert fetched.status_code == 200
-    assert fetched.json()["output"]["recommended_action"] == "create"
+    output = fetched.json()["output"]
+    assert output["manual_only"] is False
+    assert output["options"][0]["operation_type"] == "create"
     assert fetched.json()["provenance"]["provider"] == "deterministic"
 
     detail = analysis_client.get(f"/api/differences/{difference_id}").json()
@@ -129,25 +132,35 @@ def test_analysis_query_returns_current_supported_analysis_version(
     task_id, difference_id = seeded(analysis_client)
     assert analysis_client.post(f"/api/reconciliation-tasks/{task_id}/analyses").status_code == 202
 
-    async def add_future_analysis_version() -> None:
+    async def add_legacy_analysis_version() -> None:
         async with analysis_client.app.state.database.session_factory() as session:
             difference = await DifferenceRepository(session).get(difference_id)
-            current = await AnalysisRepository(session).get_for_difference(difference_id, 1)
+            current = await AnalysisRepository(session).get_for_difference(
+                difference_id,
+                1,
+                "analysis-v2",
+            )
             assert difference is not None and current is not None and current.output is not None
             await AnalysisRepository(session).save_success(
                 difference,
-                current.output,
+                CauseAnalysis(
+                    cause="Legacy deterministic analysis",
+                    evidence_summary="Legacy analysis remains available by explicit version",
+                    recommended_action=RecommendedAction.CREATE,
+                    risk=RiskLevel.MEDIUM,
+                    confidence=1,
+                ),
                 current.provenance,
-                analysis_version="analysis-v2",
+                analysis_version="analysis-v1",
             )
             await session.commit()
 
     assert analysis_client.portal is not None
-    analysis_client.portal.call(add_future_analysis_version)
+    analysis_client.portal.call(add_legacy_analysis_version)
 
     response = analysis_client.get(f"/api/differences/{difference_id}/analysis")
     assert response.status_code == 200
-    assert response.json()["analysis_version"] == "analysis-v1"
+    assert response.json()["analysis_version"] == "analysis-v2"
 
 
 def test_analysis_and_difference_endpoints_reject_cross_tenant_access(

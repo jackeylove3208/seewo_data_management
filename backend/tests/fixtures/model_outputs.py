@@ -13,13 +13,33 @@ def model_response(output: dict) -> LLMResponse:
     )
 
 
-def valid_attribute_analysis() -> dict:
+def valid_attribute_analysis(
+    *,
+    target_entity_id: str,
+    field: str = "phone",
+    before: str = "13900000000",
+    after: str = "13800000000",
+) -> dict:
     return {
         "cause": "The normalized governed attribute differs",
         "evidence_summary": "The persisted source and target phone values are different",
-        "recommended_action": "update",
-        "risk": "low",
-        "confidence": 0.9,
+        "manual_only": False,
+        "options": [
+            {
+                "option_id": "update-authoritative-field",
+                "operation_type": "update",
+                "target_entity_id": target_entity_id,
+                "proposed_changes": [
+                    {"field": field, "before": before, "after": after},
+                ],
+                "rationale": "Use the authoritative field value",
+                "evidence_refs": [f"field:{field}"],
+                "risk": "low",
+                "confidence": 0.9,
+                "preconditions": [],
+                "recommended": True,
+            }
+        ],
     }
 
 

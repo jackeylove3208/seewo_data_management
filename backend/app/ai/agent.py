@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -7,13 +7,15 @@ from app.ai.mcp.authorization import ToolAuthorizationError, ToolContext
 from app.ai.mcp.server import ToolResult
 from app.ai.prompting import (
     PROMPT_VERSION,
+    PROMPT_VERSION_V2,
     build_messages,
     response_schema,
     tool_messages,
 )
 from app.ai.providers.base import LLMProvider, LLMRequest, ModelProviderError, ModelUsage
 from app.ai.skills.registry import SkillRegistry
-from app.schemas.governance import AnalysisProvenance, CauseAnalysis
+from app.ai.tokenization import TaskTokenizationContext, UnknownTokenError
+from app.schemas.governance import AnalysisProvenance, CauseAnalysis, CauseAnalysisV2
 
 
 class AgentFailure(RuntimeError):
@@ -65,12 +67,13 @@ class AgentRequest(BaseModel):
     skill_version: str = Field(min_length=1, max_length=64)
     input_payload: dict[str, Any]
     tool_context: ToolContext | None = None
+    analysis_version: Literal["analysis-v1", "analysis-v2"] = "analysis-v1"
 
 
 class AgentResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    output: CauseAnalysis
+    output: CauseAnalysis | CauseAnalysisV2
     provenance: AnalysisProvenance
 
 
@@ -82,16 +85,29 @@ class GovernanceAgent:
         *,
         skills: SkillRegistry | None = None,
         max_tool_calls: int = 4,
+        tokenization_secret: str | None = None,
     ) -> None:
         self.llm = llm
         self.tools = tools
         self.skills = skills or SkillRegistry()
         self.max_tool_calls = max_tool_calls
+        self.tokenization_secret = tokenization_secret
 
     async def analyze(self, request: AgentRequest) -> AgentResult:
         skill = self.skills.load(request.skill_name, request.skill_version)
-        messages = build_messages(skill, request.input_payload)
+        tokenizer = self._tokenizer(request)
+        safe_payload = (
+            tokenizer.tokenize(request.input_payload) if tokenizer else request.input_payload
+        )
+        messages = build_messages(skill, safe_payload)
+        output_model = (
+            CauseAnalysisV2 if request.analysis_version == "analysis-v2" else CauseAnalysis
+        )
+        prompt_version = (
+            PROMPT_VERSION_V2 if request.analysis_version == "analysis-v2" else PROMPT_VERSION
+        )
         trace_ids: list[str] = []
+        gateway_request_ids: list[str] = []
         input_tokens = 0
         output_tokens = 0
         provider = "unavailable"
@@ -104,7 +120,7 @@ class GovernanceAgent:
                         messages=tuple(messages),
                         response_schema=response_schema(
                             skill,
-                            CauseAnalysis.model_json_schema(),
+                            output_model.model_json_schema(),
                         ),
                     )
                 )
@@ -119,6 +135,8 @@ class GovernanceAgent:
                         trace_ids,
                         input_tokens,
                         output_tokens,
+                        prompt_version,
+                        gateway_request_ids=gateway_request_ids,
                     ),
                     cause=error,
                 ) from error
@@ -126,6 +144,8 @@ class GovernanceAgent:
             model = response.model
             input_tokens += response.usage.input_tokens
             output_tokens += response.usage.output_tokens
+            if response.request_id is not None:
+                gateway_request_ids.append(response.request_id)
             provenance = _provenance(
                 provider,
                 model,
@@ -134,6 +154,8 @@ class GovernanceAgent:
                 trace_ids,
                 input_tokens,
                 output_tokens,
+                prompt_version,
+                gateway_request_ids=gateway_request_ids,
             )
             result_payload = response.output.get("result")
             if not isinstance(result_payload, dict):
@@ -149,6 +171,13 @@ class GovernanceAgent:
                 raise UnsafeToolCall(str(error), provenance=provenance, cause=error) from error
             if tool_call is not None:
                 name, arguments = tool_call
+                if tokenizer is not None:
+                    try:
+                        arguments = tokenizer.detokenize(arguments)
+                    except UnknownTokenError as error:
+                        raise InvalidAgentOutput(
+                            str(error), provenance=provenance, cause=error
+                        ) from error
                 if name not in skill.allowed_tools:
                     raise UnsafeToolCall(name, provenance=provenance)
                 if request.tool_context is None:
@@ -165,11 +194,23 @@ class GovernanceAgent:
                         str(error), provenance=provenance, cause=error
                     ) from error
                 trace_ids.append(tool_result.trace_id)
-                messages.extend(tool_messages(response.output, tool_result.payload))
+                safe_tool_payload = (
+                    tokenizer.tokenize(tool_result.payload)
+                    if tokenizer is not None
+                    else tool_result.payload
+                )
+                messages.extend(tool_messages(response.output, safe_tool_payload))
                 continue
 
+            if tokenizer is not None:
+                try:
+                    result_payload = tokenizer.detokenize(result_payload)
+                except UnknownTokenError as error:
+                    raise InvalidAgentOutput(
+                        str(error), provenance=provenance, cause=error
+                    ) from error
             try:
-                output = CauseAnalysis.model_validate(result_payload)
+                output = output_model.model_validate(result_payload)
             except ValidationError as error:
                 raise InvalidAgentOutput(
                     "model output failed CauseAnalysis validation",
@@ -186,8 +227,39 @@ class GovernanceAgent:
                     trace_ids,
                     input_tokens,
                     output_tokens,
+                    prompt_version,
+                    gateway_request_ids=gateway_request_ids,
                 ),
             )
+
+    def _tokenizer(self, request: AgentRequest) -> TaskTokenizationContext | None:
+        requires_tokenization = bool(getattr(self.llm, "requires_tokenization", False))
+        if self.tokenization_secret is None:
+            if requires_tokenization:
+                provenance = _provenance(
+                    "unavailable",
+                    "unavailable",
+                    request.skill_name,
+                    request.skill_version,
+                    [],
+                    0,
+                    0,
+                    (
+                        PROMPT_VERSION_V2
+                        if request.analysis_version == "analysis-v2"
+                        else PROMPT_VERSION
+                    ),
+                )
+                error = ModelProviderError("LLM tokenization is not configured")
+                raise AgentProviderFailure(str(error), provenance=provenance, cause=error)
+            return None
+        if request.tool_context is None:
+            raise ValueError("tokenized Agent requests require authorized task context")
+        return TaskTokenizationContext(
+            secret=self.tokenization_secret,
+            tenant_id=request.tool_context.tenant_id,
+            task_id=request.tool_context.task_id,
+        )
 
 
 def _parse_tool_call(output: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
@@ -211,14 +283,17 @@ def _provenance(
     trace_ids: list[str],
     input_tokens: int,
     output_tokens: int,
+    prompt_version: str = PROMPT_VERSION,
+    gateway_request_ids: list[str] | None = None,
 ) -> AnalysisProvenance:
     return AnalysisProvenance(
         provider=provider,
         model=model,
         skill_name=skill_name,
         skill_version=skill_version,
-        prompt_version=PROMPT_VERSION,
+        prompt_version=prompt_version,
         tool_trace_ids=tuple(trace_ids),
+        gateway_request_ids=tuple(gateway_request_ids or ()),
         usage=ModelUsage(
             input_tokens=input_tokens,
             output_tokens=output_tokens,

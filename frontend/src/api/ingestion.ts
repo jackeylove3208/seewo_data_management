@@ -1,5 +1,6 @@
 import { requestJson } from "./client";
 import type { EntityType } from "../types/domain";
+import type { WorkflowState } from "./reconciliation";
 
 export interface UploadResponse {
   id: string;
@@ -25,6 +26,7 @@ export interface ReconciliationTaskResponse {
   stage: string;
   entity_types: EntityType[];
   snapshots: Record<"authoritative" | "target", SnapshotSummary>;
+  workflow: WorkflowState;
   error: { message?: string } | null;
 }
 
@@ -35,8 +37,8 @@ async function upload(file: File, sourceRole: "authoritative" | "target") {
   return requestJson<UploadResponse>("/api/uploads", { method: "POST", body: form });
 }
 
-function getTask(taskId: string) {
-  return requestJson<ReconciliationTaskResponse>(`/api/reconciliation-tasks/${taskId}`);
+function getTask(taskId: string, signal?: AbortSignal) {
+  return requestJson<ReconciliationTaskResponse>(`/api/reconciliation-tasks/${taskId}`, { signal });
 }
 
 function createTask(body: Record<string, unknown>, idempotencyKey: string = crypto.randomUUID()) {

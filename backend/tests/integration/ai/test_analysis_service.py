@@ -20,7 +20,9 @@ from app.schemas.differences import (
 from app.schemas.governance import (
     AnalysisProvenance,
     AnalysisStatus,
-    CauseAnalysis,
+    CauseAnalysisV2,
+    GovernanceOption,
+    ProposedFieldChange,
     RecommendedAction,
     RiskLevel,
 )
@@ -32,22 +34,50 @@ class AgentSpy:
         self.action = action
         self.calls = 0
 
-    async def analyze(self, _request):
+    async def analyze(self, request):
         self.calls += 1
-        return AgentResult(
-            output=CauseAnalysis(
+        evidence = request.input_payload["evidence"]
+        if self.action is RecommendedAction.MANUAL_REVIEW:
+            output = CauseAnalysisV2(
+                cause="The governed attributes cannot be changed safely",
+                evidence_summary="The persisted evidence requires operator review",
+                manual_only=True,
+                manual_reason="A human must verify the intended target value",
+            )
+        else:
+            field = evidence["fields"][0]
+            output = CauseAnalysisV2(
                 cause="The governed attributes differ",
-                evidence_summary="The persisted field evidence shows different normalized values",
-                recommended_action=self.action,
-                risk=RiskLevel.LOW,
-                confidence=0.9,
-            ),
+                evidence_summary="The persisted field evidence shows different values",
+                manual_only=False,
+                options=(
+                    GovernanceOption(
+                        option_id="option-1",
+                        operation_type=self.action,
+                        target_entity_id=evidence["target_entity_id"],
+                        proposed_changes=(
+                            ProposedFieldChange(
+                                field=field["field"],
+                                before=field["target_value"],
+                                after=field["source_value"],
+                            ),
+                        ),
+                        rationale="Use the current authoritative field value",
+                        evidence_refs=(f"field:{field['field']}",),
+                        risk=RiskLevel.LOW,
+                        confidence=0.9,
+                        recommended=True,
+                    ),
+                ),
+            )
+        return AgentResult(
+            output=output,
             provenance=AnalysisProvenance(
                 provider="agent-provider",
                 model="agent-model",
                 skill_name="analyze-data-difference",
                 skill_version="1.0.0",
-                prompt_version="analysis-prompt-v1",
+                prompt_version="analysis-prompt-v2",
                 usage=ModelUsage(input_tokens=5, output_tokens=3),
                 generated_at=datetime.now(UTC),
             ),
@@ -113,7 +143,8 @@ async def test_clear_missing_case_uses_deterministic_analysis_without_agent(sess
     assert result.status is AnalysisStatus.SUCCEEDED
     assert result.output is not None
     assert result.output.cause == "Authoritative entity has no accepted Seewo mapping"
-    assert result.output.recommended_action is RecommendedAction.CREATE
+    assert isinstance(result.output, CauseAnalysisV2)
+    assert result.output.options[0].operation_type is RecommendedAction.CREATE
     assert result.provenance.provider == "deterministic"
     assert agent.calls == 0
 
@@ -141,9 +172,9 @@ async def test_invalid_action_twice_routes_to_manual_review(session) -> None:
 
     assert result.status is AnalysisStatus.MANUAL_REVIEW
     assert result.output is not None
-    assert result.output.recommended_action is RecommendedAction.MANUAL_REVIEW
-    assert result.output.risk is RiskLevel.HIGH
-    assert result.output.confidence == 0
+    assert isinstance(result.output, CauseAnalysisV2)
+    assert result.output.manual_only is True
+    assert result.output.options == ()
     assert result.attempt_count == 2
     assert result.failure_code == "analysis_policy_error"
     assert result.provenance.provider == "agent-provider"
@@ -162,5 +193,38 @@ async def test_valid_manual_review_recommendation_is_not_executable(session) -> 
 
     assert result.status is AnalysisStatus.MANUAL_REVIEW
     assert result.output is not None
-    assert result.output.recommended_action is RecommendedAction.MANUAL_REVIEW
+    assert isinstance(result.output, CauseAnalysisV2)
+    assert result.output.manual_only is True
     assert not await ExecutionEligibility(session).is_eligible(difference.id, difference.version)
+
+
+@pytest.mark.asyncio
+async def test_analysis_batch_processes_only_the_configured_limit(session) -> None:
+    first = await seed_difference(session, DifferenceType.ATTRIBUTE_CONFLICT)
+    drafts = []
+    for index in range(2):
+        field = first.evidence.fields[0].model_copy(
+            update={"source_value": f"1380000000{index + 1}"}
+        )
+        drafts.append(
+            DifferenceDraft(
+                task_id=first.task_id,
+                tenant_id=first.tenant_id,
+                entity_type=first.entity_type,
+                difference_type=first.difference_type,
+                proposed_action=first.proposed_action,
+                evidence=first.evidence.model_copy(update={"fields": (field,)}),
+            )
+        )
+    await DifferenceRepository(session).insert_many(tuple(drafts))
+    agent = AgentSpy()
+    service = AnalysisService(session, agent=agent)
+
+    first_batch = await service.analyze_batch(first.task_id, limit=2)
+    second_batch = await service.analyze_batch(first.task_id, limit=2)
+
+    assert first_batch.completed == 2
+    assert first_batch.remaining == 1
+    assert second_batch.completed == 3
+    assert second_batch.remaining == 0
+    assert agent.calls == 3

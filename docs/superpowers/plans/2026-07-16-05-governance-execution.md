@@ -2,20 +2,23 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Turn operator-selected, analyzed differences into policy-valid, dependency-ordered operations that produce a new verified Seewo CSV version and immutable execution audit records.
+**Goal:** Turn operator-reviewed AI or manual governance proposals into policy-valid, dependency-ordered operations that produce a new verified Seewo CSV version and immutable execution audit records.
 
-**Architecture:** A deterministic plan builder translates selected difference versions into allowed operations; model advice is evidence, never executable instructions. Preview binds task, snapshots, differences, plan version, and backend-authenticated operator. Preflight re-reads target versions and expected before-values immediately before a per-operation executor derives a new CSV, verifies it through the target connector, and records success, partial failure, retry eligibility, and immutable history.
+**Architecture:** `ai-new-ui` persists an operator-reviewed AI option or whitelisted manual edit as an immutable `pending_execution` proposal. A deterministic plan builder translates exact proposal versions into allowed operations; model advice is evidence, never executable instructions. Preview binds task, snapshots, proposals, differences, plan version, and backend-authenticated confirmer. Preflight re-reads proposal and target versions plus expected before-values immediately before a per-operation executor derives a new CSV, verifies it through the target connector, and records success, partial failure, retry eligibility, and immutable history. An optional plan explanation reuses the AI analysis enterprise model with a separate read-only Skill, but its failure never blocks preview or execution.
 
 **Tech Stack:** Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2, PostgreSQL, Polars, pytest.
 
 ## Global Constraints
 
-- Only operator-selected differences with successful current-version analysis are eligible.
-- Operator ID comes from backend authentication context and is never accepted from request JSON.
-- Supported operations are `create`, `update`, `move`, `disable`, `skip`, and `manual_review`; `delete` is forbidden.
-- Agent output cannot bypass allowed-field, operation, risk, dependency, or reversibility policies.
-- Preview and confirmation bind exact difference versions and plan version.
-- Preflight checks target hash/version, expected before-values, dependencies, conflicts, and eligibility immediately before mutation.
+- Only active `pending_execution` proposal versions backed by a current difference and mandatory analysis are eligible.
+- AI and operator-authored proposals pass through the same field, operation, risk, dependency, and version policies.
+- Proposal creator, batch confirmer, and optional independent reviewer come from backend context and are never accepted as client identity fields.
+- Supported mutation operations are `create`, `update`, `move`, `disable`, and `skip`; `manual_review` is an ineligible state and `delete` is forbidden.
+- Agent output cannot bypass allowed-field, operation, risk, dependency, reversibility, approval, or preflight policies.
+- Preview and confirmation bind exact proposal, difference, target snapshot, and plan versions.
+- First release permits the same operator to create/review a proposal and confirm its batch; high-risk operations require separate explicit acknowledgement and the model reserves an optional independent reviewer.
+- Optional plan explanation uses the same configured enterprise provider and tokenization boundary as AI analysis but a separate Skill and schema; model failure is non-blocking.
+- Preflight checks proposal/difference versions, target hash/version, expected before-values, dependencies, conflicts, and eligibility immediately before mutation.
 - Parent operations run before dependent children.
 - Uploaded target CSV is immutable; every batch derives a new child version.
 - Every operation is idempotent, independently audited, and verified after connector reload.
@@ -28,6 +31,7 @@
 - `backend/app/schemas/executions.py`: operation, plan, preview, preflight, execution, and history contracts.
 - `backend/app/models/executions.py`: plans, batches, operation attempts, target versions, audit events.
 - `backend/app/governance/`: plan builder, policy validator, risk policy, dependency graph.
+- `backend/app/governance/plan_explainer.py`: optional read-only, tokenized explanation using the shared enterprise provider.
 - `backend/app/executions/`: preflight, CSV versioning, executor, and verifier.
 - `backend/app/api/routes/execution_batches.py` and `execution_records.py`: preview, confirm, retry, history, detail, downloads.
 
@@ -37,11 +41,11 @@
 - Create: `backend/app/schemas/executions.py`
 - Create: `backend/app/models/executions.py`
 - Create: `backend/app/repositories/executions.py`
-- Create: `backend/alembic/versions/0006_governance_execution.py`
+- Create: the next Alembic revision after the `ai-new-ui` migrations, named `<revision>_governance_execution.py`
 - Test: `backend/tests/integration/repositories/test_executions.py`
 
 **Interfaces:**
-- Consumes: task/snapshot IDs, difference/version, operation data, plan version, backend operator, attempts, verification.
+- Consumes: task/snapshot IDs, proposal/difference/analysis versions, proposal source, operation data, plan version, backend approval identities, attempts, verification.
 - Produces: append-only `GovernancePlan`, `ExecutionBatch`, `ExecutionOperation`, `OperationAttempt`, and `TargetVersion` records.
 
 - [ ] **Step 1: Write schema and append-only tests**
@@ -73,7 +77,6 @@ class OperationType(StrEnum):
     MOVE = "move"
     DISABLE = "disable"
     SKIP = "skip"
-    MANUAL_REVIEW = "manual_review"
 
 class OperationStatus(StrEnum):
     PENDING = "pending"
@@ -85,6 +88,9 @@ class OperationStatus(StrEnum):
 
 class GovernanceOperation(BaseModel):
     id: UUID = Field(default_factory=uuid4)
+    proposal_id: UUID
+    proposal_version: int = Field(ge=1)
+    proposal_source: Literal["ai", "operator"]
     difference_id: UUID
     difference_version: int = Field(ge=1)
     operation_type: OperationType
@@ -105,13 +111,14 @@ class GovernancePlan(BaseModel):
     task_id: UUID
     source_snapshot_id: UUID
     target_snapshot_id: UUID
+    proposal_versions: tuple[ProposalVersionRef, ...]
     operations: tuple[GovernanceOperation, ...]
     content_hash: str
 ```
 
 - [ ] **Step 4: Add normalized execution tables**
 
-Create `governance_plans`, `execution_batches`, `execution_operations`, `operation_attempts`, `target_versions`, and `execution_audit_events`. Add uniqueness on plan content hash per task, batch idempotency key, `(batch_id, operation_id)`, and `(operation_id, attempt_number)`.
+Create `governance_plans`, `execution_batches`, `execution_operations`, `operation_attempts`, `target_versions`, and `execution_audit_events`. Reference existing `governance_proposals` rather than duplicating proposal payloads. Add uniqueness on plan content hash per task, batch idempotency key, `(batch_id, operation_id)`, and `(operation_id, attempt_number)`.
 
 ```python
 class OperationAttempt(Base, TimestampMixin):
@@ -147,21 +154,26 @@ git commit -m "feat: persist governance execution records"
 - Test: `backend/tests/unit/governance/test_plan_builder.py`
 
 **Interfaces:**
-- Consumes: selected `(difference_id, version)` pairs, current analysis, difference evidence, operator context.
-- Produces: validated and content-hashed `GovernancePlan`; rejects stale, unanalyzed, disallowed, or cross-task selections.
+- Consumes: selected `(proposal_id, version)` pairs, referenced current analysis and difference evidence, target snapshot, operator context.
+- Produces: validated and content-hashed `GovernancePlan`; rejects stale, superseded, unresolved, disallowed, or cross-task proposals.
 
 - [ ] **Step 1: Write selection and policy tests**
 
 ```python
-async def test_missing_difference_builds_create(builder, analyzed_missing) -> None:
-    plan = await builder.build(analyzed_missing.task_id, [analyzed_missing.version_ref])
+async def test_ai_missing_proposal_builds_create(builder, ai_missing_proposal) -> None:
+    plan = await builder.build(ai_missing_proposal.task_id, [ai_missing_proposal.version_ref])
     assert plan.operations[0].operation_type is OperationType.CREATE
-    assert plan.operations[0].after["name"] == analyzed_missing.source_value["name"]
+    assert plan.operations[0].proposal_source == "ai"
+    assert plan.operations[0].after["name"] == ai_missing_proposal.authoritative_value["name"]
 
-async def test_model_cannot_request_disallowed_field(builder, analysis_factory, attribute_difference) -> None:
-    analysis = analysis_factory(recommended_action="update", proposed_fields={"internal_admin": True})
+async def test_operator_proposal_cannot_change_disallowed_field(builder, operator_proposal_factory) -> None:
+    proposal = operator_proposal_factory(operation_type="update", changes={"internal_admin": True})
     with pytest.raises(PlanPolicyError, match="internal_admin"):
-        await builder.build(attribute_difference.task_id, [attribute_difference.version_ref], analyses=[analysis])
+        await builder.build(proposal.task_id, [proposal.version_ref])
+
+async def test_unresolved_manual_review_cannot_build_plan(builder, manual_review_difference) -> None:
+    with pytest.raises(PlanPolicyError, match="pending_execution proposal"):
+        await builder.build(manual_review_difference.task_id, [])
 ```
 
 - [ ] **Step 2: Run plan tests**
@@ -174,11 +186,11 @@ Expected: FAIL because plan builder is missing.
 
 ```python
 OPERATION_POLICY = {
-    DifferenceType.SEEWO_MISSING: frozenset({OperationType.CREATE, OperationType.SKIP, OperationType.MANUAL_REVIEW}),
-    DifferenceType.SEEWO_REDUNDANT: frozenset({OperationType.DISABLE, OperationType.SKIP, OperationType.MANUAL_REVIEW}),
-    DifferenceType.ATTRIBUTE_CONFLICT: frozenset({OperationType.UPDATE, OperationType.SKIP, OperationType.MANUAL_REVIEW}),
-    DifferenceType.STRUCTURE_CONFLICT: frozenset({OperationType.MOVE, OperationType.SKIP, OperationType.MANUAL_REVIEW}),
-    DifferenceType.DUPLICATE_CONFLICT: frozenset({OperationType.DISABLE, OperationType.SKIP, OperationType.MANUAL_REVIEW}),
+    DifferenceType.SEEWO_MISSING: frozenset({OperationType.CREATE, OperationType.SKIP}),
+    DifferenceType.SEEWO_REDUNDANT: frozenset({OperationType.DISABLE, OperationType.SKIP}),
+    DifferenceType.ATTRIBUTE_CONFLICT: frozenset({OperationType.UPDATE, OperationType.SKIP}),
+    DifferenceType.STRUCTURE_CONFLICT: frozenset({OperationType.MOVE, OperationType.SKIP}),
+    DifferenceType.DUPLICATE_CONFLICT: frozenset({OperationType.DISABLE, OperationType.SKIP}),
 }
 
 ALLOWED_FIELDS = {
@@ -193,10 +205,10 @@ ALLOWED_FIELDS = {
 - [ ] **Step 4: Build operations from persisted facts, not prose**
 
 ```python
-async def build(self, task_id: UUID, selected: Sequence[DifferenceVersionRef]) -> GovernancePlan:
-    differences = await self.differences.get_exact_versions(task_id, selected)
-    analyses = [await self.eligibility.require_analyzed(d.id, d.version) for d in differences]
-    operations = tuple(self._operation_from(difference, analysis) for difference, analysis in zip(differences, analyses, strict=True))
+async def build(self, task_id: UUID, selected: Sequence[ProposalVersionRef]) -> GovernancePlan:
+    proposals = await self.proposals.get_exact_pending_versions(task_id, selected)
+    contexts = [await self.eligibility.require_current_context(proposal) for proposal in proposals]
+    operations = tuple(self._operation_from(proposal, context) for proposal, context in zip(proposals, contexts, strict=True))
     self.validator.validate(operations)
     payload = canonical_json([op.model_dump(mode="json") for op in operations])
     return await self.plans.save(task_id, operations, content_hash=sha256(payload).hexdigest())
@@ -206,7 +218,7 @@ async def build(self, task_id: UUID, selected: Sequence[DifferenceVersionRef]) -
 
 Run: `cd backend && uv run pytest tests/unit/governance/test_plan_builder.py -q`
 
-Expected: all difference mappings, stale versions, analysis gate, cross-task, disallowed action, and allowed-field tests PASS.
+Expected: AI/manual proposal mapping, stale and superseded versions, mandatory-analysis gate, cross-task, unresolved manual review, disallowed action, and allowed-field tests PASS.
 
 ```bash
 git add backend/app/governance backend/tests/unit/governance/test_plan_builder.py
@@ -290,24 +302,26 @@ git add backend/app/governance/risk_policy.py backend/app/governance/dependency_
 git commit -m "feat: order and assess governance operations"
 ```
 
-### Task 4: Expose preview, confirmation, and preflight
+### Task 4: Expose preview, optional explanation, confirmation, and preflight
 
 **Files:**
 - Create: `backend/app/executions/preflight.py`
+- Create: `backend/app/governance/plan_explainer.py`
 - Create: `backend/app/api/routes/execution_batches.py`
 - Modify: `backend/app/main.py`
 - Test: `backend/tests/integration/api/test_execution_preview.py`
 
 **Interfaces:**
-- Consumes: selected difference/version refs, `Idempotency-Key`, confirmation plan version, high-risk acknowledgement, backend operator.
-- Produces: preview counts, stored plan, `PreflightResult`, confirmed batch or 409 conflicts.
+- Consumes: selected proposal/version refs, `Idempotency-Key`, confirmation plan version, high-risk acknowledgement, backend operator.
+- Produces: deterministic preview counts/before/after, optional tokenized model explanation, stored plan, `PreflightResult`, confirmed batch or 409 conflicts.
 
 - [ ] **Step 1: Write drift and operator tests**
 
 ```python
 def test_preview_counts_exact_operations(client, selected_refs) -> None:
     body = client.post("/api/execution-batches/preview", json={"task_id": TASK_ID, "differences": selected_refs}).json()
-    assert body["counts"] == {"create": 1, "update": 2, "move": 1, "disable": 0, "skip": 0, "manual_review": 0}
+    assert body["counts"] == {"create": 1, "update": 2, "move": 1, "disable": 0, "skip": 0}
+    assert body["proposal_sources"] == {"ai": 2, "operator": 2}
 
 def test_client_operator_id_is_rejected(client, valid_confirmation) -> None:
     response = client.post("/api/execution-batches", json={**valid_confirmation, "operator_id": "spoofed"})
@@ -317,6 +331,12 @@ def test_changed_before_value_returns_conflict(client, drifted_confirmation) -> 
     response = client.post("/api/execution-batches", json=drifted_confirmation)
     assert response.status_code == 409
     assert response.json()["conflicts"][0]["code"] == "before_value_drift"
+
+def test_explanation_failure_does_not_block_confirmation(client, preview, failing_model) -> None:
+    explanation = client.post(f"/api/governance-plans/{preview['plan_id']}/explanation")
+    assert explanation.status_code == 503
+    confirmed = client.post("/api/execution-batches", json=preview["confirmation"])
+    assert confirmed.status_code == 202
 ```
 
 - [ ] **Step 2: Run preview/preflight tests**
@@ -330,7 +350,7 @@ Expected: FAIL because endpoints and preflight are absent.
 ```python
 class PreflightConflict(BaseModel):
     operation_id: UUID
-    code: Literal["target_version_drift", "before_value_drift", "dependency_missing", "mapping_conflict", "ineligible"]
+    code: Literal["proposal_version_drift", "difference_version_drift", "target_version_drift", "before_value_drift", "dependency_missing", "mapping_conflict", "ineligible"]
     message: str
 
 class PreflightResult(BaseModel):
@@ -359,14 +379,18 @@ class ConfirmBatchRequest(BaseModel):
 
 @router.post("/execution-batches", status_code=202)
 async def confirm_batch(body: ConfirmBatchRequest, operator=Depends(current_operator), service=Depends(get_execution_service)):
-    return await service.confirm(body, operator_id=operator.id)
+    return await service.confirm(body, confirmed_by=operator.id, independent_reviewer_id=None)
 ```
 
-- [ ] **Step 5: Verify and commit**
+- [ ] **Step 5: Add optional shared-model plan explanation**
+
+Use the existing `HttpLLMProvider`, `TaskTokenizationContext`, and `generate-governance-plan` Skill with a plan-explanation schema containing only summary, risk explanation, and attention points. The Agent receives read-only proposal and execution context and cannot return operations. Persist safe provenance separately from the immutable deterministic plan. A provider or validation failure returns an unavailable explanation state and never changes plan validity.
+
+- [ ] **Step 6: Verify and commit**
 
 Run: `cd backend && uv run pytest tests/integration/api/test_execution_preview.py -q`
 
-Expected: exact counts, stale plan, target drift, before-value drift, conflict, high-risk acknowledgement, idempotency, and spoofed operator tests PASS.
+Expected: exact proposal/source counts, stale proposal/plan/target detection, before-value drift, conflict, high-risk acknowledgement, non-blocking explanation failure, idempotency, and spoofed identity tests PASS.
 
 ```bash
 git add backend/app/executions/preflight.py backend/app/api/routes/execution_batches.py backend/app/main.py backend/tests/integration/api/test_execution_preview.py
@@ -621,14 +645,14 @@ git commit -m "feat: expose execution audit and retries"
 - Create: `backend/tests/fixtures/execution_cases.py`
 
 **Interfaces:**
-- Consumes: synthetic task with analyzed differences from modules 1-4.
-- Produces: regression proof from selection through verified derived CSV and immutable history.
+- Consumes: synthetic task with AI and operator-authored `pending_execution` proposals from modules 1-4 plus `ai-new-ui`.
+- Produces: regression proof from proposal selection and batch review through verified derived CSV and immutable history.
 
 - [ ] **Step 1: Write the vertical-slice test**
 
 ```python
-async def test_selected_differences_produce_verified_csv(app_client, complete_analyzed_task) -> None:
-    preview = await app_client.post("/api/execution-batches/preview", json=complete_analyzed_task.selection)
+async def test_reviewed_proposals_produce_verified_csv(app_client, complete_proposed_task) -> None:
+    preview = await app_client.post("/api/execution-batches/preview", json=complete_proposed_task.selection)
     confirmed = await app_client.post("/api/execution-batches", json={
         "plan_id": preview.json()["plan_id"], "plan_version": preview.json()["plan_version"],
         "high_risk_acknowledged": True,
@@ -637,7 +661,7 @@ async def test_selected_differences_produce_verified_csv(app_client, complete_an
     assert result.status == "succeeded"
     downloaded = await app_client.get(f"/api/execution-records/{result.id}/target-version")
     assert downloaded.status_code == 200
-    assert complete_analyzed_task.original_target.read_bytes() == complete_analyzed_task.original_bytes
+    assert complete_proposed_task.original_target.read_bytes() == complete_proposed_task.original_bytes
 ```
 
 - [ ] **Step 2: Run all execution tests**
@@ -657,4 +681,4 @@ git commit -m "test: verify versioned governance execution"
 
 Run: `cd backend && uv run pytest tests/unit/governance tests/integration/executions tests/integration/api/test_execution_preview.py tests/integration/api/test_execution_records.py tests/e2e/test_governance_execution.py -q && uv run ruff check . && uv run mypy app`
 
-Expected: only exact analyzed versions execute; operator spoofing is impossible; all mutations produce derived CSV versions; partial failure and retries retain append-only facts; verification failures never appear successful.
+Expected: only exact current reviewed proposal versions execute; AI and manual proposals share one deterministic policy path; unresolved manual review is excluded; optional LLM explanation cannot block execution; identity spoofing is impossible; all mutations produce derived CSV versions; partial failure and retries retain append-only facts; verification failures never appear successful.

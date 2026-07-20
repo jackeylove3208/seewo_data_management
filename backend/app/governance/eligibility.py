@@ -2,12 +2,12 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.repositories.analyses import AnalysisRepository
+from app.repositories.analyses import CURRENT_ANALYSIS_VERSION, AnalysisRepository
 from app.repositories.differences import DifferenceRepository
 from app.schemas.governance import (
     AnalysisResult,
     AnalysisStatus,
-    RecommendedAction,
+    CauseAnalysisV2,
 )
 
 
@@ -26,12 +26,17 @@ class ExecutionEligibility:
             raise ExecutionIneligible("difference does not exist")
         if difference.version != version:
             raise ExecutionIneligible("analysis must match the current difference version")
-        result = await self.analyses.get_for_difference(difference.id, difference.version)
+        result = await self.analyses.get_for_difference(
+            difference.id,
+            difference.version,
+            CURRENT_ANALYSIS_VERSION,
+        )
         if (
             result is None
             or result.status is not AnalysisStatus.SUCCEEDED
             or result.output is None
-            or result.output.recommended_action is RecommendedAction.MANUAL_REVIEW
+            or not isinstance(result.output, CauseAnalysisV2)
+            or result.output.manual_only
         ):
             raise ExecutionIneligible("valid analysis for current difference version is required")
         return result

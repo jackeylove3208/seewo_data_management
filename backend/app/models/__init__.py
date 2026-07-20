@@ -2,6 +2,7 @@ from app.models.analyses import AnalysisRecord
 from app.models.base import Base
 from app.models.differences import DifferenceRecord
 from app.models.mappings import EntityMapping, TargetEntityEmbedding
+from app.models.proposals import GovernanceProposalRecord
 from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import (
     CanonicalEntityRecord,
@@ -10,6 +11,7 @@ from app.models.snapshots import (
     Snapshot,
     SourceFile,
 )
+from app.models.workflow import WorkflowStageRun
 
 __all__ = [
     "Base",
@@ -17,10 +19,12 @@ __all__ = [
     "CanonicalEntityRecord",
     "DifferenceRecord",
     "EntityMapping",
+    "GovernanceProposalRecord",
     "IngestionIssueRecord",
     "RawSnapshotRow",
     "ReconciliationTask",
     "Snapshot",
     "SourceFile",
     "TargetEntityEmbedding",
+    "WorkflowStageRun",
 ]

@@ -12,9 +12,11 @@ from app.schemas.governance import (
     AnalysisResult,
     AnalysisStatus,
     CauseAnalysis,
+    CauseAnalysisV2,
 )
 
 DEFAULT_ANALYSIS_VERSION = "analysis-v1"
+CURRENT_ANALYSIS_VERSION = "analysis-v2"
 
 __all__ = ["AnalysisRepository", "ImmutableAnalysisError"]
 
@@ -49,7 +51,7 @@ class AnalysisRepository:
     async def save_success(
         self,
         difference: DifferenceItem,
-        output: CauseAnalysis,
+        output: CauseAnalysis | CauseAnalysisV2,
         provenance: AnalysisProvenance,
         *,
         attempt_count: int = 1,
@@ -87,7 +89,7 @@ class AnalysisRepository:
     async def save_manual_review(
         self,
         difference: DifferenceItem,
-        output: CauseAnalysis,
+        output: CauseAnalysis | CauseAnalysisV2,
         provenance: AnalysisProvenance,
         *,
         attempt_count: int,
@@ -109,7 +111,7 @@ class AnalysisRepository:
         difference: DifferenceItem,
         *,
         status: AnalysisStatus,
-        output: CauseAnalysis | None,
+        output: CauseAnalysis | CauseAnalysisV2 | None,
         failure_code: str | None,
         attempt_count: int,
         provenance: AnalysisProvenance,
@@ -134,6 +136,7 @@ class AnalysisRepository:
             skill_version=provenance.skill_version,
             prompt_version=provenance.prompt_version,
             tool_trace_ids=list(provenance.tool_trace_ids),
+            gateway_request_ids=list(provenance.gateway_request_ids),
             usage=provenance.usage.model_dump(mode="json"),
             generated_at=provenance.generated_at,
         )
@@ -152,7 +155,12 @@ class AnalysisRepository:
 
     @staticmethod
     def _result(record: AnalysisRecord) -> AnalysisResult:
-        output = CauseAnalysis.model_validate(record.output) if record.output is not None else None
+        output_model = (
+            CauseAnalysisV2
+            if record.analysis_version == CURRENT_ANALYSIS_VERSION
+            else CauseAnalysis
+        )
+        output = output_model.model_validate(record.output) if record.output is not None else None
         generated_at = record.generated_at
         if generated_at.tzinfo is None:
             generated_at = generated_at.replace(tzinfo=UTC)
@@ -172,6 +180,7 @@ class AnalysisRepository:
                 skill_version=record.skill_version,
                 prompt_version=record.prompt_version,
                 tool_trace_ids=tuple(record.tool_trace_ids),
+                gateway_request_ids=tuple(record.gateway_request_ids),
                 usage=record.usage,
                 generated_at=generated_at,
             ),
