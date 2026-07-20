@@ -14,7 +14,6 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 DEFAULT_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 
 
