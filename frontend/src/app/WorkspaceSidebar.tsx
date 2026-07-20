@@ -87,19 +87,16 @@ export function WorkspaceSidebar({
         </div>
 
         <div className="workspace-primary-actions" aria-label="主要操作">
-          <button
+          <NavLink
             className="workspace-agent-entry"
-            type="button"
-            aria-label="新建对话，即将开放"
-            title="新建对话，即将开放"
-            disabled
+            to="/conversations/new"
+            aria-label="新建对话"
+            title="新建对话"
+            onClick={onMobileClose}
           >
             <MessageSquarePlus size={18} />
-            <span className="workspace-label workspace-command-copy">
-              <strong>新建对话</strong>
-              <small>即将开放</small>
-            </span>
-          </button>
+            <span className="workspace-label">新建对话</span>
+          </NavLink>
           <NavLink className="workspace-new-task" to="/tasks/new" aria-label="外部数据同步" title="外部数据同步" onClick={onMobileClose}>
             <RefreshCw size={18} />
             <span className="workspace-label">外部数据同步</span>

@@ -117,9 +117,25 @@ test("opens history, returns, and selects one issue independently", async ({ pag
   await expect(page.getByLabel("选择张三的手机号")).not.toBeChecked();
 });
 
-test("creates a task from manual external data sync", async ({ page }, testInfo) => {
+test("reveals only manual external data sync after explicit selection", async ({ page }) => {
+  await page.goto("/tasks/new");
+
+  await expect(page.getByRole("heading", { name: "外部数据同步" })).toBeVisible();
+  await expect(page.getByText(/自动同步/)).toHaveCount(0);
+  await expect(page.getByLabel("选择三方系统 CSV")).toHaveCount(0);
+  await page.getByRole("button", { name: "手动同步" }).click();
+  await expect(page.getByLabel("选择三方系统 CSV")).toBeVisible();
+  await expect(page.getByLabel("选择希沃魔方 CSV")).toBeVisible();
+});
+
+test("creates a task from a conversation handoff and manual external data sync", async ({ page }, testInfo) => {
   await page.route("**/health/ready", async (route) => route.fulfill({ json: { status: "ok" } }));
   let uploadCount = 0;
+  let taskCreateCount = 0;
+  let releaseTaskCreation!: () => void;
+  const taskCreationGate = new Promise<void>((resolve) => {
+    releaseTaskCreation = resolve;
+  });
   await page.route("**/api/uploads", async (route) => {
     uploadCount += 1;
     await route.fulfill({
@@ -133,34 +149,40 @@ test("creates a task from manual external data sync", async ({ page }, testInfo)
       },
     });
   });
-  await page.route("**/api/reconciliation-tasks", async (route) => route.fulfill({
-    status: 202,
-    json: {
-      id: "task-created",
-      tenant_id: "demo-school",
-      scope_id: "七年级",
-      snapshot_mode: "partial",
-      status: "ready",
-      stage: "analysis",
-      entity_types: ["teacher", "student"],
-      snapshots: {
-        authoritative: { accepted: 2, normalized_with_warning: 0, quarantined: 0, rejected: 0, quarantine_available: false },
-        target: { accepted: 2, normalized_with_warning: 0, quarantined: 0, rejected: 0, quarantine_available: false },
+  await page.route("**/api/reconciliation-tasks", async (route) => {
+    taskCreateCount += 1;
+    await taskCreationGate;
+    await route.fulfill({
+      status: 202,
+      json: {
+        id: "task-created",
+        tenant_id: "demo-school",
+        scope_id: "七年级",
+        snapshot_mode: "partial",
+        status: "ready",
+        stage: "analysis",
+        entity_types: ["teacher", "student"],
+        snapshots: {
+          authoritative: { accepted: 2, normalized_with_warning: 0, quarantined: 0, rejected: 0, quarantine_available: false },
+          target: { accepted: 2, normalized_with_warning: 0, quarantined: 0, rejected: 0, quarantine_available: false },
+        },
+        error: null,
       },
-      error: null,
-    },
-  }));
+    });
+  });
 
-  await page.goto("/tasks/new");
+  await page.goto("/conversations/new");
+  await expect(page.getByRole("heading", { name: "新建对话" })).toBeVisible();
+  await page.getByLabel("对账目标").fill("只核对七年级的老师和学生");
+  await page.getByRole("button", { name: "发送" }).click();
+  await expect(page.getByLabel("任务名称")).toHaveValue("七年级教师、学生核对");
+  await page.getByRole("button", { name: "继续外部数据同步" }).click();
+
+  await expect(page).toHaveURL(/\/tasks\/new$/);
   await expect(page.getByRole("heading", { name: "外部数据同步" })).toBeVisible();
-  await expect(page.locator(".sync-method-grid")).toHaveCSS("display", "grid");
-  await expect(page.getByLabel("选择三方系统 CSV")).toHaveCount(0);
-  await page.getByRole("button", { name: "手动同步" }).click();
-  await page.getByLabel("同步任务名称").fill("七年级教师、学生核对");
-  await page.getByLabel("核对范围").fill("七年级");
-  await page.getByRole("button", { name: "指定范围" }).click();
-  await page.getByLabel("部门").uncheck();
-  await page.getByLabel("班级").uncheck();
+  await expect(page.getByText(/自动同步/)).toHaveCount(0);
+  await expect(page.getByLabel("同步任务名称")).toHaveValue("七年级教师、学生核对");
+  await expect(page.getByLabel("核对范围")).toHaveValue("七年级");
 
   await page.getByLabel("选择三方系统 CSV").setInputFiles({ name: "third-party.csv", mimeType: "text/csv", buffer: csv });
   await page.getByLabel("选择希沃魔方 CSV").setInputFiles({ name: "mofa.csv", mimeType: "text/csv", buffer: csv });
@@ -186,7 +208,13 @@ test("creates a task from manual external data sync", async ({ page }, testInfo)
     }
   }
 
-  await page.getByRole("button", { name: "开始同步" }).click();
+  const startSync = page.getByRole("button", { name: "开始同步" });
+  await startSync.click();
+  await expect(startSync).toBeDisabled();
+  await expect.poll(() => taskCreateCount).toBe(1);
+  await startSync.dispatchEvent("click");
+  expect(taskCreateCount).toBe(1);
+  releaseTaskCreation();
 
   await expect(page).toHaveURL(/\/tasks\/task-created$/);
   if (testInfo.project.name === "mobile") {
@@ -220,9 +248,11 @@ test("uses a drawer for workspace navigation on mobile", async ({ page }, testIn
     expect(commandBox).not.toBeNull();
     expect(commandBox!.width).toBeGreaterThan(180);
   }
-  await page.getByRole("link", { name: /三方全校数据核对，已完成，9 个问题/ }).click();
+  await expect(page.getByRole("link", { name: "新建对话" })).toHaveAttribute("href", "/conversations/new");
+  await expect(page.getByRole("link", { name: "外部数据同步" })).toHaveAttribute("href", "/tasks/new");
+  await page.getByRole("link", { name: "新建对话" }).click();
 
-  await expect(page).toHaveURL(/\/tasks\/demo-001$/);
+  await expect(page).toHaveURL(/\/conversations\/new$/);
   await expect(sidebar).not.toHaveClass(/is-mobile-open/);
   await expect(sidebar).toHaveAttribute("aria-hidden", "true");
 });
@@ -329,9 +359,10 @@ test("runs from synthetic CSV upload through automatic analysis to an AI proposa
   });
 
   await page.goto("/tasks/new");
+  await page.getByRole("button", { name: "手动同步" }).click();
   await page.getByLabel("选择三方系统 CSV").setInputFiles({ name: "third-party.csv", mimeType: "text/csv", buffer: csv });
   await page.getByLabel("选择希沃魔方 CSV").setInputFiles({ name: "seewo.csv", mimeType: "text/csv", buffer: csv });
-  await page.getByRole("button", { name: "创建对账" }).click();
+  await page.getByRole("button", { name: "开始同步" }).click();
   await expect(page).toHaveURL(new RegExp(`/tasks/${taskId}$`));
   await expect(page.getByText("分析完成")).toBeVisible();
   await page.getByRole("button", { name: "查看教师问题" }).click();

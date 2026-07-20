@@ -5,6 +5,7 @@ import { afterEach, beforeEach, vi } from "vitest";
 
 import { ingestionApi } from "../../api/ingestion";
 import * as csvSummary from "./csvSummary";
+import { saveTaskIntentDraft, TASK_INTENT_STORAGE_KEY } from "./draftHandoff";
 import { TaskCreatePage } from "./TaskCreatePage";
 import type { CsvSummary } from "./csvSummary";
 
@@ -33,7 +34,10 @@ function summary(total: number): CsvSummary {
 }
 
 describe("manual external data sync", () => {
-  beforeEach(() => localStorage.clear());
+  beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+  });
   afterEach(() => vi.restoreAllMocks());
 
   it("reveals CSV controls only after manual sync is selected", async () => {
@@ -45,7 +49,7 @@ describe("manual external data sync", () => {
     );
 
     expect(screen.getByRole("heading", { name: "外部数据同步" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "系统自动同步，暂未开放" })).toBeDisabled();
+    expect(screen.queryByText(/自动同步/)).not.toBeInTheDocument();
     expect(screen.queryByLabelText("选择三方系统 CSV")).not.toBeInTheDocument();
     expect(screen.queryByText("任务草案")).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "对账要求" })).not.toBeInTheDocument();
@@ -57,8 +61,32 @@ describe("manual external data sync", () => {
     expect(screen.getByRole("button", { name: "开始同步" })).toBeDisabled();
   });
 
+  it("opens the manual form with task information handed off from a conversation", () => {
+    saveTaskIntentDraft({
+      title: "七年级教师核对",
+      scopeLabel: "七年级",
+      snapshotMode: "partial",
+      entityTypes: ["teacher"],
+    });
+
+    render(<MemoryRouter><TaskCreatePage /></MemoryRouter>);
+
+    expect(screen.getByLabelText("选择三方系统 CSV")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "同步任务名称" })).toHaveValue("七年级教师核对");
+    expect(screen.getByRole("textbox", { name: "核对范围" })).toHaveValue("七年级");
+    expect(screen.getByRole("button", { name: "指定范围" })).toHaveClass("active");
+    expect(screen.getByRole("checkbox", { name: "教师" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "学生" })).not.toBeChecked();
+  });
+
   it("creates a task and opens it after manual sync", async () => {
     const user = userEvent.setup();
+    saveTaskIntentDraft({
+      title: "待清理草案",
+      scopeLabel: "全校",
+      snapshotMode: "full",
+      entityTypes: ["organization_unit", "class", "teacher", "student"],
+    });
     vi.spyOn(ingestionApi, "upload").mockResolvedValue({
       id: "upload-id",
       source_role: "authoritative",
@@ -97,7 +125,6 @@ describe("manual external data sync", () => {
       </MemoryRouter>,
     );
 
-    await user.click(screen.getByRole("button", { name: "手动同步" }));
     await user.upload(screen.getByLabelText("选择三方系统 CSV"), new File([csv], "third-party.csv", { type: "text/csv" }));
     await user.upload(screen.getByLabelText("选择希沃魔方 CSV"), new File([csv], "mofa.csv", { type: "text/csv" }));
     const startButton = screen.getByRole("button", { name: "开始同步" });
@@ -106,6 +133,7 @@ describe("manual external data sync", () => {
 
     expect(await screen.findByText("/tasks/task-001")).toBeInTheDocument();
     expect(ingestionApi.createTask).toHaveBeenCalledTimes(1);
+    expect(sessionStorage.getItem(TASK_INTENT_STORAGE_KEY)).toBeNull();
   });
 
   it("ignores a stale source summary after a newer file is selected", async () => {
@@ -211,14 +239,38 @@ describe("manual external data sync", () => {
 
   it("preserves the completed draft when backend creation fails", async () => {
     const user = userEvent.setup();
-    vi.spyOn(ingestionApi, "upload").mockResolvedValue({
-      id: "upload-id",
-      source_role: "authoritative",
+    let uploadCount = 0;
+    vi.spyOn(ingestionApi, "upload").mockImplementation((_file, role) => Promise.resolve({
+      id: `upload-${++uploadCount}`,
+      source_role: role,
       original_name: "data.csv",
       size_bytes: csv.length,
       detected_encoding: "utf-8",
-    });
-    vi.spyOn(ingestionApi, "createTask").mockRejectedValue(new Error("后端暂时不可用"));
+    }));
+    vi.spyOn(ingestionApi, "createTask")
+      .mockRejectedValueOnce(new Error("后端暂时不可用"))
+      .mockResolvedValueOnce({
+        id: "task-retried",
+        tenant_id: "demo-school",
+        scope_id: "全校",
+        status: "ready",
+        stage: "analysis",
+        entity_types: ["organization_unit", "class", "teacher", "student"],
+        snapshots: {
+          authoritative: { accepted: 2, normalized_with_warning: 0, quarantined: 0, rejected: 0, quarantine_available: false },
+          target: { accepted: 2, normalized_with_warning: 0, quarantined: 0, rejected: 0, quarantine_available: false },
+        },
+        workflow: {
+          stage: "complete",
+          status: "succeeded",
+          attempt: 1,
+          processed: 2,
+          total: 2,
+          analysis: { total: 2, completed: 2, succeeded: 2, manual_review: 0, failed: 0 },
+          error: null,
+        },
+        error: null,
+      });
     render(
       <MemoryRouter>
         <TaskCreatePage />
@@ -238,8 +290,10 @@ describe("manual external data sync", () => {
 
     await user.click(screen.getByRole("button", { name: "开始同步" }));
     await waitFor(() => expect(ingestionApi.createTask).toHaveBeenCalledTimes(2));
-    const firstKey = vi.mocked(ingestionApi.createTask).mock.calls[0][1];
-    const retryKey = vi.mocked(ingestionApi.createTask).mock.calls[1][1];
+    const [firstRequest, firstKey] = vi.mocked(ingestionApi.createTask).mock.calls[0];
+    const [retryRequest, retryKey] = vi.mocked(ingestionApi.createTask).mock.calls[1];
+    expect(ingestionApi.upload).toHaveBeenCalledTimes(2);
+    expect(retryRequest).toEqual(firstRequest);
     expect(retryKey).toBe(firstKey);
   });
 
@@ -268,7 +322,46 @@ describe("manual external data sync", () => {
 
     await waitFor(() => expect(ingestionApi.createTask).toHaveBeenCalledTimes(1));
     expect(startButton).toBeDisabled();
+    expect(screen.getByLabelText("选择三方系统 CSV")).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "同步任务名称" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "指定范围" })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "教师" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "清空选择" })).toBeDisabled();
     await user.click(startButton);
     expect(ingestionApi.createTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts a new idempotent attempt after a failed draft is edited", async () => {
+    const user = userEvent.setup();
+    let uploadCount = 0;
+    vi.spyOn(ingestionApi, "upload").mockImplementation((_file, role) => Promise.resolve({
+      id: `edited-upload-${++uploadCount}`,
+      source_role: role,
+      original_name: "data.csv",
+      size_bytes: csv.length,
+      detected_encoding: "utf-8",
+    }));
+    vi.spyOn(ingestionApi, "createTask").mockRejectedValue(new Error("后端明确拒绝"));
+    render(<MemoryRouter><TaskCreatePage /></MemoryRouter>);
+
+    await user.click(screen.getByRole("button", { name: "手动同步" }));
+    await user.upload(screen.getByLabelText("选择三方系统 CSV"), new File([csv], "third-party.csv", { type: "text/csv" }));
+    await user.upload(screen.getByLabelText("选择希沃魔方 CSV"), new File([csv], "mofa.csv", { type: "text/csv" }));
+    const startButton = screen.getByRole("button", { name: "开始同步" });
+    await waitFor(() => expect(startButton).toBeEnabled());
+    await user.click(startButton);
+    expect(await screen.findByText("后端明确拒绝")).toBeInTheDocument();
+
+    const scope = screen.getByRole("textbox", { name: "核对范围" });
+    await user.clear(scope);
+    await user.type(scope, "高中部");
+    await user.click(startButton);
+    await waitFor(() => expect(ingestionApi.createTask).toHaveBeenCalledTimes(2));
+
+    const [firstRequest, firstKey] = vi.mocked(ingestionApi.createTask).mock.calls[0];
+    const [secondRequest, secondKey] = vi.mocked(ingestionApi.createTask).mock.calls[1];
+    expect(ingestionApi.upload).toHaveBeenCalledTimes(4);
+    expect(secondRequest).not.toEqual(firstRequest);
+    expect(secondKey).not.toBe(firstKey);
   });
 });

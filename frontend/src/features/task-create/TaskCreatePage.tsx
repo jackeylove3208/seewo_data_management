@@ -1,10 +1,10 @@
 import { Alert, Button, Checkbox, Spin } from "antd";
 import {
   Check,
-  CloudCog,
   FileSpreadsheet,
   FileUp,
   Paperclip,
+  RefreshCw,
 } from "lucide-react";
 import { useRef, useState, type ChangeEvent } from "react";
 import { useNavigate } from "react-router-dom";
@@ -13,8 +13,9 @@ import { entityLabels } from "../../data/demoDifferences";
 import type { EntityType } from "../../types/domain";
 import { createInitialDraft } from "./assistant";
 import { summarizeCsv } from "./csvSummary";
-import { createTaskFromDraft } from "./taskCreationService";
-import type { DraftAttachment, TaskDraft } from "./types";
+import { clearTaskIntentDraft, loadTaskIntentDraft } from "./draftHandoff";
+import { createTaskAttempt, type TaskCreationAttempt } from "./taskCreationService";
+import type { DraftAttachment, ManualSyncDraft } from "./types";
 import { isDraftReady } from "./types";
 
 const entityTypes: EntityType[] = ["organization_unit", "class", "teacher", "student"];
@@ -30,19 +31,24 @@ function AttachmentPicker({
   inputLabel,
   tone,
   attachment,
+  disabled,
   onChange,
 }: {
   label: string;
   inputLabel: string;
   tone: "source" | "target";
   attachment?: DraftAttachment;
+  disabled?: boolean;
   onChange: (file: File) => void;
 }) {
+  const statusId = `sync-${tone}-file-status`;
   return (
     <label className={`sync-attachment attachment-${tone}`}>
       <input
         accept=".csv,text/csv"
         aria-label={inputLabel}
+        aria-describedby={statusId}
+        disabled={disabled}
         type="file"
         onChange={(event: ChangeEvent<HTMLInputElement>) => {
           const file = event.target.files?.[0];
@@ -52,7 +58,9 @@ function AttachmentPicker({
       <span className="attachment-icon">{attachment?.summary ? <Check size={16} /> : attachment ? <Spin size="small" /> : <Paperclip size={16} />}</span>
       <span className="attachment-copy">
         <strong>{attachment?.file.name ?? label}</strong>
-        <small>{attachment?.error ?? (attachment?.summary ? `${attachment.summary.total} 条数据` : "选择 CSV")}</small>
+        <small id={statusId} role={attachment?.error ? "alert" : "status"}>
+          {attachment?.error ?? (attachment?.summary ? `${attachment.summary.total} 条数据` : "选择 CSV")}
+        </small>
       </span>
       {attachment?.summary && <FileSpreadsheet size={16} />}
     </label>
@@ -61,11 +69,12 @@ function AttachmentPicker({
 
 export function TaskCreatePage() {
   const navigate = useNavigate();
-  const [syncMethod, setSyncMethod] = useState<"manual" | null>(null);
-  const [draft, setDraft] = useState<TaskDraft>(() => createInitialDraft());
+  const handedOffDraft = useRef(loadTaskIntentDraft()).current;
+  const [syncMethod, setSyncMethod] = useState<"manual" | null>(() => handedOffDraft ? "manual" : null);
+  const [draft, setDraft] = useState<ManualSyncDraft>(() => handedOffDraft ?? createInitialDraft());
   const [submissionState, setSubmissionState] = useState<SubmissionState>("idle");
   const [submitError, setSubmitError] = useState<string>();
-  const idempotencyKey = useRef(sessionKey());
+  const attemptRef = useRef<TaskCreationAttempt | undefined>(undefined);
   const fileRequestTokens = useRef({ source: 0, target: 0 });
 
   async function prepareFile(role: "source" | "target", file: File) {
@@ -98,8 +107,12 @@ export function TaskCreatePage() {
     setSubmissionState("submitting");
     setSubmitError(undefined);
     try {
-      const task = await createTaskFromDraft(draft, idempotencyKey.current);
+      if (!attemptRef.current || attemptRef.current.draft !== draft) {
+        attemptRef.current = createTaskAttempt(draft, sessionKey());
+      }
+      const task = await attemptRef.current.run();
       setSubmissionState("created");
+      clearTaskIntentDraft();
       navigate(`/tasks/${task.id}`);
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : "任务创建失败，请稍后重试");
@@ -108,10 +121,12 @@ export function TaskCreatePage() {
   }
 
   const ready = isDraftReady(draft);
+  const isSubmitting = submissionState === "submitting";
 
   return (
     <main className="page-shell external-sync-page">
       <header className="sync-page-heading">
+        <span className="page-heading-mark sync-heading-mark"><RefreshCw size={20} /></span>
         <div>
           <h1>外部数据同步</h1>
           <p>通过手动文件同步创建对账任务，后续处理流程保持不变。</p>
@@ -125,20 +140,17 @@ export function TaskCreatePage() {
             <p>先选择数据进入方式，再配置本次同步范围。</p>
           </div>
         </div>
-        <div className="sync-method-grid">
+        <div className="sync-method-entry">
           <button
             className={syncMethod === "manual" ? "sync-method active" : "sync-method"}
             type="button"
             aria-label="手动同步"
             aria-pressed={syncMethod === "manual"}
+            disabled={isSubmitting}
             onClick={() => setSyncMethod("manual")}
           >
             <FileUp size={20} />
             <span><strong>手动同步</strong><small>上传三方系统与希沃魔方 CSV</small></span>
-          </button>
-          <button className="sync-method" type="button" aria-label="系统自动同步，暂未开放" disabled>
-            <CloudCog size={20} />
-            <span><strong>系统自动同步</strong><small>暂未开放</small></span>
           </button>
         </div>
       </section>
@@ -146,25 +158,25 @@ export function TaskCreatePage() {
       {syncMethod === "manual" && (
         <section className="manual-sync-form" aria-label="手动同步配置">
           <div className="sync-attachments" aria-label="任务数据">
-            <AttachmentPicker label="三方系统数据" inputLabel="选择三方系统 CSV" tone="source" attachment={draft.source} onChange={(file) => void prepareFile("source", file)} />
-            <AttachmentPicker label="希沃魔方数据" inputLabel="选择希沃魔方 CSV" tone="target" attachment={draft.target} onChange={(file) => void prepareFile("target", file)} />
+            <AttachmentPicker label="三方系统数据" inputLabel="选择三方系统 CSV" tone="source" attachment={draft.source} disabled={isSubmitting} onChange={(file) => void prepareFile("source", file)} />
+            <AttachmentPicker label="希沃魔方数据" inputLabel="选择希沃魔方 CSV" tone="target" attachment={draft.target} disabled={isSubmitting} onChange={(file) => void prepareFile("target", file)} />
           </div>
 
           <div className="sync-settings-grid">
             <label className="draft-field">
               <span>任务名称</span>
-              <input aria-label="同步任务名称" value={draft.title} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} />
+              <input aria-label="同步任务名称" disabled={isSubmitting} value={draft.title} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} />
             </label>
             <label className="draft-field">
               <span>核对范围</span>
-              <input aria-label="核对范围" value={draft.scopeLabel} onChange={(event) => setDraft((current) => ({ ...current, scopeLabel: event.target.value }))} />
+              <input aria-label="核对范围" disabled={isSubmitting} value={draft.scopeLabel} onChange={(event) => setDraft((current) => ({ ...current, scopeLabel: event.target.value }))} />
             </label>
 
             <fieldset className="draft-fieldset">
               <legend>处理模式</legend>
               <div className="draft-segmented">
-                <button className={draft.snapshotMode === "full" ? "active" : ""} type="button" onClick={() => setDraft((current) => ({ ...current, snapshotMode: "full" }))}>全量对账</button>
-                <button className={draft.snapshotMode === "partial" ? "active" : ""} type="button" onClick={() => setDraft((current) => ({ ...current, snapshotMode: "partial" }))}>指定范围</button>
+                <button className={draft.snapshotMode === "full" ? "active" : ""} type="button" aria-pressed={draft.snapshotMode === "full"} disabled={isSubmitting} onClick={() => setDraft((current) => ({ ...current, snapshotMode: "full" }))}>全量对账</button>
+                <button className={draft.snapshotMode === "partial" ? "active" : ""} type="button" aria-pressed={draft.snapshotMode === "partial"} disabled={isSubmitting} onClick={() => setDraft((current) => ({ ...current, snapshotMode: "partial" }))}>指定范围</button>
               </div>
             </fieldset>
 
@@ -176,11 +188,12 @@ export function TaskCreatePage() {
                     key={entityType}
                     aria-label={entityLabels[entityType]}
                     checked={draft.entityTypes.includes(entityType)}
+                    disabled={isSubmitting}
                     onChange={(event) => toggleType(entityType, event.target.checked)}
                   >{entityLabels[entityType]}</Checkbox>
                 ))}
               </div>
-              <button className="text-button" type="button" onClick={() => setDraft((current) => ({ ...current, entityTypes: [] }))}>清空选择</button>
+              <button className="text-button" type="button" disabled={isSubmitting} onClick={() => setDraft((current) => ({ ...current, entityTypes: [] }))}>清空选择</button>
             </fieldset>
           </div>
 
@@ -195,8 +208,8 @@ export function TaskCreatePage() {
             className="sync-start-button"
             type="primary"
             size="large"
-            loading={submissionState === "submitting"}
-            disabled={!ready || submissionState === "submitting"}
+            loading={isSubmitting}
+            disabled={!ready || isSubmitting}
             onClick={() => void createTask()}
           >
             开始同步
