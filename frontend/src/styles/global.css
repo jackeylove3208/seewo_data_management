@@ -2735,7 +2735,6 @@ body {
 }
 
 .conversation-surface,
-.intent-draft-section,
 .sync-methods,
 .manual-sync-form {
   border-block: 1px solid var(--v2-line);
@@ -2870,72 +2869,6 @@ body {
   color: #8b9591;
   background: #e1e6e4;
   cursor: not-allowed;
-}
-
-.intent-draft-section {
-  padding: 24px;
-}
-
-.intent-draft-heading {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  margin-bottom: 2px;
-}
-
-.intent-draft-heading > span {
-  display: grid;
-  width: 32px;
-  height: 32px;
-  place-items: center;
-  border-radius: 6px;
-  color: var(--v2-conversation);
-  background: var(--v2-conversation-soft);
-}
-
-.intent-draft-heading h2,
-.intent-draft-heading p {
-  margin: 0;
-}
-
-.intent-draft-heading h2 {
-  font-size: 15px;
-}
-
-.intent-draft-heading p {
-  margin-top: 2px;
-  color: var(--v2-ink-faint);
-  font-size: 10px;
-}
-
-.intent-fields-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 18px;
-}
-
-.intent-fields-grid > * {
-  min-width: 0;
-}
-
-.intent-draft-action {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  margin-top: 22px;
-  padding-top: 18px;
-  border-top: 1px solid var(--v2-line);
-}
-
-.intent-draft-action > span {
-  color: var(--v2-ink-soft);
-  font-size: 11px;
-}
-
-.intent-draft-action .ant-btn-primary {
-  background: var(--v2-conversation);
-  box-shadow: none;
 }
 
 .sync-heading-mark {
@@ -3204,26 +3137,15 @@ body {
     padding: 12px;
   }
 
-  .intent-draft-section,
   .sync-methods,
   .manual-sync-form {
     padding: 18px 16px;
   }
 
-  .intent-fields-grid,
   .sync-attachments,
   .sync-settings-grid,
   .draft-data-summary {
     grid-template-columns: 1fr;
-  }
-
-  .intent-draft-action {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .intent-draft-action .ant-btn {
-    width: 100%;
   }
 
   .sync-method {

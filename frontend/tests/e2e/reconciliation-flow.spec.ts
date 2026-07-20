@@ -135,7 +135,19 @@ test("reveals only manual external data sync after explicit selection", async ({
   await expect(page.getByLabel("选择希沃魔方 CSV")).toBeVisible();
 });
 
-test("creates a task from a conversation handoff and manual external data sync", async ({ page }, testInfo) => {
+test("keeps new conversation focused on agent chat", async ({ page }) => {
+  await page.goto("/conversations/new");
+
+  await expect(page.getByRole("heading", { name: "新建对话" })).toBeVisible();
+  await page.getByLabel("对账目标").fill("只核对七年级的老师和学生");
+  await page.getByRole("button", { name: "发送" }).click();
+  await expect(page.getByText(/已记录.*同步需求/)).toBeVisible();
+  await expect(page.getByText("任务草案", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "继续外部数据同步" })).toHaveCount(0);
+  await expect(page).toHaveURL(/\/conversations\/new$/);
+});
+
+test("creates a task from independent manual external data sync", async ({ page }, testInfo) => {
   await page.route("**/health/ready", async (route) => route.fulfill({ json: { status: "ok" } }));
   let uploadCount = 0;
   let taskCreateCount = 0;
@@ -164,11 +176,11 @@ test("creates a task from a conversation handoff and manual external data sync",
       json: {
         id: "task-created",
         tenant_id: "demo-school",
-        scope_id: "七年级",
-        snapshot_mode: "partial",
+        scope_id: "全校",
+        snapshot_mode: "full",
         status: "ready",
         stage: "analysis",
-        entity_types: ["teacher", "student"],
+        entity_types: ["organization_unit", "class", "teacher", "student"],
         snapshots: {
           authoritative: { accepted: 2, normalized_with_warning: 0, quarantined: 0, rejected: 0, quarantine_available: false },
           target: { accepted: 2, normalized_with_warning: 0, quarantined: 0, rejected: 0, quarantine_available: false },
@@ -178,18 +190,12 @@ test("creates a task from a conversation handoff and manual external data sync",
     });
   });
 
-  await page.goto("/conversations/new");
-  await expect(page.getByRole("heading", { name: "新建对话" })).toBeVisible();
-  await page.getByLabel("对账目标").fill("只核对七年级的老师和学生");
-  await page.getByRole("button", { name: "发送" }).click();
-  await expect(page.getByLabel("任务名称")).toHaveValue("七年级教师、学生核对");
-  await page.getByRole("button", { name: "继续外部数据同步" }).click();
-
-  await expect(page).toHaveURL(/\/tasks\/new$/);
+  await page.goto("/tasks/new");
   await expect(page.getByRole("heading", { name: "外部数据同步" })).toBeVisible();
   await expect(page.getByText(/自动同步/)).toHaveCount(0);
-  await expect(page.getByLabel("同步任务名称")).toHaveValue("七年级教师、学生核对");
-  await expect(page.getByLabel("核对范围")).toHaveValue("七年级");
+  await page.getByRole("button", { name: "手动同步" }).click();
+  await expect(page.getByLabel("同步任务名称")).toHaveValue("全校组织数据核对");
+  await expect(page.getByLabel("核对范围")).toHaveValue("全校");
 
   await page.getByLabel("选择三方系统 CSV").setInputFiles({ name: "third-party.csv", mimeType: "text/csv", buffer: csv });
   await page.getByLabel("选择希沃魔方 CSV").setInputFiles({ name: "mofa.csv", mimeType: "text/csv", buffer: csv });
@@ -227,7 +233,7 @@ test("creates a task from a conversation handoff and manual external data sync",
   if (testInfo.project.name === "mobile") {
     await page.getByRole("button", { name: "打开导航" }).click();
   }
-  await expect(page.getByRole("link", { name: /七年级教师、学生核对/ })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("link", { name: /全校组织数据核对/ })).toHaveAttribute("aria-current", "page");
 });
 
 test("collapses the desktop workspace without hiding the main task", async ({ page }, testInfo) => {

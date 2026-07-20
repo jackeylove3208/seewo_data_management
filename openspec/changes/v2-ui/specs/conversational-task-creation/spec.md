@@ -1,57 +1,44 @@
 ## ADDED Requirements
 
-### Requirement: Create a task draft through a conversation
-The Web application SHALL provide an AI-style conversation that collects reconciliation scope, entity types, processing mode, and a task title into an independent structured draft without collecting CSV files or creating a reconciliation task.
+### Requirement: Provide an Agent-only conversation
+The Web application SHALL provide an AI-style conversation that renders Agent messages, user messages, pending feedback, and a message composer without rendering task-draft fields, entity controls, processing-mode controls, CSV selectors, or a synchronization handoff command.
 
-#### Scenario: User describes a reconciliation goal
-- **WHEN** the user describes a school scope and the entities to reconcile
-- **THEN** the assistant updates the structured draft and asks only for required task information that remains missing
+#### Scenario: User opens a new conversation
+- **WHEN** the user navigates to “新建对话”
+- **THEN** the page shows the Agent conversation and composer without a visible “任务草案” region or a “继续外部数据同步” action
 
-#### Scenario: Conversation draft is displayed
-- **WHEN** the assistant has recognized any task information
-- **THEN** the conversation presents the current task draft separately from chat text without showing CSV selectors
+#### Scenario: User describes a synchronization goal
+- **WHEN** the user sends a message describing scope or entity types
+- **THEN** the Agent responds in the conversation without navigating away, persisting a handoff, or exposing editable task configuration
 
-### Requirement: Hand off a valid conversational draft
-The conversation SHALL provide an explicit command that transfers a valid task draft to “外部数据同步” for CSV selection and task creation.
+### Requirement: Maintain private multi-turn context
+The conversation SHALL retain validated recognized title, scope, entity types, and processing mode as private component state for subsequent Agent turns and SHALL NOT display, directly edit, persist, hand off, or submit that state in the current UI.
 
-#### Scenario: Task draft becomes valid
-- **WHEN** title, scope, entity types, and processing mode are valid
-- **THEN** the conversation enables the handoff command and identifies external data sync as the next step
+#### Scenario: User refines a previous request
+- **WHEN** a later message relies on valid intent recognized in an earlier message
+- **THEN** the assistant receives that recognized intent as context while the page continues to show only the conversation
 
-#### Scenario: User continues to external data sync
-- **WHEN** the user activates the handoff command
-- **THEN** the application opens manual external data sync with the exact draft values available for editing
+#### Scenario: User starts a fresh conversation
+- **WHEN** the user opens a new conversation while a legacy handoff payload exists
+- **THEN** the application clears the stale payload without changing task history
 
-#### Scenario: Task draft is incomplete
-- **WHEN** any required non-file task field is absent or invalid
-- **THEN** the handoff command remains unavailable and the assistant identifies the missing information
-
-### Requirement: Recover from assistant failures without losing the draft
-The conversation SHALL preserve recognized task information when assistant response validation or processing fails and SHALL allow the user to retry or edit the draft.
+### Requirement: Recover from assistant failures
+The conversation SHALL preserve its prior validated internal context when assistant response validation or processing fails and SHALL allow another message after displaying a recoverable error.
 
 #### Scenario: Assistant output is invalid
 - **WHEN** the assistant adapter returns an invalid structured response
-- **THEN** the conversation displays a recoverable error, retains the prior draft, and allows another message or direct field correction
+- **THEN** the conversation displays a recoverable error, keeps prior internal context unchanged, and re-enables the composer
 
-## MODIFIED Requirements
-
-### Requirement: Maintain a structured task draft
-The application SHALL store recognized title, scope, entity types, and processing mode in a structured draft independent of rendered chat text, SHALL keep that draft editable, and SHALL validate it before enabling handoff to external data sync.
-
-#### Scenario: Assistant output omits a required field
-- **WHEN** an assistant response does not provide all required non-file task fields
-- **THEN** the application keeps the draft non-transferable and identifies the next missing field through a follow-up prompt or editable draft field
-
-#### Scenario: User edits recognized information
-- **WHEN** the user changes a task title, scope, entity selection, or processing mode before handoff
-- **THEN** the structured draft reflects the edited value and transfers that latest value to external data sync
+#### Scenario: Assistant response is pending
+- **WHEN** the assistant is processing a message
+- **THEN** the page displays pending feedback and disables the textarea and send action until processing completes
 
 ## REMOVED Requirements
 
 ### Requirement: Create reconciliation tasks through a conversation
-**Reason**: V2 separates goal definition from external-data ingestion, so the conversation produces a draft instead of creating a task.
+**Reason**: The current conversation is an Agent-only surface and does not own file-backed task creation.
 
-**Migration**: Use “新建对话” to produce the draft, then hand it off to “外部数据同步” for CSV selection and task creation.
+**Migration**: Enter “外部数据同步” independently, activate “手动同步”, and create the task there.
 
 ### Requirement: Accept task data attachments
 **Reason**: CSV selection belongs exclusively to the manual external-data-sync workflow.
@@ -61,14 +48,14 @@ The application SHALL store recognized title, scope, entity types, and processin
 ### Requirement: Require explicit task confirmation
 **Reason**: The conversation no longer owns final task creation or file-backed confirmation.
 
-**Migration**: Confirm the non-file draft through the handoff command, then use “开始同步” on the valid external-data-sync form as the explicit task-creation boundary.
+**Migration**: Use “开始同步” on the valid external-data-sync form as the explicit task-creation boundary.
 
 ### Requirement: Reuse the governed task creation service
-**Reason**: The existing governed task creation service remains in use but moves from the conversation page to external data sync.
+**Reason**: The existing governed task creation service remains in use but is owned by external data sync.
 
-**Migration**: External data sync submits the handed-off or default draft through the unchanged service.
+**Migration**: External data sync submits its independent manual draft through the unchanged service.
 
 ### Requirement: Recover from assistant and submission failures
-**Reason**: Assistant recovery and task-submission recovery now occur on separate pages.
+**Reason**: Assistant recovery and task-submission recovery occur on separate pages.
 
-**Migration**: The conversation preserves drafts after assistant failures; external data sync preserves files and task information after upload or task-creation failures.
+**Migration**: The conversation permits another message after assistant failures; external data sync preserves files and task information after upload or task-creation failures.

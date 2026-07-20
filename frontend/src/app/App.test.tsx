@@ -45,6 +45,9 @@ describe("application shell", () => {
     await user.click(screen.getByRole("link", { name: "新建对话" }));
 
     expect(screen.getByRole("heading", { name: "新建对话" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "新建对话" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "任务草案" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "继续外部数据同步" })).not.toBeInTheDocument();
     expect(window.location.pathname).toBe("/conversations/new");
     expect(localStorage.getItem("mofa-reconciliation-tasks")).toBe(history);
   });

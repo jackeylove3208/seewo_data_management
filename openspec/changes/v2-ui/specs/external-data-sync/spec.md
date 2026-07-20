@@ -11,15 +11,11 @@ The Web application SHALL provide an “外部数据同步” page whose initial
 - **WHEN** the user activates “手动同步”
 - **THEN** the page reveals the paired CSV selectors and editable task information in one continuous form
 
-### Requirement: Initialize task information from the entry context
-The manual-sync form SHALL use a task draft handed off by “新建对话” when one is provided and SHALL otherwise initialize the existing default task title, scope, entity types, and processing mode.
-
-#### Scenario: User continues from a conversation
-- **WHEN** the user activates the sync handoff from a valid conversational task draft
-- **THEN** the manual-sync form displays the draft title, scope, entity types, and processing mode as editable initial values
+### Requirement: Initialize independent task information
+The manual-sync form SHALL initialize the existing default task title, scope, entity types, and processing mode without requiring or receiving a current conversation handoff.
 
 #### Scenario: User enters sync directly
-- **WHEN** the user opens external data sync from the left workspace without a handed-off draft
+- **WHEN** the user opens external data sync from the left workspace and activates “手动同步”
 - **THEN** the manual-sync form uses the existing default task information and does not require a prior conversation
 
 ### Requirement: Collect paired CSV files for manual sync

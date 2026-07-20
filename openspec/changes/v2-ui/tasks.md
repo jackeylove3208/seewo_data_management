@@ -44,3 +44,12 @@
 - [x] 6.3 Run focused Playwright flows against the local frontend and backend using synthetic CSV fixtures and confirm no duplicate task is created during guarded submission
 - [x] 6.4 Capture and inspect desktop and mobile screenshots of the sidebar, conversation page, sync entry, populated manual form, validation error, and task detail for blank content, overflow, overlap, clipping, and visual hierarchy
 - [x] 6.5 Validate `v2-ui` with OpenSpec and confirm implementation changes do not modify backend API, migrations, automatic-sync behavior, or the four downstream processing stages
+
+## 7. Simplify new conversation to Agent chat
+
+- [x] 7.1 Replace conversation tests with chat-only assertions and retain validated intent only as private multi-turn context
+- [x] 7.2 Remove visible task fields, entity controls, processing mode, and the “继续外部数据同步” action from “新建对话”
+- [x] 7.3 Keep stale handoff cleanup for compatibility while removing current persistence and navigation behavior
+- [x] 7.4 Separate Playwright coverage for Agent conversation and independent manual CSV synchronization
+- [x] 7.5 Remove conversation-draft-only CSS and preserve all manual-sync field, attachment, and summary styles
+- [x] 7.6 Update V2 specifications to mark Agent-driven data discovery and automatic synchronization as future work
