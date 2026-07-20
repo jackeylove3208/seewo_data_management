@@ -79,7 +79,7 @@
 ## 8. Governance Planning and Versioned CSV Execution
 
 - [x] 8.1 Implement governance operation types for create, update, move, disable, and skip while treating unresolved manual review as execution-ineligible
-- [ ] 8.2 Implement deterministic plan building from selected current `pending_execution` proposal versions, preserving AI/operator source and rejecting stale difference, analysis, proposal, or target versions
+- [x] 8.2 Implement deterministic plan building from selected current `pending_execution` proposal versions, preserving AI/operator source and rejecting stale difference, analysis, proposal, or target versions
 - [x] 8.3 Implement risk policy, dependency graph, topological ordering, and reversibility metadata
 - [ ] 8.4 Add batch preview and confirmation APIs that bind proposal versions and record backend-owned proposal creator, batch confirmer, optional independent reviewer, and high-risk acknowledgement
 - [ ] 8.5 Add optional tokenized plan explanation through the existing enterprise model provider and a separate read-only Skill without making it an execution gate
