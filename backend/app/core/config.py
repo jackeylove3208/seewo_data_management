@@ -15,6 +15,9 @@ from pydantic import (
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+DEFAULT_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+
+
 class LLMResponseMode(StrEnum):
     JSON_SCHEMA = "json_schema"
     JSON_OBJECT = "json_object"
@@ -27,7 +30,7 @@ MAX_LLM_EXTRA_JSON_BYTES = 32 * 1024
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=DEFAULT_ENV_FILE,
         env_prefix="RECONCILIATION_",
         extra="ignore",
     )
