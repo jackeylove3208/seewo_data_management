@@ -12,7 +12,8 @@ describe("deterministic task assistant", () => {
     expect(response.patch.entityTypes).toEqual(["teacher", "student"]);
     expect(response.patch.snapshotMode).toBe("partial");
     expect(response.patch.scopeLabel).toBe("七年级");
-    expect(response.message).toContain("草案已更新");
+    expect(response.message).toContain("已记录七年级的教师、学生同步需求");
+    expect(response.message).not.toContain("任务草案");
     expect(response.message).not.toContain("两份数据");
   });
 

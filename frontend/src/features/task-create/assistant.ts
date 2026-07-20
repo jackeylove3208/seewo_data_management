@@ -87,8 +87,8 @@ function respond(request: { draft: TaskIntentDraft; message: string }): Promise<
   return Promise.resolve({
     kind: "normal",
     message: missingFields.length > 0
-      ? `任务草案已更新，还需要补充${missingFields.join("和")}。`
-      : `已整理为${scope}的${typesLabel}对账，任务草案已更新。`,
+      ? `已记录同步需求，还需要补充${missingFields.join("和")}。`
+      : `已记录${scope}的${typesLabel}同步需求。`,
     patch,
   });
 }
