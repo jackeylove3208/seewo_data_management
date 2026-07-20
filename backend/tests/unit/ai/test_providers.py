@@ -142,6 +142,7 @@ async def test_llm_extracts_json_from_openai_compatible_response() -> None:
                 llm_url="https://model.example.test/v1/chat/completions",
                 llm_api_key="secret-token",
                 llm_model="test-model",
+                llm_response_mode="json_schema",
             ),
             client=client,
         )
