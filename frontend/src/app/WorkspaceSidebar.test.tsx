@@ -13,6 +13,36 @@ describe("workspace sidebar", () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
+  it("provides separate active conversation and external data sync routes", async () => {
+    render(
+      <MemoryRouter initialEntries={["/conversations/new"]}>
+        <WorkspaceSidebar mobileOpen={false} onMobileClose={() => undefined} />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("link", { name: "新建对话" })).toHaveAttribute("href", "/conversations/new");
+    expect(screen.getByRole("link", { name: "新建对话" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "外部数据同步" })).toHaveAttribute("href", "/tasks/new");
+    expect(screen.getByRole("link", { name: "外部数据同步" })).not.toHaveAttribute("aria-current");
+    expect(screen.queryByRole("link", { name: "新建对账" })).not.toBeInTheDocument();
+    expect(await screen.findByText("后端未连接")).toBeInTheDocument();
+  });
+
+  it("keeps both primary commands named when the desktop workspace is collapsed", async () => {
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={["/tasks/new"]}>
+        <WorkspaceSidebar mobileOpen={false} onMobileClose={() => undefined} />
+      </MemoryRouter>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "收起侧栏" }));
+
+    expect(screen.getByRole("link", { name: "新建对话" })).toHaveAttribute("title", "新建对话");
+    expect(screen.getByRole("link", { name: "外部数据同步" })).toHaveAttribute("title", "外部数据同步");
+    expect(screen.getByRole("link", { name: "外部数据同步" })).toHaveAttribute("aria-current", "page");
+  });
+
   it("shows recent task summaries and highlights the current task", async () => {
     render(
       <MemoryRouter initialEntries={["/tasks/demo-001"]}>
@@ -50,7 +80,7 @@ describe("workspace sidebar", () => {
       </MemoryRouter>,
     );
 
-    await user.click(screen.getByRole("link", { name: /三方全校数据核对/ }));
+    await user.click(screen.getByRole("link", { name: "新建对话" }));
     expect(closed).toBe(true);
   });
 

@@ -19,8 +19,34 @@ describe("application shell", () => {
     expect(screen.getByRole("link", { name: /三方全校数据核对/ })).toHaveAttribute("aria-current", "page");
     expect(await screen.findByText("后端未连接")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("link", { name: "新建对账" }));
-    expect(screen.getByRole("heading", { name: "和 AI 一起新建对账" })).toBeInTheDocument();
+    await user.click(screen.getByRole("link", { name: "外部数据同步" }));
+    expect(screen.getByRole("heading", { name: "外部数据同步" })).toBeInTheDocument();
+  });
+
+  it("opens a fresh conversation without changing task history", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+    const history = JSON.stringify([{
+      id: "history-1",
+      title: "历史任务",
+      createdAt: "2026-07-20T08:00:00Z",
+      sourceFile: "source.csv",
+      targetFile: "target.csv",
+      sourceAccepted: 1,
+      targetAccepted: 1,
+      issueCount: 0,
+      status: "ready",
+      selectedEntityTypes: ["teacher"],
+    }]);
+    localStorage.setItem("mofa-reconciliation-tasks", history);
+    window.history.pushState({}, "", "/tasks/demo-001");
+    render(<App />);
+
+    await user.click(screen.getByRole("link", { name: "新建对话" }));
+
+    expect(screen.getByRole("heading", { name: "新建对话" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/conversations/new");
+    expect(localStorage.getItem("mofa-reconciliation-tasks")).toBe(history);
   });
 
   it("moves focus into and back from the mobile workspace", async () => {

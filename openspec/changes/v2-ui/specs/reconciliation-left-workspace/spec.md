@@ -27,4 +27,3 @@ The left workspace SHALL keep “新建对话” and “外部数据同步” di
 #### Scenario: User uses the mobile drawer
 - **WHEN** the user activates either primary command from the mobile workspace drawer
 - **THEN** the application navigates to the selected destination and closes the drawer without obscuring the destination heading
-

@@ -72,4 +72,3 @@ The external-data-sync page SHALL use a restrained enterprise-workbench hierarch
 #### Scenario: User views manual sync on mobile
 - **WHEN** the manual-sync form is shown on a narrow viewport
 - **THEN** method entry, file selectors, fields, choices, errors, and actions stack without horizontal overflow or overlapping controls
-

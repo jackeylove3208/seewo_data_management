@@ -33,7 +33,7 @@ export function TaskListPage() {
           <p>从一组数据开始，查看组织实体解析和差异结果。</p>
         </div>
         <Button type="primary" icon={<Plus size={16} />} onClick={() => navigate("/tasks/new")}>
-          新建对账
+          外部数据同步
         </Button>
       </section>
 

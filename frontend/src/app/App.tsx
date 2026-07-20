@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 
 import { TaskListPage } from "../features/tasks/TaskListPage";
+import { ConversationCreatePage } from "../features/task-create/ConversationCreatePage";
 import { TaskCreatePage } from "../features/task-create/TaskCreatePage";
 import { TaskDetailPage } from "../features/task-detail/TaskDetailPage";
 import { DifferenceCategoryPage } from "../features/differences/DifferenceCategoryPage";
@@ -52,6 +53,7 @@ function AppLayout() {
         </header>
         <Routes>
           <Route path="/tasks" element={<TaskListPage />} />
+          <Route path="/conversations/new" element={<ConversationCreatePage />} />
           <Route path="/tasks/new" element={<TaskCreatePage />} />
           <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
           <Route path="/tasks/:taskId/differences/:entityType" element={<DifferenceCategoryPage />} />
