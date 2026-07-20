@@ -5,6 +5,7 @@ from uuid import UUID, uuid5
 import pytest
 from pydantic import ValidationError
 
+from app.governance.dependency_binding import bind_selected_dependencies
 from app.governance.operation_policy import (
     PlanPolicyError,
     allowed_operations,
@@ -99,6 +100,44 @@ def test_reviewed_proposal_snapshot_is_strict_frozen_and_deeply_immutable() -> N
     assert proposal.before is not None
     with pytest.raises(TypeError):
         proposal.before["name"] = "Mutated"
+
+
+def test_selected_create_relationships_bind_parent_dependencies() -> None:
+    parent = reviewed_proposal(
+        "department-create",
+        difference_type=DifferenceType.SEEWO_MISSING,
+        operation_type=OperationType.CREATE,
+        entity_type=EntityType.ORGANIZATION_UNIT,
+        target_entity_id=None,
+        target_source_identifier=None,
+        before=None,
+        after={"source_id": "D1", "name": "Department"},
+        changed_fields=frozenset({"source_id", "name"}),
+    )
+    child = reviewed_proposal(
+        "teacher-create",
+        difference_type=DifferenceType.SEEWO_MISSING,
+        operation_type=OperationType.CREATE,
+        target_entity_id=None,
+        target_source_identifier=None,
+        before=None,
+        after={
+            "source_id": "T1",
+            "name": "Teacher",
+            "department_source_id": "D1",
+        },
+        changed_fields=frozenset({"source_id", "name", "department_source_id"}),
+    )
+
+    bound = bind_selected_dependencies((child, parent))
+    by_id = {item.proposal.proposal_id: item for item in bound}
+
+    assert by_id[child.proposal.proposal_id].dependencies == frozenset(
+        {parent.proposal.proposal_id}
+    )
+    plan = build(*bound)
+    assert plan.operations[0].proposal == parent.proposal
+    assert plan.operations[1].dependencies == frozenset({plan.operations[0].id})
 
 
 def test_governance_plan_is_strict_frozen_and_preserves_exact_refs() -> None:

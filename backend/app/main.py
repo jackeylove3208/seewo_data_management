@@ -5,6 +5,8 @@ from fastapi import FastAPI
 
 from app.api.routes.analyses import router as analysis_router
 from app.api.routes.differences import router as difference_router
+from app.api.routes.execution_batches import router as execution_batch_router
+from app.api.routes.execution_records import router as execution_record_router
 from app.api.routes.health import router as health_router
 from app.api.routes.proposals import router as proposal_router
 from app.api.routes.reconciliation_tasks import router as task_router
@@ -34,6 +36,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_router, prefix="/health", tags=["health"])
     app.include_router(analysis_router)
     app.include_router(difference_router)
+    app.include_router(execution_batch_router)
+    app.include_router(execution_record_router)
     app.include_router(upload_router)
     app.include_router(task_router)
     app.include_router(proposal_router)

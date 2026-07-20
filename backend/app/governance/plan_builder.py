@@ -18,6 +18,7 @@ from app.schemas.canonical_entities import EntityType
 from app.schemas.executions import (
     GovernanceOperation,
     GovernancePlan,
+    OperationType,
     ProposalStatus,
     ProposalVersionRef,
     ReviewedProposalSnapshot,
@@ -200,9 +201,14 @@ class GovernancePlanBuilder:
         fact_fields = frozenset((proposal.before or {}).keys()) | frozenset(
             (proposal.after or {}).keys()
         )
+        system_create_fields = (
+            frozenset({"source_id"})
+            if proposal.operation_type is OperationType.CREATE
+            else frozenset()
+        )
         validate_editable_fields(
             proposal.entity_type,
-            fact_fields | proposal.changed_fields,
+            (fact_fields | proposal.changed_fields) - system_create_fields,
         )
         actual_changes = _changed_fact_fields(proposal.before, proposal.after)
         if actual_changes != proposal.changed_fields:

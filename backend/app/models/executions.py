@@ -137,7 +137,7 @@ class TargetVersionRecord(Base, TimestampMixin):
     tenant_id: Mapped[str] = mapped_column(String(128), index=True)
     source_snapshot_id: Mapped[UUID] = mapped_column(ForeignKey("snapshots.id"), index=True)
     batch_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("execution_batches.id"), nullable=True, unique=True, index=True
+        ForeignKey("execution_batches.id"), nullable=True, index=True
     )
     file_sha256: Mapped[str] = mapped_column(String(64), index=True)
     content_hash: Mapped[str] = mapped_column(String(64), index=True)
@@ -193,6 +193,20 @@ class ExecutionAuditEventRecord(Base, TimestampMixin):
     details: Mapped[dict[str, Any]] = mapped_column(json_document)
 
 
+class GovernancePlanExplanationRecord(Base, TimestampMixin):
+    __tablename__ = "governance_plan_explanations"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    plan_id: Mapped[UUID] = mapped_column(ForeignKey("governance_plans.id"), index=True)
+    explanation: Mapped[dict[str, Any]] = mapped_column(json_document)
+    provider: Mapped[str] = mapped_column(String(128))
+    model: Mapped[str] = mapped_column(String(255))
+    usage: Mapped[dict[str, Any]] = mapped_column(json_document)
+    request_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, unique=True, index=True
+    )
+
+
 def _reject_execution_mutation(
     _mapper: object, _connection: object, target: object
 ) -> None:
@@ -206,6 +220,7 @@ for immutable_model in (
     OperationAttemptRecord,
     TargetVersionRecord,
     ExecutionAuditEventRecord,
+    GovernancePlanExplanationRecord,
 ):
     event.listen(immutable_model, "before_update", _reject_execution_mutation)
     event.listen(immutable_model, "before_delete", _reject_execution_mutation)

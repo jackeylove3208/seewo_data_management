@@ -196,7 +196,6 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["source_snapshot_id"], ["snapshots.id"]),
         sa.ForeignKeyConstraint(["task_id"], ["reconciliation_tasks.id"]),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("batch_id"),
         sa.UniqueConstraint("storage_path"),
     )
     for column in (
@@ -212,7 +211,7 @@ def upgrade() -> None:
         "ix_target_versions_batch_id",
         "target_versions",
         ["batch_id"],
-        unique=True,
+        unique=False,
     )
 
     op.create_table(

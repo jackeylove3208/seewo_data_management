@@ -340,6 +340,111 @@ async def test_target_versions_and_audit_events_preserve_execution_facts(
 
 
 @pytest.mark.asyncio
+async def test_retry_appends_another_target_version_for_the_same_batch(
+    session,
+    execution_context,
+) -> None:
+    pair, _proposal, plan = execution_context
+    repository = ExecutionRepository(session)
+    root = await repository.create_target_version(
+        task_id=pair.task_id,
+        tenant_id=pair.tenant_id,
+        source_snapshot_id=pair.target_snapshot_id,
+        parent_version_id=None,
+        batch_id=None,
+        file_sha256="a" * 64,
+        content_hash="b" * 64,
+        storage_path="/tmp/retry-root.csv",
+    )
+    saved_plan = await repository.save_plan(plan, created_by="preview-operator")
+    batch = await repository.create_batch(
+        plan_id=saved_plan.id,
+        plan_version=1,
+        input_target_version_id=root.id,
+        idempotency_key="retry-version-chain",
+        confirmed_by="backend-operator",
+        high_risk_acknowledged=False,
+        preflight_result={"valid": True},
+    )
+    first = await repository.create_target_version(
+        task_id=pair.task_id,
+        tenant_id=pair.tenant_id,
+        source_snapshot_id=pair.target_snapshot_id,
+        parent_version_id=root.id,
+        batch_id=batch.id,
+        file_sha256="c" * 64,
+        content_hash="d" * 64,
+        storage_path="/tmp/retry-first.csv",
+    )
+
+    second = await repository.create_target_version(
+        task_id=pair.task_id,
+        tenant_id=pair.tenant_id,
+        source_snapshot_id=pair.target_snapshot_id,
+        parent_version_id=first.id,
+        batch_id=batch.id,
+        file_sha256="e" * 64,
+        content_hash="f" * 64,
+        storage_path="/tmp/retry-second.csv",
+    )
+
+    assert second.parent_version_id == first.id
+    assert second.batch_id == batch.id
+
+
+@pytest.mark.asyncio
+async def test_retry_rejects_a_newer_target_version_from_outside_the_batch(
+    session,
+    execution_context,
+) -> None:
+    pair, _proposal, plan = execution_context
+    repository = ExecutionRepository(session)
+    root = await repository.create_target_version(
+        task_id=pair.task_id,
+        tenant_id=pair.tenant_id,
+        source_snapshot_id=pair.target_snapshot_id,
+        parent_version_id=None,
+        batch_id=None,
+        file_sha256="1" * 64,
+        content_hash="2" * 64,
+        storage_path="/tmp/retry-drift-root.csv",
+    )
+    saved_plan = await repository.save_plan(plan, created_by="preview-operator")
+    batch = await repository.create_batch(
+        plan_id=saved_plan.id,
+        plan_version=1,
+        input_target_version_id=root.id,
+        idempotency_key="retry-target-drift",
+        confirmed_by="backend-operator",
+        high_risk_acknowledged=False,
+        preflight_result={"valid": True},
+    )
+    output = await repository.create_target_version(
+        task_id=pair.task_id,
+        tenant_id=pair.tenant_id,
+        source_snapshot_id=pair.target_snapshot_id,
+        parent_version_id=root.id,
+        batch_id=batch.id,
+        file_sha256="3" * 64,
+        content_hash="4" * 64,
+        storage_path="/tmp/retry-drift-output.csv",
+    )
+    await repository.create_target_version(
+        task_id=pair.task_id,
+        tenant_id=pair.tenant_id,
+        source_snapshot_id=pair.target_snapshot_id,
+        parent_version_id=output.id,
+        batch_id=None,
+        file_sha256="5" * 64,
+        content_hash="6" * 64,
+        storage_path="/tmp/retry-drift-external.csv",
+    )
+
+    with pytest.raises(ExecutionPersistenceConflict, match="target version drift"):
+        await repository.retry_target_version(batch.id)
+
+
+@pytest.mark.asyncio
 async def test_target_version_rejects_snapshot_from_another_task(
     session,
     execution_context,

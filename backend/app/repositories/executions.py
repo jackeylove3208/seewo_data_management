@@ -2,7 +2,7 @@ import json
 from collections.abc import Mapping
 from enum import Enum
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -13,6 +13,7 @@ from app.models.executions import (
     ExecutionAuditEventRecord,
     ExecutionBatchRecord,
     ExecutionOperationRecord,
+    GovernancePlanExplanationRecord,
     GovernancePlanRecord,
     OperationAttemptRecord,
     TargetVersionRecord,
@@ -20,7 +21,20 @@ from app.models.executions import (
 from app.models.proposals import GovernanceProposalRecord
 from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import Snapshot
-from app.schemas.executions import GovernanceOperation, GovernancePlan, OperationStatus
+from app.schemas.canonical_entities import EntityType
+from app.schemas.executions import (
+    GovernanceOperation,
+    GovernancePlan,
+    OperationStatus,
+    OperationType,
+    PlanExplanationResponse,
+    ProposalSource,
+    ProposalVersionRef,
+)
+from app.schemas.governance import RiskLevel
+
+if TYPE_CHECKING:
+    from app.executions.executor import StoredExecutionOperation
 
 
 class ExecutionPersistenceConflict(ValueError):
@@ -81,6 +95,114 @@ class ExecutionRepository:
 
     async def get_plan(self, plan_id: UUID) -> GovernancePlanRecord | None:
         return await self.session.get(GovernancePlanRecord, plan_id)
+
+    async def append_plan_explanation(
+        self,
+        plan_id: UUID,
+        response: PlanExplanationResponse,
+    ) -> GovernancePlanExplanationRecord:
+        if await self.get_plan(plan_id) is None:
+            raise LookupError("governance plan not found")
+        if response.request_id is not None:
+            existing = await self.session.scalar(
+                select(GovernancePlanExplanationRecord).where(
+                    GovernancePlanExplanationRecord.request_id == response.request_id
+                )
+            )
+            if existing is not None:
+                return existing
+        record = GovernancePlanExplanationRecord(
+            plan_id=plan_id,
+            explanation=response.explanation.model_dump(mode="json"),
+            provider=response.provider,
+            model=response.model,
+            usage={
+                "input_tokens": response.input_tokens,
+                "output_tokens": response.output_tokens,
+            },
+            request_id=response.request_id,
+        )
+        self.session.add(record)
+        await self.session.flush()
+        return record
+
+    async def get_batch(self, batch_id: UUID) -> ExecutionBatchRecord | None:
+        return await self.session.get(ExecutionBatchRecord, batch_id)
+
+    async def get_target_version(self, version_id: UUID) -> TargetVersionRecord | None:
+        return await self.session.get(TargetVersionRecord, version_id)
+
+    async def latest_target_version_for_batch(self, batch_id: UUID) -> TargetVersionRecord | None:
+        return cast(
+            TargetVersionRecord | None,
+            await self.session.scalar(
+                select(TargetVersionRecord)
+                .where(TargetVersionRecord.batch_id == batch_id)
+                .order_by(
+                    TargetVersionRecord.created_at.desc(),
+                    TargetVersionRecord.id.desc(),
+                )
+            ),
+        )
+
+    async def retry_target_version(self, batch_id: UUID) -> TargetVersionRecord:
+        batch = await self.get_batch(batch_id)
+        if batch is None:
+            raise LookupError("execution batch not found")
+        plan = await self.get_plan(batch.plan_id)
+        if plan is None:
+            raise LookupError("governance plan not found")
+        candidate = await self.latest_target_version_for_batch(batch_id)
+        if candidate is None:
+            candidate = await self.get_target_version(batch.input_target_version_id)
+        if candidate is None:
+            raise LookupError("execution target version not found")
+        current = await self.session.scalar(
+            select(TargetVersionRecord)
+            .where(TargetVersionRecord.task_id == plan.task_id)
+            .order_by(
+                TargetVersionRecord.created_at.desc(),
+                TargetVersionRecord.id.desc(),
+            )
+        )
+        if current is None or current.id != candidate.id:
+            raise ExecutionPersistenceConflict("target version drift blocks retry")
+        return candidate
+
+    async def execution_operations(self, batch_id: UUID) -> tuple["StoredExecutionOperation", ...]:
+        from app.executions.executor import StoredExecutionOperation
+
+        records = await self.list_operations(batch_id)
+        return tuple(
+            StoredExecutionOperation(
+                record_id=record.id,
+                operation=GovernanceOperation(
+                    id=record.operation_id,
+                    proposal=ProposalVersionRef(
+                        proposal_id=record.proposal_id,
+                        proposal_version=record.proposal_version,
+                    ),
+                    proposal_source=ProposalSource(record.proposal_source),
+                    difference_id=record.difference_id,
+                    difference_version=record.difference_version,
+                    analysis_id=record.analysis_id,
+                    analysis_version=record.analysis_version,
+                    operation_type=OperationType(record.operation_type),
+                    entity_type=EntityType(record.entity_type),
+                    target_entity_id=record.target_entity_id,
+                    target_source_identifier=record.target_source_identifier,
+                    before=record.before,
+                    after=record.after,
+                    changed_fields=frozenset(record.changed_fields),
+                    dependencies=frozenset(UUID(item) for item in record.dependencies),
+                    reversible=record.reversible,
+                    risk=RiskLevel(record.risk),
+                    compensation_for=record.compensation_for,
+                    restore_absence=record.restore_absence,
+                ),
+            )
+            for record in records
+        )
 
     async def create_batch(
         self,

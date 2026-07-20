@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from math import isfinite
 from types import MappingProxyType
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
 from pydantic import (
@@ -325,3 +325,229 @@ class ExecutionAuditEvent(BaseModel):
     @field_serializer("details")
     def serialize_details(self, value: Mapping[str, JsonValue]) -> dict[str, Any]:
         return cast(dict[str, Any], _serialize_fact_value(value))
+
+
+class SelectedProposalVersion(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    proposal_id: UUID
+    proposal_version: int = Field(ge=1)
+
+
+class ExecutionPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    task_id: UUID
+    proposals: tuple[SelectedProposalVersion, ...] = Field(min_length=1, max_length=500)
+
+
+class ExecutionPreview(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    plan_id: UUID
+    plan_version: int = Field(ge=1)
+    input_target_version_id: UUID
+    target_version: str = Field(min_length=1, max_length=128)
+    counts: dict[OperationType, int]
+    proposal_sources: dict[ProposalSource, int]
+    operations: tuple[GovernanceOperation, ...]
+    high_risk: bool
+
+
+class ConfirmExecutionBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    plan_id: UUID
+    plan_version: int = Field(ge=1)
+    high_risk_acknowledged: bool = False
+
+
+class PreflightConflictCode(StrEnum):
+    PROPOSAL_VERSION_DRIFT = "proposal_version_drift"
+    DIFFERENCE_VERSION_DRIFT = "difference_version_drift"
+    ANALYSIS_VERSION_DRIFT = "analysis_version_drift"
+    TARGET_VERSION_DRIFT = "target_version_drift"
+    BEFORE_VALUE_DRIFT = "before_value_drift"
+    DEPENDENCY_MISSING = "dependency_missing"
+    MAPPING_CONFLICT = "mapping_conflict"
+    INELIGIBLE = "ineligible"
+
+
+class PreflightConflict(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    operation_id: UUID | None = None
+    code: PreflightConflictCode
+    message: str = Field(min_length=1, max_length=1000)
+
+
+class PreflightResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    plan_id: UUID
+    plan_version: int = Field(ge=1)
+    target_version_id: UUID
+    target_version: str = Field(min_length=1, max_length=128)
+    conflicts: tuple[PreflightConflict, ...] = ()
+    valid: bool
+
+
+class ExecutionBatchConfirmation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    id: UUID
+    plan_id: UUID
+    plan_version: int = Field(ge=1)
+    input_target_version_id: UUID
+    status: ExecutionBatchStatus
+    confirmed_by: str = Field(min_length=1, max_length=128)
+    independent_reviewer_id: str | None = None
+    high_risk_acknowledged: bool
+    preflight: PreflightResult
+    confirmed_at: datetime
+
+
+class PlanExplanation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    summary: str = Field(min_length=3, max_length=2000)
+    risk_explanation: str = Field(min_length=3, max_length=2000)
+    attention_points: tuple[str, ...] = Field(default=(), max_length=20)
+
+
+class PlanExplanationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    state: Literal["available"] = "available"
+    explanation: PlanExplanation
+    provider: str = Field(min_length=1, max_length=128)
+    model: str = Field(min_length=1, max_length=255)
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    request_id: str | None = Field(default=None, max_length=255)
+
+
+class VerificationResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    valid: bool
+    actual: dict[str, JsonValue] | None = None
+    mismatches: dict[str, dict[str, JsonValue | None]] = Field(default_factory=dict)
+
+
+class ExecutionOperationResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    record_id: UUID
+    operation_id: UUID
+    status: OperationStatus
+    attempt_number: int = Field(ge=1)
+    retryable: bool = False
+    error_code: str | None = None
+    actual_after: dict[str, JsonValue] | None = None
+    verification: dict[str, JsonValue] | None = None
+
+
+class ExecutionBatchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: UUID
+    status: ExecutionBatchStatus
+    output_target_version_id: UUID | None = None
+    operations: tuple[ExecutionOperationResult, ...]
+    retryable_operation_ids: tuple[UUID, ...] = ()
+
+
+class RetryExecutionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    operation_ids: tuple[UUID, ...] = Field(min_length=1, max_length=500)
+
+
+class ExecutionAttemptView(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    attempt_number: int = Field(ge=1)
+    status: OperationStatus
+    error_code: str | None = None
+    error_detail: dict[str, JsonValue] | None = None
+    actual_after: dict[str, JsonValue] | None = None
+    verification: dict[str, JsonValue] | None = None
+    retryable: bool
+    target_version_id: UUID | None = None
+    created_at: datetime
+
+
+class ExecutionOperationView(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    record_id: UUID
+    operation_id: UUID
+    proposal_id: UUID
+    proposal_version: int = Field(ge=1)
+    proposal_source: ProposalSource
+    proposal_created_by: str
+    difference_id: UUID
+    difference_version: int = Field(ge=1)
+    operation_type: OperationType
+    entity_type: EntityType
+    target_source_identifier: str | None = None
+    before: dict[str, JsonValue] | None = None
+    after: dict[str, JsonValue] | None = None
+    risk: RiskLevel
+    attempts: tuple[ExecutionAttemptView, ...]
+
+
+class ExecutionAuditEventView(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: UUID
+    operation_id: UUID | None = None
+    actor_id: str
+    event_type: str
+    details: dict[str, JsonValue]
+    created_at: datetime
+
+
+class ExecutionRecordSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: UUID
+    task_id: UUID
+    plan_id: UUID
+    plan_version: int = Field(ge=1)
+    status: ExecutionBatchStatus
+    confirmed_by: str
+    confirmed_at: datetime
+    operation_count: int = Field(ge=0)
+    retryable_count: int = Field(ge=0)
+    output_target_version_id: UUID | None = None
+
+
+class ExecutionRecordPage(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    items: tuple[ExecutionRecordSummary, ...]
+    next_cursor: str | None = None
+
+
+class ExecutionRecordDetail(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: UUID
+    task_id: UUID
+    source_snapshot_id: UUID
+    target_snapshot_id: UUID
+    plan_id: UUID
+    plan_version: int = Field(ge=1)
+    plan_created_by: str
+    status: ExecutionBatchStatus
+    confirmed_by: str
+    independent_reviewer_id: str | None = None
+    high_risk_acknowledged: bool
+    input_target_version_id: UUID
+    output_target_version_ids: tuple[UUID, ...]
+    confirmed_at: datetime
+    operations: tuple[ExecutionOperationView, ...]
+    audit_events: tuple[ExecutionAuditEventView, ...]
+    permitted_actions: tuple[str, ...]
