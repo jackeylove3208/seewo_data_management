@@ -4,7 +4,12 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from app.ai.providers.base import LLMRequest, Message, ModelProviderError
+from app.ai.providers.base import (
+    LLMRequest,
+    Message,
+    ModelProviderError,
+    TransientModelError,
+)
 from app.ai.providers.embeddings import HttpEmbeddingProvider
 from app.ai.providers.llm import HttpLLMProvider
 from app.core.config import Settings
@@ -75,6 +80,36 @@ async def test_llm_does_not_retry_client_error_or_log_authorization(caplog) -> N
 
     assert "secret-token" not in caplog.text
     assert "Bearer" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_llm_failure_traceback_does_not_contain_api_key() -> None:
+    secret = "test-api-key-that-must-not-leak"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection failed", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = HttpLLMProvider(
+            settings=Settings(
+                _env_file=None,
+                llm_url="https://model.example.test/chat/completions",
+                llm_api_key=secret,
+                tokenization_secret="tokenization-secret",
+                model_retry_wait_seconds=0,
+            ),
+            client=client,
+        )
+        with pytest.raises(TransientModelError) as captured:
+            await provider.complete_json(
+                LLMRequest(messages=(Message(role="user", content="ping"),))
+            )
+
+    traceback = captured.value.__traceback__
+    while traceback is not None:
+        if traceback.tb_frame.f_code.co_filename.endswith("app/ai/providers/llm.py"):
+            assert secret not in repr(traceback.tb_frame.f_locals)
+        traceback = traceback.tb_next
 
 
 @pytest.mark.asyncio
