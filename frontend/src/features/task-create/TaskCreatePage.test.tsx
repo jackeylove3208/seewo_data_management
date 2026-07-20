@@ -61,7 +61,8 @@ describe("manual external data sync", () => {
     expect(screen.getByRole("button", { name: "开始同步" })).toBeDisabled();
   });
 
-  it("opens the manual form with task information handed off from a conversation", () => {
+  it("ignores and clears legacy conversation intent before manual sync", async () => {
+    const user = userEvent.setup();
     saveTaskIntentDraft({
       title: "七年级教师核对",
       scopeLabel: "七年级",
@@ -71,12 +72,15 @@ describe("manual external data sync", () => {
 
     render(<MemoryRouter><TaskCreatePage /></MemoryRouter>);
 
-    expect(screen.getByLabelText("选择三方系统 CSV")).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "同步任务名称" })).toHaveValue("七年级教师核对");
-    expect(screen.getByRole("textbox", { name: "核对范围" })).toHaveValue("七年级");
-    expect(screen.getByRole("button", { name: "指定范围" })).toHaveClass("active");
+    expect(screen.queryByLabelText("选择三方系统 CSV")).not.toBeInTheDocument();
+    expect(sessionStorage.getItem(TASK_INTENT_STORAGE_KEY)).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "手动同步" }));
+    expect(screen.getByRole("textbox", { name: "同步任务名称" })).toHaveValue("全校组织数据核对");
+    expect(screen.getByRole("textbox", { name: "核对范围" })).toHaveValue("全校");
+    expect(screen.getByRole("button", { name: "全量对账" })).toHaveClass("active");
     expect(screen.getByRole("checkbox", { name: "教师" })).toBeChecked();
-    expect(screen.getByRole("checkbox", { name: "学生" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "学生" })).toBeChecked();
   });
 
   it("creates a task and opens it after manual sync", async () => {
@@ -125,6 +129,7 @@ describe("manual external data sync", () => {
       </MemoryRouter>,
     );
 
+    await user.click(screen.getByRole("button", { name: "手动同步" }));
     await user.upload(screen.getByLabelText("选择三方系统 CSV"), new File([csv], "third-party.csv", { type: "text/csv" }));
     await user.upload(screen.getByLabelText("选择希沃魔方 CSV"), new File([csv], "mofa.csv", { type: "text/csv" }));
     const startButton = screen.getByRole("button", { name: "开始同步" });

@@ -6,14 +6,14 @@ import {
   Paperclip,
   RefreshCw,
 } from "lucide-react";
-import { useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { entityLabels } from "../../data/demoDifferences";
 import type { EntityType } from "../../types/domain";
 import { createInitialDraft } from "./assistant";
 import { summarizeCsv } from "./csvSummary";
-import { clearTaskIntentDraft, loadTaskIntentDraft } from "./draftHandoff";
+import { clearTaskIntentDraft } from "./draftHandoff";
 import { createTaskAttempt, type TaskCreationAttempt } from "./taskCreationService";
 import type { DraftAttachment, ManualSyncDraft } from "./types";
 import { isDraftReady } from "./types";
@@ -69,13 +69,16 @@ function AttachmentPicker({
 
 export function TaskCreatePage() {
   const navigate = useNavigate();
-  const handedOffDraft = useRef(loadTaskIntentDraft()).current;
-  const [syncMethod, setSyncMethod] = useState<"manual" | null>(() => handedOffDraft ? "manual" : null);
-  const [draft, setDraft] = useState<ManualSyncDraft>(() => handedOffDraft ?? createInitialDraft());
+  const [syncMethod, setSyncMethod] = useState<"manual" | null>(null);
+  const [draft, setDraft] = useState<ManualSyncDraft>(() => createInitialDraft());
   const [submissionState, setSubmissionState] = useState<SubmissionState>("idle");
   const [submitError, setSubmitError] = useState<string>();
   const attemptRef = useRef<TaskCreationAttempt | undefined>(undefined);
   const fileRequestTokens = useRef({ source: 0, target: 0 });
+
+  useEffect(() => {
+    clearTaskIntentDraft();
+  }, []);
 
   async function prepareFile(role: "source" | "target", file: File) {
     const requestToken = ++fileRequestTokens.current[role];
