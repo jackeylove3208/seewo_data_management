@@ -1,6 +1,14 @@
 from app.models.analyses import AnalysisRecord
 from app.models.base import Base
 from app.models.differences import DifferenceRecord
+from app.models.executions import (
+    ExecutionAuditEventRecord,
+    ExecutionBatchRecord,
+    ExecutionOperationRecord,
+    GovernancePlanRecord,
+    OperationAttemptRecord,
+    TargetVersionRecord,
+)
 from app.models.mappings import EntityMapping, TargetEntityEmbedding
 from app.models.proposals import GovernanceProposalRecord
 from app.models.reconciliation import ReconciliationTask
@@ -19,12 +27,18 @@ __all__ = [
     "CanonicalEntityRecord",
     "DifferenceRecord",
     "EntityMapping",
+    "ExecutionAuditEventRecord",
+    "ExecutionBatchRecord",
+    "ExecutionOperationRecord",
     "GovernanceProposalRecord",
+    "GovernancePlanRecord",
     "IngestionIssueRecord",
     "RawSnapshotRow",
     "ReconciliationTask",
     "Snapshot",
     "SourceFile",
     "TargetEntityEmbedding",
+    "TargetVersionRecord",
+    "OperationAttemptRecord",
     "WorkflowStageRun",
 ]

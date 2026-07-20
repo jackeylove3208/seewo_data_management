@@ -1,5 +1,6 @@
 import json
 from collections.abc import Mapping
+from datetime import datetime
 from enum import StrEnum
 from math import isfinite
 from types import MappingProxyType
@@ -61,6 +62,22 @@ class OperationType(StrEnum):
     MOVE = "move"
     DISABLE = "disable"
     SKIP = "skip"
+
+
+class OperationStatus(StrEnum):
+    PENDING = "pending"
+    BLOCKED = "blocked"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    VERIFICATION_FAILED = "verification_failed"
+
+
+class ExecutionBatchStatus(StrEnum):
+    CONFIRMED = "confirmed"
+    SUCCEEDED = "succeeded"
+    PARTIAL_FAILURE = "partial_failure"
+    FAILED = "failed"
 
 
 class ProposalSource(StrEnum):
@@ -211,3 +228,100 @@ class GovernancePlan(BaseModel):
     proposals: tuple[ProposalVersionRef, ...] = Field(min_length=1)
     operations: tuple[GovernanceOperation, ...] = Field(min_length=1)
     content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ExecutionBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    id: UUID
+    plan_id: UUID
+    plan_version: int = Field(ge=1)
+    input_target_version_id: UUID
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    status: ExecutionBatchStatus = ExecutionBatchStatus.CONFIRMED
+    confirmed_by: str = Field(min_length=1, max_length=128)
+    independent_reviewer_id: str | None = Field(default=None, min_length=1, max_length=128)
+    high_risk_acknowledged: bool = False
+    preflight_result: Mapping[str, JsonValue]
+    confirmed_at: datetime
+    created_at: datetime
+
+    @field_validator("preflight_result", mode="after")
+    @classmethod
+    def freeze_preflight(
+        cls, value: Mapping[str, JsonValue]
+    ) -> Mapping[str, JsonValue]:
+        return cast(Mapping[str, JsonValue], _freeze_fact_value(value))
+
+    @field_serializer("preflight_result")
+    def serialize_preflight(self, value: Mapping[str, JsonValue]) -> dict[str, Any]:
+        return cast(dict[str, Any], _serialize_fact_value(value))
+
+
+class OperationAttempt(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    id: UUID
+    operation_id: UUID
+    attempt_number: int = Field(ge=1)
+    status: OperationStatus
+    error_code: str | None = Field(default=None, max_length=128)
+    error_detail: Mapping[str, JsonValue] | None = None
+    actual_after: Mapping[str, JsonValue] | None = None
+    verification: Mapping[str, JsonValue] | None = None
+    retryable: bool = False
+    target_version_id: UUID | None = None
+    created_at: datetime
+
+    @field_validator("error_detail", "actual_after", "verification", mode="after")
+    @classmethod
+    def freeze_attempt_facts(
+        cls, value: Mapping[str, JsonValue] | None
+    ) -> Mapping[str, JsonValue] | None:
+        if value is None:
+            return None
+        return cast(Mapping[str, JsonValue], _freeze_fact_value(value))
+
+    @field_serializer("error_detail", "actual_after", "verification")
+    def serialize_attempt_facts(
+        self, value: Mapping[str, JsonValue] | None
+    ) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        return cast(dict[str, Any], _serialize_fact_value(value))
+
+
+class TargetVersion(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    id: UUID
+    parent_version_id: UUID | None = None
+    task_id: UUID
+    tenant_id: str = Field(min_length=1, max_length=128)
+    source_snapshot_id: UUID
+    batch_id: UUID | None = None
+    file_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    storage_path: str = Field(min_length=1, max_length=1024)
+    created_at: datetime
+
+
+class ExecutionAuditEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    id: UUID
+    batch_id: UUID
+    operation_id: UUID | None = None
+    actor_id: str = Field(min_length=1, max_length=128)
+    event_type: str = Field(min_length=1, max_length=64)
+    details: Mapping[str, JsonValue]
+    created_at: datetime
+
+    @field_validator("details", mode="after")
+    @classmethod
+    def freeze_details(cls, value: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+        return cast(Mapping[str, JsonValue], _freeze_fact_value(value))
+
+    @field_serializer("details")
+    def serialize_details(self, value: Mapping[str, JsonValue]) -> dict[str, Any]:
+        return cast(dict[str, Any], _serialize_fact_value(value))
