@@ -17,6 +17,11 @@ from app.models.analyses import AnalysisRecord
 from app.models.differences import DifferenceRecord
 from app.models.mappings import EntityMapping
 from app.models.workflow import WorkflowStageRun
+from app.tasks.deletion_service import (
+    TaskDeletionBlocked,
+    TaskDeletionNotFound,
+    TaskDeletionService,
+)
 
 ROOT = Path(__file__).parents[4]
 
@@ -41,9 +46,7 @@ def legacy_client(tmp_path: Path):
     engine = create_engine(sync_url)
     Base.metadata.create_all(engine)
     with engine.begin() as connection:
-        connection.exec_driver_sql(
-            "ALTER TABLE analysis_results DROP COLUMN gateway_request_ids"
-        )
+        connection.exec_driver_sql("ALTER TABLE analysis_results DROP COLUMN gateway_request_ids")
     settings = Settings(
         database_url=f"sqlite+aiosqlite:///{database_path}",
         upload_root=tmp_path / "uploads",
@@ -178,6 +181,55 @@ def test_cross_tenant_task_access_is_hidden(client: TestClient) -> None:
         )
     finally:
         client.app.dependency_overrides.pop(get_operator_context, None)
+
+
+def test_delete_task_returns_no_content(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_id = UUID("00000000-0000-0000-0000-000000000123")
+    calls: list[tuple[UUID, str]] = []
+
+    async def delete(_service, requested_task_id: UUID, tenant_id: str) -> None:
+        calls.append((requested_task_id, tenant_id))
+
+    monkeypatch.setattr(TaskDeletionService, "delete", delete)
+
+    response = client.delete(f"/api/reconciliation-tasks/{task_id}")
+
+    assert response.status_code == 204
+    assert response.content == b""
+    assert calls == [(task_id, "school-1")]
+
+
+@pytest.mark.parametrize(
+    ("error", "status_code", "detail"),
+    [
+        (TaskDeletionNotFound("not found"), 404, "not found"),
+        (
+            TaskDeletionBlocked("任务尚未完成 AI 分析，不能删除"),
+            409,
+            "任务尚未完成 AI 分析，不能删除",
+        ),
+        (TaskDeletionBlocked("该任务已有治理方案，不能删除"), 409, "该任务已有治理方案，不能删除"),
+    ],
+)
+def test_delete_task_maps_domain_errors(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    status_code: int,
+    detail: str,
+) -> None:
+    async def delete(_service, _task_id: UUID, _tenant_id: str) -> None:
+        raise error
+
+    monkeypatch.setattr(TaskDeletionService, "delete", delete)
+
+    response = client.delete("/api/reconciliation-tasks/00000000-0000-0000-0000-000000000123")
+
+    assert response.status_code == status_code
+    assert response.json() == {"detail": detail}
 
 
 def test_upload_rejects_unsupported_encoding(client: TestClient, tmp_path: Path) -> None:

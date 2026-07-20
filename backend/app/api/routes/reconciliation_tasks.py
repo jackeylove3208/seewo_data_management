@@ -20,6 +20,11 @@ from app.schemas.api_ingestion import (
 from app.schemas.canonical_entities import SourceRole
 from app.schemas.matching import ResolutionSummary
 from app.schemas.workflow import WorkflowAdvanceResponse
+from app.tasks.deletion_service import (
+    TaskDeletionBlocked,
+    TaskDeletionNotFound,
+    TaskDeletionService,
+)
 from app.workflow.service import ReconciliationWorkflowService
 
 router = APIRouter(prefix="/api", tags=["reconciliation-tasks"])
@@ -86,6 +91,23 @@ async def get_reconciliation_task(
         return await service_for(request, session).get_task(task_id, operator.tenant_id)
     except IngestionServiceError as error:
         raise HTTPException(error.status_code, detail=error.as_detail()) from error
+
+
+@router.delete(
+    "/reconciliation-tasks/{task_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_reconciliation_task(
+    task_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    operator: Annotated[OperatorContext, Depends(get_operator_context)],
+) -> None:
+    try:
+        await TaskDeletionService(session).delete(task_id, operator.tenant_id)
+    except TaskDeletionNotFound as error:
+        raise HTTPException(404, detail=str(error)) from error
+    except TaskDeletionBlocked as error:
+        raise HTTPException(409, detail=str(error)) from error
 
 
 @router.post(
