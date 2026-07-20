@@ -20,7 +20,7 @@ describe("application shell", () => {
     expect(await screen.findByText("后端未连接")).toBeInTheDocument();
 
     await user.click(screen.getByRole("link", { name: "外部数据同步" }));
-    expect(screen.getByRole("heading", { name: "和 AI 一起新建对账" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "外部数据同步" })).toBeInTheDocument();
   });
 
   it("moves focus into and back from the mobile workspace", async () => {
