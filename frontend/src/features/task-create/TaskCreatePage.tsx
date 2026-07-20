@@ -66,13 +66,17 @@ export function TaskCreatePage() {
   const [submissionState, setSubmissionState] = useState<SubmissionState>("idle");
   const [submitError, setSubmitError] = useState<string>();
   const idempotencyKey = useRef(sessionKey());
+  const fileRequestTokens = useRef({ source: 0, target: 0 });
 
   async function prepareFile(role: "source" | "target", file: File) {
+    const requestToken = ++fileRequestTokens.current[role];
     setDraft((current) => ({ ...current, [role]: { file } }));
     try {
       const summary = await summarizeCsv(file);
+      if (fileRequestTokens.current[role] !== requestToken) return;
       setDraft((current) => ({ ...current, [role]: { file, summary } }));
     } catch (error) {
+      if (fileRequestTokens.current[role] !== requestToken) return;
       setDraft((current) => ({
         ...current,
         [role]: { file, error: error instanceof Error ? error.message : "文件读取失败" },
