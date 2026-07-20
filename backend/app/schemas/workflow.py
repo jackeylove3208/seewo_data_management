@@ -30,6 +30,7 @@ class WorkflowError(BaseModel):
 class AnalysisProgress(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    job_id: UUID | None = None
     total: int = Field(default=0, ge=0)
     completed: int = Field(default=0, ge=0)
     succeeded: int = Field(default=0, ge=0)

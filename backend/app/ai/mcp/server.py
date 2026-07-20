@@ -32,6 +32,7 @@ class ToolResult(BaseModel):
 
 class MCPToolGateway:
     def __init__(self, session: AsyncSession) -> None:
+        self.session = session
         self.differences = DifferenceRepository(session)
         self.policy = FieldComparisonPolicy()
 
@@ -63,6 +64,10 @@ class MCPToolGateway:
         else:
             payload = read_execution_context(difference)
         return ToolResult(payload=payload, trace_id=str(uuid4()))
+
+    async def close_read_transaction(self) -> None:
+        if self.session.in_transaction():
+            await self.session.rollback()
 
 
 ToolContextProvider = Callable[[Context[Any, Any, Any]], ToolContext]

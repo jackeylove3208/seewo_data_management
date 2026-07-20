@@ -51,7 +51,12 @@ class Settings(BaseSettings):
     llm_extra_body_json: dict[str, Any] = {}
     llm_timeout_seconds: PositiveFloat = 20
     tokenization_secret: SecretStr | None = None
+    proposal_preview_secret: SecretStr | None = None
     analysis_batch_size: PositiveInt = 10
+    analysis_worker_lease_seconds: PositiveInt = 60
+    analysis_worker_concurrency: PositiveInt = 4
+    analysis_worker_poll_seconds: PositiveFloat = 0.5
+    analysis_worker_retry_wait_seconds: NonNegativeFloat = 2
     embedding_url: str | None = None
     embedding_api_key: SecretStr | None = None
     embedding_model: str = "organization-embedding"

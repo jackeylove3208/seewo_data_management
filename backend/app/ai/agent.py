@@ -8,6 +8,7 @@ from app.ai.mcp.server import ToolResult
 from app.ai.prompting import (
     PROMPT_VERSION,
     PROMPT_VERSION_V2,
+    PROMPT_VERSION_V3,
     build_messages,
     response_schema,
     tool_messages,
@@ -15,7 +16,12 @@ from app.ai.prompting import (
 from app.ai.providers.base import LLMProvider, LLMRequest, ModelProviderError, ModelUsage
 from app.ai.skills.registry import SkillRegistry
 from app.ai.tokenization import TaskTokenizationContext, UnknownTokenError
-from app.schemas.governance import AnalysisProvenance, CauseAnalysis, CauseAnalysisV2
+from app.schemas.governance import (
+    AnalysisProvenance,
+    CauseAnalysis,
+    CauseAnalysisV2,
+    CauseAnalysisV3,
+)
 
 
 class AgentFailure(RuntimeError):
@@ -59,6 +65,8 @@ class ToolGateway(Protocol):
         context: ToolContext,
     ) -> ToolResult: ...
 
+    async def close_read_transaction(self) -> None: ...
+
 
 class AgentRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -67,13 +75,13 @@ class AgentRequest(BaseModel):
     skill_version: str = Field(min_length=1, max_length=64)
     input_payload: dict[str, Any]
     tool_context: ToolContext | None = None
-    analysis_version: Literal["analysis-v1", "analysis-v2"] = "analysis-v1"
+    analysis_version: Literal["analysis-v1", "analysis-v2", "analysis-v3"] = "analysis-v1"
 
 
 class AgentResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    output: CauseAnalysis | CauseAnalysisV2
+    output: CauseAnalysis | CauseAnalysisV2 | CauseAnalysisV3
     provenance: AnalysisProvenance
 
 
@@ -100,12 +108,16 @@ class GovernanceAgent:
             tokenizer.tokenize(request.input_payload) if tokenizer else request.input_payload
         )
         messages = build_messages(skill, safe_payload)
-        output_model = (
-            CauseAnalysisV2 if request.analysis_version == "analysis-v2" else CauseAnalysis
-        )
-        prompt_version = (
-            PROMPT_VERSION_V2 if request.analysis_version == "analysis-v2" else PROMPT_VERSION
-        )
+        output_model: type[CauseAnalysis] | type[CauseAnalysisV2] | type[CauseAnalysisV3]
+        if request.analysis_version == "analysis-v3":
+            output_model = CauseAnalysisV3
+            prompt_version = PROMPT_VERSION_V3
+        elif request.analysis_version == "analysis-v2":
+            output_model = CauseAnalysisV2
+            prompt_version = PROMPT_VERSION_V2
+        else:
+            output_model = CauseAnalysis
+            prompt_version = PROMPT_VERSION
         trace_ids: list[str] = []
         gateway_request_ids: list[str] = []
         input_tokens = 0
@@ -193,6 +205,8 @@ class GovernanceAgent:
                     raise AgentToolFailure(
                         str(error), provenance=provenance, cause=error
                     ) from error
+                finally:
+                    await self.tools.close_read_transaction()
                 trace_ids.append(tool_result.trace_id)
                 safe_tool_payload = (
                     tokenizer.tokenize(tool_result.payload)
@@ -244,11 +258,7 @@ class GovernanceAgent:
                     [],
                     0,
                     0,
-                    (
-                        PROMPT_VERSION_V2
-                        if request.analysis_version == "analysis-v2"
-                        else PROMPT_VERSION
-                    ),
+                    _prompt_version(request.analysis_version),
                 )
                 error = ModelProviderError("LLM tokenization is not configured")
                 raise AgentProviderFailure(str(error), provenance=provenance, cause=error)
@@ -260,6 +270,14 @@ class GovernanceAgent:
             tenant_id=request.tool_context.tenant_id,
             task_id=request.tool_context.task_id,
         )
+
+
+def _prompt_version(analysis_version: str) -> str:
+    if analysis_version == "analysis-v3":
+        return PROMPT_VERSION_V3
+    if analysis_version == "analysis-v2":
+        return PROMPT_VERSION_V2
+    return PROMPT_VERSION
 
 
 def _parse_tool_call(output: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:

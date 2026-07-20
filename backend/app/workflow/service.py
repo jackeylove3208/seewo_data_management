@@ -1,12 +1,13 @@
 from typing import Protocol
 from uuid import UUID
 
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import OperatorContext
+from app.models.analysis_jobs import AnalysisJobRecord
 from app.repositories.tasks import TaskRepository
 from app.repositories.workflow import ConcurrentStageRunError, WorkflowRunRepository
-from app.schemas.governance import AnalysisBatchResponse
 from app.schemas.workflow import (
     WorkflowAdvanceResponse,
     WorkflowError,
@@ -22,8 +23,13 @@ class DifferenceRunner(Protocol):
     async def detect(self, task_id: UUID) -> object: ...
 
 
-class AnalysisRunner(Protocol):
-    async def analyze_batch(self, task_id: UUID, *, limit: int) -> AnalysisBatchResponse: ...
+class AnalysisJobRunner(Protocol):
+    async def create_job(
+        self,
+        task_id: UUID,
+        *,
+        idempotency_key: str,
+    ) -> AnalysisJobRecord: ...
 
 
 class ReconciliationWorkflowService:
@@ -34,7 +40,7 @@ class ReconciliationWorkflowService:
         operator: OperatorContext,
         resolver: ResolutionRunner,
         detector: DifferenceRunner,
-        analyzer: AnalysisRunner,
+        analyzer: AnalysisJobRunner,
         runs: WorkflowRunRepository | None = None,
         analysis_batch_size: int = 10,
     ) -> None:
@@ -80,24 +86,49 @@ class ReconciliationWorkflowService:
                 task.stage = "differences_ready"
                 await self.runs.complete(run, processed=count, total=count)
             elif stage is WorkflowStage.ANALYSIS:
-                result = await self.analyzer.analyze_batch(
+                job = await self.analyzer.create_job(
                     task.id,
-                    limit=self.analysis_batch_size,
+                    idempotency_key=f"workflow-analysis-v3:{task.id}",
                 )
-                task.stage = "analysis_ready" if result.remaining == 0 else "differences_ready"
-                await self.runs.complete(
-                    run,
-                    processed=result.total,
-                    total=result.total,
-                    succeeded=result.succeeded,
-                    manual_review=result.manual_review,
-                    failed=result.failed,
+                run.analysis_job_id = job.id
+                run.processed = getattr(job, "completed", 0)
+                run.total = getattr(job, "total", 0)
+                run.succeeded = getattr(job, "succeeded", 0)
+                run.manual_review = getattr(job, "manual_required", 0)
+                run.failed = getattr(job, "failed", 0)
+                await self.session.flush()
+                task.status = "processing"
+                return WorkflowAdvanceResponse(
+                    task_id=task.id,
+                    workflow=await self.runs.state(task),
                 )
             else:
                 raise ValueError(f"workflow cannot advance stage: {stage.value}")
         except Exception as error:
             workflow_error = _workflow_error(error)
-            await self.runs.fail(run, workflow_error)
+            run_id = run.id
+            run_attempt = run.attempt
+            run_started_at = run.started_at
+            if self.session.is_active and not isinstance(error, DBAPIError):
+                await self.runs.fail(run, workflow_error)
+            else:
+                await self.session.rollback()
+                task = await self.tasks.get_for_update(task_id)
+                if task is None:
+                    raise LookupError(f"reconciliation task not found: {task_id}") from error
+                failed_run = await self.runs.fail_after_rollback(
+                    task_id,
+                    stage,
+                    run_attempt,
+                    run_id,
+                    run_started_at,
+                    workflow_error,
+                )
+                if failed_run is None:
+                    return WorkflowAdvanceResponse(
+                        task_id=task.id,
+                        workflow=await self.runs.state(task),
+                    )
             task.status = "failed"
             task.error = workflow_error.model_dump(mode="json")
             await self.session.flush()
@@ -132,9 +163,35 @@ def _stage_for_task(task_stage: str) -> WorkflowStage:
 
 
 def _workflow_error(error: Exception) -> WorkflowError:
-    retryable = isinstance(error, (ConnectionError, TimeoutError))
+    schema_message = _schema_mismatch_message(error)
+    if schema_message is not None:
+        return WorkflowError(
+            code="database_schema_mismatch",
+            message=schema_message,
+            retryable=True,
+        )
+    retryable = isinstance(error, (ConnectionError, TimeoutError)) or (
+        isinstance(error, DBAPIError) and error.connection_invalidated
+    )
     return WorkflowError(
         code="workflow_timeout" if retryable else "workflow_stage_failed",
         message=str(error) or type(error).__name__,
         retryable=retryable,
+    )
+
+
+def _schema_mismatch_message(error: Exception) -> str | None:
+    detail = str(getattr(error, "orig", error))
+    normalized = detail.casefold()
+    if "analysis_results.gateway_request_ids" not in normalized:
+        return None
+    if not any(
+        marker in normalized
+        for marker in ("no such column", "does not exist", "undefined column")
+    ):
+        return None
+    return (
+        "Database schema is missing analysis_results.gateway_request_ids. "
+        "Run `alembic upgrade head` before retrying. "
+        f"Original database error: {detail}"
     )

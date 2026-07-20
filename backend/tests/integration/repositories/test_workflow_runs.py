@@ -3,6 +3,7 @@ from uuid import uuid4
 import pytest
 
 from app.models.reconciliation import ReconciliationTask
+from app.models.workflow import WorkflowStageRun
 from app.repositories.workflow import WorkflowRunRepository
 from app.schemas.workflow import WorkflowError, WorkflowStage, WorkflowStatus
 
@@ -60,3 +61,37 @@ async def test_workflow_state_reports_retryable_failure(session) -> None:
     assert state.status is WorkflowStatus.FAILED
     assert state.error is not None and state.error.code == "provider_timeout"
     assert state.can_retry is True
+
+
+@pytest.mark.asyncio
+async def test_failure_recovery_does_not_overwrite_concurrent_attempt(session) -> None:
+    record = await task(session)
+    concurrent = WorkflowStageRun(
+        id=uuid4(),
+        task_id=record.id,
+        stage=WorkflowStage.DIFFERENCES.value,
+        attempt=1,
+        status=WorkflowStatus.SUCCEEDED.value,
+        started_at=record.created_at,
+        completed_at=record.created_at,
+    )
+    session.add(concurrent)
+    await session.flush()
+
+    recovered = await WorkflowRunRepository(session).fail_after_rollback(
+        record.id,
+        WorkflowStage.DIFFERENCES,
+        1,
+        uuid4(),
+        record.created_at,
+        WorkflowError(
+            code="database_schema_mismatch",
+            message="schema mismatch",
+            retryable=True,
+        ),
+    )
+
+    assert recovered is None
+    await session.refresh(concurrent)
+    assert concurrent.status == WorkflowStatus.SUCCEEDED.value
+    assert concurrent.error is None

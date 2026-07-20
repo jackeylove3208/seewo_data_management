@@ -9,13 +9,15 @@ def test_analysis_skill_loads_a_pinned_read_only_contract() -> None:
     skill = SkillRegistry().load("analyze-data-difference", "1.0.0")
 
     assert skill.name == "analyze-data-difference"
-    assert skill.output_schema == "CauseAnalysisV2"
+    assert skill.output_schema == "CauseAnalysisV3"
     assert set(skill.allowed_tools) == {
         "difference_context",
         "candidate_search",
         "mapping_rules",
     }
     assert "write" not in skill.instructions.casefold()
+    assert "简体中文" in skill.instructions
+    assert "不得请求或调用任何目标系统写操作" in skill.instructions
 
 
 def test_unknown_skill_version_fails_closed() -> None:

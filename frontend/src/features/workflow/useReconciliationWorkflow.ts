@@ -17,6 +17,7 @@ export function useReconciliationWorkflow(taskId: string, enabled: boolean) {
     queryFn: ({ signal }) => ingestionApi.getTask(taskId, signal),
     enabled: enabled && Boolean(taskId),
     staleTime: 0,
+    refetchInterval: (query) => query.state.data?.workflow.stage === "analysis" ? 2_000 : false,
   });
 
   function updateWorkflow(workflow: WorkflowState) {
@@ -42,6 +43,7 @@ export function useReconciliationWorkflow(taskId: string, enabled: boolean) {
   useEffect(() => {
     if (!enabled || !workflow || advance.isPending || retry.isPending) return;
     if (workflow.stage === "complete" || workflow.status === "failed") return;
+    if (workflow.analysis.job_id) return;
     if (workflow.status !== "pending" && workflow.status !== "succeeded") return;
     const signature = stageSignature(workflow);
     if (attemptedStages.current.has(signature)) return;
@@ -57,5 +59,9 @@ export function useReconciliationWorkflow(taskId: string, enabled: boolean) {
     retryError: retry.error,
     canRetry: Boolean(workflow?.status === "failed" && workflow.error?.retryable),
     retry: () => retry.mutate(),
+    continueAdvance: () => {
+      advance.reset();
+      advance.mutate();
+    },
   };
 }

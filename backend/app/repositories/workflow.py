@@ -78,6 +78,36 @@ class WorkflowRunRepository:
         run.completed_at = datetime.now(UTC)
         await self.session.flush()
 
+    async def fail_after_rollback(
+        self,
+        task_id: UUID,
+        stage: WorkflowStage,
+        attempt: int,
+        run_id: UUID,
+        started_at: datetime,
+        error: WorkflowError,
+    ) -> WorkflowStageRun | None:
+        run = await self.session.get(WorkflowStageRun, run_id)
+        if run is not None and run.status == WorkflowStatus.SUCCEEDED.value:
+            return None
+        if run is None:
+            run = WorkflowStageRun(
+                id=run_id,
+                task_id=task_id,
+                stage=stage.value,
+                attempt=attempt,
+                status=WorkflowStatus.RUNNING.value,
+                started_at=started_at,
+            )
+            try:
+                async with self.session.begin_nested():
+                    self.session.add(run)
+                    await self.session.flush()
+            except IntegrityError:
+                return None
+        await self.fail(run, error)
+        return run
+
     async def list_attempts(
         self,
         task_id: UUID,
@@ -134,7 +164,14 @@ class WorkflowRunRepository:
         )
         return WorkflowState(
             stage=stage,
-            status=WorkflowStatus.PENDING,
+            status=(
+                WorkflowStatus.RUNNING
+                if stage is WorkflowStage.ANALYSIS
+                and latest is not None
+                and latest.stage == WorkflowStage.ANALYSIS.value
+                and latest.status == WorkflowStatus.RUNNING.value
+                else WorkflowStatus.PENDING
+            ),
             attempt=latest.attempt if latest is not None else 0,
             processed=analysis.completed if stage is WorkflowStage.ANALYSIS else 0,
             total=analysis.total if stage is WorkflowStage.ANALYSIS else 0,
@@ -160,6 +197,7 @@ def _analysis_progress(run: WorkflowStageRun) -> AnalysisProgress:
         return AnalysisProgress()
     completed = run.succeeded + run.manual_review + run.failed
     return AnalysisProgress(
+        job_id=run.analysis_job_id,
         total=run.total,
         completed=completed,
         succeeded=run.succeeded,

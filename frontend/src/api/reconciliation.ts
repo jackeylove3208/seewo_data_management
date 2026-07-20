@@ -14,6 +14,7 @@ export interface WorkflowError {
 }
 
 export interface AnalysisProgress {
+  job_id?: string | null;
   total: number;
   completed: number;
   succeeded: number;
@@ -116,13 +117,63 @@ export interface CauseAnalysisV2 {
   options: GovernanceOption[];
 }
 
+export type ResolutionMode = "auto_executable" | "needs_information" | "manual_only";
+
+interface ResolutionBase {
+  solution_id: string;
+  title: string;
+  rationale: string;
+  risk: RiskLevel;
+  risk_reason: string;
+  confidence: number;
+  evidence_refs: string[];
+  preconditions: string[];
+  recommended: boolean;
+}
+
+export interface AutoExecutableResolution extends ResolutionBase {
+  mode: "auto_executable";
+  action: {
+    operation_type: OperationType;
+    target_entity_id: string | null;
+    proposed_changes: ProposedFieldChange[];
+  };
+}
+
+export interface NeedsInformationResolution extends ResolutionBase {
+  mode: "needs_information";
+  information_requests: Array<{
+    request_type: string;
+    question: string;
+    reason: string;
+    source_hint: string;
+  }>;
+}
+
+export interface ManualResolution extends ResolutionBase {
+  mode: "manual_only";
+  manual_steps: Array<{ order: number; instruction: string }>;
+}
+
+export type ResolutionPath = AutoExecutableResolution | NeedsInformationResolution | ManualResolution;
+
+export interface CauseAnalysisV3 {
+  locale: "zh-CN";
+  issue_title: string;
+  cause_summary: string;
+  evidence_summary: string;
+  business_impact: string;
+  recommended_solution_id: string;
+  solutions: ResolutionPath[];
+}
+
 export interface AnalysisResult {
   id: string;
   difference_id: string;
   difference_version: number;
   analysis_version: string;
   status: AnalysisStatus;
-  output: CauseAnalysisV2 | null;
+  output: CauseAnalysisV2 | CauseAnalysisV3 | null;
   failure_code: string | null;
   attempt_count: number;
   provenance: {
@@ -199,6 +250,93 @@ export interface DifferenceFilters {
   limit?: number;
 }
 
+export type AnalysisJobStatus = "queued" | "running" | "completed" | "completed_with_failures" | "canceled";
+
+export interface AnalysisJobProgress {
+  job_id: string;
+  task_id: string;
+  status: AnalysisJobStatus;
+  total: number;
+  completed: number;
+  succeeded: number;
+  manual_required: number;
+  needs_information: number;
+  manual_only: number;
+  failed: number;
+  proposal_ready: number;
+  last_error: string | null;
+  updated_at: string;
+}
+
+export interface EntityIssueSummary {
+  entity_type: EntityType;
+  issue_count: number;
+  proposal_ready: number;
+  needs_information: number;
+  manual_only: number;
+  failed: number;
+}
+
+export interface TaskAnalysisSummary {
+  task_id: string;
+  analysis_job_id: string | null;
+  job_status: AnalysisJobStatus | null;
+  terminal: boolean;
+  entity_types: EntityIssueSummary[];
+}
+
+export type BatchExclusionReason = "high_risk" | "needs_information" | "manual_only" | "analysis_failed" | "stale" | "existing_proposal" | "no_recommended_action";
+
+export interface BatchPreviewRequest {
+  analysis_job_id: string;
+  entity_type?: EntityType;
+}
+
+export interface BatchPreviewItem {
+  difference_id: string;
+  difference_version: number;
+  analysis_id: string;
+  solution_id: string;
+  entity_type: EntityType;
+  title: string;
+  operation_type: OperationType;
+  changes: ProposedFieldChange[];
+  risk: RiskLevel;
+}
+
+export interface BatchExcludedItem {
+  difference_id: string;
+  entity_type: EntityType;
+  reason: BatchExclusionReason;
+  reason_label: string;
+}
+
+export interface BatchProposalPreview {
+  task_id: string;
+  analysis_job_id: string;
+  preview_token: string;
+  included: BatchPreviewItem[];
+  excluded: BatchExcludedItem[];
+}
+
+export interface ConfirmBatchProposalRequest {
+  preview_token: string;
+  idempotency_key: string;
+}
+
+export interface BatchProposalResult {
+  task_id: string;
+  created: number;
+  skipped: number;
+  failed: number;
+  items: Array<{
+    difference_id: string;
+    status: "created" | "skipped" | "failed";
+    proposal_id: string | null;
+    reason: string | null;
+  }>;
+}
+
 function post<T>(path: string, body?: unknown, signal?: AbortSignal) {
   return requestJson<T>(path, {
     method: "POST",
@@ -261,6 +399,38 @@ function listProposals(differenceId: string, signal?: AbortSignal) {
   return get<GovernanceProposal[]>(`/api/differences/${differenceId}/proposals`, signal);
 }
 
+function createAnalysisJob(taskId: string, idempotencyKey: string, signal?: AbortSignal) {
+  return requestJson<AnalysisJobProgress>(`/api/reconciliation-tasks/${taskId}/analysis-jobs`, {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    signal,
+  });
+}
+
+function getAnalysisJob(jobId: string, signal?: AbortSignal) {
+  return get<AnalysisJobProgress>(`/api/analysis-jobs/${jobId}`, signal);
+}
+
+function retryAnalysisJob(jobId: string) {
+  return post<AnalysisJobProgress>(`/api/analysis-jobs/${jobId}/retry`);
+}
+
+function cancelAnalysisJob(jobId: string) {
+  return post<AnalysisJobProgress>(`/api/analysis-jobs/${jobId}/cancel`);
+}
+
+function getAnalysisSummary(taskId: string, signal?: AbortSignal) {
+  return get<TaskAnalysisSummary>(`/api/reconciliation-tasks/${taskId}/analysis-summary`, signal);
+}
+
+function previewProposalBatch(taskId: string, body: BatchPreviewRequest) {
+  return post<BatchProposalPreview>(`/api/reconciliation-tasks/${taskId}/proposal-batches/preview`, body);
+}
+
+function confirmProposalBatch(taskId: string, body: ConfirmBatchProposalRequest) {
+  return post<BatchProposalResult>(`/api/reconciliation-tasks/${taskId}/proposal-batches/confirm`, body);
+}
+
 export const reconciliationApi = {
   advance,
   retry,
@@ -273,4 +443,11 @@ export const reconciliationApi = {
   previewManualProposal,
   confirmManualProposal,
   listProposals,
+  createAnalysisJob,
+  getAnalysisJob,
+  retryAnalysisJob,
+  cancelAnalysisJob,
+  getAnalysisSummary,
+  previewProposalBatch,
+  confirmProposalBatch,
 };

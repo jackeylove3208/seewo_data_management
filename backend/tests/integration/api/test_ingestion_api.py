@@ -3,16 +3,20 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
+from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import create_engine, func, inspect, select
 
+from alembic import command
 from app.api.dependencies import get_operator_context
 from app.core.config import Settings
 from app.core.security import OperatorContext
 from app.main import create_app
+from app.models import Base
 from app.models.analyses import AnalysisRecord
 from app.models.differences import DifferenceRecord
 from app.models.mappings import EntityMapping
+from app.models.workflow import WorkflowStageRun
 
 ROOT = Path(__file__).parents[4]
 
@@ -28,6 +32,27 @@ def client(tmp_path: Path):
     )
     with TestClient(create_app(settings)) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def legacy_client(tmp_path: Path):
+    database_path = tmp_path / "legacy-api.db"
+    sync_url = f"sqlite:///{database_path}"
+    engine = create_engine(sync_url)
+    Base.metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "ALTER TABLE analysis_results DROP COLUMN gateway_request_ids"
+        )
+    settings = Settings(
+        database_url=f"sqlite+aiosqlite:///{database_path}",
+        upload_root=tmp_path / "uploads",
+        snapshot_root=tmp_path / "snapshots",
+        quarantine_root=tmp_path / "quarantine",
+        auto_create_schema=False,
+    )
+    with TestClient(create_app(settings)) as test_client:
+        yield test_client, database_path
 
 
 def upload(client: TestClient, path: Path, role: str) -> dict:
@@ -226,7 +251,7 @@ def test_idempotency_key_rejects_a_different_request(client: TestClient) -> None
     assert conflict.json()["detail"]["code"] == "idempotency_conflict"
 
 
-def test_workflow_api_advances_to_analysis_ready(client: TestClient, tmp_path: Path) -> None:
+def test_workflow_api_enqueues_durable_analysis_job(client: TestClient, tmp_path: Path) -> None:
     header = "entity_type,id,name,parent_id,grade,class_name,subject,phone,email,extra\n"
     source_path = tmp_path / "workflow-source.csv"
     source_path.write_text(
@@ -256,8 +281,84 @@ def test_workflow_api_advances_to_analysis_ready(client: TestClient, tmp_path: P
     assert differences.status_code == 200, differences.text
     assert differences.json()["workflow"]["stage"] == "analysis"
     assert analysis.status_code == 200, analysis.text
-    assert analysis.json()["workflow"]["stage"] == "complete"
-    assert analysis.json()["workflow"]["analysis"]["completed"] >= 1
+    assert analysis.json()["workflow"]["stage"] == "analysis"
+    assert analysis.json()["workflow"]["status"] == "running"
+    assert analysis.json()["workflow"]["analysis"]["job_id"] is not None
+    assert analysis.json()["workflow"]["analysis"]["completed"] == 0
+
+
+def test_schema_failure_is_persisted_and_retryable_after_upgrade(
+    legacy_client,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client, database_path = legacy_client
+    header = "entity_type,id,name,parent_id,grade,class_name,subject,phone,email,extra\n"
+    source_path = tmp_path / "legacy-workflow-source.csv"
+    source_path.write_text(
+        header + "部门,D01,教务处,,,,,,,\n" + "教师,T01,张三,D01,,,数学,13100000000,,\n",
+        encoding="utf-8",
+    )
+    target_path = tmp_path / "legacy-workflow-target.csv"
+    target_path.write_text(
+        header + "部门,D01,教务处,,,,,,,\n" + "教师,T01,张三,D01,,,数学,13000000000,,\n",
+        encoding="utf-8",
+    )
+    source = upload(client, source_path, "authoritative")
+    target = upload(client, target_path, "target")
+    created = client.post(
+        "/api/reconciliation-tasks",
+        json=valid_task_payload(source["id"], target["id"]),
+        headers={"Idempotency-Key": "legacy-workflow"},
+    )
+    task_id = created.json()["id"]
+
+    matching = client.post(f"/api/reconciliation-tasks/{task_id}/workflow/advance")
+    assert matching.status_code == 200, matching.text
+    failed = client.post(f"/api/reconciliation-tasks/{task_id}/workflow/advance")
+
+    assert failed.status_code == 200, failed.text
+    failed_workflow = failed.json()["workflow"]
+    assert failed_workflow["status"] == "failed"
+    assert failed_workflow["stage"] == "differences"
+    assert failed_workflow["error"]["code"] == "database_schema_mismatch"
+    assert failed_workflow["error"]["retryable"] is True
+    assert "alembic upgrade head" in failed_workflow["error"]["message"]
+
+    monkeypatch.setenv(
+        "RECONCILIATION_DATABASE_URL",
+        f"sqlite+aiosqlite:///{database_path}",
+    )
+    command.upgrade(Config("alembic.ini"), "head")
+    assert "gateway_request_ids" in {
+        column["name"]
+        for column in inspect(create_engine(f"sqlite:///{database_path}")).get_columns(
+            "analysis_results"
+        )
+    }
+
+    retried = client.post(f"/api/reconciliation-tasks/{task_id}/workflow/retry")
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["workflow"]["status"] == "pending"
+    assert retried.json()["workflow"]["stage"] == "analysis"
+
+    async def attempts() -> list[tuple[int, str]]:
+        async with client.app.state.database.session_factory() as session:
+            rows = await session.scalars(
+                select(WorkflowStageRun)
+                .where(
+                    WorkflowStageRun.task_id == UUID(task_id),
+                    WorkflowStageRun.stage == "differences",
+                )
+                .order_by(WorkflowStageRun.attempt)
+            )
+            return [(row.attempt, row.status) for row in rows]
+
+    assert client.portal is not None
+    assert client.portal.call(attempts) == [
+        (1, "failed"),
+        (2, "succeeded"),
+    ]
 
 
 def test_concurrent_workflow_advancement_does_not_duplicate_stage_outputs(

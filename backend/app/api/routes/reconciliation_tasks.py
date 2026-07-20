@@ -5,10 +5,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.agent import GovernanceAgent
-from app.ai.analysis_service import AnalysisService
-from app.ai.mcp.server import MCPToolGateway
-from app.ai.providers.llm import HttpLLMProvider
+from app.ai.job_service import AnalysisJobService
 from app.api.dependencies import get_operator_context, get_session
 from app.core.security import OperatorContext
 from app.differences.service import DifferenceDetectionService
@@ -44,24 +41,12 @@ def workflow_service_for(
     session: AsyncSession,
     operator: OperatorContext,
 ) -> ReconciliationWorkflowService:
-    settings = request.app.state.settings
-    tokenization_secret = (
-        settings.tokenization_secret.get_secret_value()
-        if settings.tokenization_secret is not None
-        else None
-    )
-    agent = GovernanceAgent(
-        HttpLLMProvider(settings=settings),
-        MCPToolGateway(session),
-        tokenization_secret=tokenization_secret,
-    )
     return ReconciliationWorkflowService(
         session,
         operator=operator,
         resolver=EntityResolutionService(session),
         detector=DifferenceDetectionService(session),
-        analyzer=AnalysisService(session, agent=agent, operator=operator),
-        analysis_batch_size=settings.analysis_batch_size,
+        analyzer=AnalysisJobService(session, operator=operator),
     )
 
 

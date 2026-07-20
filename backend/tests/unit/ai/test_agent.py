@@ -50,10 +50,14 @@ class ModelStub:
 class ToolGatewayStub:
     def __init__(self) -> None:
         self.calls = []
+        self.close_calls = 0
 
     async def call(self, name, arguments, context):
         self.calls.append((name, arguments, context))
         return ToolResult(payload={"items": []}, trace_id=f"trace-{len(self.calls)}")
+
+    async def close_read_transaction(self) -> None:
+        self.close_calls += 1
 
 
 def request() -> AgentRequest:
@@ -108,6 +112,7 @@ async def test_agent_calls_only_a_skill_allowed_tool() -> None:
     result = await GovernanceAgent(model, tools).analyze(request())
 
     assert [call[0] for call in tools.calls] == ["candidate_search"]
+    assert tools.close_calls == 1
     assert result.provenance.tool_trace_ids == ("trace-1",)
     assert result.provenance.usage.input_tokens == 10
     first_request = model.requests[0]

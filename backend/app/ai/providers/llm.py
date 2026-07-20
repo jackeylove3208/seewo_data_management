@@ -82,7 +82,7 @@ class HttpLLMProvider(LLMProvider):
                 if attempt == self.settings.model_retry_attempts:
                     break
                 await self.sleep(self.settings.model_retry_wait_seconds * attempt)
-        raise ModelProviderError(
+        raise TransientModelError(
             f"model request failed after {self.settings.model_retry_attempts} attempts"
         ) from last_error
 

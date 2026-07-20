@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { type PropsWithChildren } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { reconciliationApi, type AnalysisResult, type DifferenceItem } from "../../api/reconciliation";
+import { reconciliationApi, type AnalysisResult, type CauseAnalysisV2, type DifferenceItem } from "../../api/reconciliation";
 import { ApiError } from "../../api/client";
 import { AnalysisModal } from "./AnalysisModal";
 
@@ -38,7 +38,7 @@ const difference: DifferenceItem = {
   current_proposal_version: null,
 };
 
-const analysis: AnalysisResult = {
+const analysis: AnalysisResult & { output: CauseAnalysisV2 } = {
   id: "analysis-1",
   difference_id: difference.id,
   difference_version: 1,
@@ -146,6 +146,8 @@ describe("AnalysisModal", () => {
 
     render(<AnalysisModal open difference={difference} onClose={() => undefined} />, { wrapper: wrapper() });
     expect(await screen.findByText("手机号来自不同更新时间的数据快照")).toBeInTheDocument();
+    expect(screen.getByText("企业模型分析")).toBeInTheDocument();
+    expect(screen.queryByText(/enterprise-model/)).not.toBeInTheDocument();
     expect(screen.getAllByText("推荐")).toHaveLength(1);
     await user.click(screen.getAllByRole("button", { name: "采用并预览" })[0]);
     expect(await screen.findByText("方案修改预览")).toBeInTheDocument();
@@ -178,6 +180,57 @@ describe("AnalysisModal", () => {
     expect(await screen.findByText("信息不足，需要人工核实")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "采用并预览" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "人工修改" })).toBeInTheDocument();
+  });
+
+  it("renders v3 information requests and manual steps in Chinese", async () => {
+    vi.spyOn(reconciliationApi, "getAnalysis").mockResolvedValue({
+      ...analysis,
+      analysis_version: "analysis-v3",
+      status: "manual_review",
+      output: {
+        locale: "zh-CN",
+        issue_title: "教师身份信息不足",
+        cause_summary: "双方记录缺少相同的稳定工号。",
+        evidence_summary: "姓名相同，但所属组织和手机号均不同。",
+        business_impact: "错误合并可能影响其他教师账号。",
+        recommended_solution_id: "info-1",
+        solutions: [
+          {
+            solution_id: "info-1",
+            mode: "needs_information",
+            title: "补充教师工号",
+            rationale: "需要稳定标识确认身份。",
+            risk: "medium",
+            risk_reason: "仅凭姓名可能匹配错误。",
+            confidence: 0.4,
+            evidence_refs: [],
+            preconditions: [],
+            recommended: true,
+            information_requests: [{ request_type: "teacher_number", question: "这两条记录是否属于同一教师？", reason: "需要核对教师工号", source_hint: "学校教师花名册" }],
+          },
+          {
+            solution_id: "manual-1",
+            mode: "manual_only",
+            title: "人工核对身份",
+            rationale: "信息不足时不能自动修改。",
+            risk: "high",
+            risk_reason: "错误修改会影响其他账号。",
+            confidence: 0.2,
+            evidence_refs: [],
+            preconditions: [],
+            recommended: false,
+            manual_steps: [{ order: 1, instruction: "向学校管理员核对教师工号。" }],
+          },
+        ],
+      },
+    });
+
+    render(<AnalysisModal open difference={{ ...difference, analysis_status: "manual_review" }} onClose={() => undefined} />, { wrapper: wrapper() });
+
+    expect(await screen.findByText("这两条记录是否属于同一教师？")).toBeInTheDocument();
+    expect(screen.getByText("向学校管理员核对教师工号。")).toBeInTheDocument();
+    expect(screen.getByText(/仅凭姓名可能匹配错误/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "采用并预览" })).not.toBeInTheDocument();
   });
 
   it("builds a manual proposal from the backend editor schema", async () => {
@@ -225,7 +278,7 @@ describe("AnalysisModal", () => {
 
     render(<AnalysisModal open difference={difference} onClose={() => undefined} />, { wrapper: wrapper() });
     await user.click(await screen.findByRole("button", { name: "人工修改" }));
-    const phone = await screen.findByRole("textbox", { name: "Phone" });
+    const phone = await screen.findByRole("textbox", { name: "手机号" });
     await user.clear(phone);
     await user.type(phone, "13700000000");
     await user.type(screen.getByRole("textbox", { name: "修改原因" }), "人工核对校内通讯录后确认");
@@ -262,5 +315,66 @@ describe("AnalysisModal", () => {
 
     expect(await screen.findByText("数据版本已变化，请重新打开分析后确认。" )).toBeInTheDocument();
     expect(screen.queryByText("方案修改预览")).not.toBeInTheDocument();
+  });
+
+  it("shows a Chinese manual fallback when analysis has no output", async () => {
+    vi.spyOn(reconciliationApi, "getAnalysis").mockResolvedValue({
+      ...analysis,
+      status: "failed",
+      output: null,
+      failure_code: "gateway_timeout",
+    });
+
+    render(<AnalysisModal open difference={{ ...difference, analysis_status: "failed" }} onClose={() => undefined} />, { wrapper: wrapper() });
+
+    expect(await screen.findByText("AI 分析未生成可用结果")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "人工修改" })).toBeInTheDocument();
+    expect(screen.queryByText("gateway_timeout")).not.toBeInTheDocument();
+  });
+
+  it("localizes status values in proposal previews", async () => {
+    const user = userEvent.setup();
+    const statusAnalysis: AnalysisResult & { output: CauseAnalysisV2 } = {
+      ...analysis,
+      output: {
+        ...analysis.output,
+        options: [{
+          ...analysis.output.options[0],
+          proposed_changes: [{ field: "status", before: "active", after: "inactive" }],
+        }],
+      },
+    };
+    vi.spyOn(reconciliationApi, "getAnalysis").mockResolvedValue(statusAnalysis);
+    vi.spyOn(reconciliationApi, "previewAIProposal").mockResolvedValue({
+      difference_id: difference.id,
+      difference_version: 1,
+      proposal_source: "ai",
+      operation_type: "update",
+      target_entity_id: "target-person",
+      changes: [{ field: "status", before: "active", after: "inactive" }],
+      rationale: "停用离职教师账号",
+      evidence_refs: ["field:status"],
+      risk: "low",
+    });
+
+    render(<AnalysisModal open difference={difference} onClose={() => undefined} />, { wrapper: wrapper() });
+    await user.click(await screen.findByRole("button", { name: "采用并预览" }));
+
+    expect(await screen.findByText("启用")).toBeInTheDocument();
+    expect(screen.getByText("停用")).toBeInTheDocument();
+    expect(screen.queryByText("active")).not.toBeInTheDocument();
+    expect(screen.queryByText("inactive")).not.toBeInTheDocument();
+  });
+
+  it("does not expose technical proposal errors", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(reconciliationApi, "getAnalysis").mockResolvedValue(analysis);
+    vi.spyOn(reconciliationApi, "previewAIProposal").mockRejectedValue(new ApiError("internal_gateway_timeout", 500));
+
+    render(<AnalysisModal open difference={difference} onClose={() => undefined} />, { wrapper: wrapper() });
+    await user.click((await screen.findAllByRole("button", { name: "采用并预览" }))[0]);
+
+    expect(await screen.findByText("请求未完成，请稍后重试。")).toBeInTheDocument();
+    expect(screen.queryByText("internal_gateway_timeout")).not.toBeInTheDocument();
   });
 });

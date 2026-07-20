@@ -13,10 +13,12 @@ from app.schemas.governance import (
     AnalysisStatus,
     CauseAnalysis,
     CauseAnalysisV2,
+    CauseAnalysisV3,
 )
 
 DEFAULT_ANALYSIS_VERSION = "analysis-v1"
 CURRENT_ANALYSIS_VERSION = "analysis-v2"
+ANALYSIS_V3_VERSION = "analysis-v3"
 
 __all__ = ["AnalysisRepository", "ImmutableAnalysisError"]
 
@@ -51,7 +53,7 @@ class AnalysisRepository:
     async def save_success(
         self,
         difference: DifferenceItem,
-        output: CauseAnalysis | CauseAnalysisV2,
+        output: CauseAnalysis | CauseAnalysisV2 | CauseAnalysisV3,
         provenance: AnalysisProvenance,
         *,
         attempt_count: int = 1,
@@ -89,7 +91,7 @@ class AnalysisRepository:
     async def save_manual_review(
         self,
         difference: DifferenceItem,
-        output: CauseAnalysis | CauseAnalysisV2,
+        output: CauseAnalysis | CauseAnalysisV2 | CauseAnalysisV3,
         provenance: AnalysisProvenance,
         *,
         attempt_count: int,
@@ -111,7 +113,7 @@ class AnalysisRepository:
         difference: DifferenceItem,
         *,
         status: AnalysisStatus,
-        output: CauseAnalysis | CauseAnalysisV2 | None,
+        output: CauseAnalysis | CauseAnalysisV2 | CauseAnalysisV3 | None,
         failure_code: str | None,
         attempt_count: int,
         provenance: AnalysisProvenance,
@@ -155,11 +157,13 @@ class AnalysisRepository:
 
     @staticmethod
     def _result(record: AnalysisRecord) -> AnalysisResult:
-        output_model = (
-            CauseAnalysisV2
-            if record.analysis_version == CURRENT_ANALYSIS_VERSION
-            else CauseAnalysis
-        )
+        output_model: type[CauseAnalysis] | type[CauseAnalysisV2] | type[CauseAnalysisV3]
+        if record.analysis_version == ANALYSIS_V3_VERSION:
+            output_model = CauseAnalysisV3
+        elif record.analysis_version == CURRENT_ANALYSIS_VERSION:
+            output_model = CauseAnalysisV2
+        else:
+            output_model = CauseAnalysis
         output = output_model.model_validate(record.output) if record.output is not None else None
         generated_at = record.generated_at
         if generated_at.tzinfo is None:

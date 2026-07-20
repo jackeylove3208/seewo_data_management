@@ -6,6 +6,7 @@ from app.ai.skills.registry import SkillDefinition
 
 PROMPT_VERSION = "analysis-prompt-v1"
 PROMPT_VERSION_V2 = "analysis-prompt-v2"
+PROMPT_VERSION_V3 = "analysis-prompt-v3"
 
 _DIFFERENCE_ID_SCHEMA = {"type": "string", "format": "uuid"}
 TOOL_ARGUMENT_SCHEMAS: dict[str, dict[str, Any]] = {

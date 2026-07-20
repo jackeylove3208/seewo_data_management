@@ -18,6 +18,7 @@ import { differencesFor, entityLabels } from "../../data/demoDifferences";
 import { findTask } from "../../data/taskHistory";
 import type { DifferencePerson, DifferenceType, EntityType } from "../../types/domain";
 import { AnalysisModal } from "../analysis/AnalysisModal";
+import { fieldLabel } from "../analysis/localization";
 import {
   getSelectionState,
   issueIdsFor,
@@ -112,7 +113,7 @@ function RealDifferencePage({ taskId, entityType }: { taskId: string; entityType
             <div className="real-field-list">
               {(item.evidence.fields.length > 0 ? item.evidence.fields : [{ field: "实体状态", source_value: item.evidence.source_payload ? "存在" : "缺失", target_value: item.evidence.target_payload ? "存在" : "缺失", normalized_source: null, normalized_target: null, comparison: "attribute" as const }]).map((field) => (
                 <div className="real-field-row" key={field.field}>
-                  <strong>{field.field}</strong>
+                  <strong>{fieldLabel(field.field)}</strong>
                   <div><small>三方系统</small><span>{displayValue(field.source_value)}</span></div>
                   <ArrowRight size={15} />
                   <div><small>希沃</small><span>{displayValue(field.target_value)}</span></div>
