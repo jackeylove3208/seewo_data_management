@@ -32,18 +32,19 @@ The backend is the sole authority for deletion eligibility. A task is deletable 
 
 - The task exists and belongs to the authenticated operator tenant.
 - The task is a real backend task rather than frontend demo data.
+- A workflow stage run exists with `stage="analysis"` and `status="succeeded"`.
 - No `governance_proposals` record exists for the task, regardless of proposal status or source.
 
 AI analysis results and recommendations embedded in an analysis result do not block deletion. Creating either an AI-derived or manually entered governance proposal permanently makes the task ineligible for this deletion workflow, even when the proposal has never executed.
 
-Missing or cross-tenant tasks return `404`. Tasks with any governance proposal return `409` with a stable user-facing explanation. Repeating deletion after a successful deletion returns `404` and does not recreate or partially restore data.
+Missing or cross-tenant tasks return `404`. Tasks without a successfully completed analysis stage return `409` with “任务尚未完成 AI 分析，不能删除”. Tasks with any governance proposal return `409` with “该任务已有治理方案，不能删除”. Repeating deletion after a successful deletion returns `404` and does not recreate or partially restore data.
 
 ## Backend Deletion Boundary
 
 Add `DELETE /api/reconciliation-tasks/{task_id}` to the reconciliation task router. The route delegates to a focused task-deletion service that:
 
 1. Loads and tenant-checks the task.
-2. Checks for any governance proposal before mutating data.
+2. Checks for a successfully completed analysis workflow stage and then checks for any governance proposal before mutating data.
 3. Collects task-owned storage paths that must be removed after database success.
 4. Deletes task-owned database records in foreign-key-safe order inside one transaction.
 5. Deletes the reconciliation task last.
@@ -87,6 +88,7 @@ The sidebar remains usable when collapsed and on mobile. The delete command is h
 Backend tests cover:
 
 - Deleting a task with completed analysis and no governance proposal.
+- Refusing deletion before AI analysis has completed successfully.
 - Refusing deletion when any AI or manual governance proposal exists.
 - Returning `404` for missing and cross-tenant tasks.
 - Removing task-owned database records without affecting another task.
