@@ -182,10 +182,10 @@ class ExactMatcher:
             )
             if matches:
                 resolved_groups.append((group, source_key, matches, policy.version))
-        trusted_policy = self._trusted_source_id_policy(
-            source,
-            target_index,
-            target_snapshot_id,
+        trusted_policy = (
+            self._trusted_source_id_policy(source, target_index, target_snapshot_id)
+            if target_snapshot_id is not None
+            else None
         )
         if trusted_policy is not None:
             fields = (trusted_policy.field,)

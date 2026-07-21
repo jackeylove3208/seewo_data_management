@@ -68,6 +68,8 @@ def test_reviewed_manual_proposal_produces_verified_derived_csv(
     assert differences.status_code == 200, differences.text
     assert differences.json()["items"], differences.text
     difference = differences.json()["items"][0]
+    analyzed = governance_client.post(f"/api/reconciliation-tasks/{task_id}/analyses")
+    assert analyzed.status_code == 202, analyzed.text
     proposal = governance_client.post(
         f"/api/differences/{difference['id']}/proposals/manual",
         json={
