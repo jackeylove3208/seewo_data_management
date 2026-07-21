@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.models.analyses import AnalysisRecord
 from app.models.differences import DifferenceRecord
+from app.models.executions import ExecutionBatchRecord, GovernancePlanRecord, TargetVersionRecord
 from app.models.proposals import GovernanceProposalRecord
 from app.models.quality import MatchingQualityRecord
 from app.models.reconciliation import ReconciliationTask
@@ -195,19 +196,18 @@ async def test_deletes_rematching_and_quality_records_with_task(session) -> None
 
 
 @pytest.mark.asyncio
-async def test_refuses_task_without_successful_analysis(session) -> None:
+async def test_deletes_task_without_successful_analysis(session) -> None:
     pending = task()
     session.add(pending)
     await session.flush()
 
-    with pytest.raises(TaskDeletionBlocked, match="尚未完成 AI 分析"):
-        await TaskDeletionService(session).delete(pending.id, "school-1")
+    await TaskDeletionService(session).delete(pending.id, "school-1")
 
-    assert await session.get(ReconciliationTask, pending.id) is not None
+    assert await session.get(ReconciliationTask, pending.id) is None
 
 
 @pytest.mark.asyncio
-async def test_refuses_task_with_any_governance_proposal(session) -> None:
+async def test_deletes_task_with_unexecuted_governance_proposal(session) -> None:
     protected = task()
     source_file_id = uuid4()
     snapshot_id = uuid4()
@@ -282,31 +282,122 @@ async def test_refuses_task_with_any_governance_proposal(session) -> None:
         )
     )
     await session.flush()
+    proposal = GovernanceProposalRecord(
+        id=uuid4(),
+        task_id=protected.id,
+        tenant_id="school-1",
+        difference_id=difference_id,
+        difference_version=1,
+        analysis_id=analysis_id,
+        analysis_version="analysis-v1",
+        proposal_version=1,
+        proposal_source="ai",
+        operation_type="update",
+        target_entity_id=None,
+        changes=[],
+        rationale="test",
+        evidence_refs=[],
+        risk="low",
+        created_by="operator-1",
+        status="pending_execution",
+        supersedes_id=None,
+    )
+    session.add(proposal)
+    await session.flush()
+    plan = GovernancePlanRecord(
+        task_id=protected.id,
+        version=1,
+        source_snapshot_id=snapshot_id,
+        target_snapshot_id=snapshot_id,
+        target_version="target-v1",
+        proposal_versions=[],
+        operations=[],
+        content_hash="2" * 64,
+        created_by="operator-1",
+    )
+    session.add(plan)
     session.add(
-        GovernanceProposalRecord(
-            id=uuid4(),
+        TargetVersionRecord(
             task_id=protected.id,
-            tenant_id="school-1",
-            difference_id=difference_id,
-            difference_version=1,
-            analysis_id=analysis_id,
-            analysis_version="analysis-v1",
-            proposal_version=1,
-            proposal_source="ai",
-            operation_type="update",
-            target_entity_id=None,
-            changes=[],
-            rationale="test",
-            evidence_refs=[],
-            risk="low",
-            created_by="operator-1",
-            status="pending_execution",
-            supersedes_id=None,
+            tenant_id=protected.tenant_id,
+            source_snapshot_id=snapshot_id,
+            file_sha256="3" * 64,
+            content_hash="4" * 64,
+            storage_path="/tmp/target-version.csv",
         )
     )
     await session.flush()
 
-    with pytest.raises(TaskDeletionBlocked, match="已有治理方案"):
+    await TaskDeletionService(session).delete(protected.id, "school-1")
+
+    assert await session.get(ReconciliationTask, protected.id) is None
+    assert await session.get(GovernanceProposalRecord, proposal.id) is None
+    assert await session.get(GovernancePlanRecord, plan.id) is None
+    assert await session.scalar(
+        select(TargetVersionRecord).where(TargetVersionRecord.task_id == protected.id)
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_refuses_task_with_governance_execution_batch(session) -> None:
+    protected = task()
+    source_file_id = uuid4()
+    snapshot_id = uuid4()
+    session.add(protected)
+    await session.flush()
+    session.add(
+        SourceFile(
+            id=source_file_id,
+            task_id=protected.id,
+            source_role="authoritative",
+            original_name="source.csv",
+            storage_name="source-executed.csv",
+            storage_path="/tmp/source-executed.csv",
+            sha256="f" * 64,
+            size_bytes=4,
+        )
+    )
+    await session.flush()
+    session.add(
+        Snapshot(
+            id=snapshot_id,
+            task_id=protected.id,
+            source_file_id=source_file_id,
+            source_role="authoritative",
+            schema_version="canonical-v1",
+            mapping_version="third-party-v1",
+            file_hash="a" * 64,
+            content_hash="b" * 64,
+            summary={},
+        )
+    )
+    await session.flush()
+    plan = GovernancePlanRecord(
+        task_id=protected.id,
+        version=1,
+        source_snapshot_id=snapshot_id,
+        target_snapshot_id=snapshot_id,
+        target_version="target-v1",
+        proposal_versions=[],
+        operations=[],
+        content_hash="c" * 64,
+        created_by="operator-1",
+    )
+    session.add(plan)
+    await session.flush()
+    session.add(
+        ExecutionBatchRecord(
+            plan_id=plan.id,
+            plan_version=plan.version,
+            input_target_version_id=uuid4(),
+            idempotency_key=str(uuid4()),
+            confirmed_by="operator-1",
+            preflight_result={},
+        )
+    )
+    await session.flush()
+
+    with pytest.raises(TaskDeletionBlocked, match="治理执行记录"):
         await TaskDeletionService(session).delete(protected.id, "school-1")
 
     assert await session.get(ReconciliationTask, protected.id) is not None

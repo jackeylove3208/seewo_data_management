@@ -110,7 +110,7 @@ def test_upgrade_reconciles_unversioned_create_all_database(
         )
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0015_merge_reporting_matching"
+                == "0017_task_delete_target_version"
         )
 
 
@@ -130,17 +130,7 @@ def test_interrupted_legacy_upgrade_can_be_reapplied(
     command.upgrade(Config("alembic.ini"), "head")
     with engine.begin() as connection:
         connection.exec_driver_sql("DROP INDEX ix_workflow_stage_runs_status")
-        connection.exec_driver_sql("DROP TRIGGER reject_governance_proposals_delete")
         connection.exec_driver_sql("DROP TRIGGER reject_analysis_results_delete")
-        connection.exec_driver_sql(
-            """
-            CREATE TRIGGER reject_governance_proposals_delete
-            AFTER INSERT ON governance_proposals
-            BEGIN
-                SELECT 1;
-            END
-            """
-        )
         connection.exec_driver_sql(
             """
             CREATE TRIGGER reject_analysis_results_delete
@@ -169,18 +159,8 @@ def test_interrupted_legacy_upgrade_can_be_reapplied(
                 "SELECT name FROM sqlite_master WHERE type = 'trigger'"
             )
         }
-        assert {
-            "reject_governance_proposals_update",
-            "reject_governance_proposals_delete",
-        } <= triggers
-        delete_trigger_sql = connection.scalar(
-            text(
-                "SELECT sql FROM sqlite_master "
-                "WHERE type = 'trigger' "
-                "AND name = 'reject_governance_proposals_delete'"
-            )
-        )
-        assert "BEFORE DELETE" in delete_trigger_sql
+        assert "reject_governance_proposals_update" in triggers
+        assert "reject_governance_proposals_delete" not in triggers
         analysis_delete_trigger_sql = connection.scalar(
             text(
                 "SELECT sql FROM sqlite_master "
@@ -191,7 +171,7 @@ def test_interrupted_legacy_upgrade_can_be_reapplied(
         assert "BEFORE DELETE" in analysis_delete_trigger_sql
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0015_merge_reporting_matching"
+                == "0017_task_delete_target_version"
         )
 
 
@@ -224,7 +204,7 @@ def test_workflow_stage_migration_downgrades_and_reapplies(tmp_path: Path) -> No
     assert "workflow_stage_runs" in inspect(create_engine(url)).get_table_names()
 
 
-def test_governance_proposal_migration_is_reversible_and_immutable(tmp_path: Path) -> None:
+def test_governance_proposal_migration_is_reversible_and_update_immutable(tmp_path: Path) -> None:
     database_path = tmp_path / "proposal-migration.db"
     url = f"sqlite:///{database_path}"
     config = Config("alembic.ini")
@@ -238,10 +218,8 @@ def test_governance_proposal_migration_is_reversible_and_immutable(tmp_path: Pat
             "SELECT name FROM sqlite_master WHERE type = 'trigger'"
         )
     }
-    assert {
-        "reject_governance_proposals_update",
-        "reject_governance_proposals_delete",
-    } <= triggers
+    assert "reject_governance_proposals_update" in triggers
+    assert "reject_governance_proposals_delete" not in triggers
 
     command.downgrade(config, "0008_analysis_gateway_requests")
     assert "governance_proposals" not in inspect(engine).get_table_names()
