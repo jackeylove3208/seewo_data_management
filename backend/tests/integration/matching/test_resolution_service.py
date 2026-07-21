@@ -3,12 +3,17 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import func, select, update
 
-from app.matching.service import RESOLUTION_ORDER, EntityResolutionService, _with_context
+from app.matching.service import (
+    RESOLUTION_ORDER,
+    EntityResolutionService,
+    _with_context,
+    recompute_descendant_context,
+)
 from app.models.mappings import EntityMapping
 from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import CanonicalEntityRecord
 from app.repositories.mappings import MappingRepository
-from app.schemas.canonical_entities import EntityType
+from app.schemas.canonical_entities import EntityType, SourceRole
 from app.schemas.matching import (
     MatchDecision,
     MatchMethod,
@@ -16,6 +21,32 @@ from app.schemas.matching import (
     NormalizedRecord,
 )
 from tests.fixtures.organization_factory import create_hierarchy_pair
+
+
+class _RecordingVectorIndex:
+    def __init__(self) -> None:
+        self.index_calls: list[tuple[SourceRole, bool]] = []
+        self.bidirectional_calls: list[tuple[int, int, bool]] = []
+
+    async def upsert_snapshot(self, records, role, tokenization_context=None):
+        self.index_calls.append((role, tokenization_context is not None))
+        return len(records)
+
+    async def search_opposite(self, *args, **kwargs):
+        return []
+
+    async def bidirectional_edges(
+        self,
+        authoritative_records,
+        target_records,
+        *,
+        tokenization_context=None,
+        **kwargs,
+    ):
+        self.bidirectional_calls.append(
+            (len(authoritative_records), len(target_records), tokenization_context is not None)
+        )
+        return []
 
 
 @pytest.mark.asyncio
@@ -56,6 +87,27 @@ async def test_resolution_retry_reuses_complete_decision_set(session) -> None:
 
     assert second_count == first_count
     assert second.decisions == first.decisions
+
+
+@pytest.mark.asyncio
+async def test_production_resolution_indexes_both_roles_with_task_tokenization(session) -> None:
+    pair = await create_hierarchy_pair(session)
+    vector_index = _RecordingVectorIndex()
+
+    await EntityResolutionService(
+        session,
+        vector_index=vector_index,
+        tokenization_secret="test-tokenization-secret-123",
+        rematching_top_k=3,
+    ).resolve(pair)
+
+    assert {role for role, _tokenized in vector_index.index_calls} == {
+        SourceRole.AUTHORITATIVE,
+        SourceRole.TARGET,
+    }
+    assert all(tokenized for _role, tokenized in vector_index.index_calls)
+    assert vector_index.bidirectional_calls
+    assert all(tokenized for _sources, _targets, tokenized in vector_index.bidirectional_calls)
 
 
 @pytest.mark.asyncio
@@ -177,3 +229,68 @@ def test_membership_role_disambiguates_cross_type_member_ids() -> None:
     )
 
     assert contextualized.values["member_mapping_id"] == str(student_id)
+
+
+def test_recovered_class_mapping_recomputes_student_teacher_and_membership_context() -> None:
+    department_target = uuid4()
+    class_target = uuid4()
+    student_target = uuid4()
+    class_record = NormalizedRecord(
+        entity_id=uuid4(),
+        snapshot_id=uuid4(),
+        tenant_id="school-1",
+        entity_type=EntityType.CLASS,
+        source_id="C-1",
+        values={"parent_source_id": "D-1"},
+        rule_version="normalization-v1",
+    )
+    teacher = NormalizedRecord(
+        entity_id=uuid4(),
+        snapshot_id=uuid4(),
+        tenant_id="school-1",
+        entity_type=EntityType.TEACHER,
+        source_id="T-1",
+        values={"parent_source_id": "D-1"},
+        rule_version="normalization-v1",
+    )
+    student = NormalizedRecord(
+        entity_id=uuid4(),
+        snapshot_id=uuid4(),
+        tenant_id="school-1",
+        entity_type=EntityType.STUDENT,
+        source_id="S-1",
+        values={"parent_source_id": "C-1"},
+        rule_version="normalization-v1",
+    )
+    membership = NormalizedRecord(
+        entity_id=uuid4(),
+        snapshot_id=uuid4(),
+        tenant_id="school-1",
+        entity_type=EntityType.MEMBERSHIP,
+        source_id="M-1",
+        values={
+            "member_source_id": "S-1",
+            "container_source_id": "C-1",
+            "role": "student",
+        },
+        rule_version="normalization-v1",
+    )
+    recovered = {
+        "organization_unit:D-1": department_target,
+        "class:C-1": class_target,
+        "student:S-1": student_target,
+    }
+
+    contextualized = recompute_descendant_context(
+        (membership, student, teacher, class_record),
+        recovered,
+        authoritative=True,
+    )
+
+    by_type = {record.entity_type: record for record in contextualized}
+    assert by_type[EntityType.CLASS].parent_mapping_id == department_target
+    assert by_type[EntityType.TEACHER].parent_mapping_id == department_target
+    assert by_type[EntityType.STUDENT].parent_mapping_id == class_target
+    assert by_type[EntityType.MEMBERSHIP].parent_mapping_id == class_target
+    assert by_type[EntityType.MEMBERSHIP].values["member_mapping_id"] == str(student_target)
+    assert by_type[EntityType.MEMBERSHIP].values["container_mapping_id"] == str(class_target)

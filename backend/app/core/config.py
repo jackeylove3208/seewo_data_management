@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import (
+    Field,
     NonNegativeFloat,
     PositiveFloat,
     PositiveInt,
@@ -13,7 +14,6 @@ from pydantic import (
     model_validator,
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
 
 DEFAULT_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 
@@ -25,6 +25,7 @@ class LLMResponseMode(StrEnum):
 
 
 RESERVED_LLM_BODY_FIELDS = frozenset({"model", "messages", "response_format", "stream"})
+RESERVED_EMBEDDING_BODY_FIELDS = frozenset({"model", "input"})
 MAX_LLM_EXTRA_JSON_BYTES = 32 * 1024
 
 
@@ -63,12 +64,35 @@ class Settings(BaseSettings):
     embedding_url: str | None = None
     embedding_api_key: SecretStr | None = None
     embedding_model: str = "organization-embedding"
+    embedding_auth_header: str = "Authorization"
+    embedding_auth_scheme: str = "Bearer"
+    embedding_extra_headers_json: dict[str, str] = {}
+    embedding_extra_body_json: dict[str, Any] = {}
     embedding_timeout_seconds: PositiveFloat = 20
     embedding_dimensions: PositiveInt = 1536
+    rematching_enabled: bool = False
+    rematching_shadow_mode: bool = True
+    rematching_top_k: PositiveInt = 3
+    rematching_high_confidence_threshold: float = Field(default=0.9, ge=0, le=1)
+    rematching_worker_lease_seconds: PositiveInt = 60
+    rematching_worker_concurrency: PositiveInt = 4
+    rematching_worker_retry_attempts: PositiveInt = 3
+    rematching_worker_retry_wait_seconds: NonNegativeFloat = 2
+    matching_quality_policy_version: str = "matching-quality-v1"
+    matching_quality_min_population: PositiveInt = 10
+    matching_quality_max_unresolved_ratio: float = Field(default=0.2, ge=0, le=1)
+    matching_quality_max_create_ratio: float = Field(default=0.2, ge=0, le=1)
+    matching_quality_max_disable_ratio: float = Field(default=0.2, ge=0, le=1)
     model_retry_attempts: PositiveInt = 3
     model_retry_wait_seconds: NonNegativeFloat = 0.2
 
-    @field_validator("llm_auth_header", "llm_model")
+    @field_validator(
+        "llm_auth_header",
+        "llm_model",
+        "embedding_auth_header",
+        "embedding_model",
+        "matching_quality_policy_version",
+    )
     @classmethod
     def reject_blank_gateway_value(cls, value: str) -> str:
         stripped = value.strip()
@@ -76,7 +100,7 @@ class Settings(BaseSettings):
             raise ValueError("LLM gateway setting must be a non-blank single line")
         return stripped
 
-    @field_validator("llm_auth_scheme")
+    @field_validator("llm_auth_scheme", "embedding_auth_scheme")
     @classmethod
     def normalize_auth_scheme(cls, value: str) -> str:
         stripped = value.strip()
@@ -101,6 +125,33 @@ class Settings(BaseSettings):
             encoded = json.dumps(values, ensure_ascii=True, separators=(",", ":")).encode()
             if len(encoded) > MAX_LLM_EXTRA_JSON_BYTES:
                 raise ValueError("LLM gateway extension JSON exceeds the size limit")
+        embedding_body_overlap = sorted(
+            RESERVED_EMBEDDING_BODY_FIELDS.intersection(self.embedding_extra_body_json)
+        )
+        if embedding_body_overlap:
+            raise ValueError(
+                f"reserved embedding body field cannot be overridden: {embedding_body_overlap[0]}"
+            )
+        reserved_embedding_headers = {
+            "content-type",
+            self.embedding_auth_header.casefold(),
+        }
+        embedding_header_overlap = sorted(
+            header
+            for header in self.embedding_extra_headers_json
+            if header.casefold() in reserved_embedding_headers
+        )
+        if embedding_header_overlap:
+            raise ValueError(
+                f"reserved embedding header cannot be overridden: {embedding_header_overlap[0]}"
+            )
+        for values in (
+            self.embedding_extra_headers_json,
+            self.embedding_extra_body_json,
+        ):
+            encoded = json.dumps(values, ensure_ascii=True, separators=(",", ":")).encode()
+            if len(encoded) > MAX_LLM_EXTRA_JSON_BYTES:
+                raise ValueError("embedding gateway extension JSON exceeds the size limit")
         return self
 
     @property

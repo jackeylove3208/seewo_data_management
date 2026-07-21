@@ -76,3 +76,56 @@ def test_lexical_candidates_are_ranked_with_evidence() -> None:
     assert candidates[0].lexical_score == 1
     assert candidates[0].vector_score is None
     assert retriever.max_returned == 2
+
+
+def test_unresolved_parent_uses_relaxed_same_tenant_and_type_retrieval() -> None:
+    source = record(
+        "source",
+        "王小明",
+        entity_type=EntityType.STUDENT,
+        parent_mapping_id=None,
+    )
+    counterpart = record(
+        "target",
+        "王小明",
+        entity_type=EntityType.STUDENT,
+        parent_mapping_id=uuid4(),
+    )
+    wrong_tenant = record(
+        "wrong-tenant",
+        "王小明",
+        tenant_id="school-2",
+        entity_type=EntityType.STUDENT,
+        parent_mapping_id=uuid4(),
+    )
+
+    candidates = CandidateRetriever([counterpart, wrong_tenant]).lexical(source, top_k=3)
+
+    assert [candidate.entity_id for candidate in candidates] == [counterpart.entity_id]
+    assert candidates[0].retrieval_scope == "relaxed"
+
+
+def test_strict_candidates_prevent_relaxed_context_widening() -> None:
+    source = record(
+        "source",
+        "王小明",
+        entity_type=EntityType.STUDENT,
+        parent_mapping_id=None,
+    )
+    strict = record(
+        "strict",
+        "王小明",
+        entity_type=EntityType.STUDENT,
+        parent_mapping_id=None,
+    )
+    relaxed_only = record(
+        "relaxed",
+        "王小明",
+        entity_type=EntityType.STUDENT,
+        parent_mapping_id=uuid4(),
+    )
+
+    candidates = CandidateRetriever([relaxed_only, strict]).lexical(source, top_k=3)
+
+    assert [candidate.entity_id for candidate in candidates] == [strict.entity_id]
+    assert candidates[0].retrieval_scope == "strict"

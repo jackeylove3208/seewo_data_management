@@ -26,7 +26,7 @@ def test_initial_migration_creates_ingestion_tables(tmp_path: Path) -> None:
         "canonical_entities",
         "ingestion_issues",
         "entity_mappings",
-        "target_entity_embeddings",
+        "snapshot_entity_embeddings",
         "difference_items",
         "analysis_results",
         "workflow_stage_runs",
@@ -35,6 +35,21 @@ def test_initial_migration_creates_ingestion_tables(tmp_path: Path) -> None:
         "analysis_work_items",
         "proposal_batches",
     } <= tables
+
+
+def test_durable_analysis_work_items_include_created_at(tmp_path: Path) -> None:
+    database_path = tmp_path / "durable-analysis-timestamp.db"
+    url = f"sqlite:///{database_path}"
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", url)
+
+    command.upgrade(config, "head")
+
+    columns = {
+        column["name"]: column
+        for column in inspect(create_engine(url)).get_columns("analysis_work_items")
+    }
+    assert columns["created_at"]["nullable"] is False
 
 
 def test_upgrade_reconciles_unversioned_create_all_database(
@@ -62,9 +77,7 @@ def test_upgrade_reconciles_unversioned_create_all_database(
             ),
             {"id": task_id},
         )
-        connection.exec_driver_sql(
-            "ALTER TABLE analysis_results DROP COLUMN gateway_request_ids"
-        )
+        connection.exec_driver_sql("ALTER TABLE analysis_results DROP COLUMN gateway_request_ids")
     assert "alembic_version" not in inspect(engine).get_table_names()
 
     monkeypatch.setenv("RECONCILIATION_DATABASE_URL", migration_url)
@@ -75,13 +88,17 @@ def test_upgrade_reconciles_unversioned_create_all_database(
     assert columns["gateway_request_ids"]["nullable"] is False
     assert columns["gateway_request_ids"]["default"] in {"'[]'", "('[]')"}
     with engine.connect() as connection:
-        assert connection.scalar(
-            text("SELECT id FROM reconciliation_tasks WHERE id = :id"),
-            {"id": task_id},
-        ) == task_id
-        assert connection.scalar(
-            text("SELECT version_num FROM alembic_version")
-        ) == "0010_durable_analysis_jobs"
+        assert (
+            connection.scalar(
+                text("SELECT id FROM reconciliation_tasks WHERE id = :id"),
+                {"id": task_id},
+            )
+            == task_id
+        )
+        assert (
+            connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == "0014_matching_quality_results"
+        )
 
 
 def test_interrupted_legacy_upgrade_can_be_reapplied(
@@ -94,22 +111,14 @@ def test_interrupted_legacy_upgrade_can_be_reapplied(
     engine = create_engine(sync_url)
     Base.metadata.create_all(engine)
     with engine.begin() as connection:
-        connection.exec_driver_sql(
-            "ALTER TABLE analysis_results DROP COLUMN gateway_request_ids"
-        )
+        connection.exec_driver_sql("ALTER TABLE analysis_results DROP COLUMN gateway_request_ids")
 
     monkeypatch.setenv("RECONCILIATION_DATABASE_URL", migration_url)
     command.upgrade(Config("alembic.ini"), "head")
     with engine.begin() as connection:
-        connection.exec_driver_sql(
-            "DROP INDEX ix_workflow_stage_runs_status"
-        )
-        connection.exec_driver_sql(
-            "DROP TRIGGER reject_governance_proposals_delete"
-        )
-        connection.exec_driver_sql(
-            "DROP TRIGGER reject_analysis_results_delete"
-        )
+        connection.exec_driver_sql("DROP INDEX ix_workflow_stage_runs_status")
+        connection.exec_driver_sql("DROP TRIGGER reject_governance_proposals_delete")
+        connection.exec_driver_sql("DROP TRIGGER reject_analysis_results_delete")
         connection.exec_driver_sql(
             """
             CREATE TRIGGER reject_governance_proposals_delete
@@ -128,12 +137,7 @@ def test_interrupted_legacy_upgrade_can_be_reapplied(
             END
             """
         )
-        connection.execute(
-            text(
-                "UPDATE alembic_version "
-                "SET version_num = '0005_analysis_results'"
-            )
-        )
+        connection.execute(text("UPDATE alembic_version SET version_num = '0005_analysis_results'"))
 
     command.upgrade(Config("alembic.ini"), "head")
 
@@ -172,9 +176,10 @@ def test_interrupted_legacy_upgrade_can_be_reapplied(
             )
         )
         assert "BEFORE DELETE" in analysis_delete_trigger_sql
-        assert connection.scalar(
-            text("SELECT version_num FROM alembic_version")
-        ) == "0010_durable_analysis_jobs"
+        assert (
+            connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == "0014_matching_quality_results"
+        )
 
 
 def test_postgresql_migration_guards_analysis_history_with_a_trigger() -> None:

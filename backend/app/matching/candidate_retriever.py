@@ -1,10 +1,12 @@
 from collections import Counter, defaultdict
 from collections.abc import Sequence
+from typing import Literal
 from uuid import UUID
 
 from rapidfuzz import fuzz
 
 from app.matching.blocking import block_key
+from app.schemas.canonical_entities import EntityType
 from app.schemas.matching import BlockKey, Candidate, NormalizedRecord
 
 
@@ -13,12 +15,21 @@ class CandidateRetriever:
         self._records: dict[UUID, NormalizedRecord] = {}
         posting_sets: dict[BlockKey, dict[str, set[UUID]]] = defaultdict(lambda: defaultdict(set))
         name_sets: dict[BlockKey, dict[str, set[UUID]]] = defaultdict(lambda: defaultdict(set))
+        relaxed_posting_sets: dict[tuple[str, EntityType], dict[str, set[UUID]]] = defaultdict(
+            lambda: defaultdict(set)
+        )
+        relaxed_name_sets: dict[tuple[str, EntityType], dict[str, set[UUID]]] = defaultdict(
+            lambda: defaultdict(set)
+        )
         for target in targets:
             self._records[target.entity_id] = target
             target_block = block_key(target)
+            relaxed_key = (target.tenant_id, target.entity_type)
             for token in _tokens(_search_text(target)):
                 posting_sets[target_block][token].add(target.entity_id)
+                relaxed_posting_sets[relaxed_key][token].add(target.entity_id)
             name_sets[target_block][_primary_name(target)].add(target.entity_id)
+            relaxed_name_sets[relaxed_key][_primary_name(target)].add(target.entity_id)
         self._postings = {
             key: {token: frozenset(ids) for token, ids in postings.items()}
             for key, postings in posting_sets.items()
@@ -31,6 +42,18 @@ class CandidateRetriever:
             key: {name: tuple(sorted(ids, key=str)) for name, ids in postings.items()}
             for key, postings in name_sets.items()
         }
+        self._relaxed_postings = {
+            key: {token: frozenset(ids) for token, ids in postings.items()}
+            for key, postings in relaxed_posting_sets.items()
+        }
+        self._relaxed_ordered_postings = {
+            key: {token: tuple(sorted(ids, key=str)) for token, ids in postings.items()}
+            for key, postings in relaxed_posting_sets.items()
+        }
+        self._relaxed_name_postings = {
+            key: {name: tuple(sorted(ids, key=str)) for name, ids in postings.items()}
+            for key, postings in relaxed_name_sets.items()
+        }
         self.comparisons = 0
         self.posting_visits = 0
         self.max_returned = 0
@@ -39,16 +62,52 @@ class CandidateRetriever:
         if top_k < 1:
             raise ValueError("top_k must be at least 1")
         source_block = block_key(source)
-        postings = self._postings.get(source_block)
-        ordered_postings = self._ordered_postings.get(source_block)
+        ranked = self._rank(
+            source,
+            source_block,
+            self._postings.get(source_block),
+            self._ordered_postings.get(source_block),
+            self._name_postings.get(source_block),
+            top_k=top_k,
+            retrieval_scope="strict",
+        )
+        if ranked or source.parent_mapping_id is not None:
+            return ranked
+        relaxed_key = (source.tenant_id, source.entity_type)
+        return self._rank(
+            source,
+            source_block,
+            self._relaxed_postings.get(relaxed_key),
+            self._relaxed_ordered_postings.get(relaxed_key),
+            self._relaxed_name_postings.get(relaxed_key),
+            top_k=top_k,
+            retrieval_scope="relaxed",
+            relaxed=True,
+        )
+
+    def _rank(
+        self,
+        source: NormalizedRecord,
+        source_block: BlockKey,
+        postings: dict[str, frozenset[UUID]] | None,
+        ordered_postings: dict[str, tuple[UUID, ...]] | None,
+        name_postings: dict[str, tuple[UUID, ...]] | None,
+        *,
+        top_k: int,
+        retrieval_scope: Literal["strict", "relaxed"],
+        relaxed: bool = False,
+    ) -> list[Candidate]:
         if not postings or not ordered_postings:
             return []
 
         pool_limit = max(top_k * 10, top_k)
-        exact_name_ids = self._name_postings.get(source_block, {}).get(
-            _primary_name(source),
-            (),
-        )
+        exact_name_ids = (name_postings or {}).get(_primary_name(source), ())
+        if relaxed:
+            exact_name_ids = tuple(
+                entity_id
+                for entity_id in exact_name_ids
+                if _compatible_relaxed_hints(source, self._records[entity_id])
+            )
         source_tokens = _tokens(_search_text(source))
         available = sorted(
             (len(postings[token]), token) for token in source_tokens if token in postings
@@ -61,6 +120,8 @@ class CandidateRetriever:
         for _, token in available:
             for entity_id in ordered_postings[token][:pool_limit]:
                 self.posting_visits += 1
+                if relaxed and not _compatible_relaxed_hints(source, self._records[entity_id]):
+                    continue
                 if entity_id not in seen:
                     seed_ids.append(entity_id)
                     seen.add(entity_id)
@@ -81,6 +142,12 @@ class CandidateRetriever:
                 key=lambda item: (-item[1], str(item[0])),
             )
         ]
+        if relaxed:
+            candidate_ids = [
+                entity_id
+                for entity_id in candidate_ids
+                if _compatible_relaxed_hints(source, self._records[entity_id])
+            ]
         self.comparisons += len(candidate_ids)
         ranked = sorted(
             (
@@ -88,6 +155,7 @@ class CandidateRetriever:
                     entity=self._records[entity_id],
                     block_key=source_block,
                     lexical_score=_lexical_score(source, self._records[entity_id]),
+                    retrieval_scope=retrieval_scope,
                 )
                 for entity_id in candidate_ids
             ),
@@ -98,6 +166,18 @@ class CandidateRetriever:
         )[:top_k]
         self.max_returned = max(self.max_returned, len(ranked))
         return ranked
+
+
+def _compatible_relaxed_hints(
+    source: NormalizedRecord,
+    target: NormalizedRecord,
+) -> bool:
+    for field in ("campus_id", "grade"):
+        source_value = source.values.get(field)
+        target_value = target.values.get(field)
+        if source_value is not None and target_value is not None and source_value != target_value:
+            return False
+    return True
 
 
 def _search_text(record: NormalizedRecord) -> str:

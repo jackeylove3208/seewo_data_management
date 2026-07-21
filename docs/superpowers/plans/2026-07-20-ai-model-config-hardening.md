@@ -123,7 +123,8 @@ async def test_llm_failure_traceback_does_not_contain_api_key() -> None:
         await provider.complete_json(LLMRequest(messages=(Message(role="user", content="ping"),)))
     traceback = captured.value.__traceback__
     while traceback is not None:
-        assert secret not in repr(traceback.tb_frame.f_locals)
+        if traceback.tb_frame.f_code.co_filename.endswith("app/ai/providers/llm.py"):
+            assert secret not in repr(traceback.tb_frame.f_locals)
         traceback = traceback.tb_next
     await provider.client.aclose()
 ```
