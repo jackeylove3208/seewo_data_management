@@ -51,12 +51,17 @@ class RestoreService:
             raise LookupError("target versions not found")
         return records
 
+    async def current_version(self, task_id: UUID) -> TargetVersionRecord:
+        version = await self.executions.current_target_version(task_id)
+        if version is None or version.tenant_id != self.operator.tenant_id:
+            raise LookupError("current target version not found")
+        return version
+
     async def preview(self, target_version_id: UUID) -> RestorePreview:
         target = await self.executions.get_target_version(target_version_id)
         if target is None or target.tenant_id != self.operator.tenant_id:
             raise LookupError("target version not found")
-        versions = await self.versions(target.task_id)
-        source = versions[-1]
+        source = await self.current_version(target.task_id)
         semantic_source_id = await self.reporting.resolve_semantic_version(
             source.id, tenant_id=self.operator.tenant_id
         )
@@ -187,7 +192,10 @@ class RestoreService:
         idempotency_key: str,
         high_risk_acknowledged: bool,
     ) -> RestoreConfirmation:
-        request = await self.reporting.get_restore_by_preview_hash(preview_hash)
+        preview = await self.reporting.get_restore_by_preview_hash(preview_hash)
+        if preview is None or preview.tenant_id != self.operator.tenant_id:
+            raise LookupError("restore preview not found")
+        request = await self.reporting.get_restore_request_for_update(preview.id)
         if request is None or request.tenant_id != self.operator.tenant_id:
             raise LookupError("restore preview not found")
         if not request.deterministic_plan.get("allowed"):
@@ -209,8 +217,8 @@ class RestoreService:
                 confirmed_by=batch.confirmed_by,
                 status=batch.status,
             )
-        versions = await self.versions(request.task_id)
-        if versions[-1].id != request.source_version_id:
+        current = await self.current_version(request.task_id)
+        if current.id != request.source_version_id:
             raise ValueError("restore preview is stale")
         plan_id = UUID(str(request.deterministic_plan["plan_id"]))
         plan = await self.executions.get_plan(plan_id)
@@ -255,11 +263,11 @@ class RestoreService:
         link = await self.reporting.get_restore_link(request.id)
         if link is None:
             raise LookupError("restore execution not found")
-        versions = await self.versions(request.task_id)
         batch = await self.executions.get_batch(link.compensation_batch_id)
         if batch is None:
             raise LookupError("restore execution batch not found")
-        if versions[-1].id != batch.input_target_version_id:
+        current = await self.current_version(request.task_id)
+        if current.id != batch.input_target_version_id:
             raise ValueError("restore execution target has drifted")
         result = await executor.execute(batch.id)
         if result.status is not ExecutionBatchStatus.SUCCEEDED:

@@ -3,7 +3,6 @@ import hashlib
 import json
 from collections.abc import Sequence
 from pathlib import Path
-from typing import cast
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -13,6 +12,7 @@ from app.models.analyses import AnalysisRecord
 from app.models.differences import DifferenceRecord
 from app.models.executions import TargetVersionRecord
 from app.models.proposals import GovernanceProposalRecord
+from app.repositories.executions import ExecutionRepository
 from app.schemas.executions import (
     GovernanceOperation,
     GovernancePlan,
@@ -26,6 +26,7 @@ from app.schemas.executions import (
 class ExecutionPreflight:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+        self.executions = ExecutionRepository(session)
 
     async def check(self, plan: GovernancePlan) -> PreflightResult:
         current_target = await self.current_target_version(plan.task_id)
@@ -53,14 +54,7 @@ class ExecutionPreflight:
         )
 
     async def current_target_version(self, task_id: UUID) -> TargetVersionRecord | None:
-        return cast(
-            TargetVersionRecord | None,
-            await self.session.scalar(
-                select(TargetVersionRecord)
-                .where(TargetVersionRecord.task_id == task_id)
-                .order_by(TargetVersionRecord.created_at.desc(), TargetVersionRecord.id.desc())
-            ),
-        )
+        return await self.executions.current_target_version(task_id)
 
     async def _operation_conflicts(
         self,

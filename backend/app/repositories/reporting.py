@@ -91,6 +91,11 @@ class ReportingRepository:
         ai_candidate: Mapping[str, Any] | None = None,
         ai_provenance: Mapping[str, Any] | None = None,
     ) -> RestoreRequestRecord:
+        existing = await self.get_restore_by_preview_hash(preview_hash)
+        if existing is not None:
+            if existing.tenant_id != tenant_id or existing.task_id != task_id:
+                raise ReportingConflict("restore preview hash belongs to another scope")
+            return existing
         record = RestoreRequestRecord(
             task_id=task_id,
             tenant_id=tenant_id,
@@ -104,8 +109,19 @@ class ReportingRepository:
             ai_candidate=dict(ai_candidate) if ai_candidate is not None else None,
             ai_provenance=dict(ai_provenance) if ai_provenance is not None else None,
         )
-        self.session.add(record)
-        await self.session.flush()
+        try:
+            async with self.session.begin_nested():
+                self.session.add(record)
+                await self.session.flush()
+        except IntegrityError:
+            existing = await self.get_restore_by_preview_hash(preview_hash)
+            if (
+                existing is not None
+                and existing.tenant_id == tenant_id
+                and existing.task_id == task_id
+            ):
+                return existing
+            raise
         return record
 
     async def resolve_semantic_version(self, version_id: UUID, *, tenant_id: str) -> UUID:
@@ -203,29 +219,38 @@ class ReportingRepository:
         compensation_batch_id: UUID,
         output_version_id: UUID | None = None,
     ) -> RestoreExecutionLinkRecord:
+        existing = await self.get_restore_link(restore_request_id)
+        if existing is not None:
+            if (
+                existing.compensation_plan_id == compensation_plan_id
+                and existing.compensation_batch_id == compensation_batch_id
+            ):
+                return existing
+            raise ReportingConflict("restore request is already linked to another compensation")
         record = RestoreExecutionLinkRecord(
             restore_request_id=restore_request_id,
             compensation_plan_id=compensation_plan_id,
             compensation_batch_id=compensation_batch_id,
             output_version_id=output_version_id,
         )
-        try:
-            async with self.session.begin_nested():
-                self.session.add(record)
-                await self.session.flush()
-        except IntegrityError:
-            existing = await self.get_restore_link(restore_request_id)
-            if (
-                existing is not None
-                and existing.compensation_plan_id == compensation_plan_id
-                and existing.compensation_batch_id == compensation_batch_id
-            ):
-                return existing
-            raise
+        self.session.add(record)
+        await self.session.flush()
         return record
 
     async def get_restore_request(self, request_id: UUID) -> RestoreRequestRecord | None:
         return await self.session.get(RestoreRequestRecord, request_id)
+
+    async def get_restore_request_for_update(
+        self, request_id: UUID
+    ) -> RestoreRequestRecord | None:
+        return cast(
+            RestoreRequestRecord | None,
+            await self.session.scalar(
+                select(RestoreRequestRecord)
+                .where(RestoreRequestRecord.id == request_id)
+                .with_for_update()
+            ),
+        )
 
     async def get_restore_by_preview_hash(self, preview_hash: str) -> RestoreRequestRecord | None:
         return cast(

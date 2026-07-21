@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, exists, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +20,7 @@ from app.models.executions import (
 )
 from app.models.proposals import GovernanceProposalRecord
 from app.models.reconciliation import ReconciliationTask
+from app.models.reporting import RestoreExecutionLinkRecord, RestoreExecutionResultRecord
 from app.models.snapshots import Snapshot
 from app.schemas.canonical_entities import EntityType
 from app.schemas.executions import (
@@ -132,6 +133,37 @@ class ExecutionRepository:
     async def get_target_version(self, version_id: UUID) -> TargetVersionRecord | None:
         return await self.session.get(TargetVersionRecord, version_id)
 
+    @staticmethod
+    def _accepted_target_version_clause() -> ColumnElement[bool]:
+        restore_batch = exists(
+            select(RestoreExecutionLinkRecord.id).where(
+                RestoreExecutionLinkRecord.compensation_batch_id == TargetVersionRecord.batch_id
+            )
+        )
+        accepted_restore_output = exists(
+            select(RestoreExecutionResultRecord.id)
+            .join(
+                RestoreExecutionLinkRecord,
+                RestoreExecutionResultRecord.restore_execution_link_id
+                == RestoreExecutionLinkRecord.id,
+            )
+            .where(RestoreExecutionResultRecord.output_version_id == TargetVersionRecord.id)
+        )
+        return or_(~restore_batch, accepted_restore_output)
+
+    async def current_target_version(self, task_id: UUID) -> TargetVersionRecord | None:
+        return cast(
+            TargetVersionRecord | None,
+            await self.session.scalar(
+                select(TargetVersionRecord)
+                .where(
+                    TargetVersionRecord.task_id == task_id,
+                    self._accepted_target_version_clause(),
+                )
+                .order_by(TargetVersionRecord.created_at.desc(), TargetVersionRecord.id.desc())
+            ),
+        )
+
     async def latest_target_version_for_batch(self, batch_id: UUID) -> TargetVersionRecord | None:
         return cast(
             TargetVersionRecord | None,
@@ -157,14 +189,7 @@ class ExecutionRepository:
             candidate = await self.get_target_version(batch.input_target_version_id)
         if candidate is None:
             raise LookupError("execution target version not found")
-        current = await self.session.scalar(
-            select(TargetVersionRecord)
-            .where(TargetVersionRecord.task_id == plan.task_id)
-            .order_by(
-                TargetVersionRecord.created_at.desc(),
-                TargetVersionRecord.id.desc(),
-            )
-        )
+        current = await self.current_target_version(plan.task_id)
         if current is None or current.id != candidate.id:
             raise ExecutionPersistenceConflict("target version drift blocks retry")
         return candidate
@@ -379,12 +404,7 @@ class ExecutionRepository:
                 raise ExecutionPersistenceConflict(
                     "parent target version belongs to another task, tenant, or snapshot"
                 )
-            current = await self.session.scalar(
-                select(TargetVersionRecord)
-                .where(TargetVersionRecord.task_id == task_id)
-                .order_by(TargetVersionRecord.created_at.desc(), TargetVersionRecord.id.desc())
-                .limit(1)
-            )
+            current = await self.current_target_version(task_id)
             if current is None or current.id != parent_version_id:
                 raise ExecutionPersistenceConflict("parent target version is no longer current")
         if batch_id is not None:

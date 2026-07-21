@@ -70,6 +70,9 @@ def test_preview_and_confirm_historical_restore(restore_client: TestClient) -> N
     assert preview.status_code == 200, preview.text
     assert preview.json()["allowed"] is True
     assert preview.json()["operations"][0]["risk"] == "high"
+    repeated_preview = restore_client.post(f"/api/target-versions/{root['id']}/restore-preview")
+    assert repeated_preview.status_code == 200, repeated_preview.text
+    assert repeated_preview.json()["restore_request_id"] == preview.json()["restore_request_id"]
 
     unacknowledged = restore_client.post(
         "/api/restores",
@@ -216,3 +219,6 @@ def test_restore_hash_mismatch_does_not_publish_a_current_version(
         f"/api/reconciliation-tasks/{task_id}/target-versions"
     ).json()
     assert len(remaining) == 3
+    retry_preview = restore_client.post(f"/api/target-versions/{root['id']}/restore-preview")
+    assert retry_preview.status_code == 200, retry_preview.text
+    assert retry_preview.json()["source_version_id"] == detail["output_target_version_ids"][-1]
