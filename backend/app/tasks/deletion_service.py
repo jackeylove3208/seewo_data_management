@@ -11,7 +11,13 @@ from app.models.differences import DifferenceRecord
 from app.models.mappings import EntityMapping, TargetEntityEmbedding
 from app.models.proposal_batches import ProposalBatchRecord
 from app.models.proposals import GovernanceProposalRecord
+from app.models.quality import MatchingQualityRecord
 from app.models.reconciliation import ReconciliationTask
+from app.models.rematching import (
+    EntityRematchCandidateEdgeRecord,
+    EntityRematchJobRecord,
+    EntityRematchWorkItemRecord,
+)
 from app.models.snapshots import (
     CanonicalEntityRecord,
     IngestionIssueRecord,
@@ -109,6 +115,42 @@ class TaskDeletionService:
                     select(AnalysisJobRecord.id).where(AnalysisJobRecord.task_id == task_id)
                 )
             ).all()
+        )
+
+        rematch_job_ids = list(
+            (
+                await self.session.scalars(
+                    select(EntityRematchJobRecord.id).where(
+                        EntityRematchJobRecord.task_id == task_id
+                    )
+                )
+            ).all()
+        )
+        rematch_item_ids = list(
+            (
+                await self.session.scalars(
+                    select(EntityRematchWorkItemRecord.id).where(
+                        EntityRematchWorkItemRecord.job_id.in_(rematch_job_ids)
+                    )
+                )
+            ).all()
+        )
+
+        await self.session.execute(
+            delete(MatchingQualityRecord).where(MatchingQualityRecord.task_id == task_id)
+        )
+        await self.session.execute(
+            delete(EntityRematchCandidateEdgeRecord).where(
+                EntityRematchCandidateEdgeRecord.work_item_id.in_(rematch_item_ids)
+            )
+        )
+        await self.session.execute(
+            delete(EntityRematchWorkItemRecord).where(
+                EntityRematchWorkItemRecord.id.in_(rematch_item_ids)
+            )
+        )
+        await self.session.execute(
+            delete(EntityRematchJobRecord).where(EntityRematchJobRecord.id.in_(rematch_job_ids))
         )
 
         await self.session.execute(

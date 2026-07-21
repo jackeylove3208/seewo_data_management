@@ -8,7 +8,11 @@ from sqlalchemy import select
 from app.models.analyses import AnalysisRecord
 from app.models.differences import DifferenceRecord
 from app.models.proposals import GovernanceProposalRecord
+from app.models.quality import MatchingQualityRecord
 from app.models.reconciliation import ReconciliationTask
+from app.models.rematching import (
+    EntityRematchJobRecord,
+)
 from app.models.snapshots import Snapshot, SourceFile
 from app.models.workflow import WorkflowStageRun
 from app.tasks.deletion_service import (
@@ -98,6 +102,96 @@ async def test_deletes_analyzed_task_and_owned_records(session, tmp_path: Path) 
     )
     assert survivor_path.exists()
     assert not removable_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_deletes_rematching_and_quality_records_with_task(session) -> None:
+    removable = task()
+    session.add(removable)
+    await session.flush()
+    now = datetime.now(UTC)
+    session.add(analysis_run(removable.id))
+    await session.flush()
+    source_file = SourceFile(
+        id=uuid4(),
+        task_id=removable.id,
+        source_role="authoritative",
+        original_name="source.csv",
+        storage_name="source.csv",
+        storage_path="/tmp/source.csv",
+        sha256="a" * 64,
+        size_bytes=1,
+    )
+    target_file = SourceFile(
+        id=uuid4(),
+        task_id=removable.id,
+        source_role="target",
+        original_name="target.csv",
+        storage_name="target.csv",
+        storage_path="/tmp/target.csv",
+        sha256="b" * 64,
+        size_bytes=1,
+    )
+    session.add_all([source_file, target_file])
+    await session.flush()
+    source_snapshot = Snapshot(
+        id=uuid4(),
+        task_id=removable.id,
+        source_file_id=source_file.id,
+        source_role="authoritative",
+        schema_version="canonical-v1",
+        mapping_version="source-v1",
+        file_hash="c" * 64,
+        content_hash="d" * 64,
+        summary={},
+    )
+    target_snapshot = Snapshot(
+        id=uuid4(),
+        task_id=removable.id,
+        source_file_id=target_file.id,
+        source_role="target",
+        schema_version="canonical-v1",
+        mapping_version="target-v1",
+        file_hash="e" * 64,
+        content_hash="f" * 64,
+        summary={},
+    )
+    session.add_all([source_snapshot, target_snapshot])
+    await session.flush()
+    job = EntityRematchJobRecord(
+        task_id=removable.id,
+        tenant_id="school-1",
+        requested_by="operator-1",
+        source_snapshot_id=source_snapshot.id,
+        target_snapshot_id=target_snapshot.id,
+        policy_version="rematching-v1",
+        idempotency_key=str(uuid4()),
+        status="completed",
+        total=0,
+        indexed=0,
+        processed=0,
+        completed_at=now,
+    )
+    session.add(job)
+    await session.flush()
+    quality = MatchingQualityRecord(
+        task_id=removable.id,
+        tenant_id="school-1",
+        policy_version="matching-quality-v1",
+        mapping_versions=["mapping-v1"],
+        result={"passed": True},
+        evaluated_at=now,
+    )
+    session.add(quality)
+    await session.flush()
+
+    await TaskDeletionService(session).delete(removable.id, "school-1")
+
+    assert await session.get(ReconciliationTask, removable.id) is None
+    assert await session.get(EntityRematchJobRecord, job.id) is None
+    assert await session.scalar(
+        select(MatchingQualityRecord).where(MatchingQualityRecord.task_id == removable.id)
+    ) is None
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 """Add the missing analysis work item creation timestamp.
 
-Revision ID: 0011_analysis_work_item_created_at
+Revision ID: 0011_analysis_item_created_at
 Revises: 0010_durable_analysis_jobs
 """
 
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 from alembic import context, op
 
-revision: str = "0011_analysis_work_item_created_at"
+revision: str = "0011_analysis_item_created_at"
 down_revision: str | None = "0010_durable_analysis_jobs"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

@@ -11,7 +11,7 @@ def test_target_embeddings_are_compatibly_migrated_to_target_role(tmp_path: Path
     url = f"sqlite:///{database_path}"
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", url)
-    command.upgrade(config, "0011_analysis_work_item_created_at")
+    command.upgrade(config, "0011_analysis_item_created_at")
     engine = create_engine(url)
     with engine.begin() as connection:
         connection.execute(
@@ -51,7 +51,7 @@ def test_target_embeddings_are_compatibly_migrated_to_target_role(tmp_path: Path
         ).one()
     assert migrated == ("target", "enterprise", "embedding-v1", "entity-representation-v1")
 
-    command.downgrade(config, "0011_analysis_work_item_created_at")
+    command.downgrade(config, "0011_analysis_item_created_at")
     inspector = inspect(engine)
     assert "target_entity_embeddings" in inspector.get_table_names()
     assert "snapshot_entity_embeddings" not in inspector.get_table_names()

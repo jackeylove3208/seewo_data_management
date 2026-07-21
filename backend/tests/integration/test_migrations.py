@@ -9,6 +9,19 @@ from alembic import command
 from app.models import Base
 
 
+def test_migration_revision_identifiers_fit_alembic_default_version_column() -> None:
+    revision_directory = Path("alembic/versions")
+    revision_identifiers = [
+        line.split('"')[1]
+        for migration in revision_directory.glob("*.py")
+        for line in migration.read_text().splitlines()
+        if line.startswith("revision: str = ")
+    ]
+
+    assert revision_identifiers
+    assert all(len(revision) <= 32 for revision in revision_identifiers)
+
+
 def test_initial_migration_creates_ingestion_tables(tmp_path: Path) -> None:
     database_path = tmp_path / "migration.db"
     config = Config("alembic.ini")

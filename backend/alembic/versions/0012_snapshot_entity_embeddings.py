@@ -1,7 +1,7 @@
 """Generalize target embeddings to role-aware snapshot embeddings.
 
 Revision ID: 0012_snapshot_entity_embeddings
-Revises: 0011_analysis_work_item_created_at
+Revises: 0011_analysis_item_created_at
 """
 
 from collections.abc import Sequence
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import context, op
 
 revision: str = "0012_snapshot_entity_embeddings"
-down_revision: str | None = "0011_analysis_work_item_created_at"
+down_revision: str | None = "0011_analysis_item_created_at"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
