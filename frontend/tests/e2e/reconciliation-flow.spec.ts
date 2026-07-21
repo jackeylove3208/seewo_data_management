@@ -147,6 +147,17 @@ test("keeps new conversation focused on agent chat", async ({ page }) => {
   await expect(page).toHaveURL(/\/conversations\/new$/);
 });
 
+test("conversation workspace fills the viewport and keeps its composer visible", async ({ page }, testInfo) => {
+  await page.goto("/conversations/new");
+
+  const surface = await page.locator(".conversation-surface").boundingBox();
+  const composer = await page.locator(".conversation-composer").boundingBox();
+  expect(surface).not.toBeNull();
+  expect(composer).not.toBeNull();
+  expect(surface!.height).toBeGreaterThan(testInfo.project.name === "desktop" ? 520 : 380);
+  expect(composer!.y + composer!.height).toBeLessThanOrEqual(page.viewportSize()!.height + 1);
+});
+
 test("creates a task from independent manual external data sync", async ({ page }, testInfo) => {
   await page.route("**/health/ready", async (route) => route.fulfill({ json: { status: "ok" } }));
   let uploadCount = 0;

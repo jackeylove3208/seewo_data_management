@@ -47,6 +47,12 @@ export function saveStoredTask(task: TaskHistoryItem) {
   window.dispatchEvent(new Event(TASK_HISTORY_UPDATED_EVENT));
 }
 
+export function removeStoredTask(taskId: string) {
+  const tasks = getStoredTasks().filter((item) => item.id !== taskId);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
+  window.dispatchEvent(new Event(TASK_HISTORY_UPDATED_EVENT));
+}
+
 export function findTask(taskId: string) {
   return [...getStoredTasks(), ...demoTasks].find((task) => task.id === taskId);
 }

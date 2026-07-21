@@ -10,4 +10,10 @@ describe("responsive analysis styles", () => {
   it("keeps the batch modal body within the viewport", () => {
     expect(globalCss).toMatch(/\.batch-analysis-modal\s+\.ant-modal-body\s*\{[^}]*max-height:[^;}]+;[^}]*overflow-y:\s*auto/s);
   });
+
+  it("lets the agent conversation fill the available viewport", () => {
+    expect(globalCss).toMatch(/\.conversation-surface\s*\{[^}]*display:\s*grid/s);
+    expect(globalCss).toMatch(/\.conversation-messages\s*\{[^}]*max-height:\s*none/s);
+    expect(globalCss).not.toMatch(/\.conversation-messages\s*\{[^}]*max-height:\s*410px/s);
+  });
 });

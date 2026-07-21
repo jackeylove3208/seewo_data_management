@@ -32,4 +32,12 @@ describe("requestJson", () => {
 
     await expect(requestJson("/api/uploads")).rejects.toBe(cancellation);
   });
+
+  it("accepts a successful response without a JSON body", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+
+    await expect(requestJson<void>("/api/reconciliation-tasks/task-1", {
+      method: "DELETE",
+    })).resolves.toBeUndefined();
+  });
 });

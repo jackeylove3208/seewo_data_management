@@ -33,6 +33,17 @@ The conversation SHALL preserve its prior validated internal context when assist
 - **WHEN** the assistant is processing a message
 - **THEN** the page displays pending feedback and disables the textarea and send action until processing completes
 
+### Requirement: Use the available conversation workspace
+The conversation page SHALL use the available main-content viewport height, keep the composer visible at the bottom of the workspace, and scroll messages internally without horizontal overflow on desktop and mobile.
+
+#### Scenario: User views a desktop conversation
+- **WHEN** the user opens “新建对话” on a desktop viewport
+- **THEN** the conversation surface expands beyond the compact message limit and the composer remains within the viewport
+
+#### Scenario: User views a mobile conversation
+- **WHEN** the user opens “新建对话” on a narrow viewport
+- **THEN** messages scroll inside the surface and the composer remains visible without overlapping navigation or overflowing horizontally
+
 ## REMOVED Requirements
 
 ### Requirement: Create reconciliation tasks through a conversation

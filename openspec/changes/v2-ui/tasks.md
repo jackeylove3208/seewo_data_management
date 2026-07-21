@@ -53,3 +53,11 @@
 - [x] 7.4 Separate Playwright coverage for Agent conversation and independent manual CSV synchronization
 - [x] 7.5 Remove conversation-draft-only CSS and preserve all manual-sync field, attachment, and summary styles
 - [x] 7.6 Update V2 specifications to mark Agent-driven data discovery and automatic synchronization as future work
+
+## 8. Expand conversation and guarded history deletion
+
+- [x] 8.1 Expand the Agent conversation surface to fill the available desktop and mobile viewport while keeping the composer visible
+- [x] 8.2 Add tenant-scoped backend deletion with successful-analysis eligibility and governance-proposal protection
+- [x] 8.3 Add confirmation-based deletion controls for real tasks in recent history and full task history; hide controls for demo tasks
+- [x] 8.4 Remove local history only after a successful backend DELETE response and preserve records after cancel, rejection, or network failure
+- [x] 8.5 Add unit and integration coverage for `204`, storage events, deletion safety, and responsive conversation contracts

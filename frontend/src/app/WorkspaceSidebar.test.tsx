@@ -106,5 +106,7 @@ describe("workspace sidebar", () => {
     }));
 
     expect(screen.getByRole("link", { name: /七年级教师核对/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "删除七年级教师核对" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "删除三方全校数据核对" })).not.toBeInTheDocument();
   });
 });

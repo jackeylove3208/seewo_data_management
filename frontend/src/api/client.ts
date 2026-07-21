@@ -38,5 +38,6 @@ export async function requestJson<T>(path: string, init?: RequestInit): Promise<
     if (!hasServerMessage && response.status >= 500) message = BACKEND_UNAVAILABLE_MESSAGE;
     throw new ApiError(message, response.status);
   }
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }

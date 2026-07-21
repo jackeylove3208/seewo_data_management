@@ -56,4 +56,8 @@ function readiness() {
   return requestJson<{ status: string }>("/health/ready");
 }
 
-export const ingestionApi = { upload, getTask, createTask, readiness };
+function deleteTask(taskId: string) {
+  return requestJson<void>(`/api/reconciliation-tasks/${taskId}`, { method: "DELETE" });
+}
+
+export const ingestionApi = { upload, getTask, createTask, readiness, deleteTask };

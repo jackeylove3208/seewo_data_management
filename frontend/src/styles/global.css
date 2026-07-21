@@ -328,6 +328,13 @@ button {
   scrollbar-width: thin;
 }
 
+.workspace-history-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+}
+
 .workspace-history-item {
   display: grid;
   grid-template-columns: 8px minmax(0, 1fr) 14px;
@@ -339,6 +346,35 @@ button {
   border-radius: 5px;
   color: #26332f;
   text-decoration: none;
+}
+
+.history-delete-button,
+.task-delete-button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  color: #8b4b4b;
+  background: transparent;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 150ms ease, color 150ms ease, background 150ms ease;
+}
+
+.workspace-history-row:hover .history-delete-button,
+.workspace-history-row:focus-within .history-delete-button,
+.task-row-wrapper:hover .task-delete-button,
+.task-row-wrapper:focus-within .task-delete-button {
+  opacity: 1;
+}
+
+.history-delete-button:hover,
+.task-delete-button:hover {
+  color: #b42318;
+  background: #fff0ef;
 }
 
 .workspace-history-item:hover {
@@ -599,6 +635,15 @@ button.connection-state {
   display: grid;
 }
 
+.task-row-wrapper {
+  position: relative;
+  border-top: 1px solid #e1e7e5;
+}
+
+.task-row-wrapper:last-child {
+  border-bottom: 1px solid #e1e7e5;
+}
+
 .task-row {
   display: grid;
   grid-template-columns: 8px minmax(260px, 1.5fr) minmax(230px, 1fr) 150px 24px;
@@ -606,9 +651,8 @@ button.connection-state {
   gap: 18px;
   width: 100%;
   min-height: 92px;
-  padding: 16px 18px;
+  padding: 16px 58px 16px 18px;
   border: 0;
-  border-top: 1px solid #e1e7e5;
   color: #17211f;
   background: #fff;
   text-align: left;
@@ -616,14 +660,17 @@ button.connection-state {
   transition: background 160ms ease, transform 160ms ease;
 }
 
-.task-row:last-child {
-  border-bottom: 1px solid #e1e7e5;
-}
-
 .task-row:hover {
   z-index: 1;
   background: #f1f8f6;
   transform: translateX(2px);
+}
+
+.task-delete-button {
+  position: absolute;
+  top: 50%;
+  right: 18px;
+  transform: translateY(-50%);
 }
 
 .task-state-dot {
@@ -1615,6 +1662,8 @@ button.connection-state {
 .workspace-agent-entry:focus-visible,
 .workspace-new-task:focus-visible,
 .workspace-history-item:focus-visible,
+.history-delete-button:focus-visible,
+.task-delete-button:focus-visible,
 .workspace-all-history:focus-visible,
 .workspace-collapse:focus-visible,
 .mobile-menu-button:focus-visible,
@@ -1657,7 +1706,7 @@ button.connection-state {
     padding-inline: 12px;
   }
 
-  .workspace-sidebar.is-collapsed .workspace-history-item {
+.workspace-sidebar.is-collapsed .workspace-history-item {
     display: grid;
     grid-template-columns: 8px minmax(0, 1fr) 14px;
     width: auto;
@@ -1713,6 +1762,10 @@ button.connection-state {
 
 }
 
+.workspace-sidebar.is-collapsed .history-delete-button {
+  display: none;
+}
+
 @media (max-width: 720px) {
 
   .page-shell {
@@ -1745,6 +1798,7 @@ button.connection-state {
   .task-row {
     grid-template-columns: 8px 1fr 20px;
     gap: 12px;
+    padding-right: 50px;
   }
 
   .task-counts,
@@ -1755,6 +1809,10 @@ button.connection-state {
   .task-arrow {
     grid-column: 3;
     grid-row: 1 / 4;
+  }
+
+  .task-delete-button {
+    right: 10px;
   }
 
   .upload-grid {
@@ -2671,6 +2729,12 @@ body {
   padding-top: 28px;
 }
 
+.conversation-create-page {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: calc(100dvh - 56px);
+}
+
 .conversation-page-heading,
 .sync-page-heading {
   display: grid;
@@ -2742,6 +2806,11 @@ body {
 }
 
 .conversation-surface {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-height: 520px;
+  height: calc(100dvh - 170px);
+  max-height: 820px;
   margin-bottom: 24px;
 }
 
@@ -2749,8 +2818,8 @@ body {
   display: grid;
   align-content: start;
   gap: 2px;
-  min-height: 250px;
-  max-height: 410px;
+  min-height: 0;
+  max-height: none;
   padding: 22px 24px;
   overflow-y: auto;
 }
@@ -3096,6 +3165,16 @@ body {
     padding-top: 18px;
   }
 
+  .conversation-create-page {
+    min-height: calc(100dvh - 28px);
+  }
+
+  .conversation-surface {
+    min-height: 400px;
+    height: calc(100dvh - 130px);
+    max-height: none;
+  }
+
   .conversation-page-heading,
   .sync-page-heading {
     grid-template-columns: 38px minmax(0, 1fr);
@@ -3113,8 +3192,8 @@ body {
   }
 
   .conversation-messages {
-    min-height: 220px;
-    max-height: 360px;
+    min-height: 0;
+    max-height: none;
     padding: 14px;
   }
 
