@@ -1,15 +1,17 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "";
 const BACKEND_UNAVAILABLE_MESSAGE = "后端服务不可用，请确认本地服务已经启动后重试";
 
-export function resolveApiUrl(path: string) {
-  return `${API_BASE_URL}${path}`;
-}
-
 export class ApiError extends Error {
   constructor(message: string, readonly status: number) {
     super(message);
   }
 }
+
+export function resolveApiUrl(path: string) {
+  return `${API_BASE_URL}${path}`;
+}
+
+export const apiUrl = resolveApiUrl;
 
 export async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;

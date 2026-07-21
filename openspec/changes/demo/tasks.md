@@ -66,7 +66,7 @@
 ## 7. Agent, Skills, MCP, and Mandatory Analysis
 
 - [x] 7.1 Implement configurable external LLM and Embedding provider adapters with timeout, retry, and usage metadata
-- [ ] 7.2 Define and validate structured Pydantic outputs for cause analysis, ambiguous matching, governance advice, rollback impact, and reports
+- [x] 7.2 Define and validate structured Pydantic outputs for cause analysis, ambiguous matching, governance advice, rollback impact, and reports
 - [x] 7.3 Create concise versioned Skills for difference analysis, ambiguous entity resolution, governance planning, rollback assessment, and reporting
 - [x] 7.4 Implement a read-oriented MCP server with difference-context, candidate-search, mapping-rule, and execution-context tools
 - [x] 7.5 Implement the governance Agent so it can use registered Skills and MCP tools but cannot mutate target data
@@ -78,16 +78,16 @@
 
 ## 8. Governance Planning and Versioned CSV Execution
 
-- [ ] 8.1 Implement governance operation types for create, update, move, disable, and skip while treating unresolved manual review as execution-ineligible
-- [ ] 8.2 Implement deterministic plan building from selected current `pending_execution` proposal versions, preserving AI/operator source and rejecting stale difference, analysis, proposal, or target versions
-- [ ] 8.3 Implement risk policy, dependency graph, topological ordering, and reversibility metadata
-- [ ] 8.4 Add batch preview and confirmation APIs that bind proposal versions and record backend-owned proposal creator, batch confirmer, optional independent reviewer, and high-risk acknowledgement
-- [ ] 8.5 Add optional tokenized plan explanation through the existing enterprise model provider and a separate read-only Skill without making it an execution gate
-- [ ] 8.6 Implement preflight checks for proposal/difference/target drift, expected before-values, dependencies, conflicts, and execution eligibility
-- [ ] 8.7 Implement CSV target versioning that derives a new file and never overwrites the uploaded target
-- [ ] 8.8 Implement per-operation execution, idempotency, partial failure, eligible retry, and append-only audit records
-- [ ] 8.9 Implement target reload and expected-versus-actual verification after every applied operation
-- [ ] 8.10 Add execution tests for proposal sources, dependency ordering, drift conflicts, non-blocking explanation failure, partial failure, retries, failed verification, and original-file preservation
+- [x] 8.1 Implement governance operation types for create, update, move, disable, and skip while treating unresolved manual review as execution-ineligible
+- [x] 8.2 Implement deterministic plan building from selected current `pending_execution` proposal versions, preserving AI/operator source and rejecting stale difference, analysis, proposal, or target versions
+- [x] 8.3 Implement risk policy, dependency graph, topological ordering, and reversibility metadata
+- [x] 8.4 Add batch preview and confirmation APIs that bind proposal versions and record backend-owned proposal creator, batch confirmer, optional independent reviewer, and high-risk acknowledgement
+- [x] 8.5 Add optional tokenized plan explanation through the existing enterprise model provider and a separate read-only Skill without making it an execution gate
+- [x] 8.6 Implement preflight checks for proposal/difference/target drift, expected before-values, dependencies, conflicts, and execution eligibility
+- [x] 8.7 Implement CSV target versioning that derives a new file and never overwrites the uploaded target
+- [x] 8.8 Implement per-operation execution, idempotency, partial failure, eligible retry, and append-only audit records
+- [x] 8.9 Implement target reload and expected-versus-actual verification after every applied operation
+- [x] 8.10 Add execution tests for proposal sources, dependency ordering, drift conflicts, non-blocking explanation failure, partial failure, retries, failed verification, and original-file preservation
 
 ## 9. Batch Confirmation and Execution Frontend
 
@@ -101,22 +101,22 @@
 
 ## 10. Execution History and Audit Views
 
-- [ ] 10.1 Add execution history and execution-detail REST endpoints with stable pagination and immutable audit data
-- [ ] 10.2 Return proposal ID/version/source, proposal creator, batch confirmer, optional reviewer, task and snapshot references, plan version, before/after values, errors, retries, and verification results
+- [x] 10.1 Add execution history and execution-detail REST endpoints with stable pagination and immutable audit data
+- [x] 10.2 Return proposal ID/version/source, proposal creator, batch confirmer, optional reviewer, task and snapshot references, plan version, before/after values, errors, retries, and verification results
 - [ ] 10.3 Build execution history filters for task, operator, date, status, and rollback state
 - [ ] 10.4 Build execution detail with operation table, audit timeline, source and output CSV versions, and permitted actions
 - [ ] 10.5 Add API and UI tests proving client-supplied operator IDs cannot replace backend audit identity
 
-## 11. Governance Reports and Rollback Compensation
+## 11. Governance Reports and Historical Restore Compensation
 
-- [ ] 11.1 Implement on-demand report jobs that read fixed execution-time facts and persist report versions
-- [ ] 11.2 Implement a structured report containing snapshots, statistics, causes, selected plans, operator, outcomes, failures, and rollback status
-- [ ] 11.3 Implement the initial HTML report renderer and downloadable report endpoint
-- [ ] 11.4 Implement rollback preflight for later dependencies, target drift, reversibility, affected scope, and conflicting entities
-- [ ] 11.5 Implement compensation-plan generation and validation without allowing the Agent to execute it directly
-- [ ] 11.6 Execute approved rollback plans as new batches, verify the resulting target version, and link both execution records
-- [ ] 11.7 Build report generation status, report viewer, rollback review, conflict explanation, and rollback confirmation views
-- [ ] 11.8 Add tests for historical report consistency, blocked rollback, successful compensation, failed compensation, and immutable originals
+- [x] 11.1 Implement on-demand report jobs that read fixed execution-time facts and persist report versions
+- [x] 11.2 Implement a structured report containing snapshots, statistics, causes, selected plans, operator, outcomes, failures, and rollback status
+- [x] 11.3 Implement the initial HTML report renderer and downloadable report endpoint
+- [x] 11.4 Implement historical restore preview and preflight for current-version drift, version paths, successful operation facts, reversibility, affected scope, and uncertain outcomes
+- [x] 11.5 Reuse the analysis model to propose restore operations and explanations while deterministically deriving and validating the authoritative restore plan
+- [x] 11.6 Execute an approved restore as one new compensation batch, verify content against the selected historical version, and persist immutable restore/version/execution links
+- [x] 11.7 Build report generation status, HTML report viewer, target-version timeline, restore review, conflict explanation, and confirmation views
+- [x] 11.8 Add tests for historical report consistency, AI fallback, stale or blocked restore, repeated restore across historical versions, failed compensation, and immutable originals
 
 ## 12. Asynchronous Workflow and Performance
 

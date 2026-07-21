@@ -2,6 +2,15 @@ from app.models.analyses import AnalysisRecord
 from app.models.analysis_jobs import AnalysisJobRecord, AnalysisWorkItemRecord
 from app.models.base import Base
 from app.models.differences import DifferenceRecord
+from app.models.executions import (
+    ExecutionAuditEventRecord,
+    ExecutionBatchRecord,
+    ExecutionOperationRecord,
+    GovernancePlanExplanationRecord,
+    GovernancePlanRecord,
+    OperationAttemptRecord,
+    TargetVersionRecord,
+)
 from app.models.mappings import EntityMapping, SnapshotEntityEmbedding, TargetEntityEmbedding
 from app.models.proposal_batches import ProposalBatchRecord
 from app.models.proposals import GovernanceProposalRecord
@@ -11,6 +20,13 @@ from app.models.rematching import (
     EntityRematchCandidateEdgeRecord,
     EntityRematchJobRecord,
     EntityRematchWorkItemRecord,
+)
+from app.models.reporting import (
+    GovernanceReportRecord,
+    ReportJobRecord,
+    RestoreExecutionLinkRecord,
+    RestoreExecutionResultRecord,
+    RestoreRequestRecord,
 )
 from app.models.snapshots import (
     CanonicalEntityRecord,
@@ -29,18 +45,30 @@ __all__ = [
     "CanonicalEntityRecord",
     "DifferenceRecord",
     "EntityMapping",
+    "ExecutionAuditEventRecord",
+    "ExecutionBatchRecord",
+    "ExecutionOperationRecord",
+    "GovernanceReportRecord",
+    "GovernancePlanRecord",
+    "GovernancePlanExplanationRecord",
+    "GovernanceProposalRecord",
     "EntityRematchCandidateEdgeRecord",
     "EntityRematchJobRecord",
     "EntityRematchWorkItemRecord",
     "MatchingQualityRecord",
-    "GovernanceProposalRecord",
     "ProposalBatchRecord",
     "IngestionIssueRecord",
     "RawSnapshotRow",
+    "ReportJobRecord",
     "ReconciliationTask",
+    "RestoreExecutionLinkRecord",
+    "RestoreExecutionResultRecord",
+    "RestoreRequestRecord",
     "Snapshot",
     "SnapshotEntityEmbedding",
     "SourceFile",
     "TargetEntityEmbedding",
+    "TargetVersionRecord",
+    "OperationAttemptRecord",
     "WorkflowStageRun",
 ]

@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     upload_root: Path = Path("storage/uploads")
     snapshot_root: Path = Path("storage/snapshots")
     quarantine_root: Path = Path("storage/quarantine")
+    export_root: Path = Path("storage/exports")
     max_upload_bytes: PositiveInt = 50 * 1024 * 1024
     demo_operator_id: str = "demo-operator"
     demo_tenant_id: str = "school-1"
@@ -165,7 +166,12 @@ class Settings(BaseSettings):
         return bool(self.llm_url and api_key and self.llm_model and token_secret)
 
     def ensure_storage_directories(self) -> None:
-        for directory in (self.upload_root, self.snapshot_root, self.quarantine_root):
+        for directory in (
+            self.upload_root,
+            self.snapshot_root,
+            self.quarantine_root,
+            self.export_root,
+        ):
             directory.mkdir(parents=True, exist_ok=True)
 
 

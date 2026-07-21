@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import select
@@ -20,7 +20,7 @@ class MatchingQualityRepository:
         tenant_id: str,
         policy_version: str,
         mapping_versions: Sequence[str],
-        result: dict,
+        result: dict[str, Any],
     ) -> MatchingQualityRecord:
         record = MatchingQualityRecord(
             task_id=task_id,

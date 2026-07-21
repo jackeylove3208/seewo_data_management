@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import get_operator_context, get_session
 from app.core.security import OperatorContext
 from app.models.mappings import EntityMapping
+from app.models.rematching import EntityRematchJobRecord
 from app.models.snapshots import Snapshot
 from app.repositories.quality import MatchingQualityRepository
 from app.repositories.rematching import EntityRematchRepository, RematchWorkItemDraft
@@ -23,7 +24,7 @@ router = APIRouter(prefix="/api", tags=["entity-rematching"])
 TERMINAL = {"completed", "completed_with_failures", "canceled"}
 
 
-def _response(job) -> RematchingJobResponse:
+def _response(job: EntityRematchJobRecord) -> RematchingJobResponse:
     return RematchingJobResponse(
         job_id=job.id,
         task_id=job.task_id,
@@ -36,7 +37,7 @@ def _response(job) -> RematchingJobResponse:
         manual_review=job.manual_review,
         conflict=job.conflict,
         failed=job.failed,
-        updated_at=job.updated_at,
+        updated_at=job.heartbeat_at or job.completed_at or job.started_at or job.created_at,
     )
 
 
@@ -93,7 +94,9 @@ async def create_rematching_job(
     return _response(job)
 
 
-async def _owned_job(session: AsyncSession, job_id: UUID, operator: OperatorContext):
+async def _owned_job(
+    session: AsyncSession, job_id: UUID, operator: OperatorContext
+) -> EntityRematchJobRecord:
     job = await EntityRematchRepository(session).get_for_tenant(job_id, operator.tenant_id)
     if job is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="entity rematch job not found")

@@ -7,6 +7,8 @@ import { ConversationCreatePage } from "../features/task-create/ConversationCrea
 import { TaskCreatePage } from "../features/task-create/TaskCreatePage";
 import { TaskDetailPage } from "../features/task-detail/TaskDetailPage";
 import { DifferenceCategoryPage } from "../features/differences/DifferenceCategoryPage";
+import { ExecutionHistoryPage } from "../features/executions/ExecutionHistoryPage";
+import { ExecutionDetailPage } from "../features/executions/ExecutionDetailPage";
 import { AppProviders } from "./providers";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
 
@@ -57,6 +59,8 @@ function AppLayout() {
           <Route path="/tasks/new" element={<TaskCreatePage />} />
           <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
           <Route path="/tasks/:taskId/differences/:entityType" element={<DifferenceCategoryPage />} />
+          <Route path="/executions" element={<ExecutionHistoryPage />} />
+          <Route path="/executions/:executionId" element={<ExecutionDetailPage />} />
           <Route path="*" element={<Navigate to="/tasks" replace />} />
         </Routes>
       </div>

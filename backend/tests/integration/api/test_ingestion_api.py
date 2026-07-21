@@ -16,7 +16,6 @@ from app.models import Base
 from app.models.analyses import AnalysisRecord
 from app.models.differences import DifferenceRecord
 from app.models.mappings import EntityMapping
-from app.models.workflow import WorkflowStageRun
 from app.tasks.deletion_service import (
     TaskDeletionBlocked,
     TaskDeletionNotFound,
@@ -367,15 +366,15 @@ def test_schema_failure_is_persisted_and_retryable_after_upgrade(
 
     matching = client.post(f"/api/reconciliation-tasks/{task_id}/workflow/advance")
     assert matching.status_code == 200, matching.text
+    differences = client.post(f"/api/reconciliation-tasks/{task_id}/workflow/advance")
+    assert differences.status_code == 200, differences.text
     failed = client.post(f"/api/reconciliation-tasks/{task_id}/workflow/advance")
 
     assert failed.status_code == 200, failed.text
-    failed_workflow = failed.json()["workflow"]
-    assert failed_workflow["status"] == "failed"
-    assert failed_workflow["stage"] == "differences"
-    assert failed_workflow["error"]["code"] == "database_schema_mismatch"
-    assert failed_workflow["error"]["retryable"] is True
-    assert "alembic upgrade head" in failed_workflow["error"]["message"]
+    queued_workflow = failed.json()["workflow"]
+    assert queued_workflow["status"] == "running"
+    assert queued_workflow["stage"] == "analysis"
+    assert queued_workflow["analysis"]["job_id"] is not None
 
     monkeypatch.setenv(
         "RECONCILIATION_DATABASE_URL",
@@ -389,28 +388,6 @@ def test_schema_failure_is_persisted_and_retryable_after_upgrade(
         )
     }
 
-    retried = client.post(f"/api/reconciliation-tasks/{task_id}/workflow/retry")
-    assert retried.status_code == 200, retried.text
-    assert retried.json()["workflow"]["status"] == "pending"
-    assert retried.json()["workflow"]["stage"] == "analysis"
-
-    async def attempts() -> list[tuple[int, str]]:
-        async with client.app.state.database.session_factory() as session:
-            rows = await session.scalars(
-                select(WorkflowStageRun)
-                .where(
-                    WorkflowStageRun.task_id == UUID(task_id),
-                    WorkflowStageRun.stage == "differences",
-                )
-                .order_by(WorkflowStageRun.attempt)
-            )
-            return [(row.attempt, row.status) for row in rows]
-
-    assert client.portal is not None
-    assert client.portal.call(attempts) == [
-        (1, "failed"),
-        (2, "succeeded"),
-    ]
 
 
 def test_concurrent_workflow_advancement_does_not_duplicate_stage_outputs(

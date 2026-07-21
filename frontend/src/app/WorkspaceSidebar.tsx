@@ -146,7 +146,7 @@ export function WorkspaceSidebar({
               </div>
             ))}
           </div>
-          <NavLink className="workspace-all-history" to="/tasks" onClick={onMobileClose}>
+          <NavLink className="workspace-all-history" to="/executions" onClick={onMobileClose}>
             <History size={16} /><span className="workspace-label">查看全部历史</span>
           </NavLink>
         </section>
