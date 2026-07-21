@@ -104,11 +104,18 @@ class ExecutionRecordService:
                 )
             )
         )
+        record_status = _status(latest_statuses)
         permitted: list[str] = []
         if retryable_count:
             permitted.append("retry")
         if versions:
             permitted.append("download")
+            permitted.append("restore")
+        if record_status in {
+            ExecutionBatchStatus.SUCCEEDED,
+            ExecutionBatchStatus.PARTIAL_FAILURE,
+        }:
+            permitted.append("report")
         return ExecutionRecordDetail(
             id=batch.id,
             task_id=plan.task_id,
@@ -117,7 +124,7 @@ class ExecutionRecordService:
             plan_id=plan.id,
             plan_version=plan.version,
             plan_created_by=plan.created_by,
-            status=_status(latest_statuses),
+            status=record_status,
             confirmed_by=batch.confirmed_by,
             independent_reviewer_id=batch.independent_reviewer_id,
             high_risk_acknowledged=batch.high_risk_acknowledged,

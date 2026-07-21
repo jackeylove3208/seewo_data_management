@@ -81,9 +81,7 @@ class GovernancePlanBuilder:
 
         proposal_nodes = self._order_proposals(selected)
         proposals_with_dependents = {
-            dependency
-            for node in proposal_nodes
-            for dependency in node.dependencies
+            dependency for node in proposal_nodes for dependency in node.dependencies
         }
         operations: list[GovernanceOperation] = []
         operation_ids_by_proposal: dict[UUID, UUID] = {}
@@ -91,8 +89,7 @@ class GovernancePlanBuilder:
             operation = self._compile_operation(
                 node.proposal,
                 dependencies=frozenset(
-                    operation_ids_by_proposal[dependency]
-                    for dependency in node.dependencies
+                    operation_ids_by_proposal[dependency] for dependency in node.dependencies
                 ),
                 has_dependents=node.id in proposals_with_dependents,
             )
@@ -212,9 +209,7 @@ class GovernancePlanBuilder:
         )
         actual_changes = _changed_fact_fields(proposal.before, proposal.after)
         if actual_changes != proposal.changed_fields:
-            raise PlanPolicyError(
-                "changed_fields must exactly match the operation fact changes"
-            )
+            raise PlanPolicyError("changed_fields must exactly match the operation fact changes")
 
         assessment = assess_operation(
             operation_type=proposal.operation_type,
@@ -300,9 +295,7 @@ def _target_aliases(operation: GovernanceOperation) -> tuple[TargetAlias, ...]:
     if operation.target_entity_id is not None:
         aliases.append((operation.entity_type, f"id:{operation.target_entity_id}"))
     if operation.target_source_identifier is not None:
-        aliases.append(
-            (operation.entity_type, f"source:{operation.target_source_identifier}")
-        )
+        aliases.append((operation.entity_type, f"source:{operation.target_source_identifier}"))
     return tuple(aliases)
 
 

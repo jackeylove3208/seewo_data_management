@@ -45,9 +45,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["target_snapshot_id"], ["snapshots.id"]),
         sa.ForeignKeyConstraint(["task_id"], ["reconciliation_tasks.id"]),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "task_id", "content_hash", name="uq_governance_plan_content"
-        ),
+        sa.UniqueConstraint("task_id", "content_hash", name="uq_governance_plan_content"),
     )
     op.create_index("ix_governance_plans_task_id", "governance_plans", ["task_id"])
     op.create_index(
@@ -60,9 +58,7 @@ def upgrade() -> None:
         "governance_plans",
         ["target_snapshot_id"],
     )
-    op.create_index(
-        "ix_governance_plans_created_by", "governance_plans", ["created_by"]
-    )
+    op.create_index("ix_governance_plans_created_by", "governance_plans", ["created_by"])
 
     op.create_table(
         "execution_batches",
@@ -78,9 +74,7 @@ def upgrade() -> None:
         sa.Column("preflight_result", sa.JSON(), nullable=False),
         sa.Column("confirmed_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.CheckConstraint(
-            "plan_version >= 1", name="ck_execution_batch_plan_version"
-        ),
+        sa.CheckConstraint("plan_version >= 1", name="ck_execution_batch_plan_version"),
         sa.CheckConstraint("status = 'confirmed'", name="ck_execution_batch_status"),
         sa.ForeignKeyConstraint(["plan_id"], ["governance_plans.id"]),
         sa.PrimaryKeyConstraint("id"),
@@ -99,9 +93,7 @@ def upgrade() -> None:
         unique=True,
     )
     op.create_index("ix_execution_batches_status", "execution_batches", ["status"])
-    op.create_index(
-        "ix_execution_batches_confirmed_by", "execution_batches", ["confirmed_by"]
-    )
+    op.create_index("ix_execution_batches_confirmed_by", "execution_batches", ["confirmed_by"])
     op.create_index(
         "ix_execution_batches_independent_reviewer_id",
         "execution_batches",
@@ -133,9 +125,7 @@ def upgrade() -> None:
         sa.Column("compensation_for", sa.Uuid(), nullable=True),
         sa.Column("restore_absence", sa.Boolean(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.CheckConstraint(
-            "proposal_version >= 1", name="ck_execution_operation_proposal_version"
-        ),
+        sa.CheckConstraint("proposal_version >= 1", name="ck_execution_operation_proposal_version"),
         sa.CheckConstraint(
             "difference_version >= 1", name="ck_execution_operation_difference_version"
         ),
@@ -147,18 +137,14 @@ def upgrade() -> None:
             "operation_type IN ('create', 'update', 'move', 'disable', 'skip')",
             name="ck_execution_operation_type",
         ),
-        sa.CheckConstraint(
-            "risk IN ('low', 'medium', 'high')", name="ck_execution_operation_risk"
-        ),
+        sa.CheckConstraint("risk IN ('low', 'medium', 'high')", name="ck_execution_operation_risk"),
         sa.ForeignKeyConstraint(["analysis_id"], ["analysis_results.id"]),
         sa.ForeignKeyConstraint(["batch_id"], ["execution_batches.id"]),
         sa.ForeignKeyConstraint(["difference_id"], ["difference_items.id"]),
         sa.ForeignKeyConstraint(["proposal_id"], ["governance_proposals.id"]),
         sa.ForeignKeyConstraint(["target_entity_id"], ["canonical_entities.id"]),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "batch_id", "operation_id", name="uq_execution_batch_operation"
-        ),
+        sa.UniqueConstraint("batch_id", "operation_id", name="uq_execution_batch_operation"),
     )
     for column in (
         "batch_id",
@@ -169,9 +155,7 @@ def upgrade() -> None:
         "operation_type",
         "entity_type",
     ):
-        op.create_index(
-            f"ix_execution_operations_{column}", "execution_operations", [column]
-        )
+        op.create_index(f"ix_execution_operations_{column}", "execution_operations", [column])
 
     op.create_table(
         "target_versions",
@@ -185,12 +169,8 @@ def upgrade() -> None:
         sa.Column("content_hash", sa.String(length=64), nullable=False),
         sa.Column("storage_path", sa.String(length=1024), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.CheckConstraint(
-            "length(file_sha256) = 64", name="ck_target_version_file_hash"
-        ),
-        sa.CheckConstraint(
-            "length(content_hash) = 64", name="ck_target_version_content_hash"
-        ),
+        sa.CheckConstraint("length(file_sha256) = 64", name="ck_target_version_file_hash"),
+        sa.CheckConstraint("length(content_hash) = 64", name="ck_target_version_content_hash"),
         sa.ForeignKeyConstraint(["batch_id"], ["execution_batches.id"]),
         sa.ForeignKeyConstraint(["parent_version_id"], ["target_versions.id"]),
         sa.ForeignKeyConstraint(["source_snapshot_id"], ["snapshots.id"]),
@@ -227,9 +207,7 @@ def upgrade() -> None:
         sa.Column("retryable", sa.Boolean(), nullable=False),
         sa.Column("target_version_id", sa.Uuid(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.CheckConstraint(
-            "attempt_number >= 1", name="ck_operation_attempt_number"
-        ),
+        sa.CheckConstraint("attempt_number >= 1", name="ck_operation_attempt_number"),
         sa.CheckConstraint(
             "status IN ('pending', 'blocked', 'running', 'succeeded', 'failed', "
             "'verification_failed')",
@@ -238,9 +216,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["operation_id"], ["execution_operations.id"]),
         sa.ForeignKeyConstraint(["target_version_id"], ["target_versions.id"]),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "operation_id", "attempt_number", name="uq_operation_attempt_number"
-        ),
+        sa.UniqueConstraint("operation_id", "attempt_number", name="uq_operation_attempt_number"),
     )
     for column in (
         "operation_id",
@@ -265,9 +241,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     for column in ("batch_id", "operation_id", "actor_id", "event_type"):
-        op.create_index(
-            f"ix_execution_audit_events_{column}", "execution_audit_events", [column]
-        )
+        op.create_index(f"ix_execution_audit_events_{column}", "execution_audit_events", [column])
 
     _create_immutability_guards()
 
@@ -309,30 +283,18 @@ def downgrade() -> None:
         "operation_id",
         "batch_id",
     ):
-        op.drop_index(
-            f"ix_execution_operations_{column}", table_name="execution_operations"
-        )
+        op.drop_index(f"ix_execution_operations_{column}", table_name="execution_operations")
     op.drop_table("execution_operations")
-    op.drop_index(
-        "ix_execution_batches_independent_reviewer_id", table_name="execution_batches"
-    )
+    op.drop_index("ix_execution_batches_independent_reviewer_id", table_name="execution_batches")
     op.drop_index("ix_execution_batches_confirmed_by", table_name="execution_batches")
     op.drop_index("ix_execution_batches_status", table_name="execution_batches")
-    op.drop_index(
-        "ix_execution_batches_idempotency_key", table_name="execution_batches"
-    )
-    op.drop_index(
-        "ix_execution_batches_input_target_version_id", table_name="execution_batches"
-    )
+    op.drop_index("ix_execution_batches_idempotency_key", table_name="execution_batches")
+    op.drop_index("ix_execution_batches_input_target_version_id", table_name="execution_batches")
     op.drop_index("ix_execution_batches_plan_id", table_name="execution_batches")
     op.drop_table("execution_batches")
     op.drop_index("ix_governance_plans_created_by", table_name="governance_plans")
-    op.drop_index(
-        "ix_governance_plans_target_snapshot_id", table_name="governance_plans"
-    )
-    op.drop_index(
-        "ix_governance_plans_source_snapshot_id", table_name="governance_plans"
-    )
+    op.drop_index("ix_governance_plans_target_snapshot_id", table_name="governance_plans")
+    op.drop_index("ix_governance_plans_source_snapshot_id", table_name="governance_plans")
     op.drop_index("ix_governance_plans_task_id", table_name="governance_plans")
     op.drop_table("governance_plans")
 

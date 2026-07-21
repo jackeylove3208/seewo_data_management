@@ -20,10 +20,7 @@ class ConflictResolver:
     def resolve(self, decisions: Sequence[MatchDecision]) -> list[MatchDecision]:
         groups: dict[UUID, list[MatchDecision]] = defaultdict(list)
         for decision in decisions:
-            if (
-                decision.status in CARDINALITY_STATUSES
-                and decision.target_entity_id is not None
-            ):
+            if decision.status in CARDINALITY_STATUSES and decision.target_entity_id is not None:
                 groups[decision.target_entity_id].append(decision)
 
         replacements: dict[UUID, MatchDecision] = {}

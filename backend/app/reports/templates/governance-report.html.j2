@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>治理报告 v{{ report_version }}</title></head>
+<body>
+  <h1>组织数据治理报告</h1>
+  <dl>
+    <dt>报告版本</dt><dd>{{ report_version }}</dd>
+    <dt>执行记录</dt><dd>{{ facts.execution_id }}</dd>
+    <dt>操作人</dt><dd>{{ facts.confirmed_by }}</dd>
+    <dt>执行状态</dt><dd>{{ facts.status }}</dd>
+    <dt>来源快照</dt><dd>{{ facts.source_snapshot_id }}</dd>
+    <dt>目标快照</dt><dd>{{ facts.target_snapshot_id }}</dd>
+    <dt>输入目标版本</dt><dd>{{ facts.input_target_version_id }}</dd>
+    <dt>输出目标版本</dt><dd>{{ facts.output_target_version_ids | join(", ") }}</dd>
+  </dl>
+  <h2>差异统计</h2><pre>{{ facts.difference_statistics | tojson(indent=2) }}</pre>
+  <h2>AI 总结</h2><p>{{ content.summary }}</p>
+  <h2>治理操作</h2>
+  <ul>{% for operation in facts.operations %}<li>{{ operation.operation_type }} {{ operation.target_source_identifier }} {{ operation.attempts }}</li>{% endfor %}</ul>
+  <h2>结果</h2><ul>{% for outcome in content.outcomes %}<li>{{ outcome }}</li>{% endfor %}</ul>
+  <h2>失败项</h2><ul>{% for failure in content.failures %}<li>{{ failure }}</li>{% endfor %}</ul>
+  <h2>固定失败事实</h2><pre>{{ facts.failures | tojson(indent=2) }}</pre>
+  <h2>恢复状态</h2><p>{{ content.restore_state }}</p>
+</body>
+</html>

@@ -22,7 +22,7 @@ describe("workspace sidebar", () => {
 
     expect(screen.getByRole("link", { name: /三方全校数据核对/ })).toHaveAttribute("aria-current", "page");
     expect(screen.getByText("9 个问题")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "查看全部历史" })).toHaveAttribute("href", "/tasks");
+    expect(screen.getByRole("link", { name: "查看全部历史" })).toHaveAttribute("href", "/executions");
     expect(await screen.findByText("后端未连接")).toBeInTheDocument();
   });
 

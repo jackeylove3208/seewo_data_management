@@ -92,9 +92,7 @@ def test_reviewed_proposal_snapshot_is_strict_frozen_and_deeply_immutable() -> N
     with pytest.raises(ValidationError):
         reviewed_proposal(task_id=str(TASK_ID))
     with pytest.raises(ValidationError):
-        ReviewedProposalSnapshot.model_validate(
-            {**proposal.model_dump(), "unexpected": True}
-        )
+        ReviewedProposalSnapshot.model_validate({**proposal.model_dump(), "unexpected": True})
     with pytest.raises(ValidationError):
         proposal.current_proposal_version = 4
     assert proposal.before is not None
@@ -532,12 +530,8 @@ def test_proposal_dependency_cycle_is_rejected() -> None:
         entity_type=EntityType.STUDENT,
         target_source_identifier="student-cycle-second",
     )
-    first = first.model_copy(
-        update={"dependencies": frozenset({second.proposal.proposal_id})}
-    )
-    second = second.model_copy(
-        update={"dependencies": frozenset({first.proposal.proposal_id})}
-    )
+    first = first.model_copy(update={"dependencies": frozenset({second.proposal.proposal_id})})
+    second = second.model_copy(update={"dependencies": frozenset({first.proposal.proposal_id})})
 
     with pytest.raises(PlanCompilationError, match="cycle"):
         build(second, first)

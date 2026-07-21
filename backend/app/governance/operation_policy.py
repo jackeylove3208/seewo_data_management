@@ -8,21 +8,11 @@ class PlanPolicyError(ValueError):
 
 
 OPERATION_POLICY: dict[DifferenceType, frozenset[OperationType]] = {
-    DifferenceType.SEEWO_MISSING: frozenset(
-        {OperationType.CREATE, OperationType.SKIP}
-    ),
-    DifferenceType.SEEWO_REDUNDANT: frozenset(
-        {OperationType.DISABLE, OperationType.SKIP}
-    ),
-    DifferenceType.ATTRIBUTE_CONFLICT: frozenset(
-        {OperationType.UPDATE, OperationType.SKIP}
-    ),
-    DifferenceType.STRUCTURE_CONFLICT: frozenset(
-        {OperationType.MOVE, OperationType.SKIP}
-    ),
-    DifferenceType.DUPLICATE_CONFLICT: frozenset(
-        {OperationType.DISABLE, OperationType.SKIP}
-    ),
+    DifferenceType.SEEWO_MISSING: frozenset({OperationType.CREATE, OperationType.SKIP}),
+    DifferenceType.SEEWO_REDUNDANT: frozenset({OperationType.DISABLE, OperationType.SKIP}),
+    DifferenceType.ATTRIBUTE_CONFLICT: frozenset({OperationType.UPDATE, OperationType.SKIP}),
+    DifferenceType.STRUCTURE_CONFLICT: frozenset({OperationType.MOVE, OperationType.SKIP}),
+    DifferenceType.DUPLICATE_CONFLICT: frozenset({OperationType.DISABLE, OperationType.SKIP}),
 }
 
 
@@ -58,9 +48,7 @@ EDITABLE_FIELDS: dict[EntityType, frozenset[str]] = {
             "status",
         }
     ),
-    EntityType.MEMBERSHIP: frozenset(
-        {"member_source_id", "container_source_id", "role", "status"}
-    ),
+    EntityType.MEMBERSHIP: frozenset({"member_source_id", "container_source_id", "role", "status"}),
 }
 
 
@@ -73,9 +61,7 @@ def validate_operation(
     operation_type: OperationType,
 ) -> None:
     if operation_type not in allowed_operations(difference_type):
-        raise PlanPolicyError(
-            f"{operation_type.value} is not allowed for {difference_type.value}"
-        )
+        raise PlanPolicyError(f"{operation_type.value} is not allowed for {difference_type.value}")
 
 
 def validate_editable_fields(
@@ -85,6 +71,4 @@ def validate_editable_fields(
     disallowed = fields - EDITABLE_FIELDS[entity_type]
     if disallowed:
         names = ", ".join(sorted(disallowed))
-        raise PlanPolicyError(
-            f"fields are protected or unknown for {entity_type.value}: {names}"
-        )
+        raise PlanPolicyError(f"fields are protected or unknown for {entity_type.value}: {names}")

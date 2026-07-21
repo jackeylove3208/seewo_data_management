@@ -30,9 +30,7 @@ class GovernancePlanRecord(Base, TimestampMixin):
     __tablename__ = "governance_plans"
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    task_id: Mapped[UUID] = mapped_column(
-        ForeignKey("reconciliation_tasks.id"), index=True
-    )
+    task_id: Mapped[UUID] = mapped_column(ForeignKey("reconciliation_tasks.id"), index=True)
     version: Mapped[int] = mapped_column(Integer, default=1)
     source_snapshot_id: Mapped[UUID] = mapped_column(ForeignKey("snapshots.id"), index=True)
     target_snapshot_id: Mapped[UUID] = mapped_column(ForeignKey("snapshots.id"), index=True)
@@ -80,9 +78,7 @@ class ExecutionOperationRecord(Base, TimestampMixin):
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     batch_id: Mapped[UUID] = mapped_column(ForeignKey("execution_batches.id"), index=True)
     operation_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
-    proposal_id: Mapped[UUID] = mapped_column(
-        ForeignKey("governance_proposals.id"), index=True
-    )
+    proposal_id: Mapped[UUID] = mapped_column(ForeignKey("governance_proposals.id"), index=True)
     proposal_version: Mapped[int] = mapped_column(Integer)
     proposal_source: Mapped[str] = mapped_column(String(32))
     difference_id: Mapped[UUID] = mapped_column(ForeignKey("difference_items.id"), index=True)
@@ -118,9 +114,7 @@ class ExecutionOperationRecord(Base, TimestampMixin):
             "operation_type IN ('create', 'update', 'move', 'disable', 'skip')",
             name="ck_execution_operation_type",
         ),
-        CheckConstraint(
-            "risk IN ('low', 'medium', 'high')", name="ck_execution_operation_risk"
-        ),
+        CheckConstraint("risk IN ('low', 'medium', 'high')", name="ck_execution_operation_risk"),
     )
 
 
@@ -131,9 +125,7 @@ class TargetVersionRecord(Base, TimestampMixin):
     parent_version_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("target_versions.id"), nullable=True, index=True
     )
-    task_id: Mapped[UUID] = mapped_column(
-        ForeignKey("reconciliation_tasks.id"), index=True
-    )
+    task_id: Mapped[UUID] = mapped_column(ForeignKey("reconciliation_tasks.id"), index=True)
     tenant_id: Mapped[str] = mapped_column(String(128), index=True)
     source_snapshot_id: Mapped[UUID] = mapped_column(ForeignKey("snapshots.id"), index=True)
     batch_id: Mapped[UUID | None] = mapped_column(
@@ -153,9 +145,7 @@ class OperationAttemptRecord(Base, TimestampMixin):
     __tablename__ = "operation_attempts"
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    operation_id: Mapped[UUID] = mapped_column(
-        ForeignKey("execution_operations.id"), index=True
-    )
+    operation_id: Mapped[UUID] = mapped_column(ForeignKey("execution_operations.id"), index=True)
     attempt_number: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(32), index=True)
     error_code: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
@@ -168,9 +158,7 @@ class OperationAttemptRecord(Base, TimestampMixin):
     )
 
     __table_args__ = (
-        UniqueConstraint(
-            "operation_id", "attempt_number", name="uq_operation_attempt_number"
-        ),
+        UniqueConstraint("operation_id", "attempt_number", name="uq_operation_attempt_number"),
         CheckConstraint("attempt_number >= 1", name="ck_operation_attempt_number"),
         CheckConstraint(
             "status IN ('pending', 'blocked', 'running', 'succeeded', 'failed', "
@@ -207,9 +195,7 @@ class GovernancePlanExplanationRecord(Base, TimestampMixin):
     )
 
 
-def _reject_execution_mutation(
-    _mapper: object, _connection: object, target: object
-) -> None:
+def _reject_execution_mutation(_mapper: object, _connection: object, target: object) -> None:
     raise ImmutableExecutionRecordError(f"{type(target).__name__} is immutable")
 
 

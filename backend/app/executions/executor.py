@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 from uuid import UUID
 
 from app.executions.csv_versioning import CsvMutationError, TargetVersionLike
@@ -136,6 +136,7 @@ class ExecutionExecutor:
         ordered = stable_topological_order(stored)
         session = await self.target.begin(parent, batch_id=batch_id)
         results: dict[UUID, ExecutionOperationResult] = {}
+        pending_attempts: list[tuple[StoredExecutionOperation, dict[str, Any]]] = []
         applied = False
         try:
             for item in ordered:
@@ -161,14 +162,14 @@ class ExecutionExecutor:
                     results,
                 )
                 if failed_dependency:
-                    attempt = await self.repository.append_attempt(
-                        item.record_id,
-                        status=OperationStatus.BLOCKED.value,
-                        error_code="dependency_failed",
-                        error_detail={"dependency_operation_id": str(failed_dependency)},
-                        retryable=False,
-                    )
-                    results[item.record_id] = _result(item, attempt)
+                    values = {
+                        "status": OperationStatus.BLOCKED.value,
+                        "error_code": "dependency_failed",
+                        "error_detail": {"dependency_operation_id": str(failed_dependency)},
+                        "retryable": False,
+                    }
+                    pending_attempts.append((item, values))
+                    results[item.record_id] = _pending_result(item, latest, values)
                     continue
                 try:
                     if item.operation.operation_type is not OperationType.SKIP:
@@ -180,29 +181,41 @@ class ExecutionExecutor:
                         if verification.valid
                         else OperationStatus.VERIFICATION_FAILED
                     )
-                    attempt = await self.repository.append_attempt(
-                        item.record_id,
-                        status=status.value,
-                        actual_after=verification.actual,
-                        verification=verification.model_dump(mode="json"),
-                        retryable=False,
-                    )
+                    values = {
+                        "status": status.value,
+                        "actual_after": verification.actual,
+                        "verification": verification.model_dump(mode="json"),
+                        "retryable": False,
+                    }
                 except (ConnectorExecutionError, CsvMutationError) as error:
                     retryable = bool(getattr(error, "retryable", False))
-                    attempt = await self.repository.append_attempt(
-                        item.record_id,
-                        status=OperationStatus.FAILED.value,
-                        error_code=str(getattr(error, "code", "csv_mutation_error")),
-                        error_detail={"message": str(error)},
-                        retryable=retryable,
-                    )
-                results[item.record_id] = _result(item, attempt)
+                    values = {
+                        "status": OperationStatus.FAILED.value,
+                        "error_code": str(getattr(error, "code", "csv_mutation_error")),
+                        "error_detail": {"message": str(error)},
+                        "retryable": retryable,
+                    }
+                pending_attempts.append((item, values))
+                results[item.record_id] = _pending_result(item, latest, values)
             output = await session.finalize() if applied else None
             if output is None:
                 await session.abort()
         except Exception:
             await session.abort()
             raise
+
+        for item, values in pending_attempts:
+            attempt = await self.repository.append_attempt(
+                item.record_id,
+                status=str(values["status"]),
+                error_code=cast(str | None, values.get("error_code")),
+                error_detail=cast(Mapping[str, Any] | None, values.get("error_detail")),
+                actual_after=cast(Mapping[str, Any] | None, values.get("actual_after")),
+                verification=cast(Mapping[str, Any] | None, values.get("verification")),
+                retryable=bool(values.get("retryable", False)),
+                target_version_id=output.id if output is not None else None,
+            )
+            results[item.record_id] = _result(item, attempt)
 
         ordered_results = tuple(
             results[item.record_id] for item in ordered if item.record_id in results
@@ -258,6 +271,23 @@ def _result(
         error_code=attempt.error_code,
         actual_after=attempt.actual_after,
         verification=attempt.verification,
+    )
+
+
+def _pending_result(
+    item: StoredExecutionOperation,
+    latest: AttemptLike | None,
+    values: Mapping[str, Any],
+) -> ExecutionOperationResult:
+    return ExecutionOperationResult(
+        record_id=item.record_id,
+        operation_id=item.operation.id,
+        status=OperationStatus(str(values["status"])),
+        attempt_number=(latest.attempt_number if latest is not None else 0) + 1,
+        retryable=bool(values.get("retryable", False)),
+        error_code=values.get("error_code"),
+        actual_after=values.get("actual_after"),
+        verification=values.get("verification"),
     )
 
 

@@ -35,6 +35,7 @@ def test_recursive_tokenization_protects_person_values_but_keeps_organization_na
             "phone": "13100000000",
             "email": "zhangsan@example.com",
             "source_id": "T-001",
+            "target_source_identifier": "SW-T-001",
             "department_source_id": "D-001",
         },
         "related_entities": [
@@ -52,6 +53,7 @@ def test_recursive_tokenization_protects_person_values_but_keeps_organization_na
     assert safe["source_payload"]["phone"].startswith("PHONE_")
     assert safe["source_payload"]["email"].startswith("EMAIL_")
     assert safe["source_payload"]["source_id"].startswith("EXTERNAL_ID_")
+    assert safe["source_payload"]["target_source_identifier"].startswith("EXTERNAL_ID_")
     assert safe["source_payload"]["department_source_id"].startswith("EXTERNAL_ID_")
     assert safe["related_entities"][0]["name"] == "七年级"
     assert "张三" not in str(safe)

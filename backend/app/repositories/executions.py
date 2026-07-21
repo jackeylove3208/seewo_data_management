@@ -279,9 +279,7 @@ class ExecutionRepository:
             ) from error
         return batch
 
-    async def list_operations(
-        self, batch_id: UUID
-    ) -> tuple[ExecutionOperationRecord, ...]:
+    async def list_operations(self, batch_id: UUID) -> tuple[ExecutionOperationRecord, ...]:
         records = await self.session.scalars(
             select(ExecutionOperationRecord)
             .where(ExecutionOperationRecord.batch_id == batch_id)
@@ -333,9 +331,7 @@ class ExecutionRepository:
             return record
         raise ExecutionPersistenceConflict("could not allocate operation attempt number")
 
-    async def list_attempts(
-        self, operation_id: UUID
-    ) -> tuple[OperationAttemptRecord, ...]:
+    async def list_attempts(self, operation_id: UUID) -> tuple[OperationAttemptRecord, ...]:
         records = await self.session.scalars(
             select(OperationAttemptRecord)
             .where(OperationAttemptRecord.operation_id == operation_id)
@@ -357,7 +353,9 @@ class ExecutionRepository:
     ) -> TargetVersionRecord:
         if not tenant_id.strip():
             raise ValueError("target version tenant is required")
-        task = await self.session.get(ReconciliationTask, task_id)
+        task = await self.session.scalar(
+            select(ReconciliationTask).where(ReconciliationTask.id == task_id).with_for_update()
+        )
         if task is None:
             raise LookupError("target version task not found")
         if task.tenant_id != tenant_id:
@@ -381,15 +379,21 @@ class ExecutionRepository:
                 raise ExecutionPersistenceConflict(
                     "parent target version belongs to another task, tenant, or snapshot"
                 )
+            current = await self.session.scalar(
+                select(TargetVersionRecord)
+                .where(TargetVersionRecord.task_id == task_id)
+                .order_by(TargetVersionRecord.created_at.desc(), TargetVersionRecord.id.desc())
+                .limit(1)
+            )
+            if current is None or current.id != parent_version_id:
+                raise ExecutionPersistenceConflict("parent target version is no longer current")
         if batch_id is not None:
             batch = await self.session.get(ExecutionBatchRecord, batch_id)
             if batch is None:
                 raise LookupError("execution batch not found")
             plan = await self.session.get(GovernancePlanRecord, batch.plan_id)
             if plan is None or plan.task_id != task_id:
-                raise ExecutionPersistenceConflict(
-                    "execution batch belongs to another task"
-                )
+                raise ExecutionPersistenceConflict("execution batch belongs to another task")
         record = TargetVersionRecord(
             parent_version_id=parent_version_id,
             task_id=task_id,
@@ -426,9 +430,7 @@ class ExecutionRepository:
         if operation_id is not None:
             operation = await self.session.get(ExecutionOperationRecord, operation_id)
             if operation is None or operation.batch_id != batch_id:
-                raise ExecutionPersistenceConflict(
-                    "audit operation does not belong to the batch"
-                )
+                raise ExecutionPersistenceConflict("audit operation does not belong to the batch")
         record = ExecutionAuditEventRecord(
             batch_id=batch_id,
             operation_id=operation_id,
@@ -440,12 +442,8 @@ class ExecutionRepository:
         await self.session.flush()
         return record
 
-    async def _validate_operation_references(
-        self, operation: GovernanceOperation
-    ) -> None:
-        proposal = await self.session.get(
-            GovernanceProposalRecord, operation.proposal.proposal_id
-        )
+    async def _validate_operation_references(self, operation: GovernanceOperation) -> None:
+        proposal = await self.session.get(GovernanceProposalRecord, operation.proposal.proposal_id)
         if proposal is None:
             raise ExecutionPersistenceConflict("operation proposal not found")
         if (
@@ -456,9 +454,7 @@ class ExecutionRepository:
             or proposal.analysis_id != operation.analysis_id
             or proposal.analysis_version != operation.analysis_version
         ):
-            raise ExecutionPersistenceConflict(
-                "operation does not match its exact proposal facts"
-            )
+            raise ExecutionPersistenceConflict("operation does not match its exact proposal facts")
 
     @staticmethod
     def _operation_record(

@@ -94,9 +94,7 @@ def test_task_can_resolve_then_detect_differences(
     task_id = snapshot_ready_task(difference_client)
 
     resolution = difference_client.post(f"/api/reconciliation-tasks/{task_id}/resolve")
-    detection = difference_client.post(
-        f"/api/reconciliation-tasks/{task_id}/differences/detect"
-    )
+    detection = difference_client.post(f"/api/reconciliation-tasks/{task_id}/differences/detect")
 
     assert resolution.status_code == 200
     assert resolution.json()["task_id"] == str(task_id)

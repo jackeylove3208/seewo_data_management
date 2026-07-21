@@ -30,6 +30,14 @@ class TargetVerifier:
                 mismatches={"identity": {"expected": "present", "actual": None}},
             )
         actual = await session.read_entity(identifier)
+        if operation.restore_absence:
+            return VerificationResult(
+                valid=actual is None,
+                actual=actual,
+                mismatches=(
+                    {} if actual is None else {"identity": {"expected": None, "actual": identifier}}
+                ),
+            )
         expected = operation.after or {}
         fields = operation.changed_fields or frozenset(expected)
         mismatches = {

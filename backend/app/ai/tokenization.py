@@ -22,6 +22,7 @@ PERSON_ENTITY_TYPES = frozenset({"teacher", "student"})
 EXTERNAL_ID_FIELDS = frozenset(
     {
         "source_id",
+        "target_source_identifier",
         "employee_number",
         "student_number",
         "member_source_id",

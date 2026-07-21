@@ -26,9 +26,7 @@ def _freeze_fact_value(value: Any) -> Any:
     if isinstance(value, float) and not isfinite(value):
         raise ValueError("fact numbers must be finite JSON values")
     if isinstance(value, Mapping):
-        return MappingProxyType(
-            {key: _freeze_fact_value(item) for key, item in value.items()}
-        )
+        return MappingProxyType({key: _freeze_fact_value(item) for key, item in value.items()})
     if isinstance(value, list):
         return tuple(_freeze_fact_value(item) for item in value)
     return value
@@ -132,17 +130,13 @@ class ReviewedProposalSnapshot(BaseModel):
 
     @field_validator("before", "after", mode="after")
     @classmethod
-    def freeze_facts(
-        cls, value: Mapping[str, JsonValue] | None
-    ) -> Mapping[str, JsonValue] | None:
+    def freeze_facts(cls, value: Mapping[str, JsonValue] | None) -> Mapping[str, JsonValue] | None:
         if value is None:
             return None
         return cast(Mapping[str, JsonValue], _freeze_fact_value(value))
 
     @field_serializer("before", "after")
-    def serialize_facts(
-        self, value: Mapping[str, JsonValue] | None
-    ) -> dict[str, Any] | None:
+    def serialize_facts(self, value: Mapping[str, JsonValue] | None) -> dict[str, Any] | None:
         if value is None:
             return None
         return cast(dict[str, Any], _serialize_fact_value(value))
@@ -173,26 +167,20 @@ class GovernanceOperation(BaseModel):
 
     @field_validator("before", "after", mode="after")
     @classmethod
-    def freeze_facts(
-        cls, value: Mapping[str, JsonValue] | None
-    ) -> Mapping[str, JsonValue] | None:
+    def freeze_facts(cls, value: Mapping[str, JsonValue] | None) -> Mapping[str, JsonValue] | None:
         if value is None:
             return None
         return cast(Mapping[str, JsonValue], _freeze_fact_value(value))
 
     @field_serializer("before", "after")
-    def serialize_facts(
-        self, value: Mapping[str, JsonValue] | None
-    ) -> dict[str, Any] | None:
+    def serialize_facts(self, value: Mapping[str, JsonValue] | None) -> dict[str, Any] | None:
         if value is None:
             return None
         return cast(dict[str, Any], _serialize_fact_value(value))
 
     @model_validator(mode="after")
     def validate_operation_shape(self) -> "GovernanceOperation":
-        has_target = (
-            self.target_entity_id is not None or self.target_source_identifier is not None
-        )
+        has_target = self.target_entity_id is not None or self.target_source_identifier is not None
 
         if self.operation_type is OperationType.CREATE:
             if has_target or self.before is not None:
@@ -248,9 +236,7 @@ class ExecutionBatch(BaseModel):
 
     @field_validator("preflight_result", mode="after")
     @classmethod
-    def freeze_preflight(
-        cls, value: Mapping[str, JsonValue]
-    ) -> Mapping[str, JsonValue]:
+    def freeze_preflight(cls, value: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
         return cast(Mapping[str, JsonValue], _freeze_fact_value(value))
 
     @field_serializer("preflight_result")

@@ -56,12 +56,15 @@ class ExecutionRepositoryFake:
         }
         self.events: list[dict[str, object]] = []
         self.latest_parent = None
+        self.output = None
 
     async def get_batch(self, batch_id: UUID):
         return self.batch if batch_id == self.batch.id else None
 
     async def get_target_version(self, version_id: UUID):
-        return self.parent if version_id == self.parent.id else None
+        if version_id == self.parent.id:
+            return self.parent
+        return self.output if self.output is not None and version_id == self.output.id else None
 
     async def retry_target_version(self, batch_id: UUID):
         assert batch_id == self.batch.id
@@ -118,7 +121,8 @@ class MutationSessionStub:
 
     async def finalize(self):
         self.finalized = True
-        return SimpleNamespace(id=uuid4())
+        self.output = SimpleNamespace(id=uuid4())
+        return self.output
 
     async def abort(self) -> None:
         self.finalized = False
@@ -160,6 +164,11 @@ async def test_unrelated_operation_continues_after_retryable_failure() -> None:
     assert session.rows["T1"]["phone"] == "one"
     assert session.rows["T3"]["phone"] == "three"
     assert session.finalized is True
+    assert {
+        attempt.target_version_id
+        for attempts in repository.attempts.values()
+        for attempt in attempts
+    } == {session.output.id}
 
 
 @pytest.mark.asyncio
