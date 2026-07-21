@@ -4,7 +4,12 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from app.ai.providers.base import LLMRequest, Message, ModelProviderError
+from app.ai.providers.base import (
+    LLMRequest,
+    Message,
+    ModelProviderError,
+    TransientModelError,
+)
 from app.ai.providers.embeddings import HttpEmbeddingProvider
 from app.ai.providers.llm import HttpLLMProvider
 from app.core.config import Settings
@@ -78,6 +83,36 @@ async def test_llm_does_not_retry_client_error_or_log_authorization(caplog) -> N
 
 
 @pytest.mark.asyncio
+async def test_llm_failure_traceback_does_not_contain_api_key() -> None:
+    secret = "test-api-key-that-must-not-leak"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection failed", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = HttpLLMProvider(
+            settings=Settings(
+                _env_file=None,
+                llm_url="https://model.example.test/chat/completions",
+                llm_api_key=secret,
+                tokenization_secret="tokenization-secret",
+                model_retry_wait_seconds=0,
+            ),
+            client=client,
+        )
+        with pytest.raises(TransientModelError) as captured:
+            await provider.complete_json(
+                LLMRequest(messages=(Message(role="user", content="ping"),))
+            )
+
+    traceback = captured.value.__traceback__
+    while traceback is not None:
+        if traceback.tb_frame.f_code.co_filename.endswith("app/ai/providers/llm.py"):
+            assert secret not in repr(traceback.tb_frame.f_locals)
+        traceback = traceback.tb_next
+
+
+@pytest.mark.asyncio
 async def test_llm_extracts_json_from_openai_compatible_response() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
@@ -107,6 +142,7 @@ async def test_llm_extracts_json_from_openai_compatible_response() -> None:
                 llm_url="https://model.example.test/v1/chat/completions",
                 llm_api_key="secret-token",
                 llm_model="test-model",
+                llm_response_mode="json_schema",
             ),
             client=client,
         )
@@ -223,6 +259,51 @@ async def test_embedding_provider_returns_vectors_and_usage() -> None:
     assert batch.usage_tokens == 5
     assert batch.provider == "http"
     assert batch.model == "test-embedding"
+
+
+@pytest.mark.asyncio
+async def test_embedding_merges_validated_enterprise_headers_and_body() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert request.headers["X-Embedding-Key"] == "secret-token"
+        assert request.headers["X-Gateway-App"] == "entity-rematching"
+        assert payload == {
+            "model": "enterprise-embedding",
+            "input": ["class 高一1班"],
+            "encoding_format": "float",
+        }
+        return httpx.Response(
+            200,
+            json={"data": [{"embedding": [0.1, 0.2, 0.3]}]},
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = HttpEmbeddingProvider(
+            settings=Settings(
+                embedding_url="https://gateway.example.test/v1/embeddings",
+                embedding_api_key="secret-token",
+                embedding_model="enterprise-embedding",
+                embedding_dimensions=3,
+                embedding_auth_header="X-Embedding-Key",
+                embedding_auth_scheme="",
+                embedding_extra_headers_json={"X-Gateway-App": "entity-rematching"},
+                embedding_extra_body_json={"encoding_format": "float"},
+            ),
+            client=client,
+        )
+        await provider.embed(["class 高一1班"])
+
+
+@pytest.mark.parametrize("reserved", ["model", "input"])
+def test_settings_rejects_reserved_embedding_body_fields(reserved: str) -> None:
+    with pytest.raises(ValidationError, match="reserved embedding body field"):
+        Settings(embedding_extra_body_json={reserved: "override"})
+
+
+def test_settings_rejects_embedding_auth_header_override() -> None:
+    with pytest.raises(ValidationError, match="reserved embedding header"):
+        Settings(embedding_extra_headers_json={"authorization": "spoofed"})
 
 
 @pytest.mark.asyncio

@@ -2,16 +2,23 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai.analysis_policy import AnalysisPolicyError, validate_analysis_v3
 from app.core.security import OperatorContext
 from app.governance.field_policy import editable_fields
-from app.repositories.analyses import CURRENT_ANALYSIS_VERSION, AnalysisRepository
+from app.repositories.analyses import (
+    ANALYSIS_V3_VERSION,
+    CURRENT_ANALYSIS_VERSION,
+    AnalysisRepository,
+)
 from app.repositories.differences import DifferenceRepository
 from app.repositories.proposals import ProposalRepository
 from app.schemas.differences import DifferenceItem
 from app.schemas.governance import (
     AnalysisResult,
     AnalysisStatus,
+    AutoExecutableResolution,
     CauseAnalysisV2,
+    CauseAnalysisV3,
     ProposedFieldChange,
     RecommendedAction,
     RiskLevel,
@@ -43,29 +50,60 @@ class ProposalService:
         difference = await self._require_difference(difference_id)
         self._require_version(difference, request.expected_difference_version)
         analysis = await self._require_analysis(difference, request.analysis_id)
-        assert isinstance(analysis.output, CauseAnalysisV2)
-        option = next(
-            (item for item in analysis.output.options if item.option_id == request.option_id),
-            None,
-        )
-        if option is None:
-            raise ProposalConflict("analysis option not found")
+        risk: RiskLevel
+        if isinstance(analysis.output, CauseAnalysisV3):
+            try:
+                validate_analysis_v3(difference, analysis.output)
+            except AnalysisPolicyError as error:
+                raise ProposalConflict("分析方案已不符合当前治理策略") from error
+            solution = next(
+                (
+                    item
+                    for item in analysis.output.solutions
+                    if item.solution_id == request.option_id
+                ),
+                None,
+            )
+            if not isinstance(solution, AutoExecutableResolution):
+                raise ProposalConflict("analysis option not found or is not executable")
+            if solution.risk is RiskLevel.HIGH:
+                raise ProposalConflict("high-risk analysis cannot create an AI proposal")
+            operation_type = solution.action.operation_type
+            target_entity_id = solution.action.target_entity_id
+            changes = solution.action.proposed_changes
+            rationale = solution.rationale
+            evidence_refs = solution.evidence_refs
+            risk = solution.risk
+        else:
+            assert isinstance(analysis.output, CauseAnalysisV2)
+            option = next(
+                (item for item in analysis.output.options if item.option_id == request.option_id),
+                None,
+            )
+            if option is None:
+                raise ProposalConflict("analysis option not found")
+            operation_type = option.operation_type
+            target_entity_id = option.target_entity_id
+            changes = option.proposed_changes
+            rationale = option.rationale
+            evidence_refs = option.evidence_refs
+            risk = option.risk
         return GovernanceProposalPreview(
             difference_id=difference.id,
             difference_version=difference.version,
             proposal_source=ProposalSource.AI,
-            operation_type=option.operation_type,
-            target_entity_id=option.target_entity_id,
-            changes=option.proposed_changes,
-            rationale=option.rationale,
-            evidence_refs=option.evidence_refs,
-            risk=option.risk,
+            operation_type=operation_type,
+            target_entity_id=target_entity_id,
+            changes=changes,
+            rationale=rationale,
+            evidence_refs=evidence_refs,
+            risk=risk,
         )
 
     async def confirm_ai(
         self, difference_id: UUID, request: CreateAIProposalRequest
     ) -> GovernanceProposal:
-        difference = await self._require_difference(difference_id)
+        difference = await self._require_difference_for_update(difference_id)
         preview = await self.preview_ai(difference_id, request)
         analysis = await self._require_analysis(difference, request.analysis_id)
         return await self.proposals.create(
@@ -117,7 +155,7 @@ class ProposalService:
     async def confirm_manual(
         self, difference_id: UUID, request: CreateManualProposalRequest
     ) -> GovernanceProposal:
-        difference = await self._require_difference(difference_id)
+        difference = await self._require_difference_for_update(difference_id)
         preview = await self.preview_manual(difference_id, request)
         analysis = await self._require_current_analysis(difference)
         return await self.proposals.create(
@@ -131,6 +169,12 @@ class ProposalService:
 
     async def _require_difference(self, difference_id: UUID) -> DifferenceItem:
         difference = await self.differences.get(difference_id)
+        if difference is None or difference.tenant_id != self.operator.tenant_id:
+            raise LookupError("difference not found")
+        return difference
+
+    async def _require_difference_for_update(self, difference_id: UUID) -> DifferenceItem:
+        difference = await self.differences.get_for_update(difference_id)
         if difference is None or difference.tenant_id != self.operator.tenant_id:
             raise LookupError("difference not found")
         return difference
@@ -150,12 +194,16 @@ class ProposalService:
 
     async def _require_current_analysis(self, difference: DifferenceItem) -> AnalysisResult:
         analysis = await self.analyses.get_for_difference(
-            difference.id, difference.version, CURRENT_ANALYSIS_VERSION
+            difference.id, difference.version, ANALYSIS_V3_VERSION
         )
+        if analysis is None:
+            analysis = await self.analyses.get_for_difference(
+                difference.id, difference.version, CURRENT_ANALYSIS_VERSION
+            )
         if (
             analysis is None
             or analysis.status not in {AnalysisStatus.SUCCEEDED, AnalysisStatus.MANUAL_REVIEW}
-            or not isinstance(analysis.output, CauseAnalysisV2)
+            or not isinstance(analysis.output, (CauseAnalysisV2, CauseAnalysisV3))
         ):
             raise ProposalConflict("current analysis is not available")
         return analysis

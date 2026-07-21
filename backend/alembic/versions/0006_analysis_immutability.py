@@ -17,6 +17,10 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     if op.get_bind().dialect.name == "postgresql":
         op.execute(
+            "DROP TRIGGER IF EXISTS reject_analysis_results_mutation ON analysis_results"
+        )
+        op.execute("DROP FUNCTION IF EXISTS reject_analysis_results_mutation_fn()")
+        op.execute(
             """
             CREATE FUNCTION reject_analysis_results_mutation_fn()
             RETURNS trigger AS $$
@@ -34,6 +38,8 @@ def upgrade() -> None:
             """
         )
     elif op.get_bind().dialect.name == "sqlite":
+        op.execute("DROP TRIGGER IF EXISTS reject_analysis_results_update")
+        op.execute("DROP TRIGGER IF EXISTS reject_analysis_results_delete")
         op.execute(
             """
             CREATE TRIGGER reject_analysis_results_update

@@ -87,6 +87,14 @@ class CandidateScorer:
         decision_evidence = (
             *first.evidence,
             MatchEvidence(
+                feature="retrieval_scope",
+                source_value=(
+                    str(source.parent_mapping_id) if source.parent_mapping_id is not None else None
+                ),
+                target_value=first.candidate.retrieval_scope,
+                score=float(first.candidate.retrieval_scope == "strict"),
+            ),
+            MatchEvidence(
                 feature="acceptance_threshold",
                 source_value=str(self.threshold),
                 target_value=None,
@@ -182,6 +190,11 @@ def _merge_candidates(candidates: Sequence[Candidate]) -> tuple[Candidate, ...]:
             block_key=candidate.block_key,
             lexical_score=max_optional(existing.lexical_score, candidate.lexical_score),
             vector_score=max_optional(existing.vector_score, candidate.vector_score),
+            retrieval_scope=(
+                "strict"
+                if "strict" in {existing.retrieval_scope, candidate.retrieval_scope}
+                else "relaxed"
+            ),
         )
     return tuple(merged.values())
 

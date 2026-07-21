@@ -8,23 +8,17 @@ import { ApiError } from "../../api/client";
 import {
   reconciliationApi,
   type AIProposalRequest,
+  type AutoExecutableResolution,
+  type CauseAnalysisV3,
   type DifferenceItem,
   type GovernanceOption,
   type GovernanceProposalPreview,
   type ManualProposalRequest,
   type OperationType,
 } from "../../api/reconciliation";
+import { displayFieldValue, fieldLabel, operationLabels, riskColors, riskLabels } from "./localization";
 
 type View = "analysis" | "manual" | "preview" | "success";
-
-const riskLabels = { low: "低风险", medium: "中风险", high: "高风险" } as const;
-const riskColors = { low: "success", medium: "warning", high: "error" } as const;
-
-function displayValue(value: unknown) {
-  if (value === null || value === undefined || value === "") return "未设置";
-  if (typeof value === "object") return JSON.stringify(value);
-  return String(value);
-}
 
 function executableOperation(value: OperationType): OperationType {
   return value === "manual_review" || value === "skip" ? "update" : value;
@@ -50,10 +44,10 @@ function ChangePreview({ preview }: { preview: GovernanceProposalPreview }) {
       <div className="proposal-change-list">
         {preview.changes.map((change) => (
           <div className="proposal-change" key={change.field}>
-            <strong>{change.field}</strong>
-            <span>{displayValue(change.before)}</span>
+            <strong>{fieldLabel(change.field)}</strong>
+            <span>{displayFieldValue(change.field, change.before)}</span>
             <ArrowRight size={15} />
-            <span>{displayValue(change.after)}</span>
+            <span>{displayFieldValue(change.field, change.after)}</span>
           </div>
         ))}
       </div>
@@ -63,10 +57,11 @@ function ChangePreview({ preview }: { preview: GovernanceProposalPreview }) {
   );
 }
 
-function OptionCard({ option, onPreview, loading }: {
+function OptionCard({ option, onPreview, loading, riskReason }: {
   option: GovernanceOption;
   onPreview: () => void;
   loading: boolean;
+  riskReason?: string;
 }) {
   return (
     <article className={option.recommended ? "analysis-option recommended" : "analysis-option"}>
@@ -74,10 +69,59 @@ function OptionCard({ option, onPreview, loading }: {
         <span>{option.recommended && <Tag color="success">推荐</Tag>}<strong>{option.rationale}</strong></span>
         <Tag color={riskColors[option.risk]}>{riskLabels[option.risk]}</Tag>
       </header>
-      <div className="option-metrics"><span>置信度 {Math.round(option.confidence * 100)}%</span><span>{option.operation_type}</span></div>
+      <div className="option-metrics"><span>置信度 {Math.round(option.confidence * 100)}%</span><span>{operationLabels[option.operation_type]}</span></div>
+      {riskReason && <p>风险说明：{riskReason}</p>}
       {option.preconditions.length > 0 && <p>前置条件：{option.preconditions.join("；")}</p>}
       <Button loading={loading} onClick={onPreview}>采用并预览</Button>
     </article>
+  );
+}
+
+function optionFromResolution(solution: AutoExecutableResolution): GovernanceOption {
+  return {
+    option_id: solution.solution_id,
+    operation_type: solution.action.operation_type,
+    target_entity_id: solution.action.target_entity_id,
+    proposed_changes: solution.action.proposed_changes,
+    rationale: solution.rationale,
+    evidence_refs: solution.evidence_refs,
+    risk: solution.risk,
+    confidence: solution.confidence,
+    preconditions: solution.preconditions,
+    recommended: solution.recommended,
+  };
+}
+
+function V3ResolutionList({ output, onPreview, loading }: {
+  output: CauseAnalysisV3;
+  onPreview: (option: GovernanceOption) => void;
+  loading: boolean;
+}) {
+  return (
+    <div className="analysis-options">
+      {output.solutions.map((solution) => {
+        if (solution.mode === "auto_executable") {
+          const option = optionFromResolution(solution);
+          return <OptionCard key={solution.solution_id} option={option} loading={loading} riskReason={solution.risk_reason} onPreview={() => onPreview(option)} />;
+        }
+        if (solution.mode === "needs_information") {
+          return (
+            <section className="analysis-resolution" key={solution.solution_id}>
+              <Alert type="warning" showIcon message={solution.title} description={solution.rationale} />
+              <p>风险说明：{solution.risk_reason}</p>
+              <ul>{solution.information_requests.map((request) => <li key={`${request.request_type}-${request.question}`}><strong>{request.question}</strong><span>{request.reason}，建议查看：{request.source_hint}</span></li>)}</ul>
+            </section>
+          );
+        }
+        return (
+          <section className="analysis-resolution" key={solution.solution_id}>
+            <Alert type="warning" showIcon icon={<ShieldAlert size={17} />} message={solution.title} description={solution.rationale} />
+            <p>风险说明：{solution.risk_reason}</p>
+            <ol>{solution.manual_steps.map((step) => <li key={step.order}>{step.instruction}</li>)}</ol>
+          </section>
+        );
+      })}
+    </div>
   );
 }
 
@@ -135,7 +179,7 @@ export function AnalysisModal({ open, difference, onClose, onProposalSaved }: {
       if (Object.keys(current).length > 0) return current;
       return Object.fromEntries(editorSchema.data.fields.map((field) => [
         field.name,
-        displayValue(difference.evidence.target_payload?.[field.name] ?? "") === "未设置"
+        displayFieldValue(field.name, difference.evidence.target_payload?.[field.name] ?? "") === "未设置"
           ? ""
           : String(difference.evidence.target_payload?.[field.name] ?? ""),
       ]));
@@ -204,6 +248,8 @@ export function AnalysisModal({ open, difference, onClose, onProposalSaved }: {
 
   const error = aiPreview.error ?? manualPreview.error ?? confirm.error;
   const output = analysis.data?.output;
+  const v3Output = output && "solutions" in output ? output : undefined;
+  const v2Output = output && "options" in output ? output : undefined;
 
   return (
     <Modal
@@ -218,31 +264,44 @@ export function AnalysisModal({ open, difference, onClose, onProposalSaved }: {
       {difference.analysis_status === "pending" && <AnalysisAnimation />}
 
       {difference.analysis_status !== "pending" && analysis.isLoading && <div className="modal-loading"><Spin /><span>正在读取分析结果</span></div>}
-      {analysis.isError && <Alert type="error" showIcon message="分析结果读取失败" description={analysis.error.message} />}
+      {analysis.isError && <Alert type="error" showIcon message="分析结果读取失败" description="请稍后重试，或转为人工修改。" />}
 
       {view === "analysis" && output && (
         <div className="analysis-result">
           <section className="analysis-explanation">
             <span className="analysis-result-icon"><Sparkles size={18} /></span>
-            <div><small>成因分析</small><h3>{output.cause}</h3><p>{output.evidence_summary}</p></div>
+            <div>
+              <small>成因分析</small>
+              <h3>{v3Output?.issue_title ?? v2Output?.cause}</h3>
+              {v3Output && <p>{v3Output.cause_summary}</p>}
+              <p>{output.evidence_summary}</p>
+              {v3Output && <p>业务影响：{v3Output.business_impact}</p>}
+            </div>
           </section>
           <div className="analysis-context">
             {difference.evidence.fields.map((field) => (
-              <div key={field.field}><strong>{field.field}</strong><span>{displayValue(field.source_value)}</span><ArrowRight size={14} /><span>{displayValue(field.target_value)}</span></div>
+              <div key={field.field}><strong>{fieldLabel(field.field)}</strong><span>{displayFieldValue(field.field, field.source_value)}</span><ArrowRight size={14} /><span>{displayFieldValue(field.field, field.target_value)}</span></div>
             ))}
           </div>
-          <div className="analysis-provenance">{analysis.data?.provenance.provider === "deterministic" ? "规则分析" : `企业模型 · ${analysis.data?.provenance.model}`}</div>
+          <div className="analysis-provenance">{analysis.data?.provenance.provider === "deterministic" ? "规则分析" : "企业模型分析"}</div>
 
-          {output.manual_only ? (
-            <Alert className="manual-only-alert" type="warning" showIcon icon={<ShieldAlert size={17} />} message="仅支持人工处理" description={output.manual_reason} />
-          ) : (
+          {v2Output?.manual_only ? (
+            <Alert className="manual-only-alert" type="warning" showIcon icon={<ShieldAlert size={17} />} message="仅支持人工处理" description={v2Output.manual_reason} />
+          ) : v2Output ? (
             <div className="analysis-options">
-              {output.options.map((option) => <OptionCard key={option.option_id} option={option} loading={aiPreview.isPending} onPreview={() => previewOption(option)} />)}
+              {v2Output.options.map((option) => <OptionCard key={option.option_id} option={option} loading={aiPreview.isPending} onPreview={() => previewOption(option)} />)}
             </div>
-          )}
+          ) : v3Output ? <V3ResolutionList output={v3Output} loading={aiPreview.isPending} onPreview={previewOption} /> : null}
           <div className="modal-command-row">
             <Button icon={<UserRound size={15} />} onClick={() => setView("manual")}>人工修改</Button>
           </div>
+        </div>
+      )}
+
+      {view === "analysis" && analysis.data && !output && (
+        <div className="analysis-result">
+          <Alert type="warning" showIcon message="AI 分析未生成可用结果" description="可以重试任务分析，或通过人工编辑器生成待执行方案。" />
+          <div className="modal-command-row"><Button icon={<UserRound size={15} />} onClick={() => setView("manual")}>人工修改</Button></div>
         </div>
       )}
 
@@ -252,11 +311,11 @@ export function AnalysisModal({ open, difference, onClose, onProposalSaved }: {
           {editorSchema.isLoading && <div className="modal-loading"><Spin /><span>正在读取可编辑字段</span></div>}
           {editorSchema.data?.fields.map((field) => (
             <label className="manual-field" key={field.name}>
-              <span>{field.label}</span>
+              <span>{fieldLabel(field.name)}</span>
               {field.field_type === "status" ? (
-                <Select aria-label={field.label} value={manualValues[field.name]} options={[{ value: "active", label: "启用" }, { value: "inactive", label: "停用" }]} onChange={(value) => setManualValues((current) => ({ ...current, [field.name]: value }))} />
+                <Select aria-label={fieldLabel(field.name)} value={manualValues[field.name]} options={[{ value: "active", label: "启用" }, { value: "inactive", label: "停用" }]} onChange={(value) => setManualValues((current) => ({ ...current, [field.name]: value }))} />
               ) : (
-                <Input aria-label={field.label} type={field.field_type === "email" ? "email" : "text"} value={manualValues[field.name] ?? ""} onChange={(event) => setManualValues((current) => ({ ...current, [field.name]: event.target.value }))} />
+                <Input aria-label={fieldLabel(field.name)} type={field.field_type === "email" ? "email" : "text"} value={manualValues[field.name] ?? ""} onChange={(event) => setManualValues((current) => ({ ...current, [field.name]: event.target.value }))} />
               )}
             </label>
           ))}
@@ -286,7 +345,7 @@ export function AnalysisModal({ open, difference, onClose, onProposalSaved }: {
           <Button type="primary" onClick={onClose}>完成</Button>
         </div>
       )}
-      {(conflictMessage || error) && <Alert className="modal-error" type="error" showIcon message={conflictMessage ?? error?.message} />}
+      {(conflictMessage || error) && <Alert className="modal-error" type="error" showIcon message={conflictMessage ?? "请求未完成，请稍后重试。"} />}
     </Modal>
   );
 }

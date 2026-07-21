@@ -25,6 +25,9 @@ class WorkflowStageRun(Base):
     succeeded: Mapped[int] = mapped_column(Integer, default=0)
     manual_review: Mapped[int] = mapped_column(Integer, default=0)
     failed: Mapped[int] = mapped_column(Integer, default=0)
+    analysis_job_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), nullable=True, index=True
+    )
     error: Mapped[dict[str, Any] | None] = mapped_column(
         JSON().with_variant(JSONB(), "postgresql"),
         nullable=True,

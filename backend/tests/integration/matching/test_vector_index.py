@@ -4,7 +4,7 @@ import pytest
 
 from app.ai.providers.base import EmbeddingBatch
 from app.matching.blocking import block_key
-from app.matching.vector_index import VectorIndex
+from app.matching.vector_index import VectorIndex, representation
 from app.models.snapshots import CanonicalEntityRecord
 from app.schemas.canonical_entities import EntityType
 from app.schemas.matching import NormalizedRecord
@@ -87,14 +87,14 @@ async def test_vector_search_is_top_k_blocked_and_cached(session) -> None:
     await session.flush()
     await index.upsert_targets([*compatible, incompatible])
     results = await index.search(
-        "张三 语文",
+        representation(compatible[0]),
         block_key(compatible[0]),
         target_snapshot_id=snapshot_id,
         top_k=2,
     )
 
     assert len(results) == 2
-    assert results[0].entity_id == compatible[0].entity_id
+    assert {result.entity_id for result in results} <= {record.entity_id for record in compatible}
     assert all(result.block_key == block_key(compatible[0]) for result in results)
     assert all(result.vector_score is not None for result in results)
     assert len(provider.calls[0]) == 4

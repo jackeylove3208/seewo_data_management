@@ -5,16 +5,15 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.agent import GovernanceAgent
-from app.ai.analysis_service import AnalysisService
-from app.ai.mcp.server import MCPToolGateway
-from app.ai.providers.llm import HttpLLMProvider
+from app.ai.job_service import AnalysisJobService
+from app.ai.providers.embeddings import HttpEmbeddingProvider
 from app.api.dependencies import get_operator_context, get_session
 from app.core.security import OperatorContext
 from app.differences.service import DifferenceDetectionService
 from app.ingestion.field_mapping import default_mapping_registry
 from app.ingestion.service import IngestionServiceError, ReconciliationIngestionService
 from app.matching.service import EntityResolutionService
+from app.matching.vector_index import VectorIndex
 from app.repositories.tasks import TaskRepository
 from app.schemas.api_ingestion import (
     CreateReconciliationTaskRequest,
@@ -23,6 +22,11 @@ from app.schemas.api_ingestion import (
 from app.schemas.canonical_entities import SourceRole
 from app.schemas.matching import ResolutionSummary
 from app.schemas.workflow import WorkflowAdvanceResponse
+from app.tasks.deletion_service import (
+    TaskDeletionBlocked,
+    TaskDeletionNotFound,
+    TaskDeletionService,
+)
 from app.workflow.service import ReconciliationWorkflowService
 
 router = APIRouter(prefix="/api", tags=["reconciliation-tasks"])
@@ -45,23 +49,27 @@ def workflow_service_for(
     operator: OperatorContext,
 ) -> ReconciliationWorkflowService:
     settings = request.app.state.settings
-    tokenization_secret = (
-        settings.tokenization_secret.get_secret_value()
-        if settings.tokenization_secret is not None
-        else None
-    )
-    agent = GovernanceAgent(
-        HttpLLMProvider(settings=settings),
-        MCPToolGateway(session),
-        tokenization_secret=tokenization_secret,
-    )
+    vector_index = None
+    tokenization_secret = None
+    if settings.rematching_enabled and settings.embedding_url and settings.embedding_api_key:
+        vector_index = VectorIndex(session, HttpEmbeddingProvider(settings=settings))
+        tokenization_secret = (
+            settings.tokenization_secret.get_secret_value()
+            if settings.tokenization_secret is not None
+            else None
+        )
     return ReconciliationWorkflowService(
         session,
         operator=operator,
-        resolver=EntityResolutionService(session),
+        resolver=EntityResolutionService(
+            session,
+            vector_index=vector_index,
+            tokenization_secret=tokenization_secret,
+            rematching_top_k=settings.rematching_top_k,
+        ),
         detector=DifferenceDetectionService(session),
-        analyzer=AnalysisService(session, agent=agent, operator=operator),
-        analysis_batch_size=settings.analysis_batch_size,
+        analyzer=AnalysisJobService(session, operator=operator),
+        rematching_enabled=settings.rematching_enabled,
     )
 
 
@@ -101,6 +109,23 @@ async def get_reconciliation_task(
         return await service_for(request, session).get_task(task_id, operator.tenant_id)
     except IngestionServiceError as error:
         raise HTTPException(error.status_code, detail=error.as_detail()) from error
+
+
+@router.delete(
+    "/reconciliation-tasks/{task_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_reconciliation_task(
+    task_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    operator: Annotated[OperatorContext, Depends(get_operator_context)],
+) -> None:
+    try:
+        await TaskDeletionService(session).delete(task_id, operator.tenant_id)
+    except TaskDeletionNotFound as error:
+        raise HTTPException(404, detail=str(error)) from error
+    except TaskDeletionBlocked as error:
+        raise HTTPException(409, detail=str(error)) from error
 
 
 @router.post(

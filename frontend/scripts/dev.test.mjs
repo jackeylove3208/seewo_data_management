@@ -28,11 +28,25 @@ const testPlan = {
   backend: {
     command: "/tmp/python",
     args: ["-m", "uvicorn"],
-    environment: {},
+    environment: { RECONCILIATION_DATABASE_URL: "sqlite+aiosqlite:///./storage/test.db" },
+  },
+  worker: {
+    command: "/tmp/python",
+    args: ["-m", "app.ai.worker"],
+    environment: { RECONCILIATION_DATABASE_URL: "sqlite+aiosqlite:///./storage/test.db" },
   },
   frontend: {
     command: "npm",
     args: ["run", "dev:web"],
+  },
+};
+
+const migrationTestPlan = {
+  ...testPlan,
+  migration: {
+    command: "/tmp/python",
+    args: ["-m", "alembic", "upgrade", "head"],
+    environment: { RECONCILIATION_DATABASE_URL: "sqlite+aiosqlite:///./storage/test.db" },
   },
 };
 
@@ -46,7 +60,7 @@ describe("local development command", () => {
     expect(packageJson.scripts["dev:web"]).toBe("vite");
   });
 
-  it("plans a local SQLite API and Vite web process", () => {
+  it("plans a local SQLite API, worker, and Vite web process", () => {
     const result = spawnSync(process.execPath, ["scripts/dev.mjs"], {
       cwd: resolve("."),
       encoding: "utf8",
@@ -62,8 +76,106 @@ describe("local development command", () => {
       RECONCILIATION_AUTO_CREATE_SCHEMA: "true",
       RECONCILIATION_DATABASE_URL: "sqlite+aiosqlite:///./storage/dev.db",
     });
+    expect(plan.worker).toEqual({
+      command: plan.backend.command,
+      args: ["-m", "app.ai.worker"],
+      environment: plan.backend.environment,
+    });
+    expect(plan.migration).toEqual({
+      command: plan.backend.command,
+      args: ["-m", "alembic", "upgrade", "head"],
+      environment: plan.backend.environment,
+    });
     expect(plan.frontend.command).toBe("npm");
     expect(plan.frontend.args).toEqual(["run", "dev:web"]);
+  });
+
+  it("upgrades the configured database before starting the backend", async () => {
+    const migration = new FakeChildProcess();
+    const backend = new FakeChildProcess();
+    const worker = new FakeChildProcess();
+    const frontend = new FakeChildProcess();
+    const children = [migration, backend, worker, frontend];
+    const spawned = [];
+    const spawnProcess = (command, args, options) => {
+      spawned.push({ command, args, options });
+      const child = children.shift();
+      queueMicrotask(() => {
+        child.emit("spawn");
+        if (child === migration) {
+          child.exitCode = 0;
+          child.emit("exit", 0, null);
+        }
+      });
+      return child;
+    };
+
+    const development = await developmentModule.startDevelopment({
+      developmentPlan: migrationTestPlan,
+      checkBackend: async () => false,
+      waitUntilBackendReady: async () => {},
+      verifyPath: async () => {},
+      spawnProcess,
+      runtime: fakeRuntime(),
+    });
+    development.stop();
+
+    expect(spawned.map(({ args }) => args)).toEqual([
+      ["-m", "alembic", "upgrade", "head"],
+      ["-m", "uvicorn"],
+      ["-m", "app.ai.worker"],
+      ["run", "dev:web"],
+    ]);
+    expect(spawned[0].options.env.RECONCILIATION_DATABASE_URL).toBe(
+      spawned[1].options.env.RECONCILIATION_DATABASE_URL,
+    );
+    expect(spawned[2].options.env.RECONCILIATION_DATABASE_URL).toBe(
+      spawned[1].options.env.RECONCILIATION_DATABASE_URL,
+    );
+  });
+
+  it("rejects an already-ready backend before migration or frontend startup", async () => {
+    const spawned = [];
+    const spawnProcess = (command, args, options) => {
+      spawned.push({ command, args, options });
+      throw new Error("unexpected process spawn");
+    };
+
+    await expect(developmentModule.startDevelopment({
+      developmentPlan: migrationTestPlan,
+      checkBackend: async () => true,
+      verifyPath: async () => {},
+      spawnProcess,
+      runtime: fakeRuntime(),
+    })).rejects.toThrow("请先停止旧后端");
+
+    expect(spawned).toEqual([]);
+  });
+
+  it("does not start the backend or frontend when migration fails", async () => {
+    const migration = new FakeChildProcess();
+    const spawned = [];
+    const spawnProcess = (command, args) => {
+      spawned.push({ command, args });
+      queueMicrotask(() => {
+        migration.emit("spawn");
+        migration.exitCode = 1;
+        migration.emit("exit", 1, null);
+      });
+      return migration;
+    };
+
+    await expect(developmentModule.startDevelopment({
+      developmentPlan: migrationTestPlan,
+      checkBackend: async () => false,
+      verifyPath: async () => {},
+      spawnProcess,
+      runtime: fakeRuntime(),
+    })).rejects.toThrow("数据库迁移");
+
+    expect(spawned.map(({ args }) => args)).toEqual([
+      ["-m", "alembic", "upgrade", "head"],
+    ]);
   });
 
   it("redacts database credentials from the dry-run plan", () => {
@@ -106,8 +218,9 @@ describe("local development command", () => {
 
   it("terminates the frontend when the owned backend exits", async () => {
     const backend = new FakeChildProcess();
+    const worker = new FakeChildProcess();
     const frontend = new FakeChildProcess();
-    const children = [backend, frontend];
+    const children = [backend, worker, frontend];
     const spawnProcess = () => {
       const child = children.shift();
       queueMicrotask(() => child.emit("spawn"));
@@ -128,13 +241,15 @@ describe("local development command", () => {
     await new Promise((resolveMicrotask) => queueMicrotask(resolveMicrotask));
 
     expect(frontend.killed).toBe(true);
+    expect(worker.killed).toBe(true);
     expect(runtime.exitCode).toBe(1);
   });
 
   it("allows a backend Python command to be resolved from PATH", async () => {
     const backend = new FakeChildProcess();
+    const worker = new FakeChildProcess();
     const frontend = new FakeChildProcess();
-    const children = [backend, frontend];
+    const children = [backend, worker, frontend];
     const spawnProcess = () => {
       const child = children.shift();
       queueMicrotask(() => child.emit("spawn"));
@@ -146,6 +261,7 @@ describe("local development command", () => {
       developmentPlan: {
         ...testPlan,
         backend: { ...testPlan.backend, command: "python3.12" },
+        worker: { ...testPlan.worker, command: "python3.12" },
       },
       checkBackend: async () => false,
       waitUntilBackendReady: async () => {},

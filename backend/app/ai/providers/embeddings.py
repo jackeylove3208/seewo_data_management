@@ -16,6 +16,7 @@ from app.core.config import Settings
 
 class HttpEmbeddingProvider(EmbeddingProvider):
     provider_name = "http"
+    requires_tokenization = True
 
     def __init__(self, *, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
         self.settings = settings
@@ -75,8 +76,12 @@ class HttpEmbeddingProvider(EmbeddingProvider):
             try:
                 response = await client.post(
                     url,
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    json={"model": self.model, "input": list(texts)},
+                    headers=_request_headers(self.settings, api_key),
+                    json={
+                        "model": self.model,
+                        "input": list(texts),
+                        **self.settings.embedding_extra_body_json,
+                    },
                     timeout=self.settings.embedding_timeout_seconds,
                 )
                 if response.status_code in {429, 500, 502, 503, 504}:
@@ -102,3 +107,11 @@ class HttpEmbeddingProvider(EmbeddingProvider):
         raise ModelProviderError(
             f"embedding request failed after {self.settings.model_retry_attempts} attempts"
         ) from last_error
+
+
+def _request_headers(settings: Settings, api_key: str) -> dict[str, str]:
+    authentication = f"{settings.embedding_auth_scheme} {api_key}".strip()
+    return {
+        **settings.embedding_extra_headers_json,
+        settings.embedding_auth_header: authentication,
+    }

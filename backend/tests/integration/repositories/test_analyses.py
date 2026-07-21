@@ -16,7 +16,10 @@ from app.schemas.governance import (
     AnalysisStatus,
     CauseAnalysis,
     CauseAnalysisV2,
+    CauseAnalysisV3,
     GovernanceOption,
+    ManualResolution,
+    ManualStep,
     ProposedFieldChange,
     RecommendedAction,
     RiskLevel,
@@ -244,6 +247,49 @@ async def test_repository_returns_none_for_unknown_difference_version(session) -
         )
         is None
     )
+
+
+@pytest.mark.asyncio
+async def test_repository_round_trips_analysis_v3(
+    session,
+    persisted_difference,
+) -> None:
+    output = CauseAnalysisV3(
+        locale="zh-CN",
+        issue_title="需要人工核对",
+        cause_summary="当前证据不足，无法安全修改。",
+        evidence_summary="双方记录缺少相同的稳定身份标识。",
+        business_impact="直接修改可能影响错误账号。",
+        recommended_solution_id="manual-1",
+        solutions=(
+            ManualResolution(
+                solution_id="manual-1",
+                title="人工核对身份",
+                rationale="先确认身份，再生成修改方案。",
+                risk=RiskLevel.HIGH,
+                risk_reason="身份不确定时不能自动修改。",
+                confidence=0.2,
+                recommended=True,
+                manual_steps=(ManualStep(order=1, instruction="向学校管理员核对教师工号。"),),
+            ),
+        ),
+    )
+
+    saved = await AnalysisRepository(session).save_manual_review(
+        persisted_difference,
+        output,
+        provenance(),
+        attempt_count=2,
+        analysis_version="analysis-v3",
+    )
+    loaded = await AnalysisRepository(session).get_for_difference(
+        persisted_difference.id,
+        persisted_difference.version,
+        "analysis-v3",
+    )
+
+    assert saved == loaded
+    assert isinstance(loaded.output, CauseAnalysisV3)
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createInitialDraft, deterministicTaskAssistant } from "./assistant";
+import { createEmptyTaskIntentDraft, createInitialDraft, deterministicTaskAssistant } from "./assistant";
 
 describe("deterministic task assistant", () => {
   it("extracts selected people types and partial scope from a request", async () => {
@@ -12,6 +12,9 @@ describe("deterministic task assistant", () => {
     expect(response.patch.entityTypes).toEqual(["teacher", "student"]);
     expect(response.patch.snapshotMode).toBe("partial");
     expect(response.patch.scopeLabel).toBe("七年级");
+    expect(response.message).toContain("已记录七年级的教师、学生同步需求");
+    expect(response.message).not.toContain("任务草案");
+    expect(response.message).not.toContain("两份数据");
   });
 
   it("refuses direct governance and rollback commands", async () => {
@@ -22,5 +25,25 @@ describe("deterministic task assistant", () => {
 
     expect(response.kind).toBe("guardrail");
     expect(response.message).toContain("不能直接执行");
+  });
+
+  it("asks for entity types when only a scope was recognized", async () => {
+    const response = await deterministicTaskAssistant.respond({
+      draft: createEmptyTaskIntentDraft(),
+      message: "核对高中部",
+    });
+
+    expect(response.patch.scopeLabel).toBe("高中部");
+    expect(response.message).toContain("实体类型");
+  });
+
+  it("asks for scope when only entity types were recognized", async () => {
+    const response = await deterministicTaskAssistant.respond({
+      draft: createEmptyTaskIntentDraft(),
+      message: "核对老师和学生",
+    });
+
+    expect(response.patch.entityTypes).toEqual(["teacher", "student"]);
+    expect(response.message).toContain("核对范围");
   });
 });

@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -85,6 +85,108 @@ class GovernanceOption(BaseModel):
         return self
 
 
+class ResolutionMode(StrEnum):
+    AUTO_EXECUTABLE = "auto_executable"
+    NEEDS_INFORMATION = "needs_information"
+    MANUAL_ONLY = "manual_only"
+
+
+class ResolutionAction(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    operation_type: RecommendedAction
+    target_entity_id: UUID | None = None
+    proposed_changes: tuple[ProposedFieldChange, ...] = Field(default=(), max_length=64)
+
+    @model_validator(mode="after")
+    def reject_manual_review(self) -> "ResolutionAction":
+        if self.operation_type is RecommendedAction.MANUAL_REVIEW:
+            raise ValueError("manual review is not an executable action")
+        return self
+
+
+class InformationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    request_type: str = Field(min_length=1, max_length=64)
+    question: str = Field(min_length=3, max_length=500)
+    reason: str = Field(min_length=3, max_length=1000)
+    source_hint: str = Field(min_length=2, max_length=500)
+
+
+class ManualStep(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    order: int = Field(ge=1, le=20)
+    instruction: str = Field(min_length=3, max_length=1000)
+
+
+class ResolutionPathBase(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    solution_id: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=3, max_length=200)
+    rationale: str = Field(min_length=3, max_length=2000)
+    risk: RiskLevel
+    risk_reason: str = Field(min_length=3, max_length=1000)
+    confidence: float = Field(ge=0, le=1)
+    evidence_refs: tuple[str, ...] = Field(default=(), max_length=64)
+    preconditions: tuple[str, ...] = Field(default=(), max_length=32)
+    recommended: bool = False
+
+
+class AutoExecutableResolution(ResolutionPathBase):
+    mode: Literal[ResolutionMode.AUTO_EXECUTABLE] = ResolutionMode.AUTO_EXECUTABLE
+    action: ResolutionAction
+
+
+class NeedsInformationResolution(ResolutionPathBase):
+    mode: Literal[ResolutionMode.NEEDS_INFORMATION] = ResolutionMode.NEEDS_INFORMATION
+    information_requests: tuple[InformationRequest, ...] = Field(min_length=1, max_length=10)
+
+
+class ManualResolution(ResolutionPathBase):
+    mode: Literal[ResolutionMode.MANUAL_ONLY] = ResolutionMode.MANUAL_ONLY
+    manual_steps: tuple[ManualStep, ...] = Field(min_length=1, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_step_order(self) -> "ManualResolution":
+        orders = tuple(step.order for step in self.manual_steps)
+        if orders != tuple(range(1, len(orders) + 1)):
+            raise ValueError("manual steps must be ordered from 1 without gaps")
+        return self
+
+
+ResolutionPath = Annotated[
+    AutoExecutableResolution | NeedsInformationResolution | ManualResolution,
+    Field(discriminator="mode"),
+]
+
+
+class CauseAnalysisV3(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    locale: Literal["zh-CN"] = "zh-CN"
+    issue_title: str = Field(min_length=3, max_length=200)
+    cause_summary: str = Field(min_length=3, max_length=1000)
+    evidence_summary: str = Field(min_length=3, max_length=2000)
+    business_impact: str = Field(min_length=3, max_length=1000)
+    recommended_solution_id: str = Field(min_length=1, max_length=64)
+    solutions: tuple[ResolutionPath, ...] = Field(min_length=1, max_length=3)
+
+    @model_validator(mode="after")
+    def validate_recommendation(self) -> "CauseAnalysisV3":
+        identifiers = tuple(solution.solution_id for solution in self.solutions)
+        if len(set(identifiers)) != len(identifiers):
+            raise ValueError("solution ids must be unique")
+        recommended = tuple(solution for solution in self.solutions if solution.recommended)
+        if len(recommended) != 1:
+            raise ValueError("exactly one solution must be recommended")
+        if recommended[0].solution_id != self.recommended_solution_id:
+            raise ValueError("recommended solution id must reference the recommended solution")
+        return self
+
+
 class CauseAnalysisV2(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -146,13 +248,28 @@ class AnalysisResult(BaseModel):
     difference_version: int = Field(ge=1)
     analysis_version: str = Field(min_length=1, max_length=64)
     status: AnalysisStatus
-    output: CauseAnalysis | CauseAnalysisV2 | None = None
+    output: CauseAnalysis | CauseAnalysisV2 | CauseAnalysisV3 | None = None
     failure_code: str | None = Field(default=None, max_length=128)
     attempt_count: int = Field(ge=0)
     provenance: AnalysisProvenance
 
     @model_validator(mode="after")
     def validate_status_output(self) -> "AnalysisResult":
+        if self.analysis_version == "analysis-v3":
+            if not isinstance(self.output, CauseAnalysisV3):
+                if self.status in {AnalysisStatus.PENDING, AnalysisStatus.FAILED}:
+                    if self.output is not None:
+                        raise ValueError("pending or failed analysis cannot contain output")
+                    return self
+                raise ValueError("terminal v3 analysis requires v3 output")
+            has_executable = any(
+                isinstance(solution, AutoExecutableResolution) for solution in self.output.solutions
+            )
+            if self.status is AnalysisStatus.SUCCEEDED and not has_executable:
+                raise ValueError("succeeded v3 analysis requires an executable resolution")
+            if self.status is AnalysisStatus.MANUAL_REVIEW and has_executable:
+                raise ValueError("manual review v3 analysis cannot contain executable resolution")
+            return self
         if self.analysis_version == "analysis-v2":
             if self.status is AnalysisStatus.SUCCEEDED:
                 if not isinstance(self.output, CauseAnalysisV2) or self.output.manual_only:

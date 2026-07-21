@@ -4,7 +4,7 @@ import pytest
 
 from app.core.security import OperatorContext
 from app.models.reconciliation import ReconciliationTask
-from app.schemas.governance import AnalysisBatchResponse
+from app.schemas.analysis_jobs import AnalysisJobStatus
 from app.workflow.service import ReconciliationWorkflowService
 
 
@@ -30,18 +30,23 @@ class AnalyzerStub:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def analyze_batch(self, task_id, *, limit):
+    async def create_job(self, task_id, *, idempotency_key):
         self.calls += 1
-        assert limit > 0
-        return AnalysisBatchResponse(
-            task_id=task_id,
-            total=2,
-            succeeded=1,
-            failed=0,
-            manual_review=1,
-            completed=2,
-            remaining=0,
-        )
+        assert idempotency_key.startswith("workflow-analysis-v3:")
+        return type(
+            "AnalysisJob",
+            (),
+            {
+                "id": uuid4(),
+                "task_id": task_id,
+                "status": AnalysisJobStatus.QUEUED.value,
+                "total": 2,
+                "completed": 0,
+                "succeeded": 0,
+                "manual_required": 0,
+                "failed": 0,
+            },
+        )()
 
 
 class TimeoutOnceDetector(DetectorStub):
@@ -88,8 +93,10 @@ async def test_workflow_advances_matching_differences_and_analysis(session) -> N
 
     assert matching.workflow.stage.value == "differences"
     assert differences.workflow.stage.value == "analysis"
-    assert analysis.workflow.stage.value == "complete"
-    assert analysis.workflow.analysis.completed == 2
+    assert analysis.workflow.stage.value == "analysis"
+    assert analysis.workflow.status.value == "running"
+    assert analysis.workflow.analysis.job_id is not None
+    assert analysis.workflow.analysis.completed == 0
     assert (resolver.calls, detector.calls, analyzer.calls) == (1, 1, 1)
 
 

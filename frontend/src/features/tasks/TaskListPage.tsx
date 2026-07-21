@@ -1,8 +1,9 @@
 import { Button, Tag } from "antd";
-import { ArrowRight, CircleCheck, Clock3, FileCheck2, Plus, RefreshCcw } from "lucide-react";
+import { ArrowRight, CircleCheck, Clock3, FileCheck2, Plus, RefreshCcw, Trash2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 import { allTasks } from "../../data/taskHistory";
+import { useTaskDeletion } from "./useTaskDeletion";
 
 const statusCopy = {
   ready: { label: "已完成", color: "success" },
@@ -21,6 +22,7 @@ function formatTime(value: string) {
 
 export function TaskListPage() {
   const navigate = useNavigate();
+  const deletion = useTaskDeletion();
   const tasks = allTasks();
   const issueCount = tasks.reduce((sum, task) => sum + task.issueCount, 0);
 
@@ -33,7 +35,7 @@ export function TaskListPage() {
           <p>从一组数据开始，查看组织实体解析和差异结果。</p>
         </div>
         <Button type="primary" icon={<Plus size={16} />} onClick={() => navigate("/tasks/new")}>
-          新建对账
+          外部数据同步
         </Button>
       </section>
 
@@ -51,9 +53,9 @@ export function TaskListPage() {
         {tasks.map((task) => {
           const status = statusCopy[task.status];
           return (
+            <div className="task-row-wrapper" key={task.id}>
             <button
               className="task-row"
-              key={task.id}
               type="button"
               onClick={() => navigate(`/tasks/${task.id}`)}
             >
@@ -78,9 +80,25 @@ export function TaskListPage() {
               </span>
               <ArrowRight className="task-arrow" size={18} />
             </button>
+            {!task.isDemo && (
+              <button
+                className="task-delete-button"
+                type="button"
+                aria-label={`删除${task.title}`}
+                title={`删除${task.title}`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  deletion.requestDelete(task);
+                }}
+              >
+                <Trash2 size={16} />
+              </button>
+            )}
+            </div>
           );
         })}
       </section>
+      {deletion.confirmation}
     </main>
   );
 }

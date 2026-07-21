@@ -10,10 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.differences.classifier import ComparableEntity, DifferenceContext
 from app.differences.detector import DifferenceDetector, ResolvedMapping
 from app.differences.field_policies import UNRESOLVED_RELATION
+from app.matching.quality import MatchingQualityPolicy
 from app.models.mappings import EntityMapping
 from app.models.snapshots import CanonicalEntityRecord
 from app.normalization.pipeline import NormalizationPipeline
 from app.repositories.differences import DifferenceRepository
+from app.repositories.quality import MatchingQualityRepository
 from app.repositories.snapshots import SnapshotRepository
 from app.repositories.tasks import TaskRepository
 from app.schemas.canonical_entities import (
@@ -24,7 +26,8 @@ from app.schemas.canonical_entities import (
 )
 from app.schemas.differences import DifferenceSummary, DifferenceType
 from app.schemas.ingestion import SnapshotMode
-from app.schemas.matching import MatchEvidence, MatchStatus
+from app.schemas.matching import MatchEvidence, MatchMethod, MatchStatus
+from app.schemas.rematching import MatchingQualityCounts, MatchingQualityResult
 
 _CANONICAL_ADAPTER: TypeAdapter[CanonicalEntity] = TypeAdapter(CanonicalEntity)
 
@@ -37,6 +40,7 @@ class DifferenceDetectionService:
         normalization: NormalizationPipeline | None = None,
         detector: DifferenceDetector | None = None,
         repository: DifferenceRepository | None = None,
+        quality_policy: MatchingQualityPolicy | None = None,
     ) -> None:
         self.session = session
         self.normalization = normalization or NormalizationPipeline()
@@ -44,6 +48,9 @@ class DifferenceDetectionService:
         self.repository = repository or DifferenceRepository(session)
         self.tasks = TaskRepository(session)
         self.snapshots = SnapshotRepository(session)
+        self.quality_policy = quality_policy or MatchingQualityPolicy()
+        self.last_quality_result: MatchingQualityResult | None = None
+        self.quality_results = MatchingQualityRepository(session)
 
     async def detect(self, task_id: UUID) -> DifferenceSummary:
         task = await self.tasks.get_for_update(task_id)
@@ -66,6 +73,43 @@ class DifferenceDetectionService:
             source_snapshot.id,
             target_snapshot.id,
         )
+        counts_by_type = _quality_counts(source, target, mappings)
+        quality = (
+            self.quality_policy.evaluate(
+                task_id=task_id,
+                mapping_versions=tuple(
+                    sorted({str(mapping.id) for mapping in mappings} or {"none"})
+                ),
+                counts_by_type=counts_by_type,
+            )
+            if max((counts.total for counts in counts_by_type.values()), default=0)
+            >= self.quality_policy.minimum_population
+            else MatchingQualityResult(
+                task_id=task_id,
+                policy_version=self.quality_policy.version,
+                mapping_versions=tuple(
+                    sorted({str(mapping.id) for mapping in mappings} or {"none"})
+                ),
+                counts=counts_by_type,
+                passed=True,
+            )
+        )
+        self.last_quality_result = quality
+        await self.quality_results.save(
+            task_id=task_id,
+            tenant_id=task.tenant_id,
+            policy_version=quality.policy_version,
+            mapping_versions=quality.mapping_versions,
+            result=quality.model_dump(mode="json"),
+        )
+        if not quality.passed:
+            task.status = "ready"
+            task.error = {
+                "code": "matching_quality_gate_failed",
+                "message": quality.failures[0].reason,
+            }
+            await self.session.flush()
+            raise MatchingQualityGateError(quality)
         source, target = _add_relationship_context(source, target, mappings)
         context = DifferenceContext(
             task_id=task.id,
@@ -140,8 +184,78 @@ class DifferenceDetectionService:
                 target_entity_id=row.target_entity_id,
                 status=MatchStatus(row.status),
                 evidence=tuple(MatchEvidence.model_validate(item) for item in row.evidence),
+                entity_type=EntityType(row.entity_type),
+                method=MatchMethod(row.method) if row.method else None,
+                rule_version=row.rule_version,
             )
         return tuple(latest.values())
+
+
+class MatchingQualityGateError(ValueError):
+    def __init__(self, result: MatchingQualityResult) -> None:
+        super().__init__(
+            result.failures[0].reason if result.failures else "matching quality gate failed"
+        )
+        self.result = result
+
+
+def _quality_counts(
+    source: Sequence[ComparableEntity],
+    target: Sequence[ComparableEntity],
+    mappings: Sequence[ResolvedMapping],
+) -> dict[EntityType, MatchingQualityCounts]:
+    source_by_type = Counter(entity.entity_type for entity in source)
+    target_by_type = Counter(entity.entity_type for entity in target)
+    accepted = Counter(
+        mapping.entity_type for mapping in mappings if mapping.status is MatchStatus.ACCEPTED
+    )
+    ai_recovered = Counter(
+        mapping.entity_type
+        for mapping in mappings
+        if (
+            mapping.status is MatchStatus.ACCEPTED
+            and mapping.method is MatchMethod.SCORED
+            and mapping.evidence
+            and any(item.feature == "ai_rematching" for item in mapping.evidence)
+        )
+    )
+    deterministic = Counter(
+        mapping.entity_type for mapping in mappings if mapping.status is MatchStatus.ACCEPTED
+    )
+    for entity_type, count in ai_recovered.items():
+        deterministic[entity_type] -= count
+    manual = Counter(
+        mapping.entity_type for mapping in mappings if mapping.status is MatchStatus.MANUAL_REVIEW
+    )
+    conflict = Counter(
+        mapping.entity_type for mapping in mappings if mapping.status is MatchStatus.CONFLICT
+    )
+    unmatched = Counter(
+        mapping.entity_type for mapping in mappings if mapping.status is MatchStatus.UNMATCHED
+    )
+    consumed_ids = {
+        mapping.target_entity_id
+        for mapping in mappings
+        if mapping.status is MatchStatus.ACCEPTED and mapping.target_entity_id is not None
+    }
+    consumed_targets = Counter(entity.entity_type for entity in target if entity.id in consumed_ids)
+    result: dict[EntityType, MatchingQualityCounts] = {}
+    for entity_type in EntityType:
+        total = source_by_type[entity_type]
+        redundant = max(target_by_type[entity_type] - consumed_targets[entity_type], 0)
+        result[entity_type] = MatchingQualityCounts(
+            total=total,
+            accepted=accepted[entity_type],
+            deterministic=deterministic[entity_type],
+            ai_recovered=ai_recovered[entity_type],
+            manual_review=manual[entity_type],
+            conflict=conflict[entity_type],
+            unmatched=unmatched[entity_type],
+            unconsumed_target=redundant,
+            predicted_missing=unmatched[entity_type],
+            predicted_redundant=redundant,
+        )
+    return result
 
 
 def _add_relationship_context(

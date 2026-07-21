@@ -1,5 +1,5 @@
 import type { EntityType } from "../../types/domain";
-import type { AssistantResponse, TaskCreationAssistant, TaskDraft } from "./types";
+import type { AssistantResponse, TaskCreationAssistant, TaskIntentDraft } from "./types";
 
 const allEntityTypes: EntityType[] = ["organization_unit", "class", "teacher", "student"];
 
@@ -16,12 +16,21 @@ const scopePatterns = [
   /(全校)/,
 ];
 
-export function createInitialDraft(): TaskDraft {
+export function createInitialDraft(): TaskIntentDraft {
   return {
     title: "全校组织数据核对",
     scopeLabel: "全校",
     snapshotMode: "full",
     entityTypes: [...allEntityTypes],
+  };
+}
+
+export function createEmptyTaskIntentDraft(): TaskIntentDraft {
+  return {
+    title: "",
+    scopeLabel: "",
+    snapshotMode: "full",
+    entityTypes: [],
   };
 }
 
@@ -48,7 +57,7 @@ function titleFor(scope: string, entityTypes: EntityType[]) {
   return `${scope}${entityLabel}核对`;
 }
 
-function respond(request: { draft: TaskDraft; message: string }): Promise<AssistantResponse> {
+function respond(request: { draft: TaskIntentDraft; message: string }): Promise<AssistantResponse> {
   const message = request.message.trim();
   if (/(直接|立即).*(修复|执行|删除|回退)|回退.*(操作|任务|数据)/.test(message)) {
     return Promise.resolve({
@@ -69,10 +78,17 @@ function respond(request: { draft: TaskDraft; message: string }): Promise<Assist
     title: titleFor(scope, entityTypes),
   } satisfies AssistantResponse["patch"];
   const typesLabel = entityTypes.length === allEntityTypes.length ? "全部实体" : titleFor("", entityTypes).replace("核对", "");
+  const nextDraft = { ...request.draft, ...patch };
+  const missingFields = [
+    !nextDraft.scopeLabel.trim() ? "核对范围" : undefined,
+    nextDraft.entityTypes.length === 0 ? "实体类型" : undefined,
+  ].filter((field): field is string => Boolean(field));
 
   return Promise.resolve({
     kind: "normal",
-    message: `已整理为${scope}的${typesLabel}对账。补齐两份数据后，我会生成可确认的任务草案。`,
+    message: missingFields.length > 0
+      ? `已记录同步需求，还需要补充${missingFields.join("和")}。`
+      : `已记录${scope}的${typesLabel}同步需求。`,
     patch,
   });
 }

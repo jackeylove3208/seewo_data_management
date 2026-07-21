@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
+from pydantic import SecretStr
 
 from app.ai.providers.base import (
     LLMProvider,
@@ -36,12 +37,11 @@ class HttpLLMProvider(LLMProvider):
     async def complete_json(self, request: LLMRequest) -> LLMResponse:
         url = self.settings.llm_url
         api_key = self.settings.llm_api_key
-        api_key_value = api_key.get_secret_value() if api_key is not None else ""
-        if not url or not api_key_value:
+        if not url or api_key is None or not api_key.get_secret_value():
             raise ModelProviderError("LLM provider is not configured")
         client = self.client or httpx.AsyncClient()
         try:
-            return await self._complete_with(client, request, url, api_key_value)
+            return await self._complete_with(client, request, url, api_key)
         finally:
             if self.client is None:
                 await client.aclose()
@@ -51,7 +51,7 @@ class HttpLLMProvider(LLMProvider):
         client: httpx.AsyncClient,
         request: LLMRequest,
         url: str,
-        api_key: str,
+        api_key: SecretStr,
     ) -> LLMResponse:
         last_error: Exception | None = None
         for attempt in range(1, self.settings.model_retry_attempts + 1):
@@ -82,13 +82,13 @@ class HttpLLMProvider(LLMProvider):
                 if attempt == self.settings.model_retry_attempts:
                     break
                 await self.sleep(self.settings.model_retry_wait_seconds * attempt)
-        raise ModelProviderError(
+        raise TransientModelError(
             f"model request failed after {self.settings.model_retry_attempts} attempts"
         ) from last_error
 
 
-def _request_headers(settings: Settings, api_key: str) -> dict[str, str]:
-    authentication = f"{settings.llm_auth_scheme} {api_key}".strip()
+def _request_headers(settings: Settings, api_key: SecretStr) -> dict[str, str]:
+    authentication = f"{settings.llm_auth_scheme} {api_key.get_secret_value()}".strip()
     return {
         **settings.llm_extra_headers_json,
         settings.llm_auth_header: authentication,

@@ -1,4 +1,5 @@
 from enum import StrEnum
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -89,6 +90,7 @@ class Candidate(BaseModel):
     block_key: BlockKey
     lexical_score: float | None = Field(default=None, ge=0, le=1)
     vector_score: float | None = Field(default=None, ge=0, le=1)
+    retrieval_scope: Literal["strict", "relaxed"] = "strict"
 
     @property
     def entity_id(self) -> UUID:

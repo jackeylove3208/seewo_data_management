@@ -16,6 +16,7 @@ def test_liveness_reports_process_health() -> None:
 
 def test_readiness_checks_database(tmp_path: Path) -> None:
     settings = Settings(
+        _env_file=None,
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'ready.db'}",
         upload_root=tmp_path / "uploads",
         snapshot_root=tmp_path / "snapshots",
@@ -34,6 +35,7 @@ def test_readiness_checks_database(tmp_path: Path) -> None:
 
 def test_readiness_reports_configured_model_without_secrets(tmp_path: Path) -> None:
     settings = Settings(
+        _env_file=None,
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'configured.db'}",
         upload_root=tmp_path / "uploads",
         snapshot_root=tmp_path / "snapshots",

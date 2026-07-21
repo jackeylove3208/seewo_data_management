@@ -17,9 +17,19 @@ const backendEnvironment = {
 };
 
 const plan = {
+  migration: {
+    command: backendPython,
+    args: ["-m", "alembic", "upgrade", "head"],
+    environment: backendEnvironment,
+  },
   backend: {
     command: backendPython,
     args: ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"],
+    environment: backendEnvironment,
+  },
+  worker: {
+    command: backendPython,
+    args: ["-m", "app.ai.worker"],
     environment: backendEnvironment,
   },
   frontend: {
@@ -29,16 +39,22 @@ const plan = {
 };
 
 function redactedPlan(developmentPlan) {
-  const databaseUrl = developmentPlan.backend.environment.RECONCILIATION_DATABASE_URL;
-  return {
-    ...developmentPlan,
-    backend: {
-      ...developmentPlan.backend,
+  const redactDatabaseUrl = (specification) => {
+    if (!specification) return specification;
+    const databaseUrl = specification.environment.RECONCILIATION_DATABASE_URL;
+    return {
+      ...specification,
       environment: {
-        ...developmentPlan.backend.environment,
+        ...specification.environment,
         RECONCILIATION_DATABASE_URL: databaseUrl.replace(/:\/\/[^/@]+@/, "://***@"),
       },
-    },
+    };
+  };
+  return {
+    ...developmentPlan,
+    migration: redactDatabaseUrl(developmentPlan.migration),
+    backend: redactDatabaseUrl(developmentPlan.backend),
+    worker: redactDatabaseUrl(developmentPlan.worker),
   };
 }
 
@@ -100,13 +116,15 @@ export async function startDevelopment({
 } = {}) {
   let backendHandle;
   let frontendHandle;
+  let migrationHandle;
+  let workerHandle;
   let stopping = false;
   const stop = (signal = "SIGTERM") => {
     if (stopping) return;
     stopping = true;
     runtime.removeListener("SIGINT", onSigint);
     runtime.removeListener("SIGTERM", onSigterm);
-    for (const handle of [frontendHandle, backendHandle]) {
+    for (const handle of [frontendHandle, workerHandle, backendHandle, migrationHandle]) {
       const child = handle?.child;
       if (child && child.exitCode === null && child.signalCode === null && !child.killed) {
         child.kill(signal);
@@ -126,7 +144,41 @@ export async function startDevelopment({
   };
 
   try {
-    if (!(await checkBackend())) {
+    const backendReady = await checkBackend();
+    if (backendReady && developmentPlan.migration) {
+      throw new Error(
+        "检测到旧后端服务已在 127.0.0.1:8000 运行。请先停止旧后端，再重新运行 npm run dev；仅启动前端请运行 npm run dev:web。",
+      );
+    }
+    if (developmentPlan.migration) {
+      if (isFilePath(developmentPlan.migration.command)) {
+        try {
+          await verifyPath(developmentPlan.migration.command);
+        } catch {
+          throw new Error(
+            `未找到后端 Python 环境：${developmentPlan.migration.command}\n请先按 AGENTS.md 初始化 backend/.venv，或设置 BACKEND_PYTHON。`,
+          );
+        }
+      }
+      migrationHandle = launchProcess(developmentPlan.migration, {
+        cwd: backendDirectory,
+        env: { ...process.env, ...developmentPlan.migration.environment },
+        stdio: "inherit",
+      }, spawnProcess);
+      try {
+        await migrationHandle.spawned;
+      } catch (error) {
+        throw new Error(
+          `无法启动数据库迁移命令：${developmentPlan.migration.command}`,
+          { cause: error },
+        );
+      }
+      const migrationOutcome = await migrationHandle.exited;
+      if (migrationOutcome.error || migrationOutcome.code !== 0) {
+        throw exitError("数据库迁移", migrationOutcome);
+      }
+    }
+    if (!backendReady) {
       if (isFilePath(developmentPlan.backend.command)) {
         try {
           await verifyPath(developmentPlan.backend.command);
@@ -155,6 +207,31 @@ export async function startDevelopment({
       ]);
     }
 
+    if (developmentPlan.worker) {
+      if (isFilePath(developmentPlan.worker.command)) {
+        try {
+          await verifyPath(developmentPlan.worker.command);
+        } catch {
+          throw new Error(
+            `未找到后端 Python 环境：${developmentPlan.worker.command}\n请先按 AGENTS.md 初始化 backend/.venv，或设置 BACKEND_PYTHON。`,
+          );
+        }
+      }
+      workerHandle = launchProcess(developmentPlan.worker, {
+        cwd: backendDirectory,
+        env: { ...process.env, ...developmentPlan.worker.environment },
+        stdio: "inherit",
+      }, spawnProcess);
+      try {
+        await workerHandle.spawned;
+      } catch (error) {
+        throw new Error(
+          `无法启动 AI 分析 worker：${developmentPlan.worker.command}`,
+          { cause: error },
+        );
+      }
+    }
+
     frontendHandle = launchProcess(developmentPlan.frontend, {
       cwd: frontendDirectory,
       env: process.env,
@@ -165,6 +242,9 @@ export async function startDevelopment({
     void frontendHandle.exited.then((outcome) => handleExit("前端服务", outcome));
     if (backendHandle) {
       void backendHandle.exited.then((outcome) => handleExit("后端服务", outcome));
+    }
+    if (workerHandle) {
+      void workerHandle.exited.then((outcome) => handleExit("AI 分析 worker", outcome));
     }
     return { stop };
   } catch (error) {

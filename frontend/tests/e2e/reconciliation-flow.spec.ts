@@ -109,6 +109,13 @@ test("opens history, returns, and selects one issue independently", async ({ pag
     const sidebarBox = await page.locator(".workspace-sidebar").boundingBox();
     const selectionBox = await page.locator(".selection-bar").boundingBox();
     expect(selectionBox?.x ?? 0).toBeGreaterThanOrEqual((sidebarBox?.width ?? 0) + 20);
+  } else {
+    const selectionBox = await page.locator(".selection-bar").boundingBox();
+    expect(selectionBox).not.toBeNull();
+    expect(selectionBox!.x).toBeGreaterThanOrEqual(9);
+    expect(selectionBox!.x).toBeLessThanOrEqual(11);
+    expect(selectionBox!.x + selectionBox!.width).toBeLessThanOrEqual(page.viewportSize()!.width - 9);
+    expect(selectionBox!.width).toBeGreaterThanOrEqual(page.viewportSize()!.width - 22);
   }
   await page.getByText("张三", { exact: true }).click();
   await page.getByLabel("选择张三的所属部门").check();
@@ -117,9 +124,48 @@ test("opens history, returns, and selects one issue independently", async ({ pag
   await expect(page.getByLabel("选择张三的手机号")).not.toBeChecked();
 });
 
-test("creates a task from an explicit conversational draft", async ({ page }, testInfo) => {
+test("reveals only manual external data sync after explicit selection", async ({ page }) => {
+  await page.goto("/tasks/new");
+
+  await expect(page.getByRole("heading", { name: "外部数据同步" })).toBeVisible();
+  await expect(page.getByText(/自动同步/)).toHaveCount(0);
+  await expect(page.getByLabel("选择三方系统 CSV")).toHaveCount(0);
+  await page.getByRole("button", { name: "手动同步" }).click();
+  await expect(page.getByLabel("选择三方系统 CSV")).toBeVisible();
+  await expect(page.getByLabel("选择希沃魔方 CSV")).toBeVisible();
+});
+
+test("keeps new conversation focused on agent chat", async ({ page }) => {
+  await page.goto("/conversations/new");
+
+  await expect(page.getByRole("heading", { name: "新建对话" })).toBeVisible();
+  await page.getByLabel("对账目标").fill("只核对七年级的老师和学生");
+  await page.getByRole("button", { name: "发送" }).click();
+  await expect(page.getByText(/已记录.*同步需求/)).toBeVisible();
+  await expect(page.getByText("任务草案", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "继续外部数据同步" })).toHaveCount(0);
+  await expect(page).toHaveURL(/\/conversations\/new$/);
+});
+
+test("conversation workspace fills the viewport and keeps its composer visible", async ({ page }, testInfo) => {
+  await page.goto("/conversations/new");
+
+  const surface = await page.locator(".conversation-surface").boundingBox();
+  const composer = await page.locator(".conversation-composer").boundingBox();
+  expect(surface).not.toBeNull();
+  expect(composer).not.toBeNull();
+  expect(surface!.height).toBeGreaterThan(testInfo.project.name === "desktop" ? 520 : 380);
+  expect(composer!.y + composer!.height).toBeLessThanOrEqual(page.viewportSize()!.height + 1);
+});
+
+test("creates a task from independent manual external data sync", async ({ page }, testInfo) => {
   await page.route("**/health/ready", async (route) => route.fulfill({ json: { status: "ok" } }));
   let uploadCount = 0;
+  let taskCreateCount = 0;
+  let releaseTaskCreation!: () => void;
+  const taskCreationGate = new Promise<void>((resolve) => {
+    releaseTaskCreation = resolve;
+  });
   await page.route("**/api/uploads", async (route) => {
     uploadCount += 1;
     await route.fulfill({
@@ -133,39 +179,72 @@ test("creates a task from an explicit conversational draft", async ({ page }, te
       },
     });
   });
-  await page.route("**/api/reconciliation-tasks", async (route) => route.fulfill({
-    status: 202,
-    json: {
-      id: "task-created",
-      tenant_id: "demo-school",
-      scope_id: "七年级",
-      snapshot_mode: "partial",
-      status: "ready",
-      stage: "analysis",
-      entity_types: ["teacher", "student"],
-      snapshots: {
-        authoritative: { accepted: 2, normalized_with_warning: 0, quarantined: 0, rejected: 0, quarantine_available: false },
-        target: { accepted: 2, normalized_with_warning: 0, quarantined: 0, rejected: 0, quarantine_available: false },
+  await page.route("**/api/reconciliation-tasks", async (route) => {
+    taskCreateCount += 1;
+    await taskCreationGate;
+    await route.fulfill({
+      status: 202,
+      json: {
+        id: "task-created",
+        tenant_id: "demo-school",
+        scope_id: "全校",
+        snapshot_mode: "full",
+        status: "ready",
+        stage: "analysis",
+        entity_types: ["organization_unit", "class", "teacher", "student"],
+        snapshots: {
+          authoritative: { accepted: 2, normalized_with_warning: 0, quarantined: 0, rejected: 0, quarantine_available: false },
+          target: { accepted: 2, normalized_with_warning: 0, quarantined: 0, rejected: 0, quarantine_available: false },
+        },
+        error: null,
       },
-      error: null,
-    },
-  }));
+    });
+  });
 
   await page.goto("/tasks/new");
-  await page.getByRole("textbox", { name: "对账要求" }).fill("只核对七年级的老师和学生");
-  await page.getByRole("button", { name: "发送" }).click();
-  await expect(page.getByLabel("核对范围")).toHaveValue("七年级");
+  await expect(page.getByRole("heading", { name: "外部数据同步" })).toBeVisible();
+  await expect(page.getByText(/自动同步/)).toHaveCount(0);
+  await page.getByRole("button", { name: "手动同步" }).click();
+  await expect(page.getByLabel("同步任务名称")).toHaveValue("全校组织数据核对");
+  await expect(page.getByLabel("核对范围")).toHaveValue("全校");
 
   await page.getByLabel("选择三方系统 CSV").setInputFiles({ name: "third-party.csv", mimeType: "text/csv", buffer: csv });
   await page.getByLabel("选择希沃魔方 CSV").setInputFiles({ name: "mofa.csv", mimeType: "text/csv", buffer: csv });
-  await expect(page.getByRole("button", { name: "创建对账" })).toBeEnabled();
-  await page.getByRole("button", { name: "创建对账" }).click();
+  await expect(page.getByRole("button", { name: "开始同步" })).toBeEnabled();
+
+  const viewportWidth = page.viewportSize()!.width;
+  if (testInfo.project.name === "desktop") {
+    const formBox = await page.locator(".manual-sync-form").boundingBox();
+    expect(formBox).not.toBeNull();
+    expect(formBox!.x).toBeGreaterThanOrEqual(0);
+    expect(formBox!.x + formBox!.width).toBeLessThanOrEqual(viewportWidth + 1);
+  } else {
+    for (const locator of [page.locator(".sync-method"), page.locator(".sync-attachment")]) {
+      const boxes = await locator.evaluateAll((elements) => elements.map((element) => {
+        const rect = element.getBoundingClientRect();
+        return { left: rect.left, right: rect.right };
+      }));
+      expect(boxes.length).toBeGreaterThan(0);
+      for (const box of boxes) {
+        expect(box.left).toBeGreaterThanOrEqual(0);
+        expect(box.right).toBeLessThanOrEqual(viewportWidth + 1);
+      }
+    }
+  }
+
+  const startSync = page.getByRole("button", { name: "开始同步" });
+  await startSync.click();
+  await expect(startSync).toBeDisabled();
+  await expect.poll(() => taskCreateCount).toBe(1);
+  await startSync.dispatchEvent("click");
+  expect(taskCreateCount).toBe(1);
+  releaseTaskCreation();
 
   await expect(page).toHaveURL(/\/tasks\/task-created$/);
   if (testInfo.project.name === "mobile") {
     await page.getByRole("button", { name: "打开导航" }).click();
   }
-  await expect(page.getByRole("link", { name: /七年级教师、学生核对/ })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("link", { name: /全校组织数据核对/ })).toHaveAttribute("aria-current", "page");
 });
 
 test("collapses the desktop workspace without hiding the main task", async ({ page }, testInfo) => {
@@ -180,6 +259,7 @@ test("collapses the desktop workspace without hiding the main task", async ({ pa
 
 test("uses a drawer for workspace navigation on mobile", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile");
+  await page.addInitScript(() => localStorage.setItem("mofa-workspace-collapsed", "true"));
   await page.goto("/tasks");
 
   const sidebar = page.locator(".workspace-sidebar");
@@ -187,9 +267,16 @@ test("uses a drawer for workspace navigation on mobile", async ({ page }, testIn
   await page.getByRole("button", { name: "打开导航" }).click();
   await expect(sidebar).not.toHaveAttribute("aria-hidden", "true");
   await expect(sidebar).toHaveClass(/is-mobile-open/);
-  await page.getByRole("link", { name: /三方全校数据核对，已完成，9 个问题/ }).click();
+  for (const command of [page.locator(".workspace-agent-entry"), page.locator(".workspace-new-task")]) {
+    const commandBox = await command.boundingBox();
+    expect(commandBox).not.toBeNull();
+    expect(commandBox!.width).toBeGreaterThan(180);
+  }
+  await expect(page.getByRole("link", { name: "新建对话" })).toHaveAttribute("href", "/conversations/new");
+  await expect(page.getByRole("link", { name: "外部数据同步" })).toHaveAttribute("href", "/tasks/new");
+  await page.getByRole("link", { name: "新建对话" }).click();
 
-  await expect(page).toHaveURL(/\/tasks\/demo-001$/);
+  await expect(page).toHaveURL(/\/conversations\/new$/);
   await expect(sidebar).not.toHaveClass(/is-mobile-open/);
   await expect(sidebar).toHaveAttribute("aria-hidden", "true");
 });
@@ -233,6 +320,7 @@ test("creates a manual pending proposal when AI is manual-only", async ({ page }
 
 test("shows persisted mandatory analysis progress without layout shifts", async ({ page }, testInfo) => {
   const taskId = "real-progress";
+  await page.emulateMedia({ reducedMotion: "reduce" });
   await page.addInitScript(({ taskId }) => {
     window.localStorage.setItem("mofa-reconciliation-tasks", JSON.stringify([{
       id: taskId,
@@ -247,7 +335,7 @@ test("shows persisted mandatory analysis progress without layout shifts", async 
       selectedEntityTypes: ["teacher"],
     }]));
   }, { taskId });
-  const workflow = { stage: "analysis", status: "pending", attempt: 2, processed: 3, total: 5, analysis: { total: 5, completed: 3, succeeded: 2, manual_review: 1, failed: 0 }, error: null };
+  const workflow = { stage: "analysis", status: "running", attempt: 2, processed: 3, total: 5, analysis: { job_id: "job-progress", total: 5, completed: 3, succeeded: 2, manual_review: 1, failed: 0 }, error: null };
   await page.route(`**/api/reconciliation-tasks/${taskId}`, async (route) => route.fulfill({ json: {
     id: taskId,
     tenant_id: "school-1",
@@ -261,18 +349,21 @@ test("shows persisted mandatory analysis progress without layout shifts", async 
     error: null,
   } }));
   await page.route(`**/api/reconciliation-tasks/${taskId}/workflow/advance`, async (route) => route.fulfill({ json: { task_id: taskId, workflow } }));
+  await page.route("**/api/analysis-jobs/job-progress", async (route) => route.fulfill({ json: { job_id: "job-progress", task_id: taskId, status: "running", total: 5, completed: 3, succeeded: 2, manual_required: 1, needs_information: 1, manual_only: 0, failed: 0, proposal_ready: 2, last_error: null, updated_at: "2026-07-20T10:00:00Z" } }));
   await page.route(`**/api/reconciliation-tasks/${taskId}/differences*`, async (route) => route.fulfill({ json: { items: [], next_cursor: null } }));
 
   await page.goto(`/tasks/${taskId}`);
   await expect(page.getByText("AI 分析中")).toBeVisible();
   await expect(page.getByText("已完成 3 / 5")).toBeVisible();
+  await expect(page.getByText(/待补信息 1/)).toBeVisible();
+  await expect(page.getByText("问题类型对照")).toHaveCount(0);
+  expect(await page.locator(".stage.active .spin").evaluate((element) => getComputedStyle(element).animationName)).toBe("none");
   const track = await page.getByRole("region", { name: "任务处理阶段" }).boundingBox().catch(() => null);
   if (track) expect(track.height).toBeGreaterThanOrEqual(100);
   await page.screenshot({ path: testInfo.outputPath("mandatory-analysis-progress.png"), fullPage: true });
 });
 
 test("runs from synthetic CSV upload through automatic analysis to an AI proposal", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== "desktop");
   const taskId = "task-full-chain";
   await seedGovernanceWorkbench(page, "ai", taskId, false);
   let uploadCount = 0;
@@ -280,7 +371,7 @@ test("runs from synthetic CSV upload through automatic analysis to an AI proposa
     uploadCount += 1;
     await route.fulfill({ status: 201, json: { id: uploadCount === 1 ? "source-full" : "target-full", source_role: uploadCount === 1 ? "authoritative" : "target", original_name: uploadCount === 1 ? "third-party.csv" : "seewo.csv", size_bytes: csv.length, detected_encoding: "utf-8" } });
   });
-  let workflow = { stage: "matching", status: "pending", attempt: 0, processed: 0, total: 0, analysis: { total: 0, completed: 0, succeeded: 0, manual_review: 0, failed: 0 }, error: null };
+  let workflow = { stage: "matching", status: "pending", attempt: 0, processed: 0, total: 0, analysis: { job_id: null, total: 0, completed: 0, succeeded: 0, manual_review: 0, failed: 0 }, error: null };
   const taskResponse = () => ({ id: taskId, tenant_id: "school-1", scope_id: "all", snapshot_mode: "full", entity_types: ["teacher"], status: "ready", stage: workflow.stage === "complete" ? "analysis_ready" : "snapshots", snapshots: { authoritative: { accepted: 2, normalized_with_warning: 0, quarantined: 0, rejected: 0, quarantine_available: false }, target: { accepted: 2, normalized_with_warning: 0, quarantined: 0, rejected: 0, quarantine_available: false } }, workflow, error: null });
   await page.route("**/api/reconciliation-tasks", async (route) => route.fulfill({ status: 202, json: taskResponse() }));
   await page.route(`**/api/reconciliation-tasks/${taskId}`, async (route) => route.fulfill({ json: taskResponse() }));
@@ -289,22 +380,66 @@ test("runs from synthetic CSV upload through automatic analysis to an AI proposa
     advanceCount += 1;
     workflow = advanceCount === 1
       ? { ...workflow, stage: "differences", attempt: 1 }
-      : advanceCount === 2
-        ? { ...workflow, stage: "analysis", attempt: 1 }
-        : { stage: "complete", status: "succeeded", attempt: 1, processed: 1, total: 1, analysis: { total: 1, completed: 1, succeeded: 1, manual_review: 0, failed: 0 }, error: null };
+      : { stage: "analysis", status: "running", attempt: 1, processed: 0, total: 2, analysis: { job_id: "job-full-chain", total: 2, completed: 0, succeeded: 0, manual_review: 0, failed: 0 }, error: null };
     await route.fulfill({ json: { task_id: taskId, workflow } });
   });
+  let jobStatusReads = 0;
+  await page.route("**/api/analysis-jobs/job-full-chain", async (route) => {
+    jobStatusReads += 1;
+    if (jobStatusReads === 1) {
+      await route.fulfill({ json: { job_id: "job-full-chain", task_id: taskId, status: "running", total: 2, completed: 0, succeeded: 0, manual_required: 0, needs_information: 0, manual_only: 0, failed: 0, proposal_ready: 0, last_error: null, updated_at: "2026-07-20T10:00:00Z" } });
+      return;
+    }
+    if (jobStatusReads === 2) {
+      await route.fulfill({ json: { job_id: "job-full-chain", task_id: taskId, status: "running", total: 2, completed: 1, succeeded: 1, manual_required: 0, needs_information: 0, manual_only: 0, failed: 0, proposal_ready: 1, last_error: null, updated_at: "2026-07-20T10:00:30Z" } });
+      return;
+    }
+    workflow = { stage: "complete", status: "succeeded", attempt: 1, processed: 2, total: 2, analysis: { job_id: "job-full-chain", total: 2, completed: 2, succeeded: 1, manual_review: 1, failed: 0 }, error: null };
+    await route.fulfill({ json: { job_id: "job-full-chain", task_id: taskId, status: "completed", total: 2, completed: 2, succeeded: 1, manual_required: 1, needs_information: 0, manual_only: 1, failed: 0, proposal_ready: 1, last_error: null, updated_at: "2026-07-20T10:01:00Z" } });
+  });
+  await page.route(`**/api/reconciliation-tasks/${taskId}/analysis-summary`, async (route) => route.fulfill({ json: {
+    task_id: taskId,
+    analysis_job_id: "job-full-chain",
+    job_status: "completed",
+    terminal: true,
+    entity_types: [{ entity_type: "teacher", issue_count: 1, proposal_ready: 1, needs_information: 0, manual_only: 0, failed: 0 }],
+  } }));
+  await page.route(`**/api/reconciliation-tasks/${taskId}/proposal-batches/preview`, async (route) => route.fulfill({ json: {
+    task_id: taskId,
+    analysis_job_id: "job-full-chain",
+    preview_token: "signed-full-chain-preview",
+    included: [{ difference_id: "difference-ai", difference_version: 1, analysis_id: "analysis-ai", solution_id: "option-1", entity_type: "teacher", title: "更新教师手机号", operation_type: "update", changes: [{ field: "phone", before: "13900000000", after: "13800000000" }], risk: "low" }],
+    excluded: [],
+  } }));
+  await page.route(`**/api/reconciliation-tasks/${taskId}/proposal-batches/confirm`, async (route) => route.fulfill({ status: 201, json: {
+    task_id: taskId,
+    created: 1,
+    skipped: 0,
+    failed: 0,
+    items: [{ difference_id: "difference-ai", status: "created", proposal_id: "proposal-batch-1", reason: null }],
+  } }));
 
   await page.goto("/tasks/new");
+  await page.getByRole("button", { name: "手动同步" }).click();
   await page.getByLabel("选择三方系统 CSV").setInputFiles({ name: "third-party.csv", mimeType: "text/csv", buffer: csv });
   await page.getByLabel("选择希沃魔方 CSV").setInputFiles({ name: "seewo.csv", mimeType: "text/csv", buffer: csv });
-  await page.getByRole("button", { name: "创建对账" }).click();
+  await page.getByRole("button", { name: "开始同步" }).click();
   await expect(page).toHaveURL(new RegExp(`/tasks/${taskId}$`));
+  await expect(page.getByText("已完成 0 / 2")).toBeVisible();
+  await page.reload();
+  await expect(page.getByText("已完成 1 / 2")).toBeVisible();
   await expect(page.getByText("分析完成")).toBeVisible();
-  await page.getByRole("button", { name: "查看教师问题" }).click();
-  await page.getByRole("button", { name: "查看 AI 分析" }).click();
-  await page.getByRole("button", { name: "采用并预览" }).click();
-  await page.getByRole("button", { name: "确认生成待执行方案" }).click();
-  await expect(page.getByText("已进入待治理执行")).toBeVisible();
-  expect(advanceCount).toBe(3);
+  await page.screenshot({ path: testInfo.outputPath("terminal-analysis-summary.png"), fullPage: true });
+  await page.getByRole("button", { name: "AI 一键处理" }).click();
+  await expect(page.getByText("确认后仅生成待执行方案，不会直接修改希沃数据。")).toBeVisible();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.waitForTimeout(400);
+  const batchDialog = await page.getByRole("dialog").boundingBox();
+  expect(batchDialog?.x ?? -1).toBeGreaterThanOrEqual(0);
+  expect((batchDialog?.x ?? 0) + (batchDialog?.width ?? 0)).toBeLessThanOrEqual(page.viewportSize()!.width + 1);
+  await page.screenshot({ path: testInfo.outputPath("batch-analysis-preview.png"), fullPage: true });
+  await page.getByRole("button", { name: "确认生成 1 份待执行方案" }).click();
+  await expect(page.getByText("已生成 1 份待执行方案")).toBeVisible();
+  await expect(page.getByRole("button", { name: "查看待执行方案" })).toBeVisible();
+  expect(advanceCount).toBe(2);
 });

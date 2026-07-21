@@ -10,7 +10,11 @@ from app.ai.mcp.server import MCPToolGateway
 from app.ai.providers.llm import HttpLLMProvider
 from app.api.dependencies import get_operator_context, get_session
 from app.core.security import OperatorContext
-from app.repositories.analyses import CURRENT_ANALYSIS_VERSION, AnalysisRepository
+from app.repositories.analyses import (
+    ANALYSIS_V3_VERSION,
+    CURRENT_ANALYSIS_VERSION,
+    AnalysisRepository,
+)
 from app.repositories.differences import DifferenceRepository
 from app.schemas.governance import AnalysisJobResponse, AnalysisResult
 
@@ -66,11 +70,18 @@ async def get_analysis(
     difference = await DifferenceRepository(session).get(difference_id)
     if difference is None or difference.tenant_id != operator.tenant_id:
         raise HTTPException(404, detail="analysis not found")
-    result = await AnalysisRepository(session).get_for_difference(
+    repository = AnalysisRepository(session)
+    result = await repository.get_for_difference(
         difference.id,
         difference.version,
-        CURRENT_ANALYSIS_VERSION,
+        ANALYSIS_V3_VERSION,
     )
+    if result is None:
+        result = await repository.get_for_difference(
+            difference.id,
+            difference.version,
+            CURRENT_ANALYSIS_VERSION,
+        )
     if result is None:
         raise HTTPException(404, detail="analysis not found")
     return result

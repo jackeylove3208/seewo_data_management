@@ -44,12 +44,32 @@ FIELD_TYPES: dict[str, EditorFieldType] = {
     "container_source_id": EditorFieldType.RELATION,
 }
 
+FIELD_LABELS: dict[str, str] = {
+    "name": "名称",
+    "code": "编码",
+    "employee_number": "教师工号",
+    "student_number": "学生学号",
+    "phone": "手机号",
+    "email": "邮箱",
+    "status": "状态",
+    "subject": "任教学科",
+    "grade": "年级",
+    "class_name": "班级名称",
+    "school_year": "学年",
+    "parent_source_id": "上级组织",
+    "department_source_id": "所属部门",
+    "class_source_id": "所属班级",
+    "member_source_id": "成员",
+    "container_source_id": "所属容器",
+    "role": "成员角色",
+}
+
 
 def editor_schema(entity_type: EntityType) -> EntityEditorSchema:
     fields = tuple(
         EntityEditorField(
             name=name,
-            label=name.replace("_", " ").title(),
+            label=FIELD_LABELS.get(name, "其他属性"),
             field_type=FIELD_TYPES.get(name, EditorFieldType.TEXT),
             required=name == "name",
         )

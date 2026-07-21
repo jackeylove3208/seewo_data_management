@@ -7,4 +7,8 @@ export const queryKeys = {
   analysis: (differenceId: string) => ["analysis", differenceId] as const,
   editorSchema: (entityType: EntityType) => ["editor-schema", entityType] as const,
   proposals: (differenceId: string) => ["proposals", differenceId] as const,
+  analysisJob: (jobId: string) => ["analysis-job", jobId] as const,
+  analysisSummary: (taskId: string) => ["analysis-summary", taskId] as const,
+  rematchingJob: (jobId: string) => ["rematching-job", jobId] as const,
+  matchingQuality: (taskId: string) => ["matching-quality", taskId] as const,
 };

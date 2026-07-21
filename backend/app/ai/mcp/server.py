@@ -15,11 +15,18 @@ from app.ai.mcp.tools.candidate_search import search_candidates
 from app.ai.mcp.tools.difference_context import read_difference_context
 from app.ai.mcp.tools.execution_context import read_execution_context
 from app.ai.mcp.tools.mapping_rules import read_mapping_rules
+from app.ai.mcp.tools.rematch_evidence import read_candidate_evidence
 from app.differences.field_policies import FieldComparisonPolicy
 from app.repositories.differences import DifferenceRepository
 
 READ_ONLY_TOOL_NAMES = frozenset(
-    {"difference_context", "candidate_search", "mapping_rules", "execution_context"}
+    {
+        "difference_context",
+        "candidate_search",
+        "rematch_candidate_evidence",
+        "mapping_rules",
+        "execution_context",
+    }
 )
 
 
@@ -32,6 +39,7 @@ class ToolResult(BaseModel):
 
 class MCPToolGateway:
     def __init__(self, session: AsyncSession) -> None:
+        self.session = session
         self.differences = DifferenceRepository(session)
         self.policy = FieldComparisonPolicy()
 
@@ -58,11 +66,26 @@ class MCPToolGateway:
                 str(arguments.get("query", "")),
                 _integer_argument(arguments, "top_k", default=5),
             )
+        elif name == "rematch_candidate_evidence":
+            work_item_id = _uuid_argument(arguments, "work_item_id")
+            evidence_payload = await read_candidate_evidence(
+                self.differences.session,
+                task_id=context.task_id,
+                tenant_id=context.tenant_id,
+                work_item_id=work_item_id,
+            )
+            if evidence_payload is None:
+                raise ToolAuthorizationError("rematch item not authorized")
+            payload = evidence_payload
         elif name == "mapping_rules":
             payload = read_mapping_rules(difference, self.policy)
         else:
             payload = read_execution_context(difference)
         return ToolResult(payload=payload, trace_id=str(uuid4()))
+
+    async def close_read_transaction(self) -> None:
+        if self.session.in_transaction():
+            await self.session.rollback()
 
 
 ToolContextProvider = Callable[[Context[Any, Any, Any]], ToolContext]
@@ -96,6 +119,19 @@ def create_fastmcp_server(
         result = await gateway.call(
             "candidate_search",
             {"difference_id": difference_id, "query": query, "top_k": top_k},
+            context_provider(ctx),
+        )
+        return result.payload
+
+    @server.tool(name="rematch_candidate_evidence")
+    async def rematch_candidate_evidence(
+        difference_id: str,
+        work_item_id: str,
+        ctx: Context[Any, Any, Any],
+    ) -> dict[str, Any]:
+        result = await gateway.call(
+            "rematch_candidate_evidence",
+            {"difference_id": difference_id, "work_item_id": work_item_id},
             context_provider(ctx),
         )
         return result.payload
@@ -137,3 +173,10 @@ def _integer_argument(arguments: dict[str, Any], name: str, *, default: int) -> 
     if not isinstance(value, int):
         raise ValueError(f"{name} must be an integer")
     return value
+
+
+def _uuid_argument(arguments: dict[str, Any], name: str) -> UUID:
+    try:
+        return UUID(str(arguments.get(name)))
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} must be a UUID") from error

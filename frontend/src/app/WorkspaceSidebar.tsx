@@ -4,8 +4,10 @@ import {
   ChevronRight,
   DatabaseZap,
   History,
+  MessageSquarePlus,
   PanelLeftClose,
-  Plus,
+  RefreshCw,
+  Trash2,
   X,
 } from "lucide-react";
 import { useEffect, useState, type RefObject } from "react";
@@ -14,6 +16,7 @@ import { NavLink, useLocation } from "react-router-dom";
 import { ConnectionStatus } from "../components/ConnectionStatus";
 import { allTasks, TASK_HISTORY_UPDATED_EVENT } from "../data/taskHistory";
 import type { TaskStatus } from "../types/domain";
+import { useTaskDeletion } from "../features/tasks/useTaskDeletion";
 
 const COLLAPSED_KEY = "mofa-workspace-collapsed";
 const RECENT_TASK_LIMIT = 8;
@@ -40,6 +43,7 @@ export function WorkspaceSidebar({
   closeButtonRef?: RefObject<HTMLButtonElement | null>;
 }) {
   const location = useLocation();
+  const deletion = useTaskDeletion();
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSED_KEY) === "true");
   const [tasks, setTasks] = useState(() => allTasks().slice(0, RECENT_TASK_LIMIT));
 
@@ -85,9 +89,22 @@ export function WorkspaceSidebar({
           <button ref={closeButtonRef} className="workspace-mobile-close" type="button" aria-label="关闭导航" onClick={onMobileClose}><X size={19} /></button>
         </div>
 
-        <NavLink className="workspace-new-task" to="/tasks/new" onClick={onMobileClose}>
-          <Plus size={18} /><span className="workspace-label">新建对账</span>
-        </NavLink>
+        <div className="workspace-primary-actions" aria-label="主要操作">
+          <NavLink
+            className="workspace-agent-entry"
+            to="/conversations/new"
+            aria-label="新建对话"
+            title="新建对话"
+            onClick={onMobileClose}
+          >
+            <MessageSquarePlus size={18} />
+            <span className="workspace-label">新建对话</span>
+          </NavLink>
+          <NavLink className="workspace-new-task" to="/tasks/new" aria-label="外部数据同步" title="外部数据同步" onClick={onMobileClose}>
+            <RefreshCw size={18} />
+            <span className="workspace-label">外部数据同步</span>
+          </NavLink>
+        </div>
 
         <section className="workspace-history" aria-label="最近任务">
           <div className="workspace-section-title">
@@ -96,21 +113,37 @@ export function WorkspaceSidebar({
           </div>
           <div className="workspace-history-list">
             {tasks.map((task) => (
-              <NavLink
-                className="workspace-history-item"
-                key={task.id}
-                to={`/tasks/${task.id}`}
-                title={task.title}
-                aria-label={`${task.title}，${statusLabels[task.status]}，${task.issueCount} 个问题`}
-                onClick={onMobileClose}
-              >
-                <span className="history-status-dot" data-status={task.status} />
-                <span className="workspace-label history-copy">
-                  <strong>{task.title}</strong>
-                  <small><span>{formatTime(task.createdAt)}</span><span>{statusLabels[task.status]}</span><span>{task.issueCount} 个问题</span></small>
-                </span>
-                <ChevronRight className="workspace-label" size={14} />
-              </NavLink>
+              <div className="workspace-history-row" key={task.id}>
+                <NavLink
+                  className="workspace-history-item"
+                  to={`/tasks/${task.id}`}
+                  title={task.title}
+                  aria-label={`${task.title}，${statusLabels[task.status]}，${task.issueCount} 个问题`}
+                  onClick={onMobileClose}
+                >
+                  <span className="history-status-dot" data-status={task.status} />
+                  <span className="workspace-label history-copy">
+                    <strong>{task.title}</strong>
+                    <small><span>{formatTime(task.createdAt)}</span><span>{statusLabels[task.status]}</span><span>{task.issueCount} 个问题</span></small>
+                  </span>
+                  <ChevronRight className="workspace-label" size={14} />
+                </NavLink>
+                {!task.isDemo && (
+                  <button
+                    className="history-delete-button"
+                    type="button"
+                    aria-label={`删除${task.title}`}
+                    title={`删除${task.title}`}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      deletion.requestDelete(task);
+                    }}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                )}
+              </div>
             ))}
           </div>
           <NavLink className="workspace-all-history" to="/executions" onClick={onMobileClose}>
@@ -131,6 +164,7 @@ export function WorkspaceSidebar({
           </button>
         </div>
       </nav>
+      {deletion.confirmation}
       <span className="sr-only">当前路径：{location.pathname}</span>
     </aside>
   );

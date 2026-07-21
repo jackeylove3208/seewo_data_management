@@ -7,12 +7,16 @@ export class ApiError extends Error {
   }
 }
 
-export const apiUrl = (path: string) => `${API_BASE_URL}${path}`;
+export function resolveApiUrl(path: string) {
+  return `${API_BASE_URL}${path}`;
+}
+
+export const apiUrl = resolveApiUrl;
 
 export async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(apiUrl(path), init);
+    response = await fetch(resolveApiUrl(path), init);
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") throw error;
     throw new ApiError(BACKEND_UNAVAILABLE_MESSAGE, 0);
@@ -36,5 +40,6 @@ export async function requestJson<T>(path: string, init?: RequestInit): Promise<
     if (!hasServerMessage && response.status >= 500) message = BACKEND_UNAVAILABLE_MESSAGE;
     throw new ApiError(message, response.status);
   }
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }

@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, insert, or_, select
+from sqlalchemy import and_, case, insert, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,7 +15,7 @@ from app.models.differences import (
     ImmutableDifferenceError,
 )
 from app.models.proposals import GovernanceProposalRecord
-from app.repositories.analyses import CURRENT_ANALYSIS_VERSION
+from app.repositories.analyses import ANALYSIS_V3_VERSION, CURRENT_ANALYSIS_VERSION
 from app.schemas.canonical_entities import EntityType
 from app.schemas.differences import (
     DifferenceAction,
@@ -88,6 +88,16 @@ class DifferenceRepository:
         proposal = await self._proposal_for(record)
         return self._item(record, analysis, proposal)
 
+    async def get_for_update(self, difference_id: UUID) -> DifferenceItem | None:
+        record = await self.session.scalar(
+            select(DifferenceRecord).where(DifferenceRecord.id == difference_id).with_for_update()
+        )
+        if record is None:
+            return None
+        analysis = await self._analysis_for(record)
+        proposal = await self._proposal_for(record)
+        return self._item(record, analysis, proposal)
+
     async def for_task(self, task_id: UUID) -> tuple[DifferenceItem, ...]:
         records = tuple(
             await self.session.scalars(
@@ -108,14 +118,28 @@ class DifferenceRepository:
         task_id: UUID,
         filters: DifferenceFilters,
     ) -> DifferencePage:
-        current_analysis = and_(
-            AnalysisRecord.difference_id == DifferenceRecord.id,
-            AnalysisRecord.difference_version == DifferenceRecord.version,
-            AnalysisRecord.analysis_version == CURRENT_ANALYSIS_VERSION,
+        current_analysis_id = (
+            select(AnalysisRecord.id)
+            .where(
+                AnalysisRecord.difference_id == DifferenceRecord.id,
+                AnalysisRecord.difference_version == DifferenceRecord.version,
+                AnalysisRecord.analysis_version.in_(
+                    (ANALYSIS_V3_VERSION, CURRENT_ANALYSIS_VERSION)
+                ),
+            )
+            .order_by(
+                case(
+                    (AnalysisRecord.analysis_version == ANALYSIS_V3_VERSION, 0),
+                    else_=1,
+                )
+            )
+            .limit(1)
+            .correlate(DifferenceRecord)
+            .scalar_subquery()
         )
         statement = (
             select(DifferenceRecord)
-            .outerjoin(AnalysisRecord, current_analysis)
+            .outerjoin(AnalysisRecord, AnalysisRecord.id == current_analysis_id)
             .where(DifferenceRecord.task_id == task_id)
         )
         if filters.entity_type is not None:
@@ -140,7 +164,12 @@ class DifferenceRepository:
                     *(
                         AnalysisRecord.output["options"][index]["risk"].as_string() == filters.risk
                         for index in range(3)
-                    )
+                    ),
+                    *(
+                        AnalysisRecord.output["solutions"][index]["risk"].as_string()
+                        == filters.risk
+                        for index in range(3)
+                    ),
                 )
             )
         if filters.resolution_status is not None:
@@ -229,10 +258,19 @@ class DifferenceRepository:
         return cast(
             AnalysisRecord | None,
             await self.session.scalar(
-                select(AnalysisRecord).where(
+                select(AnalysisRecord)
+                .where(
                     AnalysisRecord.difference_id == record.id,
                     AnalysisRecord.difference_version == record.version,
-                    AnalysisRecord.analysis_version == CURRENT_ANALYSIS_VERSION,
+                    AnalysisRecord.analysis_version.in_(
+                        (ANALYSIS_V3_VERSION, CURRENT_ANALYSIS_VERSION)
+                    ),
+                )
+                .order_by(
+                    case(
+                        (AnalysisRecord.analysis_version == ANALYSIS_V3_VERSION, 0),
+                        else_=1,
+                    )
                 )
             ),
         )
@@ -247,14 +285,19 @@ class DifferenceRepository:
         rows = await self.session.scalars(
             select(AnalysisRecord).where(
                 AnalysisRecord.difference_id.in_(versions),
-                AnalysisRecord.analysis_version == CURRENT_ANALYSIS_VERSION,
+                AnalysisRecord.analysis_version.in_(
+                    (ANALYSIS_V3_VERSION, CURRENT_ANALYSIS_VERSION)
+                ),
             )
         )
-        return {
-            row.difference_id: row
-            for row in rows
-            if row.difference_version == versions[row.difference_id]
-        }
+        current: dict[UUID, AnalysisRecord] = {}
+        for row in rows:
+            if row.difference_version != versions[row.difference_id]:
+                continue
+            existing = current.get(row.difference_id)
+            if existing is None or row.analysis_version == ANALYSIS_V3_VERSION:
+                current[row.difference_id] = row
+        return current
 
     async def _proposal_for(self, record: DifferenceRecord) -> GovernanceProposalRecord | None:
         return cast(
@@ -321,7 +364,7 @@ class DifferenceRepository:
 def _analysis_risk(output: object) -> str | None:
     if not isinstance(output, dict):
         return None
-    options = output.get("options")
+    options = output.get("solutions", output.get("options"))
     if not isinstance(options, list):
         risk = output.get("risk")
         return str(risk) if risk is not None else None
