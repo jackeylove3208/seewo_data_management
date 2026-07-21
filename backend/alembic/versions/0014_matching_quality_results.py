@@ -7,6 +7,7 @@ Revises: 0013_entity_rematch_jobs
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import context, op
 
 revision: str = "0014_matching_quality_results"

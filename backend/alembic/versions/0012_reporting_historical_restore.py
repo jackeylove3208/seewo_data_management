@@ -8,7 +8,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 
-from alembic import op
+from alembic import context, op
 
 revision: str = "0012_reporting_historical_restore"
 down_revision: str | None = "0011_plan_explanations"
@@ -24,6 +24,11 @@ IMMUTABLE_TABLES = (
 
 
 def upgrade() -> None:
+    existing_tables = set() if context.is_offline_mode() else set(
+        sa.inspect(op.get_bind()).get_table_names()
+    )
+    if "report_jobs" in existing_tables:
+        return
     op.create_table(
         "report_jobs",
         sa.Column("id", sa.Uuid(), primary_key=True),

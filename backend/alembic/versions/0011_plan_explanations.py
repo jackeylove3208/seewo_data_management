@@ -8,7 +8,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 
-from alembic import op
+from alembic import context, op
 
 revision: str = "0011_plan_explanations"
 down_revision: str | None = "0010_governance_execution"
@@ -17,6 +17,11 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    if (
+        not context.is_offline_mode()
+        and "governance_plan_explanations" in sa.inspect(op.get_bind()).get_table_names()
+    ):
+        return
     op.create_table(
         "governance_plan_explanations",
         sa.Column("id", sa.Uuid(), nullable=False),

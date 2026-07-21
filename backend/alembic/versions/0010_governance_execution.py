@@ -8,7 +8,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 
-from alembic import op
+from alembic import context, op
 
 revision: str = "0010_governance_execution"
 down_revision: str | None = "0009_governance_proposals"
@@ -26,6 +26,14 @@ IMMUTABLE_TABLES = (
 
 
 def upgrade() -> None:
+    # ``Base.metadata.create_all()`` was used by early local/demo deployments.
+    # It already contains this complete execution schema, so only stamp its
+    # historical migration path instead of attempting duplicate DDL.
+    existing_tables = set() if context.is_offline_mode() else set(
+        sa.inspect(op.get_bind()).get_table_names()
+    )
+    if "governance_plans" in existing_tables:
+        return
     op.create_table(
         "governance_plans",
         sa.Column("id", sa.Uuid(), nullable=False),

@@ -97,7 +97,7 @@ def test_upgrade_reconciles_unversioned_create_all_database(
         )
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0014_matching_quality_results"
+                == "0015_merge_reporting_and_matching_heads"
         )
 
 
@@ -178,7 +178,7 @@ def test_interrupted_legacy_upgrade_can_be_reapplied(
         assert "BEFORE DELETE" in analysis_delete_trigger_sql
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0014_matching_quality_results"
+                == "0015_merge_reporting_and_matching_heads"
         )
 
 

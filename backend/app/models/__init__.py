@@ -16,17 +16,17 @@ from app.models.proposal_batches import ProposalBatchRecord
 from app.models.proposals import GovernanceProposalRecord
 from app.models.quality import MatchingQualityRecord
 from app.models.reconciliation import ReconciliationTask
+from app.models.rematching import (
+    EntityRematchCandidateEdgeRecord,
+    EntityRematchJobRecord,
+    EntityRematchWorkItemRecord,
+)
 from app.models.reporting import (
     GovernanceReportRecord,
     ReportJobRecord,
     RestoreExecutionLinkRecord,
     RestoreExecutionResultRecord,
     RestoreRequestRecord,
-)
-from app.models.rematching import (
-    EntityRematchCandidateEdgeRecord,
-    EntityRematchJobRecord,
-    EntityRematchWorkItemRecord,
 )
 from app.models.snapshots import (
     CanonicalEntityRecord,
@@ -51,6 +51,7 @@ __all__ = [
     "GovernanceReportRecord",
     "GovernancePlanRecord",
     "GovernancePlanExplanationRecord",
+    "GovernanceProposalRecord",
     "EntityRematchCandidateEdgeRecord",
     "EntityRematchJobRecord",
     "EntityRematchWorkItemRecord",
