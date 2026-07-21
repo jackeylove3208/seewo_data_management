@@ -2,12 +2,18 @@ import logging
 from uuid import UUID
 
 from anyio import Path
-from sqlalchemy import delete, exists, or_, select
+from sqlalchemy import delete, exists, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.analyses import AnalysisRecord
 from app.models.analysis_jobs import AnalysisJobRecord, AnalysisWorkItemRecord
 from app.models.differences import DifferenceRecord
+from app.models.executions import (
+    ExecutionBatchRecord,
+    GovernancePlanExplanationRecord,
+    GovernancePlanRecord,
+    TargetVersionRecord,
+)
 from app.models.mappings import EntityMapping, TargetEntityEmbedding
 from app.models.proposal_batches import ProposalBatchRecord
 from app.models.proposals import GovernanceProposalRecord
@@ -54,23 +60,19 @@ class TaskDeletionService:
         if task is None:
             raise TaskDeletionNotFound(f"reconciliation task not found: {task_id}")
 
-        analysis_complete = await self.session.scalar(
+        execution_exists = await self.session.scalar(
             select(
                 exists().where(
-                    WorkflowStageRun.task_id == task_id,
-                    WorkflowStageRun.stage == "analysis",
-                    WorkflowStageRun.status == "succeeded",
+                    ExecutionBatchRecord.plan_id == GovernancePlanRecord.id,
+                    GovernancePlanRecord.task_id == task_id,
                 )
             )
         )
-        if not analysis_complete:
-            raise TaskDeletionBlocked("任务尚未完成 AI 分析，不能删除")
+        if execution_exists:
+            raise TaskDeletionBlocked("该任务已有治理执行记录，不能删除")
 
-        proposal_exists = await self.session.scalar(
-            select(exists().where(GovernanceProposalRecord.task_id == task_id))
-        )
-        if proposal_exists:
-            raise TaskDeletionBlocked("该任务已有治理方案，不能删除")
+        if self.session.bind is not None and self.session.bind.dialect.name == "postgresql":
+            await self.session.execute(text("SELECT set_config('app.task_deletion', 'on', true)"))
 
         snapshot_rows = (
             await self.session.execute(
@@ -116,6 +118,13 @@ class TaskDeletionService:
                 )
             ).all()
         )
+        governance_plan_ids = list(
+            (
+                await self.session.scalars(
+                    select(GovernancePlanRecord.id).where(GovernancePlanRecord.task_id == task_id)
+                )
+            ).all()
+        )
 
         rematch_job_ids = list(
             (
@@ -138,6 +147,17 @@ class TaskDeletionService:
 
         await self.session.execute(
             delete(MatchingQualityRecord).where(MatchingQualityRecord.task_id == task_id)
+        )
+        await self.session.execute(
+            delete(GovernancePlanExplanationRecord).where(
+                GovernancePlanExplanationRecord.plan_id.in_(governance_plan_ids)
+            )
+        )
+        await self.session.execute(
+            delete(GovernancePlanRecord).where(GovernancePlanRecord.id.in_(governance_plan_ids))
+        )
+        await self.session.execute(
+            delete(TargetVersionRecord).where(TargetVersionRecord.task_id == task_id)
         )
         await self.session.execute(
             delete(EntityRematchCandidateEdgeRecord).where(
@@ -167,6 +187,9 @@ class TaskDeletionService:
         )
         await self.session.execute(
             delete(AnalysisJobRecord).where(AnalysisJobRecord.id.in_(job_ids))
+        )
+        await self.session.execute(
+            delete(GovernanceProposalRecord).where(GovernanceProposalRecord.task_id == task_id)
         )
         await self.session.execute(
             delete(AnalysisRecord).where(AnalysisRecord.id.in_(analysis_ids))

@@ -44,7 +44,7 @@ export function useTaskDeletion() {
       onOk={() => void confirmDelete()}
     >
       <p>确定要删除“{selectedTask?.title}”吗？</p>
-      <p>该任务的分析数据、快照和上传文件将永久删除。</p>
+      <p>治理执行开始前可删除；分析、方案、快照和上传文件将永久删除。</p>
       {error && <Alert role="alert" type="error" message={error} showIcon />}
     </Modal>
   );

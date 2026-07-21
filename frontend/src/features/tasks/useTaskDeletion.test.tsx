@@ -67,13 +67,13 @@ describe("task deletion confirmation", () => {
 
   it("keeps history and explains a protected task", async () => {
     const user = userEvent.setup();
-    vi.spyOn(ingestionApi, "deleteTask").mockRejectedValue(new Error("该任务已有治理方案，不能删除"));
+    vi.spyOn(ingestionApi, "deleteTask").mockRejectedValue(new Error("该任务已有治理执行记录，不能删除"));
     render(<Harness />);
 
     await user.click(screen.getByRole("button", { name: "删除真实任务" }));
     await user.click(screen.getByRole("button", { name: "确认删除" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("该任务已有治理方案，不能删除");
+    expect(await screen.findByRole("alert")).toHaveTextContent("该任务已有治理执行记录，不能删除");
     expect(getStoredTasks()).toHaveLength(1);
   });
 });
