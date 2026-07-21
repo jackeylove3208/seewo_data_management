@@ -55,6 +55,9 @@ class EntityMapping(Base, TimestampMixin):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     revocation_reason: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    supersedes_mapping_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("entity_mappings.id"), nullable=True, index=True
+    )
 
     __table_args__ = (
         Index(
@@ -80,8 +83,8 @@ class EntityMapping(Base, TimestampMixin):
     )
 
 
-class TargetEntityEmbedding(Base, TimestampMixin):
-    __tablename__ = "target_entity_embeddings"
+class SnapshotEntityEmbedding(Base, TimestampMixin):
+    __tablename__ = "snapshot_entity_embeddings"
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     entity_id: Mapped[UUID] = mapped_column(
@@ -90,6 +93,7 @@ class TargetEntityEmbedding(Base, TimestampMixin):
     )
     snapshot_id: Mapped[UUID] = mapped_column(ForeignKey("snapshots.id"), index=True)
     tenant_id: Mapped[str] = mapped_column(String(128), index=True)
+    source_role: Mapped[str] = mapped_column(String(32), index=True)
     entity_type: Mapped[str] = mapped_column(String(32), index=True)
     campus_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     grade: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -106,11 +110,15 @@ class TargetEntityEmbedding(Base, TimestampMixin):
 
     __table_args__ = (
         UniqueConstraint(
+            "tenant_id",
+            "snapshot_id",
+            "source_role",
+            "entity_type",
             "entity_id",
             "provider",
             "model",
             "representation_version",
-            name="uq_target_embedding_version",
+            name="uq_snapshot_embedding_version",
         ),
         Index(
             "ix_target_embedding_partition",
@@ -121,4 +129,18 @@ class TargetEntityEmbedding(Base, TimestampMixin):
             "grade",
             "parent_mapping_id",
         ),
+        Index(
+            "ix_snapshot_embedding_partition",
+            "tenant_id",
+            "snapshot_id",
+            "source_role",
+            "entity_type",
+            "campus_id",
+            "grade",
+            "parent_mapping_id",
+        ),
     )
+
+
+# Transitional import compatibility while callers move to the role-aware name.
+TargetEntityEmbedding = SnapshotEntityEmbedding

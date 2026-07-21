@@ -6,10 +6,13 @@ from app.ai.mcp.authorization import ToolAuthorizationError, ToolContext
 from app.ai.mcp.server import MCPToolGateway, create_fastmcp_server
 from app.differences.service import DifferenceDetectionService
 from app.matching.service import EntityResolutionService
+from app.models.reconciliation import ReconciliationTask
 from app.repositories.differences import DifferenceRepository
+from app.repositories.rematching import EntityRematchRepository
 from app.schemas.differences import DifferenceType
 from tests.fixtures.organization_factory import create_hierarchy_pair
 from tests.integration.ai.test_analysis_service import seed_difference
+from tests.integration.repositories.test_entity_rematch_jobs import draft
 
 
 @pytest.fixture
@@ -77,6 +80,7 @@ async def test_gateway_has_only_read_tools_and_rejects_unknown_tool(session, dif
     assert gateway.tool_names == {
         "difference_context",
         "candidate_search",
+        "rematch_candidate_evidence",
         "mapping_rules",
         "execution_context",
     }
@@ -120,3 +124,42 @@ async def test_fastmcp_registers_only_gateway_tools(session, difference) -> None
     server = create_fastmcp_server(gateway, lambda _ctx: context_for(difference))
 
     assert {tool.name for tool in await server.list_tools()} == gateway.tool_names
+
+
+@pytest.mark.asyncio
+async def test_rematch_candidate_evidence_is_task_scoped_and_read_only(session, difference) -> None:
+    task = await session.get(ReconciliationTask, difference.task_id)
+    assert task is not None
+    item = draft(
+        focal_entity_id=difference.evidence.source_entity_id or uuid4(),
+        candidate_entity_id=difference.evidence.target_entity_id or uuid4(),
+    )
+    source_snapshot_id, target_snapshot_id = (
+        difference.evidence.source_snapshot_id,
+        difference.evidence.target_snapshot_id,
+    )
+    job = await EntityRematchRepository(session).create_or_get(
+        task_id=task.id,
+        tenant_id=difference.tenant_id,
+        requested_by="operator-1",
+        source_snapshot_id=source_snapshot_id,
+        target_snapshot_id=target_snapshot_id,
+        idempotency_key=uuid4().hex,
+        policy_version="rematch-v1",
+        items=(item,),
+    )
+    work_item = (await EntityRematchRepository(session).work_items(job.id, difference.tenant_id))[0]
+    result = await MCPToolGateway(session).call(
+        "rematch_candidate_evidence",
+        {"difference_id": str(difference.id), "work_item_id": str(work_item.id)},
+        context_for(difference),
+    )
+    assert result.payload["job_id"] == str(job.id)
+    assert result.payload["candidates"][0]["rank"] == 1
+    assert "payload" not in result.payload["candidates"][0]
+    with pytest.raises(ToolAuthorizationError, match="not authorized"):
+        await MCPToolGateway(session).call(
+            "rematch_candidate_evidence",
+            {"difference_id": str(difference.id), "work_item_id": str(work_item.id)},
+            context_for(difference, tenant_id="other-school"),
+        )

@@ -10,6 +10,7 @@ from app.api.routes.differences import router as difference_router
 from app.api.routes.health import router as health_router
 from app.api.routes.proposals import router as proposal_router
 from app.api.routes.reconciliation_tasks import router as task_router
+from app.api.routes.rematching_jobs import router as rematching_router
 from app.api.routes.uploads import router as upload_router
 from app.core.config import Settings, get_settings
 from app.core.database import Database
@@ -46,6 +47,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(upload_router)
     app.include_router(task_router)
     app.include_router(proposal_router)
+    app.include_router(rematching_router)
     return app
 
 

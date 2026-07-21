@@ -94,4 +94,26 @@ describe("reconciliation API", () => {
       idempotency_key: "confirm-key",
     });
   });
+
+  it("uses durable rematching and matching-quality endpoints", async () => {
+    const fetchSpy = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify({}), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    })));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await reconciliationApi.getRematchingJob("rematch-1");
+    await reconciliationApi.retryRematchingJob("rematch-1");
+    await reconciliationApi.cancelRematchingJob("rematch-1");
+    await reconciliationApi.getMatchingQuality("task-1");
+
+    expect(fetchSpy.mock.calls.map((call) => call[0])).toEqual([
+      "/api/entity-rematch-jobs/rematch-1",
+      "/api/entity-rematch-jobs/rematch-1/retry",
+      "/api/entity-rematch-jobs/rematch-1/cancel",
+      "/api/reconciliation-tasks/task-1/matching-quality",
+    ]);
+    expect((fetchSpy.mock.calls[1]?.[1] as RequestInit).method).toBe("POST");
+    expect((fetchSpy.mock.calls[2]?.[1] as RequestInit).method).toBe("POST");
+  });
 });

@@ -7,12 +7,13 @@ from pydantic import TypeAdapter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai.tokenization import TaskTokenizationContext
 from app.matching.blocking import block_key
 from app.matching.candidate_retriever import CandidateRetriever
 from app.matching.conflict_resolver import ConflictResolver
 from app.matching.exact_matcher import ExactMatcher
 from app.matching.scorer import CandidateScorer
-from app.matching.vector_index import VectorIndex, representation
+from app.matching.vector_index import VectorIndex
 from app.models.mappings import EntityMapping
 from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import CanonicalEntityRecord, Snapshot
@@ -27,6 +28,7 @@ from app.schemas.canonical_entities import (
     member_entity_types_for_role,
 )
 from app.schemas.matching import (
+    Candidate,
     MatchDecision,
     MatchEvidence,
     MatchMethod,
@@ -59,6 +61,8 @@ class EntityResolutionService:
         vector_index: VectorIndex | None = None,
         mapping_repository: MappingRepository | None = None,
         top_k: int = 20,
+        rematching_top_k: int = 3,
+        tokenization_secret: str | None = None,
     ) -> None:
         self.session = session
         self.normalization = normalization or NormalizationPipeline()
@@ -67,6 +71,8 @@ class EntityResolutionService:
         self.conflict_resolver = conflict_resolver or ConflictResolver()
         self.vector_index = vector_index
         self.top_k = top_k
+        self.rematching_top_k = rematching_top_k
+        self.tokenization_secret = tokenization_secret
         self.mappings = mapping_repository or MappingRepository(session)
         self.snapshots = SnapshotRepository(session)
         self.tasks = TaskRepository(session)
@@ -107,6 +113,15 @@ class EntityResolutionService:
         target_ids = {record.record_key: record.entity_id for record in target_records}
         accepted_targets: dict[str, UUID] = {}
         decisions: list[MatchDecision] = []
+        tokenization_context = (
+            TaskTokenizationContext(
+                secret=self.tokenization_secret,
+                tenant_id=pair.tenant_id,
+                task_id=pair.task_id,
+            )
+            if self.tokenization_secret is not None
+            else None
+        )
 
         for entity_type in RESOLUTION_ORDER:
             type_sources = source_by_type[entity_type]
@@ -114,25 +129,24 @@ class EntityResolutionService:
                 pair.tenant_id,
                 [record.record_key for record in type_sources],
             )
-            target_stage = tuple(
-                _with_context(record, accepted_targets, target_ids, authoritative=False)
-                for record in target_by_type[entity_type]
+            target_stage = recompute_descendant_context(
+                target_by_type[entity_type],
+                target_ids,
+                authoritative=False,
             )
             type_decisions: list[MatchDecision] = []
             for source_batch in _source_batches(entity_type, type_sources):
-                source_stage = tuple(
-                    _with_context(
-                        record,
-                        accepted_targets,
-                        target_ids,
-                        authoritative=True,
-                    )
-                    for record in source_batch
+                source_stage = recompute_descendant_context(
+                    source_batch,
+                    accepted_targets,
+                    authoritative=True,
                 )
                 batch_decisions = await self._resolve_type(
                     source_stage,
                     target_stage,
                     historical_mappings,
+                    pair=pair,
+                    tokenization_context=tokenization_context,
                 )
                 type_decisions = self.conflict_resolver.resolve([*type_decisions, *batch_decisions])
                 for source in source_by_type[entity_type]:
@@ -232,13 +246,24 @@ class EntityResolutionService:
         sources: Sequence[NormalizedRecord],
         targets: Sequence[NormalizedRecord],
         historical_mappings: dict[str, EntityMapping],
+        *,
+        pair: SnapshotPair,
+        tokenization_context: TaskTokenizationContext | None,
     ) -> list[MatchDecision]:
         retriever = CandidateRetriever(targets)
         if self.vector_index is not None:
-            await self.vector_index.upsert_targets(targets)
+            await self.vector_index.upsert_snapshot(
+                sources,
+                SourceRole.AUTHORITATIVE,
+                tokenization_context,
+            )
+            await self.vector_index.upsert_snapshot(
+                targets,
+                SourceRole.TARGET,
+                tokenization_context,
+            )
         decisions: list[MatchDecision] = []
         targets_by_key = {record.record_key: record for record in targets}
-        target_snapshot_id = targets[0].snapshot_id if targets else None
         exact_index = self.exact_matcher.build_index(targets)
         for source in sources:
             historical = historical_mappings.get(source.record_key)
@@ -247,18 +272,70 @@ class EntityResolutionService:
                 decision = self.exact_matcher.match(source, exact_index)
             if decision is None:
                 candidates = retriever.lexical(source, top_k=self.top_k)
-                if self.vector_index is not None and target_snapshot_id is not None:
+                if self.vector_index is not None:
                     candidates.extend(
-                        await self.vector_index.search(
-                            representation(source),
-                            block_key(source),
-                            target_snapshot_id=target_snapshot_id,
-                            top_k=self.top_k,
+                        await self.vector_index.search_opposite(
+                            source,
+                            SourceRole.AUTHORITATIVE,
+                            source_snapshot_id=pair.source_snapshot_id,
+                            target_snapshot_id=pair.target_snapshot_id,
+                            top_k=self.rematching_top_k,
+                            tokenization_context=tokenization_context,
                         )
                     )
                 decision = self.scorer.decide(source, candidates)
             decisions.append(decision)
-        return decisions
+        if self.vector_index is None:
+            return decisions
+
+        unresolved = [
+            source
+            for source, decision in zip(sources, decisions, strict=True)
+            if decision.status is not MatchStatus.ACCEPTED
+        ]
+        consumed_target_ids = {
+            decision.target_entity_id
+            for decision in decisions
+            if decision.status is MatchStatus.ACCEPTED and decision.target_entity_id is not None
+        }
+        unconsumed_targets = [
+            target for target in targets if target.entity_id not in consumed_target_ids
+        ]
+        if not unresolved and not unconsumed_targets:
+            return decisions
+        edges = await self.vector_index.bidirectional_edges(
+            unresolved,
+            unconsumed_targets,
+            source_snapshot_id=pair.source_snapshot_id,
+            target_snapshot_id=pair.target_snapshot_id,
+            top_k=self.rematching_top_k,
+            tokenization_context=tokenization_context,
+        )
+        targets_by_id = {target.entity_id: target for target in targets}
+        edges_by_source: dict[UUID, list[Candidate]] = defaultdict(list)
+        for edge in edges:
+            target = targets_by_id.get(edge.target_entity_id)
+            if target is None:
+                continue
+            edges_by_source[edge.source_entity_id].append(
+                Candidate(
+                    entity=target,
+                    block_key=block_key(target),
+                    vector_score=edge.vector_score,
+                    retrieval_scope="relaxed",
+                )
+            )
+        rescored: list[MatchDecision] = []
+        sources_by_id = {source.entity_id: source for source in sources}
+        for decision in decisions:
+            reverse_candidates = edges_by_source.get(decision.source_entity_id)
+            if decision.status is MatchStatus.ACCEPTED or not reverse_candidates:
+                rescored.append(decision)
+                continue
+            rescored.append(
+                self.scorer.decide(sources_by_id[decision.source_entity_id], reverse_candidates)
+            )
+        return self.conflict_resolver.resolve(rescored)
 
 
 def _by_type(
@@ -330,6 +407,27 @@ def _with_context(
         values["container_mapping_id"] = str(container_id) if container_id else None
         parent_mapping_id = container_id
     return record.model_copy(update={"values": values, "parent_mapping_id": parent_mapping_id})
+
+
+def recompute_descendant_context(
+    records: Sequence[NormalizedRecord],
+    resolved_targets: dict[str, UUID],
+    *,
+    authoritative: bool,
+) -> tuple[NormalizedRecord, ...]:
+    """Rebuild relationship context after a parent mapping changes."""
+    return tuple(
+        _with_context(
+            record,
+            resolved_targets,
+            resolved_targets,
+            authoritative=authoritative,
+        )
+        for record in sorted(
+            records,
+            key=lambda item: (RESOLUTION_ORDER.index(item.entity_type), item.source_id),
+        )
+    )
 
 
 def _parent_type(entity_type: EntityType) -> EntityType | None:

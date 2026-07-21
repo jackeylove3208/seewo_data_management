@@ -15,6 +15,8 @@ import { getSelectionState, issueIdsFor, toggleCategory } from "../differences/s
 import { useIssueSelection } from "../differences/useIssueSelection";
 import { useAnalysisJob } from "../workflow/useAnalysisJob";
 import { useReconciliationWorkflow } from "../workflow/useReconciliationWorkflow";
+import { useRematchingJob } from "../workflow/useRematchingJob";
+import { MatchingRecoveryPanel } from "./MatchingRecoveryPanel";
 
 const stages = [
   { id: "ingestion", label: "数据接入", icon: FileInput },
@@ -52,6 +54,8 @@ export function TaskDetailPage() {
   const { selection, setSelection } = useIssueSelection(taskId);
   const task = workflow.task.data;
   const currentWorkflow = task?.workflow;
+  const rematching = useRematchingJob(currentWorkflow?.rematching?.job_id, !demo && Boolean(currentWorkflow?.rematching?.job_id));
+  const quality = currentWorkflow?.matching_quality ?? null;
   const analysisJobId = currentWorkflow?.analysis.job_id;
   const analysisJob = useAnalysisJob(analysisJobId, !demo && Boolean(analysisJobId));
   const liveAnalysis = analysisJob.job.data;
@@ -122,6 +126,8 @@ export function TaskDetailPage() {
       {currentWorkflow?.status === "failed" && (
         <Alert className="workflow-alert" type="error" showIcon message="任务处理失败" description="当前阶段未完成，请重试或联系管理员。" action={workflow.canRetry ? <Button icon={<RotateCcw size={14} />} loading={workflow.retrying} onClick={workflow.retry}>重试当前阶段</Button> : undefined} />
       )}
+
+      {!demo && <MatchingRecoveryPanel progress={rematching.job.data ?? currentWorkflow?.rematching ?? null} quality={quality} loadFailed={rematching.job.isError} onReload={() => void rematching.job.refetch()} onRetry={rematching.retry} onCancel={rematching.cancel} onManualMapping={() => navigate(`/tasks/${taskId}/mapping-review`)} />}
 
       <section className="stage-track" aria-label="任务处理阶段">
         {stages.map((stage, index) => {

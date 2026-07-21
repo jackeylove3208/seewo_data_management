@@ -22,6 +22,62 @@ export interface AnalysisProgress {
   failed: number;
 }
 
+export type RematchingJobStatus =
+  | "queued"
+  | "indexing"
+  | "running"
+  | "assigning"
+  | "evaluating_quality"
+  | "completed"
+  | "completed_with_failures"
+  | "canceled";
+
+export interface RematchingJobProgress {
+  job_id: string;
+  task_id: string;
+  status: RematchingJobStatus;
+  initial_unresolved: number;
+  indexed: number;
+  processed: number;
+  ai_recovered: number;
+  no_match: number;
+  manual_review: number;
+  conflict: number;
+  failed: number;
+  updated_at: string;
+}
+
+export interface MatchingQualityCounts {
+  total: number;
+  accepted: number;
+  deterministic: number;
+  ai_recovered: number;
+  manual_review: number;
+  conflict: number;
+  unmatched: number;
+  unconsumed_target: number;
+  predicted_missing: number;
+  predicted_redundant: number;
+}
+
+export interface MatchingQualityGate {
+  code: "matching_quality_gate_failed";
+  affected_entity_types: EntityType[];
+  reason: string;
+  observed_value: number;
+  threshold: number;
+  recovery_actions: string[];
+}
+
+export interface MatchingQualityResult {
+  task_id: string;
+  policy_version: string;
+  mapping_versions: string[];
+  counts: Partial<Record<EntityType, MatchingQualityCounts>>;
+  passed: boolean;
+  failures: MatchingQualityGate[];
+}
+
 export interface WorkflowState {
   stage: WorkflowStage;
   status: WorkflowStatus;
@@ -29,6 +85,8 @@ export interface WorkflowState {
   processed: number;
   total: number;
   analysis: AnalysisProgress;
+  rematching?: RematchingJobProgress | null;
+  matching_quality?: MatchingQualityResult | null;
   error: WorkflowError | null;
 }
 
@@ -423,6 +481,22 @@ function getAnalysisSummary(taskId: string, signal?: AbortSignal) {
   return get<TaskAnalysisSummary>(`/api/reconciliation-tasks/${taskId}/analysis-summary`, signal);
 }
 
+function getRematchingJob(jobId: string, signal?: AbortSignal) {
+  return get<RematchingJobProgress>(`/api/entity-rematch-jobs/${jobId}`, signal);
+}
+
+function retryRematchingJob(jobId: string) {
+  return post<RematchingJobProgress>(`/api/entity-rematch-jobs/${jobId}/retry`);
+}
+
+function cancelRematchingJob(jobId: string) {
+  return post<RematchingJobProgress>(`/api/entity-rematch-jobs/${jobId}/cancel`);
+}
+
+function getMatchingQuality(taskId: string, signal?: AbortSignal) {
+  return get<MatchingQualityResult>(`/api/reconciliation-tasks/${taskId}/matching-quality`, signal);
+}
+
 function previewProposalBatch(taskId: string, body: BatchPreviewRequest) {
   return post<BatchProposalPreview>(`/api/reconciliation-tasks/${taskId}/proposal-batches/preview`, body);
 }
@@ -448,6 +522,10 @@ export const reconciliationApi = {
   retryAnalysisJob,
   cancelAnalysisJob,
   getAnalysisSummary,
+  getRematchingJob,
+  retryRematchingJob,
+  cancelRematchingJob,
+  getMatchingQuality,
   previewProposalBatch,
   confirmProposalBatch,
 };

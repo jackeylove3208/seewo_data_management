@@ -262,6 +262,51 @@ async def test_embedding_provider_returns_vectors_and_usage() -> None:
 
 
 @pytest.mark.asyncio
+async def test_embedding_merges_validated_enterprise_headers_and_body() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert request.headers["X-Embedding-Key"] == "secret-token"
+        assert request.headers["X-Gateway-App"] == "entity-rematching"
+        assert payload == {
+            "model": "enterprise-embedding",
+            "input": ["class 高一1班"],
+            "encoding_format": "float",
+        }
+        return httpx.Response(
+            200,
+            json={"data": [{"embedding": [0.1, 0.2, 0.3]}]},
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = HttpEmbeddingProvider(
+            settings=Settings(
+                embedding_url="https://gateway.example.test/v1/embeddings",
+                embedding_api_key="secret-token",
+                embedding_model="enterprise-embedding",
+                embedding_dimensions=3,
+                embedding_auth_header="X-Embedding-Key",
+                embedding_auth_scheme="",
+                embedding_extra_headers_json={"X-Gateway-App": "entity-rematching"},
+                embedding_extra_body_json={"encoding_format": "float"},
+            ),
+            client=client,
+        )
+        await provider.embed(["class 高一1班"])
+
+
+@pytest.mark.parametrize("reserved", ["model", "input"])
+def test_settings_rejects_reserved_embedding_body_fields(reserved: str) -> None:
+    with pytest.raises(ValidationError, match="reserved embedding body field"):
+        Settings(embedding_extra_body_json={reserved: "override"})
+
+
+def test_settings_rejects_embedding_auth_header_override() -> None:
+    with pytest.raises(ValidationError, match="reserved embedding header"):
+        Settings(embedding_extra_headers_json={"authorization": "spoofed"})
+
+
+@pytest.mark.asyncio
 async def test_embedding_provider_retries_transient_failure() -> None:
     calls = 0
 

@@ -1,11 +1,15 @@
+import hashlib
 from typing import Protocol
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import OperatorContext
 from app.models.analysis_jobs import AnalysisJobRecord
+from app.models.snapshots import Snapshot
+from app.repositories.rematching import EntityRematchRepository, RematchWorkItemDraft
 from app.repositories.tasks import TaskRepository
 from app.repositories.workflow import ConcurrentStageRunError, WorkflowRunRepository
 from app.schemas.workflow import (
@@ -43,6 +47,7 @@ class ReconciliationWorkflowService:
         analyzer: AnalysisJobRunner,
         runs: WorkflowRunRepository | None = None,
         analysis_batch_size: int = 10,
+        rematching_enabled: bool = False,
     ) -> None:
         self.session = session
         self.operator = operator
@@ -52,6 +57,7 @@ class ReconciliationWorkflowService:
         self.tasks = TaskRepository(session)
         self.runs = runs or WorkflowRunRepository(session)
         self.analysis_batch_size = analysis_batch_size
+        self.rematching_enabled = rematching_enabled
 
     async def advance(self, task_id: UUID) -> WorkflowAdvanceResponse:
         task = await self.tasks.get_for_update(task_id)
@@ -66,6 +72,19 @@ class ReconciliationWorkflowService:
         if task.stage == "analysis_ready":
             return WorkflowAdvanceResponse(task_id=task.id, workflow=await self.runs.state(task))
 
+        if self.rematching_enabled and task.stage == "matching":
+            rematch = await EntityRematchRepository(self.session).current_for_task(
+                task.id, self.operator.tenant_id
+            )
+            if rematch is not None and rematch.status not in {
+                "completed",
+                "completed_with_failures",
+                "canceled",
+            }:
+                return WorkflowAdvanceResponse(
+                    task_id=task.id, workflow=await self.runs.state(task)
+                )
+
         stage = _stage_for_task(task.stage)
         try:
             run = await self.runs.start(task.id, stage)
@@ -77,7 +96,46 @@ class ReconciliationWorkflowService:
         await self.session.flush()
         try:
             if stage is WorkflowStage.MATCHING:
-                await self.resolver.resolve_task(task.id)
+                summary = await self.resolver.resolve_task(task.id)
+                unresolved = tuple(
+                    decision
+                    for decision in getattr(summary, "decisions", ())
+                    if getattr(decision.status, "value", decision.status) != "accepted"
+                )
+                if self.rematching_enabled and unresolved:
+                    source = await self.session.scalar(
+                        select(Snapshot).where(
+                            Snapshot.task_id == task.id,
+                            Snapshot.source_role == "authoritative",
+                        )
+                    )
+                    target = await self.session.scalar(
+                        select(Snapshot).where(
+                            Snapshot.task_id == task.id,
+                            Snapshot.source_role == "target",
+                        )
+                    )
+                    if source is not None and target is not None:
+                        drafts = tuple(
+                            RematchWorkItemDraft(
+                                entity_type=decision.entity_type.value,
+                                focal_entity_id=decision.source_entity_id,
+                                focal_role="authoritative",
+                                candidate_set_hash=hashlib.sha256(b"[]").hexdigest(),
+                                candidates=(),
+                            )
+                            for decision in unresolved
+                        )
+                        await EntityRematchRepository(self.session).create_or_get(
+                            task_id=task.id,
+                            tenant_id=task.tenant_id,
+                            requested_by=self.operator.operator_id,
+                            source_snapshot_id=source.id,
+                            target_snapshot_id=target.id,
+                            idempotency_key=f"workflow-rematching-v1:{task.id}",
+                            policy_version="rematching-v1",
+                            items=drafts,
+                        )
                 task.stage = "matching"
                 await self.runs.complete(run)
             elif stage is WorkflowStage.DIFFERENCES:
@@ -186,8 +244,7 @@ def _schema_mismatch_message(error: Exception) -> str | None:
     if "analysis_results.gateway_request_ids" not in normalized:
         return None
     if not any(
-        marker in normalized
-        for marker in ("no such column", "does not exist", "undefined column")
+        marker in normalized for marker in ("no such column", "does not exist", "undefined column")
     ):
         return None
     return (
