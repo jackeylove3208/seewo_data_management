@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -18,6 +18,11 @@ class MatchingQualityRecord(Base, TimestampMixin):
     mapping_versions: Mapped[list[str]] = mapped_column(JSON)
     result: Mapped[dict[str, Any]] = mapped_column(JSON)
     evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
 
     __table_args__ = (
         Index("ix_matching_quality_task_latest", "tenant_id", "task_id", "evaluated_at"),

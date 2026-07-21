@@ -1,6 +1,6 @@
 """reporting and historical restore
 
-Revision ID: 0012_reporting_historical_restore
+Revision ID: 0012_reporting_restore
 Revises: 0011_plan_explanations
 """
 
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 from alembic import context, op
 
-revision: str = "0012_reporting_historical_restore"
+revision: str = "0012_reporting_restore"
 down_revision: str | None = "0011_plan_explanations"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

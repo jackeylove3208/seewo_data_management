@@ -1,14 +1,14 @@
 """Merge governance reporting and matching migration heads.
 
-Revision ID: 0015_merge_reporting_and_matching_heads
-Revises: 0012_reporting_historical_restore, 0014_matching_quality_results
+Revision ID: 0015_merge_reporting_matching
+Revises: 0012_reporting_restore, 0014_matching_quality_results
 """
 
 from collections.abc import Sequence
 
-revision: str = "0015_merge_reporting_and_matching_heads"
+revision: str = "0015_merge_reporting_matching"
 down_revision: tuple[str, str] = (
-    "0012_reporting_historical_restore",
+    "0012_reporting_restore",
     "0014_matching_quality_results",
 )
 branch_labels: str | Sequence[str] | None = None
