@@ -12,7 +12,7 @@ from app.differences.field_policies import FieldComparisonPolicy
 from app.schemas.canonical_entities import EntityType
 from app.schemas.differences import DifferenceDraft
 from app.schemas.ingestion import SnapshotMode
-from app.schemas.matching import MatchEvidence, MatchStatus
+from app.schemas.matching import MatchEvidence, MatchMethod, MatchStatus
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,9 @@ class ResolvedMapping:
     target_entity_id: UUID | None
     status: MatchStatus
     evidence: tuple[MatchEvidence, ...]
+    entity_type: EntityType | None = None
+    method: MatchMethod | None = None
+    rule_version: str = "unknown"
 
 
 @dataclass(frozen=True)

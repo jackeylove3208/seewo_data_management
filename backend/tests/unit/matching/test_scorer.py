@@ -101,3 +101,33 @@ def test_custom_scoring_policy_must_be_complete_and_normalized() -> None:
     source = record("source", "教务处", uuid4())
     target = record("target", "教务处", source.parent_mapping_id)
     assert scorer.decide(source, [candidate(target)]).status is MatchStatus.ACCEPTED
+
+
+def test_relaxed_candidate_records_parent_risk_without_name_only_acceptance() -> None:
+    def student(source_id: str) -> NormalizedRecord:
+        return NormalizedRecord(
+            entity_id=uuid4(),
+            snapshot_id=uuid4(),
+            tenant_id="school-1",
+            entity_type=EntityType.STUDENT,
+            source_id=source_id,
+            values={"display_name": "王小明"},
+            rule_version="normalization-v1",
+        )
+
+    source = student("source")
+    target = student("target")
+    relaxed = Candidate(
+        entity=target,
+        block_key=block_key(source),
+        lexical_score=1,
+        retrieval_scope="relaxed",
+    )
+
+    decision = CandidateScorer().decide(source, [relaxed])
+
+    assert decision.status is MatchStatus.MANUAL_REVIEW
+    assert any(
+        item.feature == "retrieval_scope" and item.target_value == "relaxed"
+        for item in decision.evidence
+    )

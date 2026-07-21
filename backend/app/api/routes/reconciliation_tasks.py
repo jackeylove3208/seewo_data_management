@@ -6,12 +6,14 @@ from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.job_service import AnalysisJobService
+from app.ai.providers.embeddings import HttpEmbeddingProvider
 from app.api.dependencies import get_operator_context, get_session
 from app.core.security import OperatorContext
 from app.differences.service import DifferenceDetectionService
 from app.ingestion.field_mapping import default_mapping_registry
 from app.ingestion.service import IngestionServiceError, ReconciliationIngestionService
 from app.matching.service import EntityResolutionService
+from app.matching.vector_index import VectorIndex
 from app.repositories.tasks import TaskRepository
 from app.schemas.api_ingestion import (
     CreateReconciliationTaskRequest,
@@ -41,12 +43,28 @@ def workflow_service_for(
     session: AsyncSession,
     operator: OperatorContext,
 ) -> ReconciliationWorkflowService:
+    settings = request.app.state.settings
+    vector_index = None
+    tokenization_secret = None
+    if settings.rematching_enabled and settings.embedding_url and settings.embedding_api_key:
+        vector_index = VectorIndex(session, HttpEmbeddingProvider(settings=settings))
+        tokenization_secret = (
+            settings.tokenization_secret.get_secret_value()
+            if settings.tokenization_secret is not None
+            else None
+        )
     return ReconciliationWorkflowService(
         session,
         operator=operator,
-        resolver=EntityResolutionService(session),
+        resolver=EntityResolutionService(
+            session,
+            vector_index=vector_index,
+            tokenization_secret=tokenization_secret,
+            rematching_top_k=settings.rematching_top_k,
+        ),
         detector=DifferenceDetectionService(session),
         analyzer=AnalysisJobService(session, operator=operator),
+        rematching_enabled=settings.rematching_enabled,
     )
 
 

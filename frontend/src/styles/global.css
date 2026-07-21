@@ -2570,6 +2570,49 @@ body {
   background: var(--v2-canvas);
 }
 
+.matching-recovery-panel {
+  display: grid;
+  gap: 14px;
+  margin: 18px 0;
+  padding: 18px;
+  border: 1px solid var(--v2-line);
+  border-radius: 14px;
+  background: #fff;
+}
+
+.matching-recovery-stages,
+.matching-recovery-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.matching-recovery-counts > span {
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: #f5f7f6;
+  color: var(--v2-muted);
+  font-size: 13px;
+}
+
+.matching-recovery-counts strong {
+  margin-left: 3px;
+  color: var(--v2-ink);
+}
+
+.matching-recovery-updated {
+  margin: 0;
+  color: var(--v2-muted);
+  font-size: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .matching-recovery-panel .ant-progress-bg {
+    transition: none;
+  }
+}
+
 .workspace-sidebar {
   width: 280px;
   padding: 14px 12px;
