@@ -11,12 +11,12 @@
 ## 2. Domain Models and Persistence
 
 - [x] 2.1 Define Pydantic canonical models for organization units, classes, teachers, students, and memberships with source and snapshot provenance
-- [ ] 2.2 Define Pydantic models for matches, differences, AI analyses, governance plans, execution operations, reports, and rollback preflight results
-- [ ] 2.3 Implement SQLAlchemy models for reconciliation tasks, files, snapshots, canonical entities, mappings, differences, analyses, executions, reports, and rollback links
+- [x] 2.2 Define Pydantic models for matches, differences, AI analyses, governance plans, execution operations, reports, and rollback preflight results
+- [x] 2.3 Implement SQLAlchemy models for reconciliation tasks, files, snapshots, canonical entities, mappings, differences, analyses, executions, reports, and rollback links
 - [ ] 2.4 Create and apply the initial Alembic migration against a clean PostgreSQL database
-- [ ] 2.5 Implement focused repositories for tasks, snapshots, mappings, differences, executions, and reports
-- [ ] 2.6 Implement a backend-owned demo operator identity dependency so audit records never accept a client-supplied operator ID
-- [ ] 2.7 Add model and repository tests covering constraints, JSON payloads, immutable records, and transaction rollback
+- [x] 2.5 Implement focused repositories for tasks, snapshots, mappings, differences, executions, and reports
+- [x] 2.6 Implement a backend-owned demo operator identity dependency so audit records never accept a client-supplied operator ID
+- [x] 2.7 Add model and repository tests covering constraints, JSON payloads, immutable records, and transaction rollback
 
 ## 3. CSV Connectors, Uploads, and Snapshots
 
