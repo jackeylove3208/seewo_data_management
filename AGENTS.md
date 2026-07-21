@@ -28,10 +28,29 @@ npm run typecheck
 npm run build
 npm run test:e2e
 cd ..
-openspec validate optimize-ai-analysis-workflow
+openspec validate basic-development
 ```
 
 The API is served at `http://127.0.0.1:8000`; interactive OpenAPI documentation is at `/docs`. Run the API and `app.ai.worker` in separate terminals so durable AI jobs continue when the browser disconnects.
+
+## Delivery quality gates
+
+Run Docker before the clean PostgreSQL migration smoke test. The test always recreates and
+removes only `reconcile_migration_test`; it rejects the normal `reconcile` database URL.
+
+```bash
+cd backend
+RECONCILIATION_MIGRATION_TEST_DATABASE_URL=postgresql+asyncpg://reconcile:reconcile@127.0.0.1:5432/reconcile_migration_test \
+  .venv/bin/pytest tests/integration/test_migrations.py::test_clean_postgresql_migration_reaches_head -q
+```
+
+The ordinary backend suite skips just this smoke test when the environment variable is absent.
+The CI-equivalent local checks use
+`.venv/bin/python -m pip install --constraint requirements-ci.txt -e '.[dev]'`,
+`.venv/bin/pytest`, `.venv/bin/ruff check .`, and `.venv/bin/mypy app` in `backend/`,
+then `npm ci`, `npm test -- --run`, `npm run lint`, `npm run typecheck`, and `npm run build`
+in `frontend/`. These checks use only synthetic fixtures and do not require model credentials
+or production data.
 
 Document the real install, development, lint, and test commands here when a technology stack is introduced.
 

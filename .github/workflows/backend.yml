@@ -13,7 +13,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: python -m pip install -e './backend[dev]'
+      - run: python -m pip install --constraint backend/requirements-ci.txt -e './backend[dev]'
       - run: python --version
       - run: python -m pytest
         working-directory: backend
@@ -21,3 +21,31 @@ jobs:
         working-directory: backend
       - run: python -m mypy app
         working-directory: backend
+
+  postgres-migration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.1-pg16
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: reconcile
+          POSTGRES_PASSWORD: reconcile
+        options: >-
+          --health-cmd "pg_isready -U reconcile -d postgres"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 20
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --constraint backend/requirements-ci.txt -e './backend[dev]'
+      - run: python -m pytest tests/integration/test_migrations.py::test_clean_postgresql_migration_reaches_head -q
+        working-directory: backend
+        env:
+          RECONCILIATION_MIGRATION_TEST_DATABASE_URL: postgresql+asyncpg://reconcile:reconcile@127.0.0.1:5432/reconcile_migration_test

@@ -1,12 +1,155 @@
+import asyncio
+import os
 from io import StringIO
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.engine import URL, make_url
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import command
 from app.models import Base
+
+MIGRATION_TEST_DATABASE_URL_ENV = "RECONCILIATION_MIGRATION_TEST_DATABASE_URL"
+MIGRATION_TEST_DATABASE_NAME = "reconcile_migration_test"
+
+
+def _migration_test_database_url(value: str) -> URL:
+    url = make_url(value)
+    if url.drivername != "postgresql+asyncpg":
+        raise ValueError("migration test database URL must use PostgreSQL with asyncpg")
+    if url.database != MIGRATION_TEST_DATABASE_NAME:
+        raise ValueError(
+            "migration test database URL must target "
+            f"{MIGRATION_TEST_DATABASE_NAME!r}"
+        )
+    return url
+
+
+async def _recreate_migration_test_database(url: URL) -> None:
+    maintenance_url = url.set(
+        drivername="postgresql+asyncpg",
+        database="postgres",
+    )
+    engine = create_async_engine(maintenance_url)
+    try:
+        async with engine.connect() as connection:
+            await connection.execution_options(isolation_level="AUTOCOMMIT")
+            await connection.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) "
+                    "FROM pg_stat_activity "
+                    "WHERE datname = :database_name AND pid <> pg_backend_pid()"
+                ),
+                {"database_name": MIGRATION_TEST_DATABASE_NAME},
+            )
+            await connection.execute(
+                text(f"DROP DATABASE IF EXISTS {MIGRATION_TEST_DATABASE_NAME}")
+            )
+            await connection.execute(text(f"CREATE DATABASE {MIGRATION_TEST_DATABASE_NAME}"))
+    finally:
+        await engine.dispose()
+
+
+async def _drop_migration_test_database(url: URL) -> None:
+    maintenance_url = url.set(
+        drivername="postgresql+asyncpg",
+        database="postgres",
+    )
+    engine = create_async_engine(maintenance_url)
+    try:
+        async with engine.connect() as connection:
+            await connection.execution_options(isolation_level="AUTOCOMMIT")
+            await connection.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) "
+                    "FROM pg_stat_activity "
+                    "WHERE datname = :database_name AND pid <> pg_backend_pid()"
+                ),
+                {"database_name": MIGRATION_TEST_DATABASE_NAME},
+            )
+            await connection.execute(
+                text(f"DROP DATABASE IF EXISTS {MIGRATION_TEST_DATABASE_NAME}")
+            )
+    finally:
+        await engine.dispose()
+
+
+async def _migration_test_schema_state(url: URL) -> tuple[set[str], set[str], set[str]]:
+    engine = create_async_engine(url.set(drivername="postgresql+asyncpg"))
+    try:
+        async with engine.connect() as connection:
+            versions = set(
+                (await connection.scalars(text("SELECT version_num FROM alembic_version"))).all()
+            )
+            extensions = set(
+                (await connection.scalars(text("SELECT extname FROM pg_extension"))).all()
+            )
+            tables = set(
+                (
+                    await connection.scalars(
+                        text(
+                            "SELECT table_name FROM information_schema.tables "
+                            "WHERE table_schema = 'public'"
+                        )
+                    )
+                ).all()
+            )
+            return versions, extensions, tables
+    finally:
+        await engine.dispose()
+
+
+def test_migration_test_database_url_requires_dedicated_postgresql_database() -> None:
+    with pytest.raises(ValueError, match="PostgreSQL"):
+        _migration_test_database_url("sqlite:///migration-test.db")
+
+    with pytest.raises(ValueError, match="asyncpg"):
+        _migration_test_database_url(
+            "postgresql+psycopg://reconcile:reconcile@localhost:5432/reconcile_migration_test"
+        )
+
+    with pytest.raises(ValueError, match="reconcile_migration_test"):
+        _migration_test_database_url(
+            "postgresql+asyncpg://reconcile:reconcile@localhost:5432/reconcile"
+        )
+
+
+def test_clean_postgresql_migration_reaches_head(monkeypatch: pytest.MonkeyPatch) -> None:
+    configured_url = os.getenv(MIGRATION_TEST_DATABASE_URL_ENV)
+    if configured_url is None:
+        pytest.skip(
+            f"set {MIGRATION_TEST_DATABASE_URL_ENV} to run the clean PostgreSQL migration test"
+        )
+
+    url = _migration_test_database_url(configured_url)
+    database_url = url.render_as_string(hide_password=False)
+    monkeypatch.setenv("RECONCILIATION_DATABASE_URL", database_url)
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", database_url)
+    expected_heads = set(ScriptDirectory.from_config(config).get_heads())
+
+    asyncio.run(_recreate_migration_test_database(url))
+    try:
+        command.upgrade(config, "head")
+        versions, extensions, tables = asyncio.run(_migration_test_schema_state(url))
+        assert versions == expected_heads
+        assert "vector" in extensions
+        assert {
+            "execution_batches",
+            "execution_operations",
+            "report_jobs",
+            "governance_reports",
+            "restore_requests",
+            "restore_execution_links",
+            "restore_execution_results",
+        } <= tables
+    finally:
+        asyncio.run(_drop_migration_test_database(url))
 
 
 def test_migration_revision_identifiers_fit_alembic_default_version_column() -> None:

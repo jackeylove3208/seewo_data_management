@@ -30,6 +30,44 @@ The worker claims one persisted difference at a time, commits progress after eac
 item, and resumes work whose lease expires. The API process does not execute model
 calls inside `workflow/advance`.
 
+## Verify delivery readiness
+
+From the repository root, start the local pgvector PostgreSQL service before running
+the PostgreSQL migration smoke test:
+
+```bash
+docker compose -f infra/docker-compose.yml up -d
+cd backend
+RECONCILIATION_MIGRATION_TEST_DATABASE_URL=postgresql+asyncpg://reconcile:reconcile@127.0.0.1:5432/reconcile_migration_test \
+  .venv/bin/pytest tests/integration/test_migrations.py::test_clean_postgresql_migration_reaches_head -q
+```
+
+The smoke test drops, creates, migrates, and removes only the dedicated
+`reconcile_migration_test` database. It refuses the ordinary `reconcile` database
+and skips with an explicit message if its environment variable is absent.
+
+Run backend checks from `backend/`:
+
+```bash
+.venv/bin/python -m pip install --constraint requirements-ci.txt -e '.[dev]'
+.venv/bin/pytest
+.venv/bin/ruff check .
+.venv/bin/mypy app
+```
+
+Run frontend checks from `frontend/`:
+
+```bash
+npm ci
+npm test -- --run
+npm run lint
+npm run typecheck
+npm run build
+```
+
+These commands match GitHub Actions. They use test fixtures only and do not need a
+model gateway credential; the separate opt-in model smoke test remains outside CI.
+
 ## Configure the enterprise model gateway
 
 Put real model URLs, credentials, and model names in `backend/.env`. The file is

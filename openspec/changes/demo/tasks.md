@@ -6,14 +6,14 @@
 - [x] 1.4 Add environment-based backend and frontend configuration with checked-in example files and no committed secrets
 - [x] 1.5 Add Docker Compose services for PostgreSQL with pgvector and document the local startup commands
 - [x] 1.6 Add backend health and readiness endpoints and a frontend application shell that displays connection failure states
-- [ ] 1.7 Add formatting, linting, type-checking, and baseline test commands to repository documentation and CI
+- [x] 1.7 Add formatting, linting, type-checking, and baseline test commands to repository documentation and CI
 
 ## 2. Domain Models and Persistence
 
 - [x] 2.1 Define Pydantic canonical models for organization units, classes, teachers, students, and memberships with source and snapshot provenance
 - [x] 2.2 Define Pydantic models for matches, differences, AI analyses, governance plans, execution operations, reports, and rollback preflight results
 - [x] 2.3 Implement SQLAlchemy models for reconciliation tasks, files, snapshots, canonical entities, mappings, differences, analyses, executions, reports, and rollback links
-- [ ] 2.4 Create and apply the initial Alembic migration against a clean PostgreSQL database
+- [x] 2.4 Create and apply the initial Alembic migration against a clean PostgreSQL database
 - [x] 2.5 Implement focused repositories for tasks, snapshots, mappings, differences, executions, and reports
 - [x] 2.6 Implement a backend-owned demo operator identity dependency so audit records never accept a client-supplied operator ID
 - [x] 2.7 Add model and repository tests covering constraints, JSON payloads, immutable records, and transaction rollback
