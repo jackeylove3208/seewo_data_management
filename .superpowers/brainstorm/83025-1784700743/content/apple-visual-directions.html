@@ -1,0 +1,102 @@
+<style>
+  .direction-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; align-items:start; }
+  .direction-card { overflow:hidden; border:1px solid #d8d8dc; border-radius:18px; background:#fff; box-shadow:0 18px 42px rgba(0,0,0,.08); cursor:pointer; transition:.18s ease; }
+  .direction-card:hover { transform:translateY(-2px); box-shadow:0 22px 48px rgba(0,0,0,.12); }
+  .direction-card.selected { outline:3px solid #007aff; outline-offset:3px; }
+  .preview { height:430px; overflow:hidden; }
+  .windowbar { height:26px; display:flex; align-items:center; gap:5px; padding:0 9px; border-bottom:1px solid rgba(0,0,0,.08); }
+  .dot { width:7px; height:7px; border-radius:50%; } .red{background:#ff5f57}.amber{background:#febc2e}.green{background:#28c840}
+  .app { display:grid; grid-template-columns:82px 1fr; height:404px; color:#1d1d1f; font:10px/1.35 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif; }
+  .side { padding:11px 8px; border-right:1px solid rgba(0,0,0,.08); }
+  .brand { display:flex; align-items:center; gap:6px; margin-bottom:15px; font-weight:700; }
+  .brandmark { display:grid; width:19px; height:19px; place-items:center; border-radius:6px; background:#16704c; color:#fff; font-size:8px; }
+  .nav { padding:6px; margin:3px 0; border-radius:6px; color:#555; white-space:nowrap; }
+  .nav.active { background:rgba(0,122,255,.1); color:#075db6; }
+  .history-label { margin:14px 6px 5px; color:#8a8a8e; font-size:8px; }
+  .history { margin:2px 0; padding:5px 6px; border-radius:6px; color:#666; }
+  .main { min-width:0; padding:16px; }
+  .title { margin:0; font-size:18px; letter-spacing:-.45px; }
+  .subtitle { margin:3px 0 14px; color:#86868b; font-size:9px; }
+  .surface { min-height:320px; padding:12px; border-radius:14px; }
+  .message { display:grid; grid-template-columns:20px 1fr; gap:7px; margin-bottom:11px; }
+  .avatar { display:grid; width:20px; height:20px; place-items:center; border-radius:7px; background:#16704c; color:#fff; font-size:8px; }
+  .bubble { padding:9px 10px; border-radius:10px; background:#fff; border:1px solid rgba(0,0,0,.08); }
+  .bubble b { display:block; margin-bottom:3px; }
+  .progress { display:flex; gap:4px; margin:8px 0; }
+  .phase { flex:1; height:4px; border-radius:4px; background:#d9d9de; }.phase.done{background:#34c759}.phase.live{background:#007aff}
+  .approval { margin-top:10px; padding:10px; border:1px solid rgba(0,0,0,.09); border-radius:11px; background:#fff; }
+  .approval strong { display:block; font-size:10px; }.approval p{margin:4px 0 8px;color:#6e6e73;font-size:8px}
+  .buttons { display:flex; gap:5px; }
+  .btn { height:22px; padding:0 9px; border:1px solid #ccd8d4; border-radius:6px; background:#fff; color:#16302c; font-size:8px; font-weight:650; }
+  .btn.primary { border-color:#16704c; background:#16704c; color:#fff; }
+  .btn.danger { color:#b42318; }
+  .composer { display:flex; align-items:center; justify-content:space-between; margin-top:11px; padding:8px 9px; border:1px solid rgba(0,0,0,.1); border-radius:11px; color:#9a9aa0; background:#fff; }
+  .send { display:grid;width:20px;height:20px;place-items:center;border-radius:6px;background:#16704c;color:#fff; }
+
+  .macos .windowbar { background:rgba(244,244,246,.82); backdrop-filter:blur(18px); }
+  .macos .app { background:linear-gradient(135deg,#eef5f2,#f7f7fa 55%,#edf3fb); }
+  .macos .side { background:rgba(245,245,247,.68); backdrop-filter:blur(22px); }
+  .macos .surface { background:rgba(255,255,255,.56); border:1px solid rgba(255,255,255,.85); box-shadow:0 12px 28px rgba(0,0,0,.06); }
+
+  .web .windowbar { background:#fff; }
+  .web .app { grid-template-columns:72px 1fr; background:#fff; }
+  .web .side { background:#fbfbfd; }
+  .web .main { padding:22px 20px; }
+  .web .surface { padding:0; background:#fff; }
+  .web .bubble,.web .approval { border-color:#e8e8ed; box-shadow:0 8px 24px rgba(0,0,0,.045); }
+  .web .composer { margin-top:18px; box-shadow:0 10px 30px rgba(0,0,0,.07); }
+
+  .pro .windowbar { background:#f1f2f4; }
+  .pro .app { grid-template-columns:94px 1fr; background:#f5f5f7; }
+  .pro .side { background:#e9eaed; }
+  .pro .main { padding:11px 13px; }
+  .pro .title { font-size:15px; }
+  .pro .surface { min-height:330px; padding:9px; border:1px solid #d4d5d9; border-radius:9px; background:#fafafa; }
+  .pro .message { margin-bottom:7px; }.pro .bubble{padding:7px 8px;border-radius:7px}.pro .approval{margin-top:7px;padding:8px;border-radius:7px}
+  .pro .composer { margin-top:7px; border-radius:7px; }
+  .direction-copy { padding:15px 16px 17px; border-top:1px solid #ececf0; }
+  .direction-copy h3 { margin:0 0 6px; font-size:16px; }.direction-copy p{margin:0;color:#666;font-size:12px;line-height:1.55}
+  .recommended { display:inline-block;margin-left:6px;padding:2px 6px;border-radius:999px;background:#e9f5ef;color:#16704c;font-size:9px;vertical-align:2px; }
+  .constraint { margin-top:18px; padding:12px 14px; border-radius:12px; background:#f5f5f7; color:#555; font-size:12px; }
+  @media(max-width:1050px){.direction-grid{grid-template-columns:1fr}.preview{height:380px}.app{height:354px}.surface{min-height:270px}}
+</style>
+
+<h2>哪一种“苹果感”更适合这个 Agent 工作台？</h2>
+<p class="subtitle">三个方案都保留现有左侧工作区、对话时间线、阶段进度、审批卡，以及“同意 / 拒绝 / 终止”等按钮的文案、位置、层级和行为。</p>
+
+<div class="direction-grid">
+  <div class="direction-card macos" data-choice="a-macos" onclick="toggleSelect(this)">
+    <div class="preview">
+      <div class="windowbar"><i class="dot red"></i><i class="dot amber"></i><i class="dot green"></i></div>
+      <div class="app">
+        <aside class="side"><div class="brand"><span class="brandmark">AI</span>魔方</div><div class="nav active">＋ 新建对话</div><div class="nav">↻ 外部同步</div><div class="history-label">历史记录</div><div class="history">七年级数据同步</div><div class="history">教师信息治理</div></aside>
+        <main class="main"><h4 class="title">新建对话</h4><p class="subtitle">当前学校 · 智能数据同步助手</p><section class="surface"><div class="message"><span class="avatar">AI</span><div class="bubble"><b>同步助手</b>已完成分析，发现 12 项高风险治理建议。<div class="progress"><i class="phase done"></i><i class="phase done"></i><i class="phase live"></i><i class="phase"></i></div></div></div><div class="approval"><strong>学生手机号更新 · 12 项</strong><p>成员与版本已冻结，查看详情后统一决定。</p><div class="buttons"><button class="btn primary">同意</button><button class="btn">拒绝</button><button class="btn danger">终止</button></div></div><div class="composer">任务处理中，当前仅可使用卡片操作<span class="send">↑</span></div></section></main>
+      </div>
+    </div>
+    <div class="direction-copy"><h3>A. macOS 半透明工作台 <span class="recommended">推荐</span></h3><p>克制的材质感、层级清晰、长时间使用舒适。适合“一个智能 Agent + 专业治理工具”的产品气质。</p></div>
+  </div>
+
+  <div class="direction-card web" data-choice="b-web" onclick="toggleSelect(this)">
+    <div class="preview">
+      <div class="windowbar"><i class="dot red"></i><i class="dot amber"></i><i class="dot green"></i></div>
+      <div class="app">
+        <aside class="side"><div class="brand"><span class="brandmark">AI</span>魔方</div><div class="nav active">＋ 新建对话</div><div class="nav">↻ 外部同步</div><div class="history-label">历史记录</div><div class="history">七年级数据同步</div><div class="history">教师信息治理</div></aside>
+        <main class="main"><h4 class="title">新建对话</h4><p class="subtitle">当前学校 · 智能数据同步助手</p><section class="surface"><div class="message"><span class="avatar">AI</span><div class="bubble"><b>同步助手</b>已完成分析，发现 12 项高风险治理建议。<div class="progress"><i class="phase done"></i><i class="phase done"></i><i class="phase live"></i><i class="phase"></i></div></div></div><div class="approval"><strong>学生手机号更新 · 12 项</strong><p>成员与版本已冻结，查看详情后统一决定。</p><div class="buttons"><button class="btn primary">同意</button><button class="btn">拒绝</button><button class="btn danger">终止</button></div></div><div class="composer">任务处理中，当前仅可使用卡片操作<span class="send">↑</span></div></section></main>
+      </div>
+    </div>
+    <div class="direction-copy"><h3>B. Apple 官网式留白</h3><p>更大字号、更少边框、更强内容聚焦。精致，但信息密集的审批、执行和报告页面会需要更多滚动。</p></div>
+  </div>
+
+  <div class="direction-card pro" data-choice="c-pro" onclick="toggleSelect(this)">
+    <div class="preview">
+      <div class="windowbar"><i class="dot red"></i><i class="dot amber"></i><i class="dot green"></i></div>
+      <div class="app">
+        <aside class="side"><div class="brand"><span class="brandmark">AI</span>魔方</div><div class="nav active">＋ 新建对话</div><div class="nav">↻ 外部同步</div><div class="history-label">历史记录</div><div class="history">七年级数据同步</div><div class="history">教师信息治理</div></aside>
+        <main class="main"><h4 class="title">新建对话</h4><p class="subtitle">当前学校 · 智能数据同步助手</p><section class="surface"><div class="message"><span class="avatar">AI</span><div class="bubble"><b>同步助手</b>已完成分析，发现 12 项高风险治理建议。<div class="progress"><i class="phase done"></i><i class="phase done"></i><i class="phase live"></i><i class="phase"></i></div></div></div><div class="approval"><strong>学生手机号更新 · 12 项</strong><p>成员与版本已冻结，查看详情后统一决定。</p><div class="buttons"><button class="btn primary">同意</button><button class="btn">拒绝</button><button class="btn danger">终止</button></div></div><div class="composer">任务处理中，当前仅可使用卡片操作<span class="send">↑</span></div></section></main>
+      </div>
+    </div>
+    <div class="direction-copy"><h3>C. Apple Pro 高密度工具</h3><p>接近专业桌面工具：紧凑、低装饰、数据可见性最高。适合运营人员，但“智能对话”的亲和力较弱。</p></div>
+  </div>
+</div>
+
+<div class="constraint"><strong>不变项：</strong>信息架构、路由、功能、按钮文案、按钮顺序、按钮主次与交互状态。变化项仅限字体、色彩、材质、留白、阴影、圆角和动效节奏。</div>

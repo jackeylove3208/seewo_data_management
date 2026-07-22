@@ -1,0 +1,32 @@
+<style>
+  .board { max-width:1050px; margin:0 auto; padding:6px 0 30px; font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang SC",sans-serif; }
+  .app-preview { overflow:hidden; border:1px solid rgba(255,255,255,.9); border-radius:22px; background:linear-gradient(135deg,#e8edf7 0%,#f9fafc 48%,#f0ebfa 100%); box-shadow:0 26px 70px rgba(22,34,65,.16); }
+  .toolbar { display:flex; height:38px; align-items:center; gap:6px; padding:0 14px; border-bottom:1px solid rgba(25,33,50,.08); background:rgba(255,255,255,.55); backdrop-filter:blur(20px); }
+  .traffic { width:9px;height:9px;border-radius:50%; }.r{background:#ff5f57}.y{background:#febc2e}.g{background:#28c840}
+  .toolbar-title { margin-left:7px; color:#4b5261;font-size:12px;font-weight:650; }
+  .screen { display:grid; grid-template-columns:175px minmax(0,1fr); min-height:440px; }
+  .sidebar { padding:18px 12px; border-right:1px solid rgba(25,33,50,.08); background:rgba(255,255,255,.42); }
+  .logo { display:flex;align-items:center;gap:9px;margin:0 7px 22px;color:#1c2536;font-size:14px;font-weight:750; }.logo-mark{display:grid;width:27px;height:27px;place-items:center;border-radius:9px;background:linear-gradient(145deg,#315ec8,#604cc7 60%,#e77c64);box-shadow:0 5px 12px rgba(63,71,175,.26);color:#fff;font-size:11px}
+  .nav { margin:4px 0;padding:9px 10px;border-radius:10px;color:#667083;font-size:12px; }.nav.current{background:rgba(255,255,255,.8);box-shadow:0 2px 9px rgba(38,51,78,.08);color:#1668d8;font-weight:650}
+  .content { padding:30px 36px; }.content h3{margin:0;font-size:24px;letter-spacing:-.6px;color:#1b2230}.content>p{margin:6px 0 20px;color:#727a8a;font-size:13px}
+  .agent-card { max-width:660px;padding:17px;border:1px solid rgba(255,255,255,.86);border-radius:18px;background:rgba(255,255,255,.68);box-shadow:0 16px 38px rgba(45,57,87,.1); }
+  .agent-head{display:flex;align-items:center;gap:10px}.agent-icon{display:grid;width:31px;height:31px;place-items:center;border-radius:11px;background:linear-gradient(135deg,#345fc9,#7753cd);color:white;font-size:11px;font-weight:800}.agent-head strong{font-size:13px;color:#222b3b}.agent-head span{display:block;margin-top:2px;color:#747e90;font-size:11px}
+  .agent-card>p{margin:15px 0 10px;color:#454e5f;font-size:13px}.track{display:flex;gap:4px;margin:13px 0 17px}.track i{height:5px;flex:1;border-radius:999px;background:#d5dae5}.track i.done{background:linear-gradient(90deg,#4e8cef,#6d62d4)}.track i.live{background:#ef8d65}
+  .approval { margin-top:14px;padding:16px;border:1px solid #e0e4ec;border-radius:15px;background:rgba(255,255,255,.88); }.approval-top{display:flex;align-items:start;justify-content:space-between;gap:12px}.approval strong{display:block;color:#202838;font-size:14px}.approval p{margin:5px 0 0;color:#70798b;font-size:12px}.pill{padding:4px 8px;border-radius:999px;background:#fff2e7;color:#b45a27;font-size:10px;font-weight:700;white-space:nowrap}
+  .actions { display:flex;flex-wrap:wrap;gap:8px;margin-top:15px}.button { display:inline-flex;align-items:center;justify-content:center;min-height:34px;padding:0 14px;border:1px solid transparent;border-radius:10px;font:650 12px -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;letter-spacing:-.05px;cursor:default; }.primary{color:#fff;background:linear-gradient(135deg,#1677e8,#5b5bd6);box-shadow:0 5px 12px rgba(49,89,205,.25)}.secondary{color:#344054;border-color:#d8dde8;background:rgba(255,255,255,.88);box-shadow:0 1px 2px rgba(0,0,0,.04)}.danger{color:#c53c37;border-color:#f1cdc9;background:#fff7f6}.quiet{color:#657084;background:transparent}
+  .swatches{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:20px}.swatch{padding:12px;border:1px solid rgba(255,255,255,.85);border-radius:13px;background:rgba(255,255,255,.54)}.swatch b{display:block;margin-bottom:4px;color:#3b4557;font-size:11px}.swatch span{color:#7b8494;font-size:10px;line-height:1.35}
+  .note{margin-top:18px;padding:13px 15px;border-left:3px solid #5d65d4;border-radius:0 12px 12px 0;background:rgba(94,99,211,.075);color:#4d576a;font-size:12px;line-height:1.6}
+  @media(max-width:750px){.screen{grid-template-columns:1fr}.sidebar{display:none}.content{padding:22px 18px}.swatches{grid-template-columns:repeat(2,1fr)}}
+</style>
+<div class="board">
+  <h2>按钮语义不变，视觉语言升级</h2>
+  <p class="subtitle">同意、拒绝、终止、返回、发送等操作仍保留原来的文案、位置、禁用规则与主次；只改变颜色、圆角、阴影和悬停/按压反馈。</p>
+  <div class="app-preview">
+    <div class="toolbar"><i class="traffic r"></i><i class="traffic y"></i><i class="traffic g"></i><span class="toolbar-title">魔方 AI 数据治理</span></div>
+    <div class="screen">
+      <aside class="sidebar"><div class="logo"><span class="logo-mark">◆</span>魔方</div><div class="nav current">＋ 新建对话</div><div class="nav">↻ 外部数据同步</div><div class="nav">◷ 历史记录</div></aside>
+      <main class="content"><h3>新建对话</h3><p>当前学校 · 智能数据同步助手</p><section class="agent-card"><div class="agent-head"><span class="agent-icon">AI</span><div><strong>同步助手</strong><span>分析与风险聚合已完成</span></div></div><p>发现 12 项需要人工确认的高风险治理建议。</p><div class="track"><i class="done"></i><i class="done"></i><i class="done"></i><i class="live"></i></div><div class="approval"><div class="approval-top"><div><strong>学生手机号更新 · 12 项</strong><p>成员与版本已冻结。确认后由服务端执行并验证结果。</p></div><span class="pill">高风险</span></div><div class="actions"><button class="button primary">同意</button><button class="button secondary">拒绝</button><button class="button danger">终止</button></div></div></section><div class="swatches"><div class="swatch"><b>主操作</b><span>蓝紫渐变，表达开始/确认/继续</span></div><div class="swatch"><b>次操作</b><span>磨砂白，保留低干扰的可见边界</span></div><div class="swatch"><b>危险操作</b><span>淡珊瑚底与红色文字，明确但不刺眼</span></div><div class="swatch"><b>静默操作</b><span>透明文字按钮，用于返回、清空、详情</span></div></div></main>
+    </div>
+  </div>
+  <div class="note"><strong>可访问性：</strong>颜色不是唯一状态表达；仍保留文字、图标、禁用态和焦点环。减少动态偏好下，进度与按钮不使用闪烁或缩放动画。</div>
+</div>
