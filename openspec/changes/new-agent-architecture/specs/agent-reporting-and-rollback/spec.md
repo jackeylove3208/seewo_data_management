@@ -47,3 +47,9 @@ The system SHALL return tenant-safe paged history for all report-bearing tasks w
 - **WHEN** the same authenticated school loads the workspace without prior local storage
 - **THEN** it sees the persisted task and rollback history from the backend
 
+### Requirement: Derive downstream records only from immutable prior facts
+The reporting and rollback milestone SHALL consume persisted ingestion marks, analysis findings, approvals, verified execution attempts, target versions, and task events through versioned read contracts. It SHALL NOT convert model narrative into execution or restore facts, rewrite completed execution evidence, or expose an abnormal-input report as rollback evidence.
+
+#### Scenario: A report narrative recommends an unsupported restore
+- **WHEN** the narrative suggests a restore action absent from verified execution facts
+- **THEN** the report may display the narrative as non-authoritative context but the rollback planner excludes it

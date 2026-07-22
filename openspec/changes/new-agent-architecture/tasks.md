@@ -3,6 +3,20 @@ CSV analysis-only, complete CSV governance, reports/history/rollback, frontend u
 real API/database connectors. A later milestone may depend on completed foundation tasks, but no
 unchecked task is implied complete merely because its interface was scaffolded.
 
+## Independent-conversation delivery matrix
+
+The following rows are mandatory handoff boundaries for separate implementation conversations. They do not replace the numbered checkboxes below or mark any checkbox complete.
+
+| Conversation | Owns | Depends on | Must not change | Merge gate |
+| --- | --- | --- | --- | --- |
+| 2. CSV analysis mode | 1.4, 2.3–2.5, CSV parts of 3.1–3.4, 4.4–4.6, analysis-only handlers, 6.1–6.9 | 1.1–1.3, 2.1–2.2, 4.1, 5.1/5.3/5.6 | governance writes, approvals, reports/history, public APIs, frontend, API/database connectors | focused + upstream regression + clean migration + privacy/contract tests; execution flag remains off |
+| 3. CSV complete governance | 2.6–2.7, 5.4–5.5/5.7, 7.1–7.6, 8.1–8.6 | merged Conversation 2 persisted inputs/work/finding/solution contracts | identity matching, model batch membership, authoritative source, reports/rollback, non-CSV adapters | governance E2E with CSV version verification, lock/retry/approval regression, no authority mutation |
+| 4. Reports and rollback | 9.1–9.6 and reporting/rollback worker portions of 5.2 | merged Conversation 3 verified execution facts/target versions | completed execution facts, restore-from-narrative, frontend workflow ownership | terminal/partial/termination/rollback tests, protected-history and restore-conflict regression |
+| 5. Unified frontend | 10.1–10.4, 11.1–11.7, frontend quality gates 12.5 | merged typed APIs and events from Conversations 2–4 | direct persistence access, client-built mutations, localStorage as source of truth | OpenAPI/API compatibility, frontend unit/type/lint/build/Playwright, legacy rendering regression |
+| 6. API and database connectors | 3.5–3.7, connector portions of 3.6/8.4, connector/rollout gates 12.3/12.7 | merged CSV governance safety and operation contract | arbitrary SQL/DSNs/credentials to model or client, third-party writes, placeholder success | connector contract/E2E tests, secret-free logs, capability and optimistic-version verification |
+
+Before a new conversation begins, its owner SHALL record the current mainline commit, Alembic head, feature-flag state, versioned input/output schema, owned files/tables, and required regression commands. Before merging, it SHALL rebase onto the latest predecessor, reconcile migration heads and contract versions, preserve legacy reads, and rerun its own plus affected predecessor gates. A later conversation may add adapters and additive versions, but SHALL NOT edit an already-merged migration, reinterpret immutable facts, or treat an unchecked upstream task as complete.
+
 ## 1. Baseline and migration boundary
 
 - [x] 1.1 Add characterization tests for the current CSV ingestion, matching/difference/analysis workflow, governed execution, reporting, restore, and task-deletion behavior before changing orchestration.

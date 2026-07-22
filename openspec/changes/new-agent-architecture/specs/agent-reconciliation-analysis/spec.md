@@ -62,3 +62,10 @@ The system SHALL aggregate identity conflicts into persisted clarification batch
 #### Scenario: User explanation is ambiguous
 - **WHEN** the clarification Skill cannot bind the user's text to exactly one listed candidate or outcome
 - **THEN** it requests a restatement and leaves the conflict unresolved
+
+### Requirement: Publish an immutable analysis-to-governance handoff
+The analysis milestone SHALL publish only validated actionable findings to later milestones. Each published finding SHALL retain immutable work-item membership and evidence references, a Chinese category and explanation, server-owned risk, one to three validated target-only solutions, and exactly one recommended solution; correct rows SHALL remain absent from the user-facing handoff.
+
+#### Scenario: A governance implementation consumes an analysis finding
+- **WHEN** a later governance milestone reads an analysis finding
+- **THEN** it uses the persisted versioned finding and solution IDs and does not recompute identity matching, alter batch membership, or accept model prose as an executable operation

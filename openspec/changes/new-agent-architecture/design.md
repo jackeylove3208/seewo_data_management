@@ -217,6 +217,32 @@ Each model call has one initial attempt plus at most three retries. Invalid JSON
 
 The user may terminate the blocked task. There is no automatic lock release or fabricated AI outcome. Process restart recovers leases and the same terminal/blocked state.
 
+### 14. Deliver later milestones in separate conversations through frozen handoffs
+
+The remaining work is intentionally divided into independent implementation conversations, but it remains one ordered architecture. A later conversation consumes only persisted, versioned contracts produced by an earlier merged milestone; it MUST NOT recreate upstream behavior from browser state, in-memory objects, legacy difference rows, or model prose.
+
+| Conversation | Permitted scope | Required frozen input | Required handoff | Explicitly out of scope |
+| --- | --- | --- | --- | --- |
+| 2. CSV analysis mode | CSV ingestion, three-entity projection, marks, identity evidence, bounded analysis, privacy, analysis-only handlers | Agent foundation, workflow version, run/lock/lease/event contracts | immutable inputs, marks, postings, work items, batches, findings, validated solutions, analysis-only terminal state | approvals, target writes, reports/history, public Agent APIs, frontend, API/database connectors |
+| 3. CSV complete governance | risk policy, approvals, clarification, plan compilation, CSV mutation, verification | Conversation 2 findings/solutions/evidence and run fencing | immutable decisions, plans, operation attempts, verified target versions and mutation facts | changing identity matching, changing model batch membership, reports/rollback UX, non-CSV target writes |
+| 4. Reports and rollback | terminal reports, history, deletion eligibility, termination reports, restore planning/execution | Conversation 3 verified execution facts and target versions | immutable report/history/restore facts and rollback task links | deriving restore from narrative, altering completed execution facts, frontend ownership |
+| 5. Unified frontend | typed API clients, conversation/events, manual sync entry, approval/clarification/report/history views | Conversations 2–4 typed API and event schemas | UI-only state and contract tests; no workflow truth | direct database access, client-generated operations, localStorage as history truth, bypassing server lock/approval checks |
+| 6. API and database connectors | configured capability discovery, read/version/write/verify adapters, connector contract tests | CSV lifecycle safety rules and governance operation contract | capability snapshots and verified adapter behavior | model-generated SQL, client credentials, third-party mutation, enabling a connector without end-to-end verification |
+
+All conversations SHALL follow these integration rules:
+
+- **Branch and merge boundary:** each conversation starts from the latest merged mainline in its own worktree. It MAY prepare isolated changes before a predecessor merges, but it SHALL rebase/reconcile against the predecessor before implementation tests or merge. No conversation assumes an unmerged interface exists.
+- **Schema ownership:** persisted task, run, lock, event, checkpoint, input, mark, identity, finding, solution, decision, operation, report, and restore IDs are server-owned and immutable once committed. A downstream milestone adds an append-only migration and adapter; it SHALL NOT repurpose a field, rewrite prior facts, or alter an already-merged Alembic revision.
+- **Migration discipline:** every migration uses the current mainline Alembic head, has a single linear parent, preserves legacy and prior-Agent rows, and is accepted only with clean PostgreSQL migration plus historical-row readability coverage. Concurrent migrations are reconciled before merge, never by editing an already-shipped revision.
+- **Contract ownership:** phase inputs/outputs, event payloads, finding and solution schemas, recommendation/risk fields, connector capabilities, error codes, and feature flags are versioned server contracts. A consumer may tolerate additive fields, but a breaking change requires a new version, compatibility reader, migration plan, and contract tests.
+- **Workflow and fencing:** only the supervisor advances phases. Every worker write is bound to tenant, task, run, phase, workflow version, lease/fencing token, snapshot/target version, and idempotency key. A later conversation SHALL NOT bypass these checks or invoke legacy `matching -> differences -> analysis`, rematching, embeddings, vectors, or matching-quality gates for `new-agent-v1`.
+- **Trust and privacy:** third-party authority remains read-only in every milestone. CSV/API/database text is untrusted evidence, never an instruction. `student.phone` remains tokenized at model boundaries and absent from logs, events, failure records, and ordinary report/UI output. Models never receive generic SQL, filesystem, URL, shell, credential, or unconstrained connector capabilities.
+- **Analysis-to-governance handoff:** only validated actionable findings enter governance. Each finding has immutable evidence membership, a Chinese category and analysis, one to three validated solutions, exactly one recommended solution, server-owned risk, and target-only operation constraints. Correct rows remain silent. Invalid authority rows remain reportable anomalies and never become authority writes.
+- **Facts-to-report/frontend handoff:** reports and rollback consume verified immutable execution facts, not model narrative. The frontend consumes typed APIs and persisted event cursors only; it may cache but never invents phase, lock, approval, mutation, report, or deletion state.
+- **Feature flags and quality gates:** child flags require their parent safety/runtime flag and default to off. A milestone cannot enable its next-stage flag until its focused tests, affected upstream regression tests, lint/type checks, migration tests, and contract tests pass. A real-model smoke test is opt-in, synthetic, and must never log credentials or payloads.
+
+Alternative: let each conversation independently refactor its required upstream components. Rejected because it would create incompatible migrations, duplicate identity semantics, and unsafe paths around approvals or immutable audit facts.
+
 ## Risks / Trade-offs
 
 - [One school-wide lock can block all work after a failure] → persist clear owner/status/events, recover the same run after restart, provide explicit termination, and never rely on an expiring browser lock.
