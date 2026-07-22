@@ -28,6 +28,7 @@ def execution_client(tmp_path: Path):
         snapshot_root=tmp_path / "snapshots",
         quarantine_root=tmp_path / "quarantine",
         auto_create_schema=True,
+        tokenization_secret=None,
     )
     with TestClient(create_app(settings)) as client:
         yield client
