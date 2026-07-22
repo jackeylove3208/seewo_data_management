@@ -79,6 +79,7 @@ def test_reconciliation_payloads_are_strict_and_bound_solution_cardinality() -> 
     assert finding.solutions == (solution,)
     assert IdentityKeyKind.NUMBER.value == "number"
     assert WorkItemKind.TARGET_EXTRA.value == "target_extra"
+    assert WorkItemKind.AUTHORITY_INVALID.value == "authority_invalid"
     assert WorkItemState.PENDING.value == "pending"
     with pytest.raises(ValidationError, match="at most 3"):
         AgentFindingPayload(
