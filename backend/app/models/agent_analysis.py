@@ -157,7 +157,7 @@ class AgentWorkItemRecord(Base, TimestampMixin):
         ),
         CheckConstraint(
             "kind IN ('resolved', 'identity_conflict', 'target_extra', 'target_duplicate', "
-            "'target_missing', 'field_difference', 'correct')",
+            "'target_missing', 'field_difference', 'authority_invalid', 'correct')",
             name="ck_agent_work_item_kind",
         ),
         CheckConstraint(

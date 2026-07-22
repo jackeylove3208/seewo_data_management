@@ -17,6 +17,7 @@ class WorkItemKind(StrEnum):
     TARGET_DUPLICATE = "target_duplicate"
     TARGET_MISSING = "target_missing"
     FIELD_DIFFERENCE = "field_difference"
+    AUTHORITY_INVALID = "authority_invalid"
     CORRECT = "correct"
 
 
@@ -43,7 +44,7 @@ class AgentFindingPayload(BaseModel):
 
     work_item_id: UUID
     kind: str = Field(
-        pattern="^(target_extra|target_duplicate|target_missing|field_difference|clarify)$"
+        pattern="^(target_extra|target_duplicate|target_missing|field_difference|authority_invalid|clarify)$"
     )
     category_zh: str = Field(min_length=1, max_length=255)
     analysis_zh: str = Field(min_length=1, max_length=8000)
