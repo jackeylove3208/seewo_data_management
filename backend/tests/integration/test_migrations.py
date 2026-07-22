@@ -196,6 +196,19 @@ def test_initial_migration_creates_ingestion_tables(tmp_path: Path) -> None:
         "agent_checkpoints",
         "agent_failures",
         "school_task_locks",
+        "agent_connector_capabilities",
+        "agent_input_records",
+        "agent_input_marks",
+        "agent_identity_postings",
+        "agent_identity_evidence",
+        "agent_identity_claims",
+        "agent_work_items",
+        "agent_model_batches",
+        "agent_model_batch_items",
+        "agent_model_attempts",
+        "agent_findings",
+        "agent_finding_solutions",
+        "agent_finding_dependencies",
     } <= tables
 
     task_columns = {
