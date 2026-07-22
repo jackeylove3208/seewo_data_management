@@ -42,9 +42,7 @@ TERMINAL_STATUSES = frozenset(
 )
 
 STATUS_TRANSITIONS: dict[AgentRunStatus, frozenset[AgentRunStatus]] = {
-    AgentRunStatus.PENDING: frozenset(
-        {AgentRunStatus.RUNNING, AgentRunStatus.TERMINATING}
-    ),
+    AgentRunStatus.PENDING: frozenset({AgentRunStatus.RUNNING, AgentRunStatus.TERMINATING}),
     AgentRunStatus.RUNNING: frozenset(
         {
             AgentRunStatus.WAITING_HUMAN,
@@ -52,16 +50,12 @@ STATUS_TRANSITIONS: dict[AgentRunStatus, frozenset[AgentRunStatus]] = {
             AgentRunStatus.TERMINATING,
         }
     ),
-    AgentRunStatus.WAITING_HUMAN: frozenset(
-        {AgentRunStatus.RUNNING, AgentRunStatus.TERMINATING}
-    ),
+    AgentRunStatus.WAITING_HUMAN: frozenset({AgentRunStatus.RUNNING, AgentRunStatus.TERMINATING}),
     AgentRunStatus.BLOCKED_MODEL_ERROR: frozenset({AgentRunStatus.TERMINATING}),
-    AgentRunStatus.TERMINATING: frozenset(),
+    AgentRunStatus.TERMINATING: frozenset({AgentRunStatus.TERMINATED}),
 }
 
-PHASE_ADVANCE_STATUSES = frozenset(
-    {AgentRunStatus.PENDING, AgentRunStatus.RUNNING}
-)
+PHASE_ADVANCE_STATUSES = frozenset({AgentRunStatus.PENDING, AgentRunStatus.RUNNING})
 
 SYNC_PHASES = (
     AgentPhase.INTENT_CONFIRMED,
@@ -118,9 +112,7 @@ def transition(
     if requested_phase is None:
         raise InvalidAgentTransition("an agent transition target is required")
     if current_status not in PHASE_ADVANCE_STATUSES:
-        raise InvalidAgentTransition(
-            f"agent status {current_status.value} cannot advance phase"
-        )
+        raise InvalidAgentTransition(f"agent status {current_status.value} cannot advance phase")
 
     phases = SYNC_PHASES if kind is AgentRunKind.SYNC else ROLLBACK_PHASES
     try:

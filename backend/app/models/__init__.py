@@ -1,16 +1,12 @@
-from app.models.agent_runtime import (
-    AgentCheckpointRecord,
-    AgentConversationRecord,
-    AgentFailureRecord,
-    AgentRunRecord,
-    AgentTaskEventRecord,
-    SchoolTaskLockRecord,
-)
 from app.models.agent_analysis import (
+    AgentApprovalGroupRecord,
+    AgentClarificationRecord,
     AgentConnectorCapabilityRecord,
     AgentFindingDependencyRecord,
     AgentFindingRecord,
     AgentFindingSolutionRecord,
+    AgentGovernanceOperationRecord,
+    AgentGovernancePlanRecord,
     AgentIdentityClaimRecord,
     AgentIdentityEvidenceRecord,
     AgentIdentityPostingRecord,
@@ -20,6 +16,14 @@ from app.models.agent_analysis import (
     AgentModelBatchItemRecord,
     AgentModelBatchRecord,
     AgentWorkItemRecord,
+)
+from app.models.agent_runtime import (
+    AgentCheckpointRecord,
+    AgentConversationRecord,
+    AgentFailureRecord,
+    AgentRunRecord,
+    AgentTaskEventRecord,
+    SchoolTaskLockRecord,
 )
 from app.models.analyses import AnalysisRecord
 from app.models.analysis_jobs import AnalysisJobRecord, AnalysisWorkItemRecord
@@ -70,6 +74,10 @@ __all__ = [
     "AgentFindingDependencyRecord",
     "AgentFindingRecord",
     "AgentFindingSolutionRecord",
+    "AgentApprovalGroupRecord",
+    "AgentClarificationRecord",
+    "AgentGovernanceOperationRecord",
+    "AgentGovernancePlanRecord",
     "AgentIdentityClaimRecord",
     "AgentIdentityEvidenceRecord",
     "AgentIdentityPostingRecord",

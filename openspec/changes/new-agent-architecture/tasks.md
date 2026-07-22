@@ -31,8 +31,8 @@ Before a new conversation begins, its owner SHALL record the current mainline co
 - [ ] 2.3 Add persistence for normalized input records, invalid-row marks, exclusion reasons, source locators, immutable source evidence, and connector capability snapshots.
 - [ ] 2.4 Add persistence for reconciliation findings, candidate-key evidence, authoritative-row claims, target-row claims, duplicate groups, missing-source findings, and deterministic idempotency keys.
 - [ ] 2.5 Add persistence for model batches and attempts, generated Chinese categories, analyses, proposed actions, risk levels, dependency edges, and model provenance.
-- [ ] 2.6 Add persistence for grouped approvals, clarification requests, conversation decisions, second confirmations, rejection reasons, and their audit identities/timestamps.
-- [ ] 2.7 Add repository-level concurrency, replay, and crash-recovery tests for locks, events, checkpoints, model attempts, approvals, and findings.
+- [x] 2.6 Add persistence for grouped approvals, clarification requests, conversation decisions, second confirmations, rejection reasons, and their audit identities/timestamps.
+- [x] 2.7 Add repository-level concurrency, replay, and crash-recovery tests for locks, events, checkpoints, model attempts, approvals, and findings.
 
 ## 3. Three-entity ingestion contract and connectors
 
@@ -59,10 +59,10 @@ Before a new conversation begins, its owner SHALL record the current mainline co
 - [x] 5.1 Implement the supervisor state machine for start confirmation, lock acquisition, ingestion, analysis, approvals/clarifications, execution, reporting, completed/terminated/failed-waiting states, and rollback tasks.
 - [ ] 5.2 Implement dedicated durable workers/handlers for ingestion, reconciliation analysis, governance execution, reporting, and rollback while reusing the existing durable-job polling pattern where appropriate.
 - [x] 5.3 Persist every phase transition, lease, event, and checkpoint transactionally so a process restart resumes the incomplete phase without repeating a completed phase unit or releasing the school lock; mutation idempotency remains task 8.4.
-- [ ] 5.4 Enforce one active task per school across conversational creation, external-data sync, and rollback; reject or queue no second task until the owner reports completion or is explicitly terminated.
-- [ ] 5.5 Implement explicit termination that stops future work, does not auto-rollback committed changes, generates a termination report, and releases the lock only after that report is persisted.
+- [x] 5.4 Enforce one active task per school across conversational creation, external-data sync, and rollback; reject or queue no second task until the owner reports completion or is explicitly terminated.
+- [x] 5.5 Implement explicit termination that stops future work, does not auto-rollback committed changes, generates a termination report, and releases the lock only after that report is persisted.
 - [x] 5.6 Implement initial model call plus at most three retries per batch; after exhaustion persist a sanitized error event, stop advancement, keep the lock, and advertise termination as the only recovery command; the public command API remains task 10.1.
-- [ ] 5.7 Add state-machine tests for duplicate delivery, stale workers, crash/restart, timeout, termination at each phase, report failure, model retry exhaustion, and lock handoff after valid terminal states.
+- [x] 5.7 Add state-machine tests for duplicate delivery, stale workers, crash/restart, timeout, termination at each phase, report failure, model retry exhaustion, and lock handoff after valid terminal states.
 
 ## 6. Reconciliation and mandatory AI analysis
 
@@ -78,21 +78,21 @@ Before a new conversation begins, its owner SHALL record the current mainline co
 
 ## 7. Human approvals and conflict dialogue
 
-- [ ] 7.1 Implement risk policy with student-phone exposure/change and destructive deletes initially high risk, plus a versioned server-side extension point for later risk rules.
-- [ ] 7.2 Aggregate equivalent high-risk findings by issue type and proposed operation so one agree/reject card can govern a homogeneous batch without merging incompatible evidence.
-- [ ] 7.3 Implement conflict cards that temporarily reopen conversation input, present masked structured evidence, accept natural-language operator guidance, and have the model translate it into a bounded typed decision.
-- [ ] 7.4 Require a second explicit confirmation of the interpreted conflict decision before it becomes executable, and retain the original text, interpretation, confirmation, actor, and timestamp.
-- [ ] 7.5 Treat rejected high-risk groups and unresolved conflicts as non-executable while allowing independent approved work to continue and ensuring reports describe every skipped item.
-- [ ] 7.6 Add API and service tests for grouped consent, mixed groups, rejection, clarification parsing, invalid interpretation, second-confirmation denial, privacy masking, and independent continuation.
+- [x] 7.1 Implement risk policy with student-phone exposure/change and destructive deletes initially high risk, plus a versioned server-side extension point for later risk rules.
+- [x] 7.2 Aggregate equivalent high-risk findings by issue type and proposed operation so one agree/reject card can govern a homogeneous batch without merging incompatible evidence.
+- [x] 7.3 Implement conflict cards that temporarily reopen conversation input, present masked structured evidence, accept natural-language operator guidance, and have the model translate it into a bounded typed decision.
+- [x] 7.4 Require a second explicit confirmation of the interpreted conflict decision before it becomes executable, and retain the original text, interpretation, confirmation, actor, and timestamp.
+- [x] 7.5 Treat rejected high-risk groups and unresolved conflicts as non-executable while allowing independent approved work to continue and ensuring reports describe every skipped item.
+- [x] 7.6 Add API and service tests for grouped consent, mixed groups, rejection, clarification parsing, invalid interpretation, second-confirmation denial, privacy masking, and independent continuation.
 
 ## 8. Governance planning and execution
 
-- [ ] 8.1 Adapt the existing governance proposal, risk, dependency-graph, preflight, executor, verification, and execution-record services to consume new Agent findings without depending on legacy difference rows.
-- [ ] 8.2 Generate only typed allow-listed create/update/delete operations against the Seewo target, bind each operation to source evidence and approvals, and reject any operation that would mutate third-party authority data.
-- [ ] 8.3 Resolve dependencies so failed operations block only dependants, independent operations continue, and successful operations are never automatically reverted after a later failure or termination.
+- [x] 8.1 Adapt the existing governance proposal, risk, dependency-graph, preflight, executor, verification, and execution-record services to consume new Agent findings without depending on legacy difference rows.
+- [x] 8.2 Generate only typed allow-listed create/update/delete operations against the Seewo target, bind each operation to source evidence and approvals, and reject any operation that would mutate third-party authority data.
+- [x] 8.3 Resolve dependencies so failed operations block only dependants, independent operations continue, and successful operations are never automatically reverted after a later failure or termination.
 - [ ] 8.4 Preserve CSV version artifacts and implement equivalent before/after evidence and verification for API/database mutations, including idempotency and optimistic conflict detection.
-- [ ] 8.5 Record verified mutation outcome per operation and batch so deletion policy, reporting, and rollback eligibility are based on actual successful target changes rather than the existence of an execution batch.
-- [ ] 8.6 Add end-to-end synthetic tests for create/update/delete, duplicate retention, partial batch failure, dependency blocking, retry idempotency, target conflict, source immutability, and privacy-safe execution evidence.
+- [x] 8.5 Record verified mutation outcome per operation and batch so deletion policy, reporting, and rollback eligibility are based on actual successful target changes rather than the existence of an execution batch.
+- [x] 8.6 Add end-to-end synthetic tests for create/update/delete, duplicate retention, partial batch failure, dependency blocking, retry idempotency, target conflict, source immutability, and privacy-safe execution evidence.
 
 ## 9. Reports, history, deletion, and rollback
 

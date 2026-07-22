@@ -157,3 +157,32 @@ async def test_derive_rejects_missing_target_without_writing_child(tmp_path: Pat
         )
 
     assert not output_root.exists() or not tuple(output_root.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_delete_creates_verified_child_without_overwriting_parent(tmp_path: Path) -> None:
+    original = tmp_path / "uploaded-target.csv"
+    original.write_text("entity_type,id,name\n学生,S1,Ada\n学生,S2,Grace\n", encoding="utf-8")
+    original_bytes = original.read_bytes()
+    repository = VersionRepositorySpy()
+    versioner = CsvTargetVersioner(repository=repository, output_root=tmp_path / "derived")
+
+    child = await versioner.derive(
+        parent_version(original),
+        (
+            operation(
+                OperationType.DISABLE,
+                target="S1",
+                before={"name": "Ada"},
+                after={},
+            ).model_copy(
+                update={"after": {}, "compensation_for": uuid4(), "restore_absence": True}
+            ),
+        ),
+        batch_id=uuid4(),
+    )
+
+    assert original.read_bytes() == original_bytes
+    assert read_rows(Path(child.storage_path)) == [
+        {"entity_type": "学生", "id": "S2", "name": "Grace"}
+    ]

@@ -64,9 +64,7 @@ async def test_model_exhaustion_blocks_run_without_releasing_school_lock(session
         conversation_id=None,
     )
     repository = AgentRuntimeRepository(session)
-    run = await repository.transition_run(
-        run.id, requested_phase=AgentPhase.BUILD_IDENTITY_WORK
-    )
+    run = await repository.transition_run(run.id, requested_phase=AgentPhase.BUILD_IDENTITY_WORK)
     run = await repository.transition_run(run.id, requested_phase=AgentPhase.ANALYZE_BATCHES)
 
     blocked = await service.block_model_failure(
@@ -98,12 +96,28 @@ async def test_model_exhaustion_blocks_run_without_releasing_school_lock(session
 
 
 @pytest.mark.asyncio
+async def test_termination_persists_terminal_summary_before_releasing_school_lock(session) -> None:
+    task = await create_agent_task(session, tenant_id="school-1", key="supervisor-terminate")
+    service = supervisor(session)
+    run = await service.start(task_id=task.id, conversation_id=None)
+
+    terminated = await service.terminate(run_id=run.id, reason="operator_requested")
+
+    assert terminated.status == AgentRunStatus.TERMINATED.value
+    lock = await session.scalar(
+        select(SchoolTaskLockRecord).where(SchoolTaskLockRecord.owner_run_id == run.id)
+    )
+    assert lock is not None and lock.active is False
+    events = await AgentRuntimeRepository(session).list_events(run.id)
+    assert events[-2].event_type == "termination.report.persisted"
+    assert events[-1].event_type == "run.terminated"
+
+
+@pytest.mark.asyncio
 async def test_supervisor_rejects_cross_tenant_or_inactive_conversation(session) -> None:
     task = await create_agent_task(session, tenant_id="school-1", key="supervisor-tenant")
     repository = AgentRuntimeRepository(session)
-    foreign = await repository.create_conversation(
-        tenant_id="school-2", created_by="operator-2"
-    )
+    foreign = await repository.create_conversation(tenant_id="school-2", created_by="operator-2")
 
     with pytest.raises(LookupError, match="conversation"):
         await supervisor(session).start(
@@ -111,9 +125,7 @@ async def test_supervisor_rejects_cross_tenant_or_inactive_conversation(session)
             conversation_id=foreign.id,
         )
 
-    local = await repository.create_conversation(
-        tenant_id="school-1", created_by="operator-1"
-    )
+    local = await repository.create_conversation(tenant_id="school-1", created_by="operator-1")
     local.status = "closed"
     await session.flush()
     with pytest.raises(LookupError, match="conversation"):

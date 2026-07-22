@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -315,6 +315,137 @@ class AgentFindingDependencyRecord(Base):
     finding_id: Mapped[UUID] = mapped_column(ForeignKey("agent_findings.id"), primary_key=True)
     depends_on_finding_id: Mapped[UUID] = mapped_column(
         ForeignKey("agent_findings.id"), primary_key=True
+    )
+
+
+class AgentApprovalGroupRecord(Base, TimestampMixin):
+    __tablename__ = "agent_approval_groups"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), index=True)
+    task_id: Mapped[UUID] = mapped_column(ForeignKey("reconciliation_tasks.id"), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), index=True)
+    group_key: Mapped[str] = mapped_column(String(255))
+    membership_hash: Mapped[str] = mapped_column(String(64))
+    finding_ids: Mapped[list[str]] = mapped_column(_json())
+    issue_kind: Mapped[str] = mapped_column(String(64))
+    entity_kind: Mapped[str] = mapped_column(String(32))
+    operation: Mapped[str] = mapped_column(String(32))
+    policy_version: Mapped[str] = mapped_column(String(64))
+    risk: Mapped[str] = mapped_column(String(32), default="high")
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    decided_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    decision_reason: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "group_key", name="uq_agent_approval_group_key"),
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected', 'stale')",
+            name="ck_agent_approval_group_status",
+        ),
+        CheckConstraint("risk = 'high'", name="ck_agent_approval_group_risk"),
+    )
+
+
+class AgentClarificationRecord(Base, TimestampMixin):
+    __tablename__ = "agent_clarifications"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), index=True)
+    task_id: Mapped[UUID] = mapped_column(ForeignKey("reconciliation_tasks.id"), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), index=True)
+    work_item_id: Mapped[UUID] = mapped_column(ForeignKey("agent_work_items.id"), index=True)
+    batch_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_model_batches.id"), nullable=True
+    )
+    masked_candidates: Mapped[list[dict[str, Any]]] = mapped_column(_json(), default=list)
+    allowed_outcomes: Mapped[list[str]] = mapped_column(_json(), default=list)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    original_text: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    interpretation: Mapped[dict[str, Any] | None] = mapped_column(_json(), nullable=True)
+    interpreted_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    confirmed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "work_item_id", name="uq_agent_clarification_work_item"),
+        CheckConstraint(
+            "status IN ('pending', 'interpreted', 'confirmed', 'rejected')",
+            name="ck_agent_clarification_status",
+        ),
+    )
+
+
+class AgentGovernancePlanRecord(Base, TimestampMixin):
+    __tablename__ = "agent_governance_plans"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), index=True)
+    task_id: Mapped[UUID] = mapped_column(ForeignKey("reconciliation_tasks.id"), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), index=True)
+    source_snapshot_id: Mapped[UUID] = mapped_column(ForeignKey("snapshots.id"))
+    target_snapshot_id: Mapped[UUID] = mapped_column(ForeignKey("snapshots.id"))
+    target_version: Mapped[str] = mapped_column(String(128))
+    finding_ids: Mapped[list[str]] = mapped_column(_json())
+    operations: Mapped[list[dict[str, Any]]] = mapped_column(_json())
+    content_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="compiled", index=True)
+    compiled_by: Mapped[str] = mapped_column(String(128))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "content_hash", name="uq_agent_governance_plan_content"),
+        CheckConstraint(
+            "status IN ('compiled', 'approved', 'executing', 'partial', 'succeeded', 'failed')",
+            name="ck_agent_governance_plan_status",
+        ),
+    )
+
+
+class AgentGovernanceOperationRecord(Base, TimestampMixin):
+    __tablename__ = "agent_governance_operations"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    plan_id: Mapped[UUID] = mapped_column(ForeignKey("agent_governance_plans.id"), index=True)
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id"), index=True)
+    task_id: Mapped[UUID] = mapped_column(ForeignKey("reconciliation_tasks.id"), index=True)
+    finding_id: Mapped[UUID] = mapped_column(ForeignKey("agent_findings.id"), index=True)
+    operation_type: Mapped[str] = mapped_column(String(32), index=True)
+    entity_kind: Mapped[str] = mapped_column(String(32), index=True)
+    target_source_identifier: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    before: Mapped[dict[str, Any] | None] = mapped_column(_json(), nullable=True)
+    after: Mapped[dict[str, Any] | None] = mapped_column(_json(), nullable=True)
+    dependencies: Mapped[list[str]] = mapped_column(_json(), default=list)
+    risk: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    actual_after: Mapped[dict[str, Any] | None] = mapped_column(_json(), nullable=True)
+    verification: Mapped[dict[str, Any] | None] = mapped_column(_json(), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("plan_id", "id", name="uq_agent_governance_operation"),
+        CheckConstraint(
+            "operation_type IN ('create', 'update', 'delete', 'retain', 'skip')",
+            name="ck_agent_governance_operation_type",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'running', 'succeeded', 'failed', 'blocked', "
+            "'verification_failed')",
+            name="ck_agent_governance_operation_status",
+        ),
     )
 
 

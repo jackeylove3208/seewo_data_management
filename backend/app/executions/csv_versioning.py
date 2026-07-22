@@ -23,6 +23,7 @@ class TargetVersionLike(Protocol):
     tenant_id: str
     source_snapshot_id: UUID
     storage_path: str
+    file_sha256: str
 
 
 class TargetVersionRepository(Protocol):
