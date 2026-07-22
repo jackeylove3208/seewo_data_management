@@ -13,6 +13,21 @@ describe("workspace sidebar", () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
+  it("renders the local app icon in the workspace brand", async () => {
+    render(
+      <MemoryRouter>
+        <WorkspaceSidebar mobileOpen={false} onMobileClose={() => undefined} />
+      </MemoryRouter>,
+    );
+
+    const brand = screen.getByRole("link", { name: "魔方 AI 数据治理" });
+    expect(brand.querySelector("img")).toHaveAttribute(
+      "src",
+      expect.stringContaining("mofa-app-icon.png"),
+    );
+    expect(await screen.findByText("后端未连接")).toBeInTheDocument();
+  });
+
   it("provides separate active conversation and external data sync routes", async () => {
     render(
       <MemoryRouter initialEntries={["/conversations/new"]}>

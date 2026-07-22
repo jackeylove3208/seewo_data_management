@@ -1,4 +1,4 @@
-import { DatabaseZap, Menu } from "lucide-react";
+import { Menu } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 
@@ -9,6 +9,7 @@ import { TaskDetailPage } from "../features/task-detail/TaskDetailPage";
 import { DifferenceCategoryPage } from "../features/differences/DifferenceCategoryPage";
 import { ExecutionHistoryPage } from "../features/executions/ExecutionHistoryPage";
 import { ExecutionDetailPage } from "../features/executions/ExecutionDetailPage";
+import appIcon from "../assets/mofa-app-icon.png";
 import { AppProviders } from "./providers";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
 
@@ -50,7 +51,7 @@ function AppLayout() {
       <div className="workspace-main">
         <header className="workspace-mobile-header">
           <button ref={menuButtonRef} className="mobile-menu-button" type="button" aria-label="打开导航" onClick={() => setMobileOpen(true)}><Menu size={20} /></button>
-          <span className="mobile-brand-mark"><DatabaseZap size={17} /></span>
+          <span className="mobile-brand-mark"><img src={appIcon} alt="" /></span>
           <strong>魔方 AI 数据治理</strong>
         </header>
         <Routes>

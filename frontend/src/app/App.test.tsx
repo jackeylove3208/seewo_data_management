@@ -15,9 +15,13 @@ describe("application shell", () => {
     render(<App />);
 
     expect(screen.getByRole("link", { name: "魔方 AI 数据治理" })).toBeInTheDocument();
+    expect(await screen.findByText("后端未连接")).toBeInTheDocument();
+    expect(document.querySelector(".mobile-brand-mark img")).toHaveAttribute(
+      "src",
+      expect.stringContaining("mofa-app-icon.png"),
+    );
     expect(screen.getByRole("navigation", { name: "对账工作区" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /三方全校数据核对/ })).toHaveAttribute("aria-current", "page");
-    expect(await screen.findByText("后端未连接")).toBeInTheDocument();
 
     await user.click(screen.getByRole("link", { name: "外部数据同步" }));
     expect(screen.getByRole("heading", { name: "外部数据同步" })).toBeInTheDocument();

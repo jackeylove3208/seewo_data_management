@@ -232,8 +232,16 @@ button {
   flex: 0 0 36px;
   place-items: center;
   border-radius: 7px;
-  color: #fff;
-  background: #126f67;
+  overflow: hidden;
+  background: transparent;
+}
+
+.workspace-brand-mark img,
+.mobile-brand-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .workspace-brand strong,

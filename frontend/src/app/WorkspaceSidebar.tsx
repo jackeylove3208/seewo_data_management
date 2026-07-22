@@ -2,7 +2,6 @@ import {
   Activity,
   ChevronLeft,
   ChevronRight,
-  DatabaseZap,
   History,
   MessageSquarePlus,
   PanelLeftClose,
@@ -17,6 +16,7 @@ import { ConnectionStatus } from "../components/ConnectionStatus";
 import { allTasks, TASK_HISTORY_UPDATED_EVENT } from "../data/taskHistory";
 import type { TaskStatus } from "../types/domain";
 import { useTaskDeletion } from "../features/tasks/useTaskDeletion";
+import appIcon from "../assets/mofa-app-icon.png";
 
 const COLLAPSED_KEY = "mofa-workspace-collapsed";
 const RECENT_TASK_LIMIT = 8;
@@ -83,7 +83,7 @@ export function WorkspaceSidebar({
       <nav className="workspace-navigation" aria-label="对账工作区">
         <div className="workspace-brand-row">
           <NavLink className="workspace-brand" to="/tasks" aria-label="魔方 AI 数据治理" onClick={onMobileClose}>
-            <span className="workspace-brand-mark"><DatabaseZap size={19} /></span>
+            <span className="workspace-brand-mark"><img src={appIcon} alt="" /></span>
             <span className="workspace-label"><strong>魔方 AI 数据治理</strong><small>组织数据工作台</small></span>
           </NavLink>
           <button ref={closeButtonRef} className="workspace-mobile-close" type="button" aria-label="关闭导航" onClick={onMobileClose}><X size={19} /></button>
