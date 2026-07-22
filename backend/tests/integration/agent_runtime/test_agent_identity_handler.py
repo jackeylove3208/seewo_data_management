@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentRunKind
+from app.ai.agent_batching import AgentBatchPlanner
 from app.models.agent_analysis import AgentInputRecord, AgentWorkItemRecord
 from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import Snapshot, SourceFile
@@ -88,3 +89,7 @@ async def test_builder_marks_correct_rows_silent_and_emits_duplicate_extra_and_m
         "correct", "target_duplicate", "target_extra", "target_missing"
     ]
     assert len(tuple(await session.scalars(select(AgentInputRecord)))) == 5
+
+    batches = await AgentBatchPlanner(session).create_for_run(run_id=run.id)
+
+    assert [batch.item_count for batch in batches] == [3]
