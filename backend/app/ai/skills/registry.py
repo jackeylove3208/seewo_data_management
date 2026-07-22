@@ -3,6 +3,10 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.agent_runtime.state_machine import AgentPhase
+from app.ai.mcp.agent_authorization import PHASE_CAPABILITIES
+from app.ai.skills.contracts import AGENT_SKILL_SCHEMAS
+
 READ_ONLY_TOOL_NAMES = frozenset(
     {"difference_context", "candidate_search", "mapping_rules", "execution_context"}
 )
@@ -21,7 +25,9 @@ class SkillDefinition(BaseModel):
 
     name: str = Field(min_length=1, max_length=128)
     version: str = Field(min_length=1, max_length=64)
+    phase: str | None = Field(default=None, min_length=1, max_length=64)
     allowed_tools: tuple[str, ...]
+    input_schema: str | None = Field(default=None, min_length=1, max_length=128)
     output_schema: str = Field(min_length=1, max_length=128)
     instructions: str = Field(min_length=1)
 
@@ -38,9 +44,54 @@ class SkillRegistry:
             raise SkillNotFound(f"{name}@{version}") from error
         if definition.name != name or definition.version != version:
             raise SkillNotFound(f"{name}@{version}")
-        if not set(definition.allowed_tools) <= READ_ONLY_TOOL_NAMES:
-            raise UnsafeSkillError(name)
+        if definition.phase is None:
+            if not set(definition.allowed_tools) <= READ_ONLY_TOOL_NAMES:
+                raise UnsafeSkillError(name)
+        else:
+            if (
+                definition.input_schema not in AGENT_SKILL_SCHEMAS
+                or definition.output_schema not in AGENT_SKILL_SCHEMAS
+            ):
+                raise UnsafeSkillError(name)
+            if definition.phase == "supervisor":
+                allowed_tools: set[str] = set()
+            else:
+                try:
+                    phase = AgentPhase(definition.phase)
+                except ValueError as error:
+                    raise UnsafeSkillError(name) from error
+                allowed_tools = {
+                    capability.value for capability in PHASE_CAPABILITIES.get(phase, frozenset())
+                }
+            if not set(definition.allowed_tools) <= allowed_tools:
+                raise UnsafeSkillError(name)
         return definition
+
+    def validate_input(
+        self, definition: SkillDefinition, payload: object
+    ) -> BaseModel:
+        if definition.input_schema is None:
+            raise UnsafeSkillError(definition.name)
+        schema = AGENT_SKILL_SCHEMAS.get(definition.input_schema)
+        if schema is None:
+            raise UnsafeSkillError(definition.name)
+        validated = schema.model_validate(payload)
+        phase_name = definition.phase
+        if phase_name is None:
+            raise UnsafeSkillError(definition.name)
+        if phase_name != "supervisor" and getattr(validated, "phase", None) != AgentPhase(
+            phase_name
+        ):
+            raise UnsafeSkillError(definition.name)
+        return validated
+
+    def validate_output(
+        self, definition: SkillDefinition, payload: object
+    ) -> BaseModel:
+        schema = AGENT_SKILL_SCHEMAS.get(definition.output_schema)
+        if schema is None:
+            raise UnsafeSkillError(definition.name)
+        return schema.model_validate(payload)
 
 
 def _parse_skill(content: str) -> SkillDefinition:

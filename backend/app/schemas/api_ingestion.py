@@ -59,6 +59,7 @@ class SnapshotSummaryResponse(IngestionSummary):
 class ReconciliationTaskResponse(BaseModel):
     id: UUID
     tenant_id: str
+    workflow_version: str
     scope_id: str
     snapshot_mode: SnapshotMode
     entity_types: tuple[EntityType, ...]

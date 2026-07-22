@@ -17,6 +17,9 @@ class ReconciliationTask(Base, TimestampMixin):
     entity_types: Mapped[list[str]] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(32), default="created", index=True)
     stage: Mapped[str] = mapped_column(String(32), default="ingestion")
+    workflow_version: Mapped[str] = mapped_column(
+        String(32), default="legacy-v1", server_default="legacy-v1", index=True
+    )
     idempotency_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     request_hash: Mapped[str] = mapped_column(String(64))
     error: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)

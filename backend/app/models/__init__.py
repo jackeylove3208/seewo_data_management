@@ -1,3 +1,11 @@
+from app.models.agent_runtime import (
+    AgentCheckpointRecord,
+    AgentConversationRecord,
+    AgentFailureRecord,
+    AgentRunRecord,
+    AgentTaskEventRecord,
+    SchoolTaskLockRecord,
+)
 from app.models.analyses import AnalysisRecord
 from app.models.analysis_jobs import AnalysisJobRecord, AnalysisWorkItemRecord
 from app.models.base import Base
@@ -40,6 +48,11 @@ from app.models.workflow import WorkflowStageRun
 __all__ = [
     "Base",
     "AnalysisRecord",
+    "AgentCheckpointRecord",
+    "AgentConversationRecord",
+    "AgentFailureRecord",
+    "AgentRunRecord",
+    "AgentTaskEventRecord",
     "AnalysisJobRecord",
     "AnalysisWorkItemRecord",
     "CanonicalEntityRecord",
@@ -65,6 +78,7 @@ __all__ = [
     "RestoreExecutionResultRecord",
     "RestoreRequestRecord",
     "Snapshot",
+    "SchoolTaskLockRecord",
     "SnapshotEntityEmbedding",
     "SourceFile",
     "TargetEntityEmbedding",

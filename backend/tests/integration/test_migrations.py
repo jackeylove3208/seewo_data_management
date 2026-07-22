@@ -190,7 +190,29 @@ def test_initial_migration_creates_ingestion_tables(tmp_path: Path) -> None:
         "analysis_jobs",
         "analysis_work_items",
         "proposal_batches",
+        "agent_conversations",
+        "agent_runs",
+        "agent_task_events",
+        "agent_checkpoints",
+        "agent_failures",
+        "school_task_locks",
     } <= tables
+
+    task_columns = {
+        column["name"]: column
+        for column in inspect(create_engine(f"sqlite:///{database_path}")).get_columns(
+            "reconciliation_tasks"
+        )
+    }
+    assert task_columns["workflow_version"]["nullable"] is False
+    run_columns = {
+        column["name"]
+        for column in inspect(create_engine(f"sqlite:///{database_path}")).get_columns(
+            "agent_runs"
+        )
+    }
+    assert "attempt_count" in run_columns
+    assert "lease_token" in run_columns
 
 
 def test_durable_analysis_work_items_include_created_at(tmp_path: Path) -> None:
@@ -251,9 +273,12 @@ def test_upgrade_reconciles_unversioned_create_all_database(
             )
             == task_id
         )
-        assert (
-            connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0017_task_delete_target_version"
+        assert connection.scalar(
+            text("SELECT workflow_version FROM reconciliation_tasks WHERE id = :id"),
+            {"id": task_id},
+        ) == "legacy-v1"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) in set(
+            ScriptDirectory.from_config(Config("alembic.ini")).get_heads()
         )
 
 
@@ -312,9 +337,8 @@ def test_interrupted_legacy_upgrade_can_be_reapplied(
             )
         )
         assert "BEFORE DELETE" in analysis_delete_trigger_sql
-        assert (
-            connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0017_task_delete_target_version"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) in set(
+            ScriptDirectory.from_config(Config("alembic.ini")).get_heads()
         )
 
 

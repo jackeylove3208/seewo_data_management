@@ -19,6 +19,7 @@ from app.repositories.quality import MatchingQualityRepository
 from app.repositories.rematching import EntityRematchRepository, RematchWorkItemDraft
 from app.repositories.tasks import TaskRepository
 from app.schemas.rematching_api import MatchingQualityResponse, RematchingJobResponse
+from app.workflow.versioning import LegacyWorkflowOnlyError, require_legacy_workflow
 
 router = APIRouter(prefix="/api", tags=["entity-rematching"])
 TERMINAL = {"completed", "completed_with_failures", "canceled"}
@@ -55,6 +56,10 @@ async def create_rematching_job(
     task = await TaskRepository(session).get(task_id)
     if task is None or task.tenant_id != operator.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="reconciliation task not found")
+    try:
+        require_legacy_workflow(task.workflow_version)
+    except LegacyWorkflowOnlyError as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
     source = await session.scalar(
         select(Snapshot).where(Snapshot.task_id == task_id, Snapshot.source_role == "authoritative")
     )
@@ -206,6 +211,10 @@ async def get_matching_quality(
         task = None
     if task is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="reconciliation task not found")
+    try:
+        require_legacy_workflow(task.workflow_version)
+    except LegacyWorkflowOnlyError as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
     record = await MatchingQualityRepository(session).latest(task_id, operator.tenant_id)
     if record is None:
         raise HTTPException(

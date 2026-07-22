@@ -11,6 +11,7 @@ from app.repositories.tasks import TaskRepository
 from app.repositories.workflow import WorkflowRunRepository
 from app.schemas.analysis_jobs import AnalysisJobProgress, AnalysisJobStatus
 from app.schemas.workflow import WorkflowError, WorkflowStatus
+from app.workflow.versioning import require_legacy_workflow
 
 
 class AnalysisJobService:
@@ -38,6 +39,7 @@ class AnalysisJobService:
         task = await self.tasks.get(task_id)
         if task is None or task.tenant_id != self.operator.tenant_id:
             raise LookupError(f"reconciliation task not found: {task_id}")
+        require_legacy_workflow(task.workflow_version)
         differences = await self.differences.for_task(task_id)
         job = await self.jobs.create_or_get(
             task_id=task_id,

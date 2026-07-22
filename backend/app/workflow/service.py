@@ -17,6 +17,7 @@ from app.schemas.workflow import (
     WorkflowError,
     WorkflowStage,
 )
+from app.workflow.versioning import require_legacy_workflow
 
 
 class ResolutionRunner(Protocol):
@@ -63,6 +64,7 @@ class ReconciliationWorkflowService:
         task = await self.tasks.get_for_update(task_id)
         if task is None or task.tenant_id != self.operator.tenant_id:
             raise LookupError(f"reconciliation task not found: {task_id}")
+        require_legacy_workflow(task.workflow_version)
         if task.status == "failed":
             state = await self.runs.state(task)
             if not state.can_retry:
@@ -200,6 +202,7 @@ class ReconciliationWorkflowService:
         task = await self.tasks.get_for_update(task_id)
         if task is None or task.tenant_id != self.operator.tenant_id:
             raise LookupError(f"reconciliation task not found: {task_id}")
+        require_legacy_workflow(task.workflow_version)
         state = await self.runs.state(task)
         if not state.can_retry:
             raise ValueError("workflow failure is not retryable")

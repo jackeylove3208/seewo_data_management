@@ -188,6 +188,10 @@ class ReconciliationIngestionService:
             scope=scope,
             idempotency_key=idempotency_key,
             request_hash=request_hash,
+            # This endpoint remains the legacy entry until the Agent task API is introduced.
+            # Keeping the boundary explicit prevents a rollout flag from sending legacy CSV
+            # requests into a partially deployed runtime.
+            workflow_version="legacy-v1",
         )
         await self.session.flush()
         await self.files.bind_to_task(source_file.id, task.id)
@@ -366,6 +370,7 @@ def _task_response(
     return ReconciliationTaskResponse(
         id=task.id,
         tenant_id=task.tenant_id,
+        workflow_version=task.workflow_version,
         scope_id=task.scope_id,
         snapshot_mode=task.snapshot_mode,
         entity_types=tuple(EntityType(value) for value in task.entity_types),
