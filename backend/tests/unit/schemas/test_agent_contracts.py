@@ -65,6 +65,7 @@ def test_reconciliation_payloads_are_strict_and_bound_solution_cardinality() -> 
         operation="update",
         risk="low",
         solution_zh="补齐权威字段",
+        recommended=True,
     )
     finding = AgentFindingPayload(
         work_item_id=uuid4(),
@@ -89,7 +90,36 @@ def test_reconciliation_payloads_are_strict_and_bound_solution_cardinality() -> 
             solutions=(solution, solution, solution, solution),
         )
     with pytest.raises(ValidationError):
-        AgentSolutionPayload(operation="update", risk="low", solution_zh="x", unexpected="value")
+        AgentSolutionPayload(
+            operation="update",
+            risk="low",
+            solution_zh="x",
+            recommended=True,
+            unexpected="value",
+        )
+
+    with pytest.raises(ValidationError, match="exactly one"):
+        AgentFindingPayload(
+            work_item_id=uuid4(),
+            kind="field_difference",
+            category_zh="字段缺失",
+            analysis_zh="目标记录缺少班级。",
+            evidence_refs=("evidence:1",),
+            solutions=(
+                AgentSolutionPayload(
+                    operation="update",
+                    risk="low",
+                    solution_zh="方案一",
+                    recommended=False,
+                ),
+                AgentSolutionPayload(
+                    operation="skip",
+                    risk="low",
+                    solution_zh="方案二",
+                    recommended=False,
+                ),
+            ),
+        )
 
 
 def test_input_marks_reject_sensitive_evidence_fields() -> None:
@@ -101,4 +131,13 @@ def test_input_marks_reject_sensitive_evidence_fields() -> None:
             inclusion_state="anomaly",
             report_disposition="report",
             safe_evidence={"phone": "13800000000"},
+        )
+    with pytest.raises(ValidationError, match="unsupported"):
+        AgentInputMark(
+            input_record_id=uuid4(),
+            reason_code="missing_identity",
+            affected_fields=("phone",),
+            inclusion_state="anomaly",
+            report_disposition="report",
+            safe_evidence={"message": "call +1-415-555-0199"},
         )

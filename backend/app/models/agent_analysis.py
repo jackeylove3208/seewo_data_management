@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -42,6 +43,9 @@ class AgentConnectorCapabilityRecord(Base, TimestampMixin):
 
     __table_args__ = (
         UniqueConstraint("run_id", "source_role", "capability_hash", name="uq_agent_capability"),
+        CheckConstraint(
+            "source_role IN ('authoritative', 'target')", name="ck_agent_capability_source_role"
+        ),
     )
 
 
@@ -76,6 +80,9 @@ class AgentInputRecord(Base, TimestampMixin):
         CheckConstraint(
             "entity_kind = 'student' OR class_name IS NULL", name="ck_agent_input_class"
         ),
+        CheckConstraint(
+            "source_role IN ('authoritative', 'target')", name="ck_agent_input_source_role"
+        ),
     )
 
 
@@ -92,6 +99,10 @@ class AgentInputMarkRecord(Base, TimestampMixin):
 
     __table_args__ = (
         UniqueConstraint("input_record_id", "reason_code", name="uq_agent_input_mark"),
+        CheckConstraint(
+            "inclusion_state IN ('included', 'excluded', 'anomaly')",
+            name="ck_agent_mark_inclusion_state",
+        ),
     )
 
 
@@ -140,6 +151,19 @@ class AgentWorkItemRecord(Base, TimestampMixin):
 
     __table_args__ = (
         UniqueConstraint("run_id", "idempotency_hash", name="uq_agent_work_item_replay"),
+        CheckConstraint(
+            "entity_kind IN ('department', 'student', 'teacher')",
+            name="ck_agent_work_item_entity_kind",
+        ),
+        CheckConstraint(
+            "kind IN ('resolved', 'identity_conflict', 'target_extra', 'target_duplicate', "
+            "'target_missing', 'field_difference', 'correct')",
+            name="ck_agent_work_item_kind",
+        ),
+        CheckConstraint(
+            "state IN ('pending', 'claimed', 'awaiting_clarification', 'analyzed', 'blocked')",
+            name="ck_agent_work_item_state",
+        ),
     )
 
 
@@ -200,6 +224,14 @@ class AgentModelBatchRecord(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("run_id", "input_hash", name="uq_agent_model_batch_input"),
         CheckConstraint("item_count >= 1 AND item_count <= 50", name="ck_agent_batch_item_count"),
+        CheckConstraint(
+            "entity_kind IN ('department', 'student', 'teacher')",
+            name="ck_agent_batch_entity_kind",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'claimed', 'completed', 'blocked')",
+            name="ck_agent_batch_status",
+        ),
     )
 
 
@@ -234,6 +266,7 @@ class AgentModelAttemptRecord(Base, TimestampMixin):
         CheckConstraint(
             "attempt_number >= 1 AND attempt_number <= 4", name="ck_agent_attempt_number"
         ),
+        CheckConstraint("status IN ('succeeded', 'failed')", name="ck_agent_attempt_status"),
     )
 
 
@@ -263,10 +296,16 @@ class AgentFindingSolutionRecord(Base, TimestampMixin):
     operation: Mapped[str] = mapped_column(String(32))
     risk: Mapped[str] = mapped_column(String(32))
     solution_zh: Mapped[str] = mapped_column(String(4000))
+    recommended: Mapped[bool] = mapped_column(Boolean)
 
     __table_args__ = (
         UniqueConstraint("finding_id", "ordinal", name="uq_agent_finding_solution"),
         CheckConstraint("ordinal >= 1 AND ordinal <= 3", name="ck_agent_solution_ordinal"),
+        CheckConstraint(
+            "operation IN ('create', 'update', 'delete', 'retain', 'skip')",
+            name="ck_agent_solution_operation",
+        ),
+        CheckConstraint("risk IN ('low', 'medium', 'high')", name="ck_agent_solution_risk"),
     )
 
 
