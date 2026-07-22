@@ -207,6 +207,19 @@ async def test_deletes_task_without_successful_analysis(session) -> None:
 
 
 @pytest.mark.asyncio
+async def test_legacy_deletion_service_refuses_new_agent_task(session) -> None:
+    pending = task()
+    pending.workflow_version = "new-agent-v1"
+    session.add(pending)
+    await session.flush()
+
+    with pytest.raises(TaskDeletionBlocked, match="Agent"):
+        await TaskDeletionService(session).delete(pending.id, "school-1")
+
+    assert await session.get(ReconciliationTask, pending.id) is not None
+
+
+@pytest.mark.asyncio
 async def test_deletes_task_with_unexecuted_governance_proposal(session) -> None:
     protected = task()
     source_file_id = uuid4()

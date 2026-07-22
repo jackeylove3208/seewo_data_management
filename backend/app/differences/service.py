@@ -28,6 +28,7 @@ from app.schemas.differences import DifferenceSummary, DifferenceType
 from app.schemas.ingestion import SnapshotMode
 from app.schemas.matching import MatchEvidence, MatchMethod, MatchStatus
 from app.schemas.rematching import MatchingQualityCounts, MatchingQualityResult
+from app.workflow.versioning import require_legacy_workflow
 
 _CANONICAL_ADAPTER: TypeAdapter[CanonicalEntity] = TypeAdapter(CanonicalEntity)
 
@@ -56,6 +57,7 @@ class DifferenceDetectionService:
         task = await self.tasks.get_for_update(task_id)
         if task is None:
             raise LookupError(f"reconciliation task not found: {task_id}")
+        require_legacy_workflow(task.workflow_version)
         if task.stage not in {"matching", "differences_ready"}:
             raise ValueError("difference detection requires a completed matching stage")
         source_snapshot = await self.snapshots.get_for_task_role(

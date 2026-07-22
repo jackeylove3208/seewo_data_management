@@ -58,7 +58,13 @@ class TimeoutOnceDetector(DetectorStub):
         return type("DifferenceResult", (), values)()
 
 
-async def create_task(session, *, stage: str = "snapshots", tenant_id: str = "school-1"):
+async def create_task(
+    session,
+    *,
+    stage: str = "snapshots",
+    tenant_id: str = "school-1",
+    workflow_version: str = "legacy-v1",
+):
     record = ReconciliationTask(
         id=uuid4(),
         tenant_id=tenant_id,
@@ -67,6 +73,7 @@ async def create_task(session, *, stage: str = "snapshots", tenant_id: str = "sc
         entity_types=["teacher"],
         status="ready",
         stage=stage,
+        workflow_version=workflow_version,
         idempotency_key=f"workflow-service-{uuid4()}",
         request_hash="hash",
     )
@@ -167,3 +174,21 @@ async def test_workflow_rejects_unknown_task_stage(session) -> None:
 
     with pytest.raises(ValueError, match="cannot advance task stage"):
         await service.advance(record.id)
+
+
+@pytest.mark.asyncio
+async def test_legacy_workflow_never_invokes_old_stages_for_agent_task(session) -> None:
+    record = await create_task(session, workflow_version="new-agent-v1")
+    resolver, detector, analyzer = ResolverStub(), DetectorStub(), AnalyzerStub()
+    service = ReconciliationWorkflowService(
+        session,
+        operator=OperatorContext(operator_id="operator-1", tenant_id="school-1"),
+        resolver=resolver,
+        detector=detector,
+        analyzer=analyzer,
+    )
+
+    with pytest.raises(ValueError, match="legacy workflow cannot process"):
+        await service.advance(record.id)
+
+    assert (resolver.calls, detector.calls, analyzer.calls) == (0, 0, 0)

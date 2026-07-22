@@ -59,6 +59,10 @@ class TaskDeletionService:
         )
         if task is None:
             raise TaskDeletionNotFound(f"reconciliation task not found: {task_id}")
+        if task.workflow_version != "legacy-v1":
+            raise TaskDeletionBlocked(
+                "Agent 任务不能通过旧版删除链路删除；请使用 Agent 历史记录策略"
+            )
 
         execution_exists = await self.session.scalar(
             select(

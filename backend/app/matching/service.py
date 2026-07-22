@@ -37,6 +37,7 @@ from app.schemas.matching import (
     ResolutionSummary,
     SnapshotPair,
 )
+from app.workflow.versioning import require_legacy_workflow
 
 RESOLUTION_ORDER = (
     EntityType.ORGANIZATION_UNIT,
@@ -81,6 +82,7 @@ class EntityResolutionService:
         task = await self.tasks.get(task_id)
         if task is None:
             raise LookupError(f"reconciliation task not found: {task_id}")
+        require_legacy_workflow(task.workflow_version)
         source = await self.snapshots.get_for_task_role(task_id, SourceRole.AUTHORITATIVE)
         target = await self.snapshots.get_for_task_role(task_id, SourceRole.TARGET)
         if source is None or target is None:

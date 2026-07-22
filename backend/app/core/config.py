@@ -86,6 +86,11 @@ class Settings(BaseSettings):
     matching_quality_max_disable_ratio: float = Field(default=0.2, ge=0, le=1)
     model_retry_attempts: PositiveInt = 3
     model_retry_wait_seconds: NonNegativeFloat = 0.2
+    new_agent_enabled: bool = False
+    new_agent_analysis_only: bool = True
+    new_agent_csv_execution_enabled: bool = False
+    new_agent_api_connector_enabled: bool = False
+    new_agent_database_connector_enabled: bool = False
 
     @field_validator(
         "llm_auth_header",
@@ -153,6 +158,15 @@ class Settings(BaseSettings):
             encoded = json.dumps(values, ensure_ascii=True, separators=(",", ":")).encode()
             if len(encoded) > MAX_LLM_EXTRA_JSON_BYTES:
                 raise ValueError("embedding gateway extension JSON exceeds the size limit")
+        child_flags = (
+            self.new_agent_csv_execution_enabled,
+            self.new_agent_api_connector_enabled,
+            self.new_agent_database_connector_enabled,
+        )
+        if any(child_flags) and not self.new_agent_enabled:
+            raise ValueError("new_agent_enabled is required for Agent rollout flags")
+        if self.new_agent_analysis_only and self.new_agent_csv_execution_enabled:
+            raise ValueError("new_agent_analysis_only cannot enable target execution")
         return self
 
     @property
@@ -164,6 +178,10 @@ class Settings(BaseSettings):
             else ""
         )
         return bool(self.llm_url and api_key and self.llm_model and token_secret)
+
+    @property
+    def new_task_workflow_version(self) -> str:
+        return "new-agent-v1" if self.new_agent_enabled else "legacy-v1"
 
     def ensure_storage_directories(self) -> None:
         for directory in (

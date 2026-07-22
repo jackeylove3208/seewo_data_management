@@ -18,6 +18,7 @@ class TaskRepository:
         scope: SnapshotScope,
         idempotency_key: str,
         request_hash: str,
+        workflow_version: str = "legacy-v1",
     ) -> ReconciliationTask:
         task = ReconciliationTask(
             id=uuid4(),
@@ -27,6 +28,7 @@ class TaskRepository:
             entity_types=sorted(entity_type.value for entity_type in scope.entity_types),
             idempotency_key=idempotency_key,
             request_hash=request_hash,
+            workflow_version=workflow_version,
         )
         self.session.add(task)
         return task

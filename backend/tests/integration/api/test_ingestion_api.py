@@ -105,6 +105,7 @@ def test_real_csv_upload_preview_and_snapshot_creation(client: TestClient) -> No
     assert created.status_code == 202, created.text
     body = created.json()
     assert body["tenant_id"] == "school-1"
+    assert body["workflow_version"] == "legacy-v1"
     assert body["workflow"]["stage"] == "matching"
     assert body["workflow"]["status"] == "pending"
     assert body["status"] == "ready"
