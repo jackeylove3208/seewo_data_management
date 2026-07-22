@@ -54,3 +54,10 @@ The system SHALL make one initial model call plus at most three retries, SHALL e
 #### Scenario: User terminates a blocked run
 - **WHEN** the user explicitly terminates a blocked task
 - **THEN** the supervisor stops new work, records the termination report, releases the school lock, and permits the next task
+
+### Requirement: Preserve versioned cross-milestone handoffs
+The system SHALL allow independently delivered milestones to consume only persisted, versioned server contracts for task, run, phase, lease, event, checkpoint, finding, decision, operation, report, and restore state. A later milestone SHALL NOT advance a phase, write a work result, or reinterpret an immutable prior fact without the owning workflow version, tenant, task, run, phase, fencing token, and idempotency context.
+
+#### Scenario: A later worker uses a stale analysis context
+- **WHEN** a governance or reporting worker attempts to persist a result with an expired lease, a different phase, or a superseded contract version
+- **THEN** the backend rejects the write without changing the prior milestone's facts or releasing the school lock

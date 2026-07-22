@@ -55,3 +55,9 @@ The system SHALL retry retryable connector operations at most three times, SHALL
 - **WHEN** termination is requested after some operations succeeded
 - **THEN** no new operations start, the current atomic connector unit drains or aborts safely, prior successes remain, and reporting begins
 
+### Requirement: Consume frozen analysis contracts without changing reconciliation
+The governance milestone SHALL consume only persisted, versioned findings, selected solutions, risk decisions, approvals, and target versions from the analysis milestone. It SHALL NOT rerun identity matching, modify authoritative data, alter a finding's evidence membership, or use legacy difference rows as a substitute for a new-Agent finding.
+
+#### Scenario: A finding changes after plan compilation
+- **WHEN** the finding, solution, target version, or approval membership no longer matches the frozen plan input
+- **THEN** the backend rejects execution and requires a new versioned analysis or plan rather than mutating with stale evidence
