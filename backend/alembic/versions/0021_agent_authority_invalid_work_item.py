@@ -1,6 +1,6 @@
 """Allow read-only invalid-authority Agent findings.
 
-Revision ID: 0021_agent_authority_invalid_work_item
+Revision ID: 0021_authority_invalid_work
 Revises: 0020_agent_csv_analysis
 """
 
@@ -8,7 +8,7 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0021_agent_authority_invalid_work_item"
+revision: str = "0021_authority_invalid_work"
 down_revision: str | None = "0020_agent_csv_analysis"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

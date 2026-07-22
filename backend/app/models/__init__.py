@@ -1,11 +1,3 @@
-from app.models.agent_runtime import (
-    AgentCheckpointRecord,
-    AgentConversationRecord,
-    AgentFailureRecord,
-    AgentRunRecord,
-    AgentTaskEventRecord,
-    SchoolTaskLockRecord,
-)
 from app.models.agent_analysis import (
     AgentConnectorCapabilityRecord,
     AgentFindingDependencyRecord,
@@ -20,6 +12,14 @@ from app.models.agent_analysis import (
     AgentModelBatchItemRecord,
     AgentModelBatchRecord,
     AgentWorkItemRecord,
+)
+from app.models.agent_runtime import (
+    AgentCheckpointRecord,
+    AgentConversationRecord,
+    AgentFailureRecord,
+    AgentRunRecord,
+    AgentTaskEventRecord,
+    SchoolTaskLockRecord,
 )
 from app.models.analyses import AnalysisRecord
 from app.models.analysis_jobs import AnalysisJobRecord, AnalysisWorkItemRecord
