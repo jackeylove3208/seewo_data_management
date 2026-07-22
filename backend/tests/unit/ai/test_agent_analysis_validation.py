@@ -50,3 +50,14 @@ def test_rejects_authority_write_solution() -> None:
 
     with pytest.raises(AgentModelOutputError, match="authority"):
         validate_agent_model_output(output, (work_item_id,), authority_invalid_ids={work_item_id})
+
+
+def test_rejects_model_finding_kind_that_does_not_match_persisted_work() -> None:
+    work_item_id = uuid4()
+
+    with pytest.raises(AgentModelOutputError, match="kind"):
+        validate_agent_model_output(
+            _output(work_item_id),
+            (work_item_id,),
+            expected_kinds={work_item_id: "target_missing"},
+        )

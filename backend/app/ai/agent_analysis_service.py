@@ -79,4 +79,5 @@ class AgentAnalysisService:
             response.output,
             tuple(item.work_item_id for item in work_items),
             authority_invalid_ids=invalid_ids,
+            expected_kinds={item.work_item_id: item.kind for item in work_items},
         )

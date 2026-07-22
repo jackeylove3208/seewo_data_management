@@ -16,6 +16,7 @@ class AgentLeaseLost(RuntimeError):
 
 @dataclass(frozen=True)
 class AgentWorkContext:
+    worker_id: str
     run_id: UUID
     task_id: UUID
     tenant_id: str
@@ -130,6 +131,7 @@ class AgentWorker:
                 if claimed.lease_token is None:
                     raise RuntimeError("claimed Agent run has no lease token")
                 context = AgentWorkContext(
+                    worker_id=self.worker_id,
                     run_id=claimed.id,
                     task_id=claimed.task_id,
                     tenant_id=claimed.tenant_id,

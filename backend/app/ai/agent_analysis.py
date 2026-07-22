@@ -17,6 +17,7 @@ def validate_agent_model_output(
     expected_work_item_ids: tuple[UUID, ...],
     *,
     authority_invalid_ids: set[UUID] | None = None,
+    expected_kinds: Mapping[UUID, str] | None = None,
 ) -> tuple[AgentFindingPayload, ...]:
     raw_findings = output.get("findings")
     if not isinstance(raw_findings, list):
@@ -35,6 +36,8 @@ def validate_agent_model_output(
         )
     invalid_ids = authority_invalid_ids or set()
     for finding in findings:
+        if expected_kinds is not None and finding.kind != expected_kinds.get(finding.work_item_id):
+            raise AgentModelOutputError("model finding kind does not match persisted work")
         if finding.work_item_id in invalid_ids:
             if finding.kind != "authority_invalid" or any(
                 solution.operation != "skip" for solution in finding.solutions
