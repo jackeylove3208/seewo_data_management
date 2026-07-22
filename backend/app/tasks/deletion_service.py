@@ -5,6 +5,14 @@ from anyio import Path
 from sqlalchemy import delete, exists, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent_reporting.service import AgentReportingService
+from app.models.agent_runtime import (
+    AgentCheckpointRecord,
+    AgentFailureRecord,
+    AgentRunRecord,
+    AgentTaskEventRecord,
+    SchoolTaskLockRecord,
+)
 from app.models.analyses import AnalysisRecord
 from app.models.analysis_jobs import AnalysisJobRecord, AnalysisWorkItemRecord
 from app.models.differences import DifferenceRecord
@@ -24,6 +32,7 @@ from app.models.rematching import (
     EntityRematchJobRecord,
     EntityRematchWorkItemRecord,
 )
+from app.models.reporting import AgentReportRecord
 from app.models.snapshots import (
     CanonicalEntityRecord,
     IngestionIssueRecord,
@@ -60,8 +69,34 @@ class TaskDeletionService:
         if task is None:
             raise TaskDeletionNotFound(f"reconciliation task not found: {task_id}")
         if task.workflow_version != "legacy-v1":
-            raise TaskDeletionBlocked(
-                "Agent 任务不能通过旧版删除链路删除；请使用 Agent 历史记录策略"
+            if not await AgentReportingService(self.session).deletion_eligible(
+                task_id=task_id, tenant_id=tenant_id
+            ):
+                raise TaskDeletionBlocked("该 Agent 任务已有已验证的目标变更，不能删除")
+            await self.session.execute(
+                delete(AgentReportRecord).where(AgentReportRecord.task_id == task_id)
+            )
+            run_ids = list(
+                await self.session.scalars(
+                    select(AgentRunRecord.id).where(AgentRunRecord.task_id == task_id)
+                )
+            )
+            await self.session.execute(
+                delete(AgentTaskEventRecord).where(AgentTaskEventRecord.run_id.in_(run_ids))
+            )
+            await self.session.execute(
+                delete(AgentCheckpointRecord).where(AgentCheckpointRecord.run_id.in_(run_ids))
+            )
+            await self.session.execute(
+                delete(AgentFailureRecord).where(AgentFailureRecord.run_id.in_(run_ids))
+            )
+            await self.session.execute(
+                delete(SchoolTaskLockRecord).where(
+                    SchoolTaskLockRecord.owner_task_id == task_id
+                )
+            )
+            await self.session.execute(
+                delete(AgentRunRecord).where(AgentRunRecord.task_id == task_id)
             )
 
         execution_exists = await self.session.scalar(

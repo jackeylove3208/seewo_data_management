@@ -82,10 +82,10 @@ unchecked task is implied complete merely because its interface was scaffolded.
 
 ## 9. Reports, history, deletion, and rollback
 
-- [ ] 9.1 Extend fact-based reporting to cover normal completion, abnormal input, model failure, operator rejection, conflict outcomes, partial execution, termination, and rollback while separating facts from model narrative.
-- [ ] 9.2 Ensure invalid authoritative/target rows and excluded findings appear in reports, and mark abnormal-input reports as ineligible evidence for rollback planning.
+- [x] 9.1 Extend fact-based reporting to cover normal completion, abnormal input, model failure, operator rejection, conflict outcomes, partial execution, termination, and rollback while separating facts from model narrative.
+- [x] 9.2 Ensure invalid authoritative/target rows and excluded findings appear in reports, and mark abnormal-input reports as ineligible evidence for rollback planning.
 - [ ] 9.3 Persist backend-owned history records for every task outcome and expose report, phase, risk/approval summary, mutation status, and rollback relationship through typed APIs.
-- [ ] 9.4 Change task deletion eligibility to allow deletion only when neither governance nor rollback produced any verified successful target mutation; protect all mutation-bearing task/report/version/restore chains.
+- [x] 9.4 Change task deletion eligibility to allow deletion only when neither governance nor rollback produced any verified successful target mutation; protect all mutation-bearing task/report/version/restore chains.
 - [ ] 9.5 Implement rollback as a newly confirmed school-exclusive Agent task that derives a restore plan only from verified execution facts, waits for human confirmation, uses the governance executor, and produces its own report/history.
 - [ ] 9.6 Extend restore conflict and path tests for intervening versions, partial original execution, missing artifacts, rejected rollback approval, rollback termination, and independent rollback audit trails.
 

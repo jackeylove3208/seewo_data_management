@@ -26,6 +26,24 @@ class ImmutableReportingRecordError(ValueError):
     pass
 
 
+class AgentReportRecord(Base, TimestampMixin):
+    __tablename__ = "agent_reports"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    task_id: Mapped[UUID] = mapped_column(
+        ForeignKey("reconciliation_tasks.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    tenant_id: Mapped[str] = mapped_column(String(128), index=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    terminal_state: Mapped[str] = mapped_column(String(64), index=True)
+    facts: Mapped[dict[str, Any]] = mapped_column(json_document)
+    facts_hash: Mapped[str] = mapped_column(String(64))
+    content: Mapped[dict[str, Any]] = mapped_column(json_document)
+    rollback_eligible: Mapped[bool] = mapped_column(index=True)
+    deletion_eligible: Mapped[bool] = mapped_column(index=True)
+    generated_by: Mapped[str] = mapped_column(String(128), index=True)
+
+
 def _reject_report_job_fact_mutation(_mapper: object, _connection: object, target: object) -> None:
     state = inspect(target)
     if state is None:
@@ -152,3 +170,4 @@ for immutable_model in (
 
 event.listen(ReportJobRecord, "before_update", _reject_report_job_fact_mutation)
 event.listen(ReportJobRecord, "before_delete", _reject_mutation)
+event.listen(AgentReportRecord, "before_update", _reject_mutation)

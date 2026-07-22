@@ -30,6 +30,7 @@ from app.models.rematching import (
     EntityRematchWorkItemRecord,
 )
 from app.models.reporting import (
+    AgentReportRecord,
     GovernanceReportRecord,
     ReportJobRecord,
     RestoreExecutionLinkRecord,
@@ -62,6 +63,7 @@ __all__ = [
     "ExecutionBatchRecord",
     "ExecutionOperationRecord",
     "GovernanceReportRecord",
+    "AgentReportRecord",
     "GovernancePlanRecord",
     "GovernancePlanExplanationRecord",
     "GovernanceProposalRecord",

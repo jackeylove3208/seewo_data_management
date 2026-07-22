@@ -14,6 +14,7 @@ from app.models.reconciliation import ReconciliationTask
 from app.models.rematching import (
     EntityRematchJobRecord,
 )
+from app.models.reporting import AgentReportRecord
 from app.models.snapshots import Snapshot, SourceFile
 from app.models.workflow import WorkflowStageRun
 from app.tasks.deletion_service import (
@@ -207,16 +208,44 @@ async def test_deletes_task_without_successful_analysis(session) -> None:
 
 
 @pytest.mark.asyncio
-async def test_legacy_deletion_service_refuses_new_agent_task(session) -> None:
+async def test_agent_deletion_service_allows_report_without_verified_mutation(session) -> None:
     pending = task()
     pending.workflow_version = "new-agent-v1"
     session.add(pending)
     await session.flush()
 
-    with pytest.raises(TaskDeletionBlocked, match="Agent"):
-        await TaskDeletionService(session).delete(pending.id, "school-1")
+    await TaskDeletionService(session).delete(pending.id, "school-1")
+    assert await session.get(ReconciliationTask, pending.id) is None
 
-    assert await session.get(ReconciliationTask, pending.id) is not None
+
+@pytest.mark.asyncio
+async def test_agent_deletion_service_protects_verified_mutation(session) -> None:
+    protected = task()
+    protected.workflow_version = "new-agent-v1"
+    session.add(protected)
+    await session.flush()
+    session.add(
+        AgentReportRecord(
+            task_id=protected.id,
+            tenant_id=protected.tenant_id,
+            kind="sync",
+            terminal_state="partial",
+            facts={
+                "rollback_evidence": {"eligible": True, "successful_mutation_ids": ["op-1"]}
+            },
+            facts_hash="a" * 64,
+            content={},
+            rollback_eligible=True,
+            deletion_eligible=False,
+            generated_by="test",
+        )
+    )
+    await session.flush()
+
+    with pytest.raises(TaskDeletionBlocked, match="已验证"):
+        await TaskDeletionService(session).delete(protected.id, "school-1")
+
+    assert await session.get(ReconciliationTask, protected.id) is not None
 
 
 @pytest.mark.asyncio

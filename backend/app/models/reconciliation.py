@@ -1,7 +1,7 @@
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, String, Uuid
+from sqlalchemy import JSON, ForeignKey, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -19,6 +19,12 @@ class ReconciliationTask(Base, TimestampMixin):
     stage: Mapped[str] = mapped_column(String(32), default="ingestion")
     workflow_version: Mapped[str] = mapped_column(
         String(32), default="legacy-v1", server_default="legacy-v1", index=True
+    )
+    task_kind: Mapped[str] = mapped_column(
+        String(32), default="sync", server_default="sync", index=True
+    )
+    parent_task_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("reconciliation_tasks.id"), nullable=True, index=True
     )
     idempotency_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     request_hash: Mapped[str] = mapped_column(String(64))
