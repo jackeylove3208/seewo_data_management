@@ -1,4 +1,3 @@
-import re
 from enum import StrEnum
 from uuid import UUID
 
@@ -52,16 +51,23 @@ class AgentInputMark(BaseModel):
     affected_fields: tuple[str, ...] = ()
     inclusion_state: str = Field(pattern="^(included|excluded|anomaly)$")
     report_disposition: str = Field(min_length=1, max_length=64)
-    safe_evidence: dict[str, str | None] = Field(default_factory=dict)
+    safe_evidence: dict[str, str | int | bool | None] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _reject_sensitive_evidence(self) -> "AgentInputMark":
-        sensitive_keys = {"phone", "raw_phone", "original_phone", "original_value"}
-        if sensitive_keys.intersection(key.casefold() for key in self.safe_evidence):
-            raise ValueError("safe_evidence contains a sensitive field")
-        if any(
-            value is not None and re.search(r"(?<!\d)1\d{10}(?!\d)", value)
-            for value in self.safe_evidence.values()
-        ):
-            raise ValueError("safe_evidence contains a sensitive phone value")
+        allowed_keys = {
+            "code",
+            "entity_kind",
+            "has_identity",
+            "missing_count",
+            "missing_fields",
+            "present_count",
+            "row_number",
+            "source_role",
+        }
+        unsupported = set(self.safe_evidence).difference(allowed_keys)
+        if unsupported:
+            if unsupported.intersection({"phone", "raw_phone", "original_phone", "original_value"}):
+                raise ValueError("safe_evidence contains a sensitive field")
+            raise ValueError("safe_evidence contains an unsupported key")
         return self
