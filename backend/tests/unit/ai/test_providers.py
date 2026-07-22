@@ -60,6 +60,33 @@ async def test_llm_retries_transient_failure_and_returns_usage() -> None:
 
 
 @pytest.mark.asyncio
+async def test_llm_single_attempt_mode_does_not_hide_outer_agent_retries() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(503, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = HttpLLMProvider(
+            settings=Settings(
+                llm_url="https://model.example.test/v1/analyze",
+                llm_api_key="secret-token",
+                model_retry_attempts=3,
+                model_retry_wait_seconds=0,
+            ),
+            client=client,
+        )
+        with pytest.raises(TransientModelError):
+            await provider.complete_json_once(
+                LLMRequest(messages=(Message(role="user", content="analyze"),))
+            )
+
+    assert calls == 1
+
+
+@pytest.mark.asyncio
 async def test_llm_does_not_retry_client_error_or_log_authorization(caplog) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, json={"error": "unauthorized"}, request=request)
