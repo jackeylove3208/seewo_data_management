@@ -24,8 +24,7 @@ def _migration_test_database_url(value: str) -> URL:
         raise ValueError("migration test database URL must use PostgreSQL with asyncpg")
     if url.database != MIGRATION_TEST_DATABASE_NAME:
         raise ValueError(
-            "migration test database URL must target "
-            f"{MIGRATION_TEST_DATABASE_NAME!r}"
+            f"migration test database URL must target {MIGRATION_TEST_DATABASE_NAME!r}"
         )
     return url
 
@@ -196,6 +195,19 @@ def test_initial_migration_creates_ingestion_tables(tmp_path: Path) -> None:
         "agent_checkpoints",
         "agent_failures",
         "school_task_locks",
+        "agent_connector_capabilities",
+        "agent_input_records",
+        "agent_input_marks",
+        "agent_identity_postings",
+        "agent_identity_evidence",
+        "agent_identity_claims",
+        "agent_work_items",
+        "agent_model_batches",
+        "agent_model_batch_items",
+        "agent_model_attempts",
+        "agent_findings",
+        "agent_finding_solutions",
+        "agent_finding_dependencies",
     } <= tables
 
     task_columns = {
@@ -207,9 +219,7 @@ def test_initial_migration_creates_ingestion_tables(tmp_path: Path) -> None:
     assert task_columns["workflow_version"]["nullable"] is False
     run_columns = {
         column["name"]
-        for column in inspect(create_engine(f"sqlite:///{database_path}")).get_columns(
-            "agent_runs"
-        )
+        for column in inspect(create_engine(f"sqlite:///{database_path}")).get_columns("agent_runs")
     }
     assert "attempt_count" in run_columns
     assert "lease_token" in run_columns
@@ -228,6 +238,54 @@ def test_durable_analysis_work_items_include_created_at(tmp_path: Path) -> None:
         for column in inspect(create_engine(url)).get_columns("analysis_work_items")
     }
     assert columns["created_at"]["nullable"] is False
+
+
+def test_agent_csv_migration_preserves_seeded_legacy_task_and_guards_new_rows(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "agent-csv-history.db"
+    url = f"sqlite:///{database_path}"
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(config, "0019_agent_lease_fencing")
+    engine = create_engine(url)
+    task_id = uuid4().hex
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO reconciliation_tasks (
+                    id, tenant_id, scope_id, snapshot_mode, entity_types, status,
+                    stage, idempotency_key, request_hash, workflow_version, created_at
+                ) VALUES (
+                    :id, 'school-1', 'all', 'full', '["student"]', 'ready',
+                    'matching', 'seeded-legacy-task', 'legacy-hash', 'legacy-v1',
+                    CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {"id": task_id},
+        )
+
+    command.upgrade(config, "head")
+
+    with engine.connect() as connection:
+        row = connection.execute(
+            text("SELECT id, workflow_version FROM reconciliation_tasks WHERE id = :id"),
+            {"id": task_id},
+        ).one()
+        assert row == (task_id, "legacy-v1")
+        triggers = {
+            value
+            for value in connection.scalars(
+                text(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'trigger' AND name LIKE 'reject_agent_%'"
+                )
+            )
+        }
+        assert "reject_agent_input_records_update" in triggers
+        assert "reject_agent_model_attempts_delete" in triggers
 
 
 def test_upgrade_reconciles_unversioned_create_all_database(
@@ -273,10 +331,13 @@ def test_upgrade_reconciles_unversioned_create_all_database(
             )
             == task_id
         )
-        assert connection.scalar(
-            text("SELECT workflow_version FROM reconciliation_tasks WHERE id = :id"),
-            {"id": task_id},
-        ) == "legacy-v1"
+        assert (
+            connection.scalar(
+                text("SELECT workflow_version FROM reconciliation_tasks WHERE id = :id"),
+                {"id": task_id},
+            )
+            == "legacy-v1"
+        )
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) in set(
             ScriptDirectory.from_config(Config("alembic.ini")).get_heads()
         )
@@ -430,9 +491,7 @@ def test_reporting_restore_migration_is_reversible_and_immutable(tmp_path: Path)
         "restore_execution_results",
     }
     assert {
-        f"reject_{table}_{action}"
-        for table in immutable_tables
-        for action in ("update", "delete")
+        f"reject_{table}_{action}" for table in immutable_tables for action in ("update", "delete")
     } <= triggers
     assert {"reject_report_jobs_fact_update", "reject_report_jobs_delete"} <= triggers
 

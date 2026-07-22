@@ -64,3 +64,9 @@ The workbench SHALL never mutate a target directly; it SHALL submit only version
 - **WHEN** the approval command succeeds
 - **THEN** the card records approval and backend execution may later proceed, but the browser does not send target field changes
 
+### Requirement: Consume typed backend contracts as the sole workflow truth
+The frontend milestone SHALL render only typed, versioned backend APIs and persisted event cursors for Agent state, findings, approvals, reports, history, and rollback. It SHALL NOT read Agent persistence directly, generate operations, use localStorage as task-history truth, or infer a lock/phase/mutation state from UI state.
+
+#### Scenario: A browser reconnects after another client advances work
+- **WHEN** the workbench resumes with an event cursor
+- **THEN** it refreshes from backend facts and renders the current server state without replaying or inventing a client-side transition

@@ -3,6 +3,20 @@ CSV analysis-only, complete CSV governance, reports/history/rollback, frontend u
 real API/database connectors. A later milestone may depend on completed foundation tasks, but no
 unchecked task is implied complete merely because its interface was scaffolded.
 
+## Independent-conversation delivery matrix
+
+The following rows are mandatory handoff boundaries for separate implementation conversations. They do not replace the numbered checkboxes below or mark any checkbox complete.
+
+| Conversation | Owns | Depends on | Must not change | Merge gate |
+| --- | --- | --- | --- | --- |
+| 2. CSV analysis mode | 1.4, 2.3–2.5, CSV parts of 3.1–3.4, 4.4–4.6, analysis-only handlers, 6.1–6.9 | 1.1–1.3, 2.1–2.2, 4.1, 5.1/5.3/5.6 | governance writes, approvals, reports/history, public APIs, frontend, API/database connectors | focused + upstream regression + clean migration + privacy/contract tests; execution flag remains off |
+| 3. CSV complete governance | 2.6–2.7, 5.4–5.5/5.7, 7.1–7.6, 8.1–8.6 | merged Conversation 2 persisted inputs/work/finding/solution contracts | identity matching, model batch membership, authoritative source, reports/rollback, non-CSV adapters | governance E2E with CSV version verification, lock/retry/approval regression, no authority mutation |
+| 4. Reports and rollback | 9.1–9.6 and reporting/rollback worker portions of 5.2 | merged Conversation 3 verified execution facts/target versions | completed execution facts, restore-from-narrative, frontend workflow ownership | terminal/partial/termination/rollback tests, protected-history and restore-conflict regression |
+| 5. Unified frontend | 10.1–10.4, 11.1–11.7, frontend quality gates 12.5 | merged typed APIs and events from Conversations 2–4 | direct persistence access, client-built mutations, localStorage as source of truth | OpenAPI/API compatibility, frontend unit/type/lint/build/Playwright, legacy rendering regression |
+| 6. API and database connectors | 3.5–3.7, connector portions of 3.6/8.4, connector/rollout gates 12.3/12.7 | merged CSV governance safety and operation contract | arbitrary SQL/DSNs/credentials to model or client, third-party writes, placeholder success | connector contract/E2E tests, secret-free logs, capability and optimistic-version verification |
+
+Before a new conversation begins, its owner SHALL record the current mainline commit, Alembic head, feature-flag state, versioned input/output schema, owned files/tables, and required regression commands. Before merging, it SHALL rebase onto the latest predecessor, reconcile migration heads and contract versions, preserve legacy reads, and rerun its own plus affected predecessor gates. A later conversation may add adapters and additive versions, but SHALL NOT edit an already-merged migration, reinterpret immutable facts, or treat an unchecked upstream task as complete.
+
 ## 1. Baseline and migration boundary
 
 - [x] 1.1 Add characterization tests for the current CSV ingestion, matching/difference/analysis workflow, governed execution, reporting, restore, and task-deletion behavior before changing orchestration.
@@ -17,15 +31,15 @@ unchecked task is implied complete merely because its interface was scaffolded.
 - [ ] 2.3 Add persistence for normalized input records, invalid-row marks, exclusion reasons, source locators, immutable source evidence, and connector capability snapshots.
 - [ ] 2.4 Add persistence for reconciliation findings, candidate-key evidence, authoritative-row claims, target-row claims, duplicate groups, missing-source findings, and deterministic idempotency keys.
 - [ ] 2.5 Add persistence for model batches and attempts, generated Chinese categories, analyses, proposed actions, risk levels, dependency edges, and model provenance.
-- [ ] 2.6 Add persistence for grouped approvals, clarification requests, conversation decisions, second confirmations, rejection reasons, and their audit identities/timestamps.
-- [ ] 2.7 Add repository-level concurrency, replay, and crash-recovery tests for locks, events, checkpoints, model attempts, approvals, and findings.
+- [x] 2.6 Add persistence for grouped approvals, clarification requests, conversation decisions, second confirmations, rejection reasons, and their audit identities/timestamps.
+- [x] 2.7 Add repository-level concurrency, replay, and crash-recovery tests for locks, events, checkpoints, model attempts, approvals, and findings.
 
 ## 3. Three-entity ingestion contract and connectors
 
 - [ ] 3.1 Define `agent-contract-v1` schemas for only `department`, `student`, and `teacher`, with class retained solely as an optional student attribute and normalized number/phone/email candidate keys.
 - [ ] 3.2 Reuse the existing upload storage, CSV reader, field mapping, normalization, hashing, snapshot, and quarantine modules behind a new ingestion-sub-agent adapter without changing historical snapshot interpretation.
 - [ ] 3.3 Implement authority validation: every third-party department/teacher row requires category, name, number, phone, and email; every third-party student row additionally requires class; invalid rows are marked, excluded, never written back, and reported.
-- [ ] 3.4 Implement target validation: a Seewo row is invalid only when number, phone, and email are all absent; invalid rows are marked and excluded from reconciliation but are not changed during ingestion.
+- [ ] 3.4 Implement target validation: a Seewo row with no number, phone, or email is marked but retained as a deterministic target-extra candidate; it is never changed during ingestion, while missing category, class, or name remains an ordinary downstream difference.
 - [ ] 3.5 Replace placeholder API/database connector behavior with explicit configuration, credential references, paging/streaming, schema discovery, read/write capability declarations, health checks, and actionable configuration errors.
 - [ ] 3.6 Keep CSV target versioning as the CSV mutation adapter and add equivalent capability-checked adapters for configured API and database targets; enforce third-party connectors as read-only.
 - [ ] 3.7 Add synthetic connector contract tests covering CSV, paged API, database reads, malformed schemas, partial fetch failures, unsupported write capabilities, and secret-free logs.
@@ -45,10 +59,10 @@ unchecked task is implied complete merely because its interface was scaffolded.
 - [x] 5.1 Implement the supervisor state machine for start confirmation, lock acquisition, ingestion, analysis, approvals/clarifications, execution, reporting, completed/terminated/failed-waiting states, and rollback tasks.
 - [ ] 5.2 Implement dedicated durable workers/handlers for ingestion, reconciliation analysis, governance execution, reporting, and rollback while reusing the existing durable-job polling pattern where appropriate.
 - [x] 5.3 Persist every phase transition, lease, event, and checkpoint transactionally so a process restart resumes the incomplete phase without repeating a completed phase unit or releasing the school lock; mutation idempotency remains task 8.4.
-- [ ] 5.4 Enforce one active task per school across conversational creation, external-data sync, and rollback; reject or queue no second task until the owner reports completion or is explicitly terminated.
-- [ ] 5.5 Implement explicit termination that stops future work, does not auto-rollback committed changes, generates a termination report, and releases the lock only after that report is persisted.
+- [x] 5.4 Enforce one active task per school across conversational creation, external-data sync, and rollback; reject or queue no second task until the owner reports completion or is explicitly terminated.
+- [x] 5.5 Implement explicit termination that stops future work, does not auto-rollback committed changes, generates a termination report, and releases the lock only after that report is persisted.
 - [x] 5.6 Implement initial model call plus at most three retries per batch; after exhaustion persist a sanitized error event, stop advancement, keep the lock, and advertise termination as the only recovery command; the public command API remains task 10.1.
-- [ ] 5.7 Add state-machine tests for duplicate delivery, stale workers, crash/restart, timeout, termination at each phase, report failure, model retry exhaustion, and lock handoff after valid terminal states.
+- [x] 5.7 Add state-machine tests for duplicate delivery, stale workers, crash/restart, timeout, termination at each phase, report failure, model retry exhaustion, and lock handoff after valid terminal states.
 
 ## 6. Reconciliation and mandatory AI analysis
 
@@ -64,21 +78,21 @@ unchecked task is implied complete merely because its interface was scaffolded.
 
 ## 7. Human approvals and conflict dialogue
 
-- [ ] 7.1 Implement risk policy with student-phone exposure/change and destructive deletes initially high risk, plus a versioned server-side extension point for later risk rules.
-- [ ] 7.2 Aggregate equivalent high-risk findings by issue type and proposed operation so one agree/reject card can govern a homogeneous batch without merging incompatible evidence.
-- [ ] 7.3 Implement conflict cards that temporarily reopen conversation input, present masked structured evidence, accept natural-language operator guidance, and have the model translate it into a bounded typed decision.
-- [ ] 7.4 Require a second explicit confirmation of the interpreted conflict decision before it becomes executable, and retain the original text, interpretation, confirmation, actor, and timestamp.
-- [ ] 7.5 Treat rejected high-risk groups and unresolved conflicts as non-executable while allowing independent approved work to continue and ensuring reports describe every skipped item.
-- [ ] 7.6 Add API and service tests for grouped consent, mixed groups, rejection, clarification parsing, invalid interpretation, second-confirmation denial, privacy masking, and independent continuation.
+- [x] 7.1 Implement risk policy with student-phone exposure/change and destructive deletes initially high risk, plus a versioned server-side extension point for later risk rules.
+- [x] 7.2 Aggregate equivalent high-risk findings by issue type and proposed operation so one agree/reject card can govern a homogeneous batch without merging incompatible evidence.
+- [x] 7.3 Implement conflict cards that temporarily reopen conversation input, present masked structured evidence, accept natural-language operator guidance, and have the model translate it into a bounded typed decision.
+- [x] 7.4 Require a second explicit confirmation of the interpreted conflict decision before it becomes executable, and retain the original text, interpretation, confirmation, actor, and timestamp.
+- [x] 7.5 Treat rejected high-risk groups and unresolved conflicts as non-executable while allowing independent approved work to continue and ensuring reports describe every skipped item.
+- [x] 7.6 Add API and service tests for grouped consent, mixed groups, rejection, clarification parsing, invalid interpretation, second-confirmation denial, privacy masking, and independent continuation.
 
 ## 8. Governance planning and execution
 
-- [ ] 8.1 Adapt the existing governance proposal, risk, dependency-graph, preflight, executor, verification, and execution-record services to consume new Agent findings without depending on legacy difference rows.
-- [ ] 8.2 Generate only typed allow-listed create/update/delete operations against the Seewo target, bind each operation to source evidence and approvals, and reject any operation that would mutate third-party authority data.
-- [ ] 8.3 Resolve dependencies so failed operations block only dependants, independent operations continue, and successful operations are never automatically reverted after a later failure or termination.
+- [x] 8.1 Adapt the existing governance proposal, risk, dependency-graph, preflight, executor, verification, and execution-record services to consume new Agent findings without depending on legacy difference rows.
+- [x] 8.2 Generate only typed allow-listed create/update/delete operations against the Seewo target, bind each operation to source evidence and approvals, and reject any operation that would mutate third-party authority data.
+- [x] 8.3 Resolve dependencies so failed operations block only dependants, independent operations continue, and successful operations are never automatically reverted after a later failure or termination.
 - [ ] 8.4 Preserve CSV version artifacts and implement equivalent before/after evidence and verification for API/database mutations, including idempotency and optimistic conflict detection.
-- [ ] 8.5 Record verified mutation outcome per operation and batch so deletion policy, reporting, and rollback eligibility are based on actual successful target changes rather than the existence of an execution batch.
-- [ ] 8.6 Add end-to-end synthetic tests for create/update/delete, duplicate retention, partial batch failure, dependency blocking, retry idempotency, target conflict, source immutability, and privacy-safe execution evidence.
+- [x] 8.5 Record verified mutation outcome per operation and batch so deletion policy, reporting, and rollback eligibility are based on actual successful target changes rather than the existence of an execution batch.
+- [x] 8.6 Add end-to-end synthetic tests for create/update/delete, duplicate retention, partial batch failure, dependency blocking, retry idempotency, target conflict, source immutability, and privacy-safe execution evidence.
 
 ## 9. Reports, history, deletion, and rollback
 

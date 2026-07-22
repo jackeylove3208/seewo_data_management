@@ -148,3 +148,41 @@ class AgentSupervisorService:
             },
         )
         return blocked
+
+    async def terminate(self, *, run_id: UUID, reason: str) -> AgentRunRecord:
+        """Persist a deterministic terminal summary before releasing the school lock."""
+        run = await self.repository.get_run(run_id, for_update=True)
+        if run is None or run.tenant_id != self.operator.tenant_id:
+            raise LookupError("Agent run not found")
+        current_status = AgentRunStatus(run.status)
+        if current_status in {AgentRunStatus.COMPLETED, AgentRunStatus.TERMINATED}:
+            return run
+        if current_status is not AgentRunStatus.TERMINATING:
+            run = await self.repository.transition_run(
+                run_id, requested_status=AgentRunStatus.TERMINATING
+            )
+        await self.repository.append_event(
+            run_id,
+            "termination.report.persisted",
+            {
+                "reason": reason[:128],
+                "phase": run.phase,
+                "status": "terminated",
+                "facts_only": True,
+                "mutations_preserved": True,
+            },
+        )
+        run = await self.repository.transition_run(
+            run_id, requested_status=AgentRunStatus.TERMINATED
+        )
+        await self.repository.append_event(
+            run_id,
+            "run.terminated",
+            {"phase": run.phase, "status": run.status, "reason": reason[:128]},
+        )
+        await self.repository.release_school_lock(
+            tenant_id=self.operator.tenant_id,
+            run_id=run_id,
+            reason="terminated",
+        )
+        return run
