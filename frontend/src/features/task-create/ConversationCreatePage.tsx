@@ -218,7 +218,7 @@ export function ConversationCreatePage({
   const taskActive = Boolean(task && !["completed", "terminated", "failed"].includes(task.status));
 
   return (
-    <main className="page-shell conversation-create-page">
+    <main className="page-shell conversation-create-page apple-page">
       <header className="conversation-page-heading">
         <span className="page-heading-mark"><MessageSquareText size={20} /></span>
         <div>

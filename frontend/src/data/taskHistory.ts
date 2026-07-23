@@ -21,6 +21,7 @@ export function toTaskHistoryItem(item: AgentHistoryItem): TaskHistoryItem {
     reportId: item.report_id,
     rollbackEligible: item.rollback_eligible,
     deletionEligible: item.deletion_eligible,
+    operationSummary: item.operation_summary,
   };
 }
 

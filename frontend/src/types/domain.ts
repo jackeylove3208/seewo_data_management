@@ -43,6 +43,7 @@ export interface TaskHistoryItem {
   reportId?: string | null;
   rollbackEligible?: boolean;
   deletionEligible?: boolean;
+  operationSummary?: { succeeded: number; failed: number; blocked: number };
 }
 
 export interface EntitySummary {

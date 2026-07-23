@@ -160,7 +160,7 @@ export function TaskCreatePage({
   const ready = Boolean(draft.title.trim() && draft.entityTypes.length && readyConnector(draft.source) && readyConnector(draft.target));
 
   return (
-    <main className="page-shell external-sync-page">
+    <main className="page-shell external-sync-page apple-page">
       <header className="sync-page-heading">
         <span className="page-heading-mark sync-heading-mark"><RefreshCw size={20} /></span>
         <div>
@@ -192,7 +192,7 @@ export function TaskCreatePage({
                     <option value="csv">CSV 文件</option><option value="api">API 连接</option><option value="database">数据库连接</option>
                   </select>
                   {connector?.kind === "csv" && <AttachmentPicker label={`${label} CSV`} inputLabel={`选择${label} CSV`} tone={role === "source" ? "source" : "target"} connector={connector} disabled={isSubmitting} onChange={(file) => void prepareFile(role, file)} />}
-                  {connector?.kind !== "csv" && <input aria-label={`${label}配置 ID`} placeholder="输入后端配置 ID" disabled={isSubmitting} value={connector?.configurationId ?? ""} onChange={(event) => setDraft((current) => ({ ...current, [role]: { kind: connector?.kind ?? "api", configurationId: event.target.value } }))} />}
+                  {connector?.kind !== "csv" && <><input aria-label={`${label}配置 ID`} placeholder="输入后端配置 ID" disabled={isSubmitting} value={connector?.configurationId ?? ""} onChange={(event) => setDraft((current) => ({ ...current, [role]: { kind: connector?.kind ?? "api", configurationId: event.target.value } }))} /><small className="connector-capability-note">当前连接器仅支持配置占位，真实读取与写入暂不支持。</small></>}
                 </fieldset>
               );
             })}

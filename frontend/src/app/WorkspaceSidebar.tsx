@@ -86,7 +86,7 @@ export function WorkspaceSidebar({
 
   return (
     <aside
-      className={className}
+      className={`${className} apple-sidebar`}
       aria-label="对账工作区"
       aria-hidden={mobileMode && !mobileOpen ? true : undefined}
       inert={mobileMode && !mobileOpen ? true : undefined}

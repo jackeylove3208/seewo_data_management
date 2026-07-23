@@ -38,24 +38,32 @@ export function TaskListPage() {
   }, []);
   const tasks = backendTasks ?? allTasks();
   const issueCount = tasks.reduce((sum, task) => sum + task.issueCount, 0);
+  const operationTotals = tasks.reduce((totals, task) => ({
+    succeeded: totals.succeeded + (task.operationSummary?.succeeded ?? 0),
+    failed: totals.failed + (task.operationSummary?.failed ?? 0),
+    blocked: totals.blocked + (task.operationSummary?.blocked ?? 0),
+  }), { succeeded: 0, failed: 0, blocked: 0 });
+  const operationCount = operationTotals.succeeded + operationTotals.failed + operationTotals.blocked;
+  const operationSuccessRate = operationCount ? `${Math.round((operationTotals.succeeded / operationCount) * 100)}%` : "暂无数据";
 
   return (
-    <main className="page-shell task-list-page">
+    <main className="page-shell task-list-page apple-page">
       <section className="page-heading">
         <div>
-          <p className="eyebrow">RECONCILIATION TASKS</p>
+          <p className="eyebrow">WORKSPACE OVERVIEW · 当前加载历史</p>
           <h1>对账任务</h1>
-          <p>从一组数据开始，查看组织实体解析和差异结果。</p>
+          <p>从一组数据开始，查看组织实体解析和差异结果。指标仅统计当前加载的历史任务。</p>
         </div>
         <Button type="primary" icon={<Plus size={16} />} onClick={() => navigate("/tasks/new")}>
           外部数据同步
         </Button>
       </section>
 
-      <section className="summary-band" aria-label="任务概览">
+      <section className="summary-band apple-metric-grid" aria-label="任务概览">
         <div><FileCheck2 size={18} /><span>历史任务</span><strong>{tasks.length}</strong></div>
         <div><CircleCheck size={18} /><span>已完成</span><strong>{tasks.filter((task) => task.status === "ready").length}</strong></div>
         <div><RefreshCcw size={18} /><span>待处理问题</span><strong>{issueCount}</strong></div>
+        <div><CircleCheck size={18} /><span>治理操作成功率</span><strong>{operationSuccessRate}</strong></div>
       </section>
 
       <section className="task-list" aria-label="历史任务">

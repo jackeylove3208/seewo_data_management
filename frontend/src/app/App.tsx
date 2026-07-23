@@ -46,7 +46,7 @@ function AppLayout() {
   }
 
   return (
-    <div className="app-shell">
+    <div className="app-shell apple-workspace">
       <WorkspaceSidebar mobileOpen={mobileOpen} mobileMode={mobileMode} onMobileClose={closeMobileSidebar} closeButtonRef={closeButtonRef} />
       {mobileOpen && <button className="workspace-overlay" type="button" aria-label="关闭导航" onClick={closeMobileSidebar} />}
       <div className="workspace-main">
