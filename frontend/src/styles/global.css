@@ -2777,6 +2777,63 @@ body:has(.apple-workspace) { background: #080b18; color: #f4f6ff; }
 .apple-page .draft-entity-grid .ant-checkbox-wrapper { color: #dfe3f5; }
 .apple-page .status-label, .apple-page .ant-tag { border: 0; background: rgba(103, 111, 235, 0.22); color: #c5c8ff; }
 
+/* Final contrast and typography pass */
+:root {
+  --apple-font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --apple-border: rgba(124, 139, 255, 0.24);
+}
+body:has(.apple-workspace), .apple-workspace, .apple-workspace button, .apple-workspace input, .apple-workspace textarea, .apple-workspace select {
+  font-family: var(--apple-font);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+.apple-workspace *, .apple-workspace *::before, .apple-workspace *::after { border-color: var(--apple-border); }
+.apple-sidebar { border-right: 1px solid rgba(116, 132, 255, 0.24) !important; }
+.apple-sidebar .workspace-agent-entry, .apple-sidebar .workspace-new-task {
+  color: #cbd2ed !important;
+  border: 1px solid rgba(124, 139, 255, 0.2) !important;
+}
+.apple-sidebar .workspace-agent-entry:hover, .apple-sidebar .workspace-agent-entry.active,
+.apple-sidebar .workspace-new-task:hover, .apple-sidebar .workspace-new-task.active {
+  color: #ffffff !important;
+  background: linear-gradient(135deg, rgba(92, 96, 222, 0.72), rgba(45, 122, 169, 0.52)) !important;
+  border-color: rgba(145, 154, 255, 0.72) !important;
+}
+.apple-sidebar .workspace-agent-entry:hover *, .apple-sidebar .workspace-agent-entry.active *,
+.apple-sidebar .workspace-new-task:hover *, .apple-sidebar .workspace-new-task.active * { color: #ffffff !important; }
+.apple-sidebar .workspace-history-item:hover, .apple-sidebar .workspace-history-item.active {
+  color: #ffffff !important;
+  background: rgba(96, 108, 196, 0.28) !important;
+  border: 1px solid rgba(124, 139, 255, 0.34) !important;
+}
+.apple-sidebar .workspace-history-item:hover *, .apple-sidebar .workspace-history-item.active * { color: #ffffff !important; }
+
+.apple-page .conversation-surface, .apple-page .sync-methods, .apple-page .manual-sync-form, .apple-page .task-list {
+  border: 1px solid rgba(124, 139, 255, 0.28) !important;
+}
+.apple-page .conversation-message, .apple-page .conversation-card, .apple-page .agent-event, .apple-page .sync-method-entry,
+.apple-page .draft-fieldset, .apple-page .sync-attachment, .apple-page .task-row-wrapper {
+  border-color: rgba(124, 139, 255, 0.2) !important;
+}
+.apple-page .conversation-message.assistant { background: rgba(42, 52, 104, 0.4) !important; }
+.apple-page .conversation-message.assistant strong, .apple-page .conversation-message.user strong { color: #ffffff !important; }
+.apple-page .conversation-message.assistant .message-avatar { color: #c2c5ff !important; background: rgba(90, 96, 220, 0.4) !important; }
+.apple-page .conversation-card strong { color: #ffffff !important; }
+
+/* Ant Design primary buttons otherwise fall back to the legacy green theme. */
+.apple-page .ant-btn-primary, .apple-page .ant-btn-primary:hover, .apple-page .ant-btn-primary:focus {
+  border-color: transparent !important;
+  color: #ffffff !important;
+  background: linear-gradient(135deg, #6b70ef, #4bafd0) !important;
+  box-shadow: 0 12px 26px rgba(75, 122, 218, 0.3) !important;
+}
+.apple-page .ant-btn-default, .apple-page .ant-btn-default:hover, .apple-page .ant-btn-default:focus {
+  color: #dce2fa !important;
+  border-color: rgba(124, 139, 255, 0.32) !important;
+  background: rgba(28, 36, 76, 0.76) !important;
+}
+.apple-page .ant-btn-primary span, .apple-page .ant-btn-primary svg { color: #ffffff !important; }
+
 /* V2 task conversation and external data sync */
 body {
   color: var(--v2-ink);
