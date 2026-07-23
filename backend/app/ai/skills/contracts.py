@@ -3,6 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.agent_graph.contracts import SupervisorContextV1, SupervisorDecisionV1
 from app.agent_runtime.state_machine import AgentPhase, AgentRunStatus
 
 EntityKind = Literal["department", "student", "teacher"]
@@ -222,6 +223,7 @@ AGENT_SKILL_SCHEMAS: dict[str, type[BaseModel]] = {
         GovernanceReportInput,
         RollbackAssessmentInput,
         RollbackExecutionInput,
+        SupervisorContextV1,
         SupervisorPhaseDecision,
         SourceInspectionResult,
         NormalizedOrganizationBatch,
@@ -233,5 +235,6 @@ AGENT_SKILL_SCHEMAS: dict[str, type[BaseModel]] = {
         AgentGovernanceReport,
         AgentRollbackAssessment,
         AgentRollbackOutcome,
+        SupervisorDecisionV1,
     )
 }
