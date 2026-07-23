@@ -5,7 +5,6 @@ import {
   History,
   MessageSquarePlus,
   PanelLeftClose,
-  RefreshCw,
   Trash2,
   X,
 } from "lucide-react";
@@ -110,10 +109,6 @@ export function WorkspaceSidebar({
           >
             <MessageSquarePlus size={18} />
             <span className="workspace-label">新建对话</span>
-          </NavLink>
-          <NavLink className="workspace-new-task" to="/tasks/new" aria-label="外部数据同步" title="外部数据同步" onClick={onMobileClose}>
-            <RefreshCw size={18} />
-            <span className="workspace-label">外部数据同步</span>
           </NavLink>
         </div>
 

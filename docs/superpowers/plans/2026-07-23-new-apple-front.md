@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 将现有 React 工作台统一为 Apple 风格的轻量玻璃质感界面，并让“新建对话”“外部数据同步”与任务概览共用同一套真实数据展示规则。
+**Goal:** 将现有 React 工作台统一为 Apple 风格的轻量玻璃质感界面，让任务主页、“新建对话”和“外部数据同步”共用同一套真实数据展示规则，并将外部数据同步入口收敛到主页右上角。
 
 **Architecture:** 保留现有路由、API 调用、表单行为和可访问性语义，仅在 React 页面结构中补充视觉层级，并在 `global.css` 中新增一组 scoped Apple workspace tokens。首页指标只从 `/api/agent/history` 的现有 `issue_summary`、`operation_summary` 和任务状态派生，不新增伪造字段；后端需求另写书面契约。
 
@@ -15,6 +15,7 @@
 - 不修改后端代码；后端配合项写入 `docs/backend/new-apple-front-backend-notes.md`。
 - 不把视觉占位数字接入正式页面；指标必须来自已有 API 或显示“暂无数据”。
 - 保持窄屏导航、键盘焦点、表单提交和现有测试语义。
+- 左侧导航只保留“新建对话”；“外部数据同步”仅从任务主页右上角进入，`/tasks/new` 路由和内部功能不变。
 
 ---
 
