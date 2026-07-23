@@ -53,9 +53,9 @@ export function TaskDetailPage() {
   const agentTask = useQuery({
     queryKey: ["agent-task", taskId],
     queryFn: ({ signal }) => agentApi.task(taskId, signal),
-    enabled: !historyTask || historyTask.workflowVersion === "new-agent-v1",
+    enabled: !historyTask || ["new-agent-v1", "agent-graph-v1"].includes(historyTask.workflowVersion ?? ""),
   });
-  const isAgentTask = agentTask.data?.workflow_version === "new-agent-v1";
+  const isAgentTask = ["new-agent-v1", "agent-graph-v1"].includes(agentTask.data?.workflow_version ?? "");
   const demo = Boolean(historyTask?.isDemo);
   const workflow = useReconciliationWorkflow(taskId, !demo);
   const [batchOpen, setBatchOpen] = useState(false);

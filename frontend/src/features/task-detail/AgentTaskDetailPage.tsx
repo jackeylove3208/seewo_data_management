@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Alert, Button, Modal, Progress, Skeleton, Tag } from "antd";
-import { FileInput, Flag, GitBranch, RotateCcw, ShieldCheck, StopCircle } from "lucide-react";
+import { Check, FileInput, Flag, GitBranch, RotateCcw, ShieldCheck, StopCircle, X } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
@@ -25,10 +25,18 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
   const [terminateError, setTerminateError] = useState<string>();
   const [rollbackLoading, setRollbackLoading] = useState(false);
   const [rollbackPreview, setRollbackPreview] = useState<AgentRollbackPreview>();
+  const [gateLoading, setGateLoading] = useState<string>();
   const task = useQuery({
     queryKey: ["agent-task", taskId],
     queryFn: ({ signal }) => agentApi.task(taskId, signal),
     initialData: initialTask,
+    refetchInterval: 3000,
+  });
+  const graph = useQuery({
+    queryKey: ["agent-task-graph", taskId],
+    queryFn: ({ signal }) => agentApi.graph(taskId, signal),
+    enabled: task.data?.workflow_version === "agent-graph-v1",
+    refetchInterval: 2000,
   });
   const events = useQuery({
     queryKey: ["agent-task-events", taskId],
@@ -42,7 +50,15 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
 
   const current = task.data;
   const terminal = ["completed", "terminated", "failed"].includes(current.status);
-  const completed = phaseIndex(current.phase);
+  const graphStageIndex = {
+    data_ingestion: 0,
+    agent_analysis: 1,
+    governance_execution: 2,
+    report_and_rollback: 3,
+    terminal: phases.length,
+  } as const;
+  const completed = graph.data ? graphStageIndex[graph.data.business_stage] : phaseIndex(current.phase);
+  const pendingGates = graph.data?.human_gates.filter((gate) => gate.status === "pending") ?? [];
   async function terminate() {
     try {
       await agentApi.terminate(taskId);
@@ -92,10 +108,23 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
     }
   }
 
+  async function decideGate(gateId: string, decision: "approve" | "reject") {
+    setGateLoading(gateId);
+    setTerminateError(undefined);
+    try {
+      await agentApi.decideGraphGate(taskId, gateId, decision);
+      await graph.refetch();
+    } catch (error) {
+      setTerminateError(error instanceof Error ? error.message : "审批操作未完成");
+    } finally {
+      setGateLoading(undefined);
+    }
+  }
+
   return (
     <main className="page-shell task-detail-page agent-task-detail-page">
       <BackButton fallback="/tasks" label="返回任务列表" />
-      <section className="detail-heading"><div><span className="heading-tags"><Tag color={terminal ? "success" : "processing"}>{terminal ? "任务结束" : "处理中"}</Tag>{current.task_kind === "rollback" && <Tag color="warning">回滚任务</Tag>}</span><h1>{current.title ?? "Agent 数据同步任务"}</h1><p>后端持久化工作流 · {current.workflow_version}</p></div><div className="detail-total"><span>当前阶段</span><strong>{current.phase}</strong></div></section>
+      <section className="detail-heading"><div><span className="heading-tags"><Tag color={terminal ? "success" : "processing"}>{terminal ? "任务结束" : "处理中"}</Tag>{current.task_kind === "rollback" && <Tag color="warning">回滚任务</Tag>}</span><h1>{current.title ?? "Agent 数据同步任务"}</h1><p>后端持久化工作流 · {current.workflow_version}</p></div><div className="detail-total"><span>当前阶段</span><strong>{graph.data?.current_action_zh ?? current.phase}</strong></div></section>
       {terminateError && <Alert type="error" showIcon message={terminateError} />}
       {!terminal && <div className="agent-task-actions"><Button danger icon={<StopCircle size={15} />} onClick={() => void terminate()}>终止任务</Button></div>}
       {terminal && current.task_kind !== "rollback" && current.rollback_eligible && (
@@ -108,7 +137,22 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
       <section className="stage-track agent-stage-track" aria-label="Agent 任务处理阶段">
         {phases.map((phase, index) => { const Icon = phase.icon; const done = completed > index; const active = completed === index && !terminal; return <div className={`stage${done ? " completed" : ""}${active ? " active" : ""}`} key={phase.id}><span className="stage-icon"><Icon size={15} /></span><span className="stage-copy"><strong>{phase.label}</strong><small>{done ? "已完成" : active ? "正在处理" : "等待处理"}</small></span></div>; })}
       </section>
-      {events.data?.events.length ? <section className="agent-event-history" aria-label="Agent 事件"><h2>任务事件</h2><ul>{events.data.events.slice().reverse().map((event) => <li key={event.id}><strong>{event.type}</strong><span>{event.created_at}</span></li>)}</ul></section> : <Progress percent={terminal ? 100 : Math.round((completed / phases.length) * 100)} showInfo={false} />}
+      {graph.data && !terminal && (
+        <section className="graph-live-progress" aria-live="polite">
+          <span className="graph-orbit" aria-hidden="true"><i /><i /><i /></span>
+          <div><strong>{graph.data.current_action_zh}</strong><small>Agent 正在依据受控状态图安全处理，离开页面不会中断任务。</small></div>
+        </section>
+      )}
+      {pendingGates.map((gate) => (
+        <section className="graph-approval-card" key={gate.id}>
+          <div><Tag color="warning">需要确认</Tag><h2>高风险操作审批</h2><p>同类问题已合并，共 {gate.item_count} 条记录。只有本组当前冻结内容会受到本次决定影响。</p></div>
+          <div className="graph-approval-actions">
+            <Button icon={<X size={14} />} loading={gateLoading === gate.id} onClick={() => void decideGate(gate.id, "reject")}>拒绝</Button>
+            <Button type="primary" icon={<Check size={14} />} loading={gateLoading === gate.id} onClick={() => void decideGate(gate.id, "approve")}>同意</Button>
+          </div>
+        </section>
+      ))}
+      {!graph.data && events.data?.events.length ? <section className="agent-event-history" aria-label="Agent 事件"><h2>任务事件</h2><ul>{events.data.events.slice().reverse().map((event) => <li key={event.id}><strong>{event.type}</strong><span>{event.created_at}</span></li>)}</ul></section> : !graph.data && <Progress percent={terminal ? 100 : Math.round((completed / phases.length) * 100)} showInfo={false} />}
       {current.report_id && <Button onClick={() => navigate(`/tasks/${taskId}/report`)}>查看任务报告</Button>}
       <Modal
         title="确认创建独立回滚任务？"

@@ -77,6 +77,31 @@ export interface AgentEventPage {
   events: AgentTaskEvent[];
 }
 
+export interface AgentGraphHumanGate {
+  id: string;
+  kind: string;
+  status: string;
+  item_count: number;
+}
+
+export interface AgentGraphProgress {
+  task_id: string;
+  workflow_version: "agent-graph-v1";
+  graph_version: string;
+  graph_cursor: number;
+  current_node: string;
+  business_stage:
+    | "data_ingestion"
+    | "agent_analysis"
+    | "governance_execution"
+    | "report_and_rollback"
+    | "terminal";
+  current_action_zh: string;
+  status: string;
+  can_terminate: boolean;
+  human_gates: AgentGraphHumanGate[];
+}
+
 export interface AgentConversationApi {
   createConversation(): Promise<AgentConversation>;
   sendMessage(conversationId: string, message: string): Promise<AgentMessageResponse>;
@@ -157,6 +182,26 @@ async function startManualTask(intent: AgentIntent, idempotencyKey: string) {
 async function events(taskId: string, cursor?: string, signal?: AbortSignal) {
   const suffix = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
   return requestJson<AgentEventPage>(`/api/agent/tasks/${taskId}/events${suffix}`, { signal });
+}
+
+async function graph(taskId: string, signal?: AbortSignal) {
+  return requestJson<AgentGraphProgress>(`/api/agent/tasks/${taskId}/graph`, { signal });
+}
+
+async function decideGraphGate(
+  taskId: string,
+  gateId: string,
+  decision: "approve" | "reject",
+  reason?: string,
+) {
+  return requestJson<{ gate_id: string; status: "approved" | "rejected"; graph_cursor: number }>(
+    `/api/agent/tasks/${taskId}/graph/gates/${gateId}/decision`,
+    {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ decision, reason }),
+    },
+  );
 }
 
 async function terminate(taskId: string) {
@@ -256,6 +301,8 @@ export const agentApi: AgentConversationApi & AgentManualTaskApi & {
   previewRollback: typeof previewRollback;
   confirmRollback: typeof confirmRollback;
   rejectRollback: typeof rejectRollback;
+  graph: typeof graph;
+  decideGraphGate: typeof decideGraphGate;
 } = {
   createConversation,
   sendMessage,
@@ -274,4 +321,6 @@ export const agentApi: AgentConversationApi & AgentManualTaskApi & {
   previewRollback,
   confirmRollback,
   rejectRollback,
+  graph,
+  decideGraphGate,
 };
