@@ -5,9 +5,32 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.agent_reporting.service import AgentReportingService
+from app.ai.providers.base import LLMRequest, LLMResponse
 from app.core.config import Settings
 from app.main import create_app
 from app.models.reconciliation import ReconciliationTask
+
+
+class ConversationProvider:
+    def __init__(self) -> None:
+        self.requests: list[LLMRequest] = []
+
+    async def complete_json_once(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        return LLMResponse(
+            output={
+                "result": {
+                    "kind": "start_confirmation",
+                    "title": "本地学生同步",
+                    "entity_types": ["student"],
+                    "source_ref": "third-party/roster.csv",
+                    "target_ref": "seewo/roster.csv",
+                    "message_zh": "已确认两份本地数据。",
+                }
+            },
+            provider="stub",
+            model="stub",
+        )
 
 
 @pytest.fixture
@@ -68,6 +91,11 @@ def test_manual_csv_task_uses_agent_runtime_and_exposes_persisted_events(
     assert task["phase"] == "ingest_and_normalize"
     assert task["status"] == "running"
     assert task["title"] == "全校学生同步"
+
+    history = agent_client.get("/api/agent/history")
+    assert history.status_code == 200
+    assert history.json()["items"][0]["id"] == task["id"]
+    assert history.json()["items"][0]["completed_at"] is None
 
     fetched = agent_client.get(f"/api/agent/tasks/{task['id']}")
     assert fetched.status_code == 200
@@ -205,6 +233,36 @@ def test_conversation_collects_intent_and_can_start_the_same_agent_workflow(
     )
     assert locked_message.status_code == 409
     assert locked_message.json()["detail"]["code"] == "invalid_state"
+
+
+def test_conversation_uses_model_discovered_local_sources(
+    agent_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "local-sources"
+    for relative in ("third-party/roster.csv", "seewo/roster.csv"):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "类别,姓名,编号,班级,电话,邮箱\n学生,张三,S001,一班,13800000001,a@example.test\n",
+            encoding="utf-8",
+        )
+    agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
+    provider = ConversationProvider()
+    agent_client.app.state.conversation_provider = provider
+
+    conversation = agent_client.post("/api/agent/conversations")
+    message = agent_client.post(
+        f"/api/agent/conversations/{conversation.json()['id']}/messages",
+        json={"message": "同步本地学生数据"},
+    )
+
+    assert message.status_code == 200, message.text
+    assert message.json()["message"] == "已确认两份本地数据。"
+    assert message.json()["intent"]["source"] == {
+        "kind": "local", "source_ref": "third-party/roster.csv"
+    }
+    assert "converse-school-data-sync@1.0.0" in provider.requests[0].messages[0].content
 
 
 def test_termination_persists_history_before_releasing_school_lock(

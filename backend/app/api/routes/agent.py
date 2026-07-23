@@ -16,9 +16,12 @@ from app.agent_runtime.task_service import (
     AgentTaskConflict,
     AgentTaskService,
 )
+from app.ai.conversation_agent import ConversationSupervisorAgent
+from app.ai.providers.llm import HttpLLMProvider
 from app.api.dependencies import get_operator_context, get_session
 from app.core.security import OperatorContext
 from app.governance.agent_governance import interpret_clarification
+from app.local_sources.service import LocalSourceService
 from app.models.agent_analysis import AgentApprovalGroupRecord, AgentClarificationRecord
 from app.models.agent_runtime import AgentRunRecord, SchoolTaskLockRecord
 from app.models.reconciliation import ReconciliationTask
@@ -50,6 +53,7 @@ from app.schemas.agent_api import (
     ClarificationConfirmationRequest,
     ClarificationRequest,
 )
+from app.schemas.agent_conversation import ConversationAgentContext
 from app.tasks.deletion_service import (
     TaskDeletionBlocked,
     TaskDeletionNotFound,
@@ -115,6 +119,7 @@ async def create_agent_conversation(
 @router.post(
     "/conversations/{conversation_id}/messages",
     response_model=AgentMessageResponse,
+    response_model_exclude_none=True,
 )
 async def send_agent_message(
     conversation_id: UUID,
@@ -143,22 +148,52 @@ async def send_agent_message(
             409,
             detail=_error("invalid_state", "Conversation is locked by an active task"),
         )
-    intent = _merge_conversation_intent(conversation.context, body.message)
+    sources = LocalSourceService(request.app.state.settings).list_sources()
+    provider = getattr(
+        request.app.state,
+        "conversation_provider",
+        HttpLLMProvider(settings=request.app.state.settings),
+    )
+    decision = await ConversationSupervisorAgent(provider).reply(
+        ConversationAgentContext(
+            conversation_id=conversation.id,
+            tenant_id=operator.tenant_id,
+            message=body.message,
+            available_source_refs=tuple(source.source_ref for source in sources),
+        )
+    )
+    intent = {
+        "title": decision.title or "全校组织数据同步",
+        "entity_types": [entity.value for entity in decision.entity_types],
+        "source": (
+            {"kind": "local", "source_ref": decision.source_ref}
+            if decision.source_ref is not None
+            else None
+        ),
+        "target": (
+            {"kind": "local", "source_ref": decision.target_ref}
+            if decision.target_ref is not None
+            else None
+        ),
+        "decision_kind": decision.kind,
+    }
     conversation.context = intent
     view = AgentIntentView.model_validate(intent)
     confirmation = None
-    if view.source is not None and view.target is not None and view.entity_types:
+    can_confirm = (
+        decision.kind == "start_confirmation"
+        and view.source is not None
+        and view.target is not None
+        and view.entity_types
+    )
+    if can_confirm:
         confirmation = AgentStartConfirmation(
             title=view.title,
-            summary="将按全校范围同步所选部门、学生和教师数据。",
+            summary=decision.message_zh,
             entity_types=view.entity_types,
         )
     return AgentMessageResponse(
-        message=(
-            "同步要求已确认，请检查后开始。"
-            if confirmation is not None
-            else "已记录同步对象；请补充可用的数据源和希沃目标配置。"
-        ),
+        message=decision.message_zh,
         intent=view,
         start_confirmation=confirmation,
     )
@@ -419,16 +454,24 @@ async def get_agent_history(
     cursor: Annotated[str | None, Query()] = None,
 ) -> AgentHistoryPage:
     _require_enabled(request)
-    page = await AgentReportingService(session).history(
-        tenant_id=operator.tenant_id, cursor=cursor
+    del cursor
+    rows = tuple(
+        (
+            await session.execute(
+                select(ReconciliationTask, AgentRunRecord, AgentReportRecord)
+                .join(AgentRunRecord, AgentRunRecord.task_id == ReconciliationTask.id)
+                .outerjoin(AgentReportRecord, AgentReportRecord.task_id == ReconciliationTask.id)
+                .where(
+                    ReconciliationTask.tenant_id == operator.tenant_id,
+                    ReconciliationTask.workflow_version == "new-agent-v1",
+                )
+                .order_by(ReconciliationTask.created_at.desc(), ReconciliationTask.id.desc())
+            )
+        ).all()
     )
     items: list[AgentHistoryItem] = []
-    for report in page.items:
-        task = await session.get(ReconciliationTask, report.task_id)
-        run = await AgentRuntimeRepository(session).get_run_for_task(report.task_id)
-        if task is None or run is None:
-            continue
-        summary = report.facts.get("mutation_summary", {})
+    for task, run, report in rows:
+        summary = report.facts.get("mutation_summary", {}) if report is not None else {}
         items.append(
             AgentHistoryItem(
                 id=task.id,
@@ -438,24 +481,28 @@ async def get_agent_history(
                 phase=run.phase,
                 status=run.status,
                 title=task.title,
-                report_id=report.id,
+                report_id=report.id if report is not None else None,
                 created_at=task.created_at,
-                completed_at=report.created_at,
+                completed_at=report.created_at if report is not None else None,
                 issue_summary={
-                    "total": len(report.facts.get("findings", [])),
-                    "excluded": len(report.facts.get("excluded_findings", [])),
+                    "total": len(report.facts.get("findings", [])) if report is not None else 0,
+                    "excluded": (
+                        len(report.facts.get("excluded_findings", []))
+                        if report is not None
+                        else 0
+                    ),
                 },
                 operation_summary={
                     "succeeded": int(summary.get("succeeded", 0)),
                     "failed": int(summary.get("failed", 0)),
                     "blocked": int(summary.get("blocked", 0)),
                 },
-                rollback_eligible=report.rollback_eligible,
-                deletion_eligible=report.deletion_eligible,
+                rollback_eligible=report.rollback_eligible if report is not None else False,
+                deletion_eligible=report.deletion_eligible if report is not None else True,
                 entity_types=tuple(task.entity_types),
             )
         )
-    return AgentHistoryPage(items=tuple(items), next_cursor=page.next_cursor)
+    return AgentHistoryPage(items=tuple(items), next_cursor=None)
 
 
 @router.delete("/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -771,25 +818,6 @@ async def _resume_waiting_run(
         "run.resumed",
         {"phase": resumed.phase, "status": resumed.status},
     )
-
-
-def _merge_conversation_intent(context: dict[str, object], message: str) -> dict[str, object]:
-    normalized = message.casefold()
-    selected: list[str] = []
-    for entity, words in {
-        "department": ("部门", "组织", "department"),
-        "student": ("学生", "student"),
-        "teacher": ("教师", "老师", "teacher"),
-    }.items():
-        if any(word in normalized for word in words):
-            selected.append(entity)
-    result = dict(context)
-    result["title"] = str(result.get("title") or "全校组织数据同步")
-    if selected:
-        result["entity_types"] = selected
-    else:
-        result.setdefault("entity_types", ["department", "student", "teacher"])
-    return result
 
 
 _PHONE_PATTERN = re.compile(r"(?<!\d)1\d{10}(?!\d)")
