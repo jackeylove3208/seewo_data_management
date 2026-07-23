@@ -29,6 +29,20 @@ GRAPH_SKILL_TOOLS_BY_PHASE: dict[str, frozenset[str]] = {
             "submit_finding_batch",
         }
     ),
+    "generate_report": frozenset(
+        {
+            "read_report_fact_manifest",
+            "submit_report_narrative",
+        }
+    ),
+    "execute_and_verify": frozenset(
+        {
+            "read_execution_plan",
+            "read_ready_operations",
+            "request_operation_execution",
+            "read_operation_verification",
+        }
+    ),
 }
 
 

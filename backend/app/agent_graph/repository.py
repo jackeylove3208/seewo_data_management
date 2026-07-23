@@ -380,6 +380,21 @@ class AgentGraphRepository:
         status: str,
     ) -> AgentHumanGateRecord:
         state = await self._require_state_at_cursor(graph_run_id, cursor)
+        existing = await self.session.scalar(
+            select(AgentHumanGateRecord).where(
+                AgentHumanGateRecord.graph_run_id == state.id,
+                AgentHumanGateRecord.cursor == cursor,
+                AgentHumanGateRecord.gate_kind == gate_kind,
+                AgentHumanGateRecord.content_hash == content_hash,
+            )
+        )
+        if existing is not None:
+            if (
+                existing.member_ids != list(member_ids)
+                or existing.status != status
+            ):
+                raise GraphFactConflict("human gate replay changed frozen content")
+            return existing
         record = AgentHumanGateRecord(
             graph_run_id=state.id,
             tenant_id=state.tenant_id,

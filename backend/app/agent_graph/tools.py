@@ -109,6 +109,18 @@ GRAPH_NODE_TOOL_NAMES: dict[str, frozenset[str]] = {
             "submit_report_narrative",
         }
     ),
+    "termination_report": frozenset(
+        {
+            "read_report_fact_manifest",
+            "submit_report_narrative",
+        }
+    ),
+    "abnormal_input_report": frozenset(
+        {
+            "read_report_fact_manifest",
+            "submit_report_narrative",
+        }
+    ),
     "assess_restore_impact": frozenset(
         {
             "read_verified_mutations",

@@ -194,7 +194,9 @@ class AgentSupervisorService:
             .where(
                 ReconciliationTask.id == task_id,
                 ReconciliationTask.tenant_id == self.operator.tenant_id,
-                ReconciliationTask.workflow_version == "new-agent-v1",
+                ReconciliationTask.workflow_version.in_(
+                    ("new-agent-v1", "agent-graph-v1")
+                ),
                 ReconciliationTask.task_kind == AgentRunKind.ROLLBACK.value,
             )
             .with_for_update()
@@ -212,6 +214,26 @@ class AgentSupervisorService:
         run = await self.repository.transition_run(
             run.id, requested_phase=AgentPhase.ACQUIRE_SCHOOL_LOCK
         )
+        graph_repository = (
+            AgentGraphRepository(self.session)
+            if task.workflow_version == "agent-graph-v1"
+            else None
+        )
+        graph_state = (
+            await graph_repository.get_run_state_for_agent_run(run.id)
+            if graph_repository is not None
+            else None
+        )
+        if graph_repository is not None and graph_state is not None:
+            await graph_repository.record_transition(
+                graph_state.id,
+                expected_cursor=0,
+                from_node="rollback_intent_confirmed",
+                to_node="acquire_school_lock",
+                action_id="acquire_school_lock",
+                guard_results={"workflow_version": "passed", "tenant": "passed"},
+                fencing_token=run.attempt_count,
+            )
         await self.repository.acquire_school_lock(
             tenant_id=task.tenant_id,
             task_id=task.id,
@@ -225,6 +247,16 @@ class AgentSupervisorService:
         run = await self.repository.transition_run(
             run.id, requested_phase=AgentPhase.PLAN_RESTORE
         )
+        if graph_repository is not None and graph_state is not None:
+            await graph_repository.record_transition(
+                graph_state.id,
+                expected_cursor=1,
+                from_node="acquire_school_lock",
+                to_node="load_verified_mutations",
+                action_id="load_verified_mutations",
+                guard_results={"school_lock": "passed", "report_facts": "passed"},
+                fencing_token=run.attempt_count,
+            )
         await self.repository.append_event(
             run.id,
             "phase.started",
