@@ -4,8 +4,10 @@ from uuid import UUID
 
 from pydantic import TypeAdapter, ValidationError
 
+from app.ai.agent_prompting import render_agent_system_prompt
 from app.ai.providers.base import LLMProvider, LLMRequest, Message
 from app.ai.rematching_policy import manual_review_fallback, validate_rematch_decision
+from app.ai.skills.registry import SkillRegistry
 from app.ai.tokenization import TaskTokenizationContext
 from app.schemas.rematching import (
     CandidateEdge,
@@ -24,11 +26,13 @@ class RematchingAgent:
         tokenization_secret: str | None = None,
         high_confidence_threshold: float = 0.9,
         top_k: int = 3,
+        skill_registry: SkillRegistry | None = None,
     ) -> None:
         self.llm = llm
         self.tokenization_secret = tokenization_secret
         self.high_confidence_threshold = high_confidence_threshold
         self.top_k = top_k
+        self.skill_registry = skill_registry or SkillRegistry()
 
     async def decide(
         self,
@@ -58,15 +62,18 @@ class RematchingAgent:
             ],
         }
         safe_payload = tokenizer.tokenize(payload)
+        skill = self.skill_registry.load("resolve-entity-rematching", "1.0.0")
         response = await self.llm.complete_json(
             LLMRequest(
                 messages=(
                     Message(
                         role="system",
-                        content=(
-                            "你是实体二次匹配审查器。只能从服务端候选中选择，"
-                            "输出 accept_candidate、no_match 或 manual_review。"
-                            "证据不足或冲突时必须人工复核，原因使用简体中文。"
+                        content=render_agent_system_prompt(
+                            (skill,),
+                            invocation_contract=(
+                                "只输出 RematchDecision JSON。只能选择输入 candidate_edges 中的"
+                                " candidate_entity_id；输出不合法时服务端会转为人工复核。"
+                            ),
                         ),
                     ),
                     Message(
