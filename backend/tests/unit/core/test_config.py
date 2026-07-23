@@ -43,3 +43,37 @@ def test_analysis_only_mode_rejects_target_execution() -> None:
             new_agent_csv_execution_enabled=True,
             _env_file=None,
         )
+
+
+def test_connector_execution_flags_require_server_side_connector_configuration() -> None:
+    with pytest.raises(ValueError, match="API connector configuration"):
+        Settings(
+            new_agent_enabled=True,
+            new_agent_analysis_only=False,
+            new_agent_api_connector_enabled=True,
+            _env_file=None,
+        )
+
+    configured = Settings(
+        new_agent_enabled=True,
+        new_agent_analysis_only=False,
+        new_agent_api_connector_enabled=True,
+        api_connector_configurations={
+            "seewo": {
+                "credential_reference": "secret://connectors/seewo-api",
+                "endpoint": "https://connector.example.test/v1/people",
+                "record_id_field": "id",
+                "version_field": "etag",
+            }
+        },
+        _env_file=None,
+    )
+
+    assert configured.api_connector_configurations["seewo"].credential_reference.endswith(
+        "seewo-api"
+    )
+
+
+def test_agent_batch_size_cannot_exceed_connector_contract_limit() -> None:
+    with pytest.raises(ValueError, match="less than or equal to 50"):
+        Settings(analysis_batch_size=51, _env_file=None)

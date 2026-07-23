@@ -9,6 +9,12 @@ from app.connectors.base import (
     ConnectorVersion,
     SourceConnector,
 )
+from app.connectors.configured import (
+    ConfiguredApiConnector,
+    ConnectorCapabilities,
+    DatabaseConnectorConfiguration,
+    InMemoryConnectorStore,
+)
 from app.connectors.csv_source import ThirdPartyCsvConnector
 from app.connectors.csv_target import MofaCsvConnector
 from app.connectors.database import DatabaseSourceConnector
@@ -86,3 +92,24 @@ async def test_csv_connectors_emit_same_canonical_contract(
 async def test_future_connectors_fail_explicitly_when_not_configured(connector) -> None:
     with pytest.raises(ConnectorNotConfigured):
         await connector.version()
+
+
+@pytest.mark.asyncio
+async def test_database_extension_point_delegates_to_a_real_configured_connector() -> None:
+    configured = ConfiguredApiConnector(
+        configuration=DatabaseConnectorConfiguration(
+            credential_reference="secret://connectors/target-db",
+            table_name="seewo_people",
+            primary_key="id",
+            version_column="version",
+            field_columns={"name": "name"},
+            capabilities=ConnectorCapabilities(read=True, paginated=True),
+        ),
+        store=InMemoryConnectorStore(records=[{"id": "1", "version": "v1", "name": "张三"}]),
+    )
+    connector = DatabaseSourceConnector(configured=configured)
+
+    assert (await connector.version()).value == "v1"
+    assert [
+        row["id"] async for page in connector.read_pages(page_size=1) for row in page.records
+    ] == ["1"]

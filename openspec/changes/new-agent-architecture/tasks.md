@@ -40,9 +40,9 @@ Before a new conversation begins, its owner SHALL record the current mainline co
 - [ ] 3.2 Reuse the existing upload storage, CSV reader, field mapping, normalization, hashing, snapshot, and quarantine modules behind a new ingestion-sub-agent adapter without changing historical snapshot interpretation.
 - [ ] 3.3 Implement authority validation: every third-party department/teacher row requires category, name, number, phone, and email; every third-party student row additionally requires class; invalid rows are marked, excluded, never written back, and reported.
 - [ ] 3.4 Implement target validation: a Seewo row with no number, phone, or email is marked but retained as a deterministic target-extra candidate; it is never changed during ingestion, while missing category, class, or name remains an ordinary downstream difference.
-- [ ] 3.5 Replace placeholder API/database connector behavior with explicit configuration, credential references, paging/streaming, schema discovery, read/write capability declarations, health checks, and actionable configuration errors.
-- [ ] 3.6 Keep CSV target versioning as the CSV mutation adapter and add equivalent capability-checked adapters for configured API and database targets; enforce third-party connectors as read-only.
-- [ ] 3.7 Add synthetic connector contract tests covering CSV, paged API, database reads, malformed schemas, partial fetch failures, unsupported write capabilities, and secret-free logs.
+- [x] 3.5 Replace placeholder API/database connector behavior with explicit configuration, credential references, paging/streaming, schema discovery, read/write capability declarations, health checks, and actionable configuration errors.
+- [x] 3.6 Keep CSV target versioning as the CSV mutation adapter and add equivalent capability-checked adapters for configured API and database targets; enforce third-party connectors as read-only.
+- [x] 3.7 Add synthetic connector contract tests covering CSV, paged API, database reads, malformed schemas, partial fetch failures, unsupported write capabilities, and secret-free logs.
 - [ ] 3.8 Make any unrecognizable input schema end normal processing, route directly to an abnormal-input report, exclude that report from rollback evidence, and retain the task lock until report completion or termination.
 
 ## 4. Skill, MCP, and privacy runtime
