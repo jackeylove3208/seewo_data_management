@@ -220,6 +220,10 @@ current_node
 graph_cursor
 status
 allowed_actions
+action_set_hash
+single_action_reason_code
+excluded_action_summaries
+active_blockers
 completed_action_summary
 pending_work_summary
 evidence_manifest_refs
@@ -247,6 +251,41 @@ termination_requested
 }
 ```
 
+### 真实选择性合同
+
+服务端必须先对图定义中的所有上下文候选生成 `candidate_action_evaluations`，再把其中通过
+guard、能力和证据校验的完整集合投影为 `allowed_actions`。`allowed_actions` 必须表达当前
+上下文中所有安全、可执行且业务语义不同的候选动作，而不是把旧流程的固定 `next_phase`
+换一个名字：
+
+- 当前 decision 节点存在两个或以上安全可行动作时，服务端必须至少提供两个真实候选。
+- 服务端不得为了保持旧 Handler 的固定顺序而隐藏满足 guard 的候选动作。
+- 不同 action 必须改变后续可观察路径，例如调度不同 sub-agent、处理不同 work unit、请求
+  不同证据、进入不同 human gate，或形成不同的合法状态转换。
+- 两个 action 如果最终调用相同执行器、使用相同资源、产生相同预期证据且进入相同后续状态，
+  应视为别名；合同校验必须拒绝用别名伪造选择性。
+- 不得为了凑足两个候选而加入不安全、guard 不满足、能力不可用或没有证据支持的动作。
+
+只有当前确实只剩一个安全动作时，decision 节点才允许返回单一 `allowed_action`。服务端必须
+同时持久化 `single_action_reason_code`，并记录其他候选被排除的机器可读原因。允许的原因至少
+包括：
+
+```text
+safety_mandatory
+human_gate_required
+only_guard_satisfied
+termination_requested
+terminalization_required
+```
+
+`excluded_action_summaries` 只能包含服务端候选 action ID、被拒 guard 和安全原因，不包含模型
+推测。固定获取锁、提交已验证事实、响应终止和进入必需人工 gate 等确定性动作应优先建模为
+`deterministic` 或 `human_gate` 节点，而不是通过单一候选反复调用 Supervisor。
+
+每次决策都持久化 `candidate_action_evaluations`、完整允许集合的 `action_set_hash`、候选
+数量、排除原因、是否触发单一动作例外及最终选择。运行时以候选评估记录核验投影完整性；
+若存在多个通过校验的候选却只发布一个 action，必须拒绝推进，不能降级为固定线性流程。
+
 ### 输出
 
 `SupervisorDecisionV1`：
@@ -256,9 +295,30 @@ termination_requested
   "action_id": "必须来自 allowed_actions",
   "reason_zh": "为什么选择该动作",
   "expected_result": "期望产生的证据类型",
+  "observed_blockers": ["只能引用 SupervisorContextV1 中的服务端 blocker ID"],
+  "risk_notes_zh": ["对当前候选风险的非执行性中文说明"],
+  "why_not_other_actions_zh": [
+    {
+      "action_id": "另一个 allowed action ID",
+      "reason_zh": "为什么本次没有选择该动作"
+    }
+  ],
   "operator_message_zh": "可选的业务进度说明"
 }
 ```
+
+除 `action_id` 外，其余字段都是审计叙述，不能改变 guard、风险等级、审批、证据成员、工具
+权限或写入参数。合同校验还必须保证：
+
+- `observed_blockers` 只能引用服务端上下文已经给出的 blocker，不能创造新的事实。
+- `risk_notes_zh` 不能降低、覆盖或解除服务端风险结论。
+- `expected_result` 必须属于所选 action 声明的 `required_evidence` 或 output schema，不能要求
+  action 无权产生的结果。
+- 对两个及以上候选的决策，`why_not_other_actions_zh` 必须为每个未选 action 恰好提供一项，
+  不得遗漏、重复或引用候选集合外的 action。
+- 单一 action 例外下，`why_not_other_actions_zh` 必须为空，审计依据来自
+  `single_action_reason_code` 和 `excluded_action_summaries`。
+- `operator_message_zh` 必须通过隐私过滤，不得包含原始学生手机号、凭据或内部资源定位符。
 
 Supervisor 不返回任意节点名称、不返回工具参数、不返回写操作。
 
@@ -545,6 +605,11 @@ evidence_refs
 ### 合同测试
 
 - Supervisor 只能选择 allowed action。
+- 存在多个满足 guard 的候选时，服务端必须提供两个或以上语义不同的 action。
+- 存在多个合法候选却只发布固定 `next_phase` 包装 action 时，合同测试拒绝推进。
+- 单一安全 action 必须具有允许的 `single_action_reason_code` 和完整排除原因。
+- `why_not_other_actions_zh` 必须恰好覆盖所有未选择 action，且不得引用候选集合外成员。
+- `observed_blockers` 只能引用服务端 blocker；风险说明不能改变服务端风险事实。
 - 图 guard 拒绝非法边、旧 cursor、过期 lease 和跨租户资源。
 - Skill、input/output schema、MCP capability 精确绑定。
 - evidence ref、candidate、token 和 operation membership 校验。
@@ -552,6 +617,9 @@ evidence_refs
 ### 状态图测试
 
 - 正常同步。
+- 在同一冻结上下文和候选集合下，让 Supervisor 分别选择两个合法 action，必须产生不同的
+  sub-agent/work unit、证据获取序列或合法状态转换，并能从 transition 审计记录中证明。
+- 映射到相同执行器、相同资源和相同后继状态的 action 别名不得通过真实选择性测试。
 - 异常输入报告。
 - 无异常直接报告。
 - 身份冲突、重述和二次确认。
@@ -590,13 +658,31 @@ evidence_refs
 - 添加 `agent-graph-v1` 和功能开关。
 - 添加图定义、guard、决策/转换/manifest 持久化。
 - 实现真实 Supervisor 调用。
-- 初期 sub-agent action 可以委托现有确定性 Handler，行为与 `new-agent-v1` 等价。
+- 里程碑一早期允许 sub-agent action 以 shadow/delegation 方式委托现有确定性 Handler，
+  用于验证图恢复、状态转换和兼容行为。
+- 每次委托必须显式记录 `execution_mode=legacy_delegate`、委托 Handler、输入/输出哈希和
+  shadow 对比结果；Supervisor 不得绕过 action executor 直接调用旧 Handler。
+
+#### 里程碑一退出标准
+
+进入里程碑二前必须同时满足：
+
+- `inspect_sources` 由真实数据接入 Skill 模型调用产生严格 schema 的结构化检查结果。
+- `normalize_input_batches` 由真实规范化 Skill 模型调用按最多五十条产生结构化批次和标记。
+- `analyze_actionable_batches` 由真实对账分析 Skill 模型调用基于版本化双边证据产生结构化
+  finding、AI 分析和治理方案。
+- 上述三个 action 所需的最小 phase-scoped MCP 读取/提交工具必须真实可用；不得把完整原始
+  数据直接拼入 Supervisor prompt，或用固定 Python 结果冒充模型工具输出。
+- 上述三个 action 的正常路径均不得以旧 Handler 输出代替模型输出；模型失败只能按策略重试、
+  阻断或进入人工/异常报告，不能静默回退到 `legacy_delegate`。
+- shadow 结果只允许用于对比和审计，不能在退出门槛后成为 `agent-graph-v1` 的工作流事实。
+- 测试必须断言三类 action 的 invocation 记录包含真实模型 provenance、Skill 版本、schema
+  版本和 evidence manifest。
 
 ### 里程碑二：证据与真实接入/分析 sub-agent
 
-- 实现 MCP 工具循环。
-- 接入 Agent 真正加载检查与规范化 Skill。
-- 增加完整配对 evidence manifest。
+- 完成其余接入和对账 action 的 MCP 工具循环，不再保留任何正常路径委托。
+- 扩展完整配对 evidence manifest 和阶段专属最小能力。
 - 修复 number/phone/email 普通字段差异。
 - 强化模型输出引用成员校验。
 
@@ -619,6 +705,15 @@ evidence_refs
 
 - `agent-graph-v1` 的每个非确定性阶段都有真实 Supervisor 或 sub-agent 模型调用及固定 Skill。
 - Supervisor 无法选择服务端未提供的 action。
+- 除有审计原因的唯一安全动作外，每个 Supervisor decision 至少提供两个语义不同的真实
+  action；不同选择会产生可测试、可审计的不同后续路径。
+- 不得把旧固定 `next_phase` 包装成唯一 `allowed_action` 作为 AI 驱动实现。
+- `SupervisorDecisionV1` 对所有未选择 action 给出逐项原因，并且阻断、风险和操作消息均不能
+  改变服务端安全事实。
+- `inspect_sources`、`normalize_input_batches` 和 `analyze_actionable_batches` 使用真实 Skill
+  模型调用和结构化输出。
+- 最终正常运行的 `agent-graph-v1` action 记录中不得出现 `execution_mode=legacy_delegate`；
+  旧 Handler 只能继续服务 `legacy-v1`、`new-agent-v1` 或显式迁移测试。
 - 所有模型可见记录都有版本化 evidence manifest。
 - AI 分析拥有完整权威—希沃配对证据。
 - 所有可操作异常均有中文 AI 分析和方案，正确记录不进入工作台。
