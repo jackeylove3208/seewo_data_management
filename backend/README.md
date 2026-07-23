@@ -2,15 +2,27 @@
 
 ## Run the application locally
 
-After installing `backend/.venv` and frontend dependencies, the repository launcher
-runs migrations, the API, the durable analysis worker, and Vite together:
+After installing `backend/.venv`, frontend dependencies, Docker Desktop, and configuring
+the ignored `backend/.env`, the root launcher starts PostgreSQL, runs migrations, and
+supervises FastAPI, the durable new Agent worker, and Vite:
 
 ```bash
-cd frontend
-npm run dev
+cd /path/to/PythonProject
+python3 dev.py
 ```
 
-For a production-like PostgreSQL setup, run the backend processes separately:
+Open `http://127.0.0.1:5173`. API documentation is available at
+`http://127.0.0.1:8000/docs`. The launcher enables the CSV Agent rollout only in its
+child processes and never prints or copies `.env` secrets. Run `python3 dev.py --dry-run`
+to inspect the non-sensitive startup plan, or `python3 dev.py --no-browser` to skip opening
+the browser. Press `Ctrl+C` to stop API, Agent worker, and Vite; PostgreSQL remains running
+so demo data is preserved.
+
+The `.env` filename begins with a dot and may be hidden in Finder or an IDE. If it does not
+exist, create it from `backend/.env.example` and enter the local DeepSeek and tokenization
+settings. Git intentionally ignores this file, so linked worktrees do not receive it.
+
+To run the backend processes separately:
 
 ```bash
 cd backend
@@ -20,15 +32,8 @@ cd backend
 
 ```bash
 cd backend
-.venv/bin/python -m app.ai.worker
+.venv/bin/python -m app.agent_runtime
 ```
-
-Open `http://127.0.0.1:5173`. The API is served at `http://127.0.0.1:8000` and its
-interactive documentation is at `http://127.0.0.1:8000/docs`.
-
-The worker claims one persisted difference at a time, commits progress after each
-item, and resumes work whose lease expires. The API process does not execute model
-calls inside `workflow/advance`.
 
 ## Verify delivery readiness
 

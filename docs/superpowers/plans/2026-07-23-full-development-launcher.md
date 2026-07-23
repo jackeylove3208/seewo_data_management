@@ -33,13 +33,13 @@ pytest.
 - Produces: `validate_prerequisites(plan: LaunchPlan) -> None`
 - Produces: `port_is_available(host: str, port: int) -> bool`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Test that the plan uses `backend/.venv/bin/python`, starts `app.agent_runtime`, supplies all
 three CSV Agent rollout flags, points Compose at `infra/docker-compose.yml`, and rejects a
 missing `backend/.env`.
 
-- [ ] **Step 2: Verify the tests fail**
+- [x] **Step 2: Verify the tests fail**
 
 Run:
 
@@ -50,12 +50,12 @@ cd backend
 
 Expected: collection fails because root `dev.py` does not exist.
 
-- [ ] **Step 3: Implement the minimal plan and preflight**
+- [x] **Step 3: Implement the minimal plan and preflight**
 
 Use frozen dataclasses for command and launch-plan values. Check executable/file existence with
 `Path`, use `shutil.which` for Docker/npm, and probe ports with `socket.bind`.
 
-- [ ] **Step 4: Verify the focused tests pass**
+- [x] **Step 4: Verify the focused tests pass**
 
 Run the command from Step 2. Expected: all launcher unit tests pass.
 
@@ -70,22 +70,22 @@ Run the command from Step 2. Expected: all launcher unit tests pass.
 - Produces: `wait_for_http(url: str, process: Popen, timeout: float) -> None`
 - Produces: `DevelopmentSupervisor.run() -> int`
 
-- [ ] **Step 1: Write failing lifecycle tests**
+- [x] **Step 1: Write failing lifecycle tests**
 
 Inject command runners, process factories, and readiness probes. Assert Compose precedes
 Alembic, FastAPI becomes ready before the worker and frontend start, and an unexpected exit
 terminates sibling processes.
 
-- [ ] **Step 2: Verify the tests fail for missing lifecycle behavior**
+- [x] **Step 2: Verify the tests fail for missing lifecycle behavior**
 
 Run the focused pytest command and confirm assertion failures describe the missing order.
 
-- [ ] **Step 3: Implement minimal lifecycle behavior**
+- [x] **Step 3: Implement minimal lifecycle behavior**
 
 Run setup commands with `subprocess.run(check=True)`, start child processes with inherited
 stdio, wait with bounded polling, and terminate/kill remaining children in `finally`.
 
-- [ ] **Step 4: Verify focused tests pass**
+- [x] **Step 4: Verify focused tests pass**
 
 Run the focused pytest command. Expected: all launcher tests pass.
 
@@ -99,21 +99,21 @@ Run the focused pytest command. Expected: all launcher tests pass.
 **Interfaces:**
 - Produces: CLI options `--dry-run` and `--no-browser`
 
-- [ ] **Step 1: Write a failing dry-run redaction test**
+- [x] **Step 1: Write a failing dry-run redaction test**
 
 Assert output lists startup commands and rollout flags without `.env` values or credential
 contents.
 
-- [ ] **Step 2: Verify the test fails**
+- [x] **Step 2: Verify the test fails**
 
 Run the focused pytest command and confirm dry-run behavior is absent.
 
-- [ ] **Step 3: Implement CLI and concise root documentation**
+- [x] **Step 3: Implement CLI and concise root documentation**
 
 Document `python3 dev.py`, prerequisites, URLs, shutdown behavior, and the ignored `.env`
 requirement.
 
-- [ ] **Step 4: Run repository verification**
+- [x] **Step 4: Run repository verification**
 
 Run backend pytest/Ruff/mypy, frontend unit/lint/typecheck/build/Playwright, the clean PostgreSQL
 migration smoke test, `openspec validate new-agent-architecture`, and `git diff --check`.

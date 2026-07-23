@@ -582,13 +582,18 @@ class InMemoryConnectorStore:
         self._records = [dict(record) for record in records]
         self._credential = credential
         self._idempotent_versions: dict[str, str] = {}
+        self._current_version: str | None = None
 
     async def health(self) -> bool:
         return True
 
     async def version(self, version_field: str) -> str:
-        values = [str(record.get(version_field, "")) for record in self._records]
-        return max(values, default="empty")
+        if self._current_version is None:
+            self._current_version = max(
+                (str(record.get(version_field, "")) for record in self._records),
+                default="empty",
+            )
+        return self._current_version
 
     async def schema(self) -> ConnectorSchema:
         return ConnectorSchema(
@@ -645,6 +650,7 @@ class InMemoryConnectorStore:
         output = sha256(json.dumps(self._records, sort_keys=True, default=str).encode()).hexdigest()
         for record in self._records:
             record[version_field] = output
+        self._current_version = output
         self._idempotent_versions[idempotency_key] = output
         return output
 

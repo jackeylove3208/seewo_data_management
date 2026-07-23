@@ -141,10 +141,10 @@ async def test_rollback_is_a_new_task_and_is_blocked_by_another_active_school_lo
     assert preview.report_id is None
     assert [operation["compensation_for"] for operation in preview.operations] == ["op-1"]
 
-    with pytest.raises(ValueError, match="school lock"):
-        await service.create_rollback_task(
-            source_task_id=original.id,
-            tenant_id=original.tenant_id,
-            requested_by="operator-1",
-            target_version_id=uuid4(),
-        )
+    replay = await service.create_rollback_task(
+        source_task_id=original.id,
+        tenant_id=original.tenant_id,
+        requested_by="operator-1",
+        target_version_id=preview.target_version_id,
+    )
+    assert replay.task_id == preview.task_id

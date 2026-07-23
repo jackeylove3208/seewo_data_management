@@ -9,6 +9,7 @@ import { TaskDetailPage } from "../features/task-detail/TaskDetailPage";
 import { DifferenceCategoryPage } from "../features/differences/DifferenceCategoryPage";
 import { ExecutionHistoryPage } from "../features/executions/ExecutionHistoryPage";
 import { ExecutionDetailPage } from "../features/executions/ExecutionDetailPage";
+import { AgentReportPage } from "../features/reports/AgentReportPage";
 import appIcon from "../assets/mofa-app-icon.png";
 import { AppProviders } from "./providers";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
@@ -59,6 +60,7 @@ function AppLayout() {
           <Route path="/conversations/new" element={<ConversationCreatePage />} />
           <Route path="/tasks/new" element={<TaskCreatePage />} />
           <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
+          <Route path="/tasks/:taskId/report" element={<AgentReportPage />} />
           <Route path="/tasks/:taskId/differences/:entityType" element={<DifferenceCategoryPage />} />
           <Route path="/executions" element={<ExecutionHistoryPage />} />
           <Route path="/executions/:executionId" element={<ExecutionDetailPage />} />

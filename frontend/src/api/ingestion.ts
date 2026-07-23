@@ -41,17 +41,6 @@ function getTask(taskId: string, signal?: AbortSignal) {
   return requestJson<ReconciliationTaskResponse>(`/api/reconciliation-tasks/${taskId}`, { signal });
 }
 
-function createTask(body: Record<string, unknown>, idempotencyKey: string = crypto.randomUUID()) {
-  return requestJson<ReconciliationTaskResponse>("/api/reconciliation-tasks", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Idempotency-Key": idempotencyKey,
-    },
-    body: JSON.stringify(body),
-  });
-}
-
 function readiness() {
   return requestJson<{ status: string }>("/health/ready");
 }
@@ -60,4 +49,4 @@ function deleteTask(taskId: string) {
   return requestJson<void>(`/api/reconciliation-tasks/${taskId}`, { method: "DELETE" });
 }
 
-export const ingestionApi = { upload, getTask, createTask, readiness, deleteTask };
+export const ingestionApi = { upload, getTask, readiness, deleteTask };

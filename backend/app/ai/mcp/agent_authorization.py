@@ -69,6 +69,7 @@ class AgentToolContext(BaseModel):
     approval_id: UUID | None = None
     allowed_capabilities: frozenset[AgentCapability] = frozenset()
     allowed_resource_ids: frozenset[UUID] = frozenset()
+    allowed_connector_ids: frozenset[str] = frozenset()
 
 
 def require_agent_capability(
@@ -83,3 +84,8 @@ def require_agent_capability(
 def require_agent_resource(context: AgentToolContext, resource_id: UUID) -> None:
     if resource_id not in context.allowed_resource_ids:
         raise AgentToolAuthorizationError("resource not authorized")
+
+
+def require_agent_connector(context: AgentToolContext, connector_id: str) -> None:
+    if connector_id not in context.allowed_connector_ids:
+        raise AgentToolAuthorizationError("connector not authorized")

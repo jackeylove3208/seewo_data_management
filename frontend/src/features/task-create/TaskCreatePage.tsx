@@ -1,12 +1,11 @@
 import { Alert, Button, Checkbox, Spin } from "antd";
 import { Check, FileSpreadsheet, FileUp, Paperclip, RefreshCw } from "lucide-react";
-import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { useRef, useState, type ChangeEvent } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { agentApi as defaultAgentApi, type AgentConnectorSelection, type AgentEntityType, type AgentManualTaskApi } from "../../api/agent";
 import { ingestionApi } from "../../api/ingestion";
 import { summarizeCsv, type CsvSummary } from "./csvSummary";
-import { clearTaskIntentDraft } from "./draftHandoff";
 
 type ConnectorKind = AgentConnectorSelection["kind"];
 type ConnectorDraft = {
@@ -100,8 +99,6 @@ export function TaskCreatePage({
   const [submitError, setSubmitError] = useState<string>();
   const fileRequestTokens = useRef({ source: 0, target: 0 });
 
-  useEffect(() => clearTaskIntentDraft(), []);
-
   async function prepareFile(role: "source" | "target", file: File) {
     const requestToken = ++fileRequestTokens.current[role];
     setDraft((current) => ({ ...current, [role]: { kind: "csv", file } }));
@@ -145,7 +142,6 @@ export function TaskCreatePage({
         target,
       }, sessionKey());
       setSubmissionState("created");
-      clearTaskIntentDraft();
       navigate(`/tasks/${task.id}`);
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : "任务创建失败，请稍后重试");

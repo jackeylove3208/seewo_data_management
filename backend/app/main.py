@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api.routes.agent import router as agent_router
 from app.api.routes.analyses import router as analysis_router
 from app.api.routes.analysis_jobs import router as analysis_job_router
 from app.api.routes.differences import router as difference_router
@@ -45,6 +46,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title=configured.app_name, version="0.1.0", lifespan=lifespan)
     app.include_router(health_router, prefix="/health", tags=["health"])
+    app.include_router(agent_router)
     app.include_router(analysis_router)
     app.include_router(analysis_job_router)
     app.include_router(difference_router)

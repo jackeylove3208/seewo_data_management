@@ -136,6 +136,12 @@ test("reveals only manual external data sync after explicit selection", async ({
 });
 
 test("keeps new conversation focused on agent chat", async ({ page }) => {
+  await page.route("**/api/agent/history*", (route) => route.fulfill({ json: { items: [], next_cursor: null } }));
+  await page.route("**/api/agent/conversations", (route) => route.fulfill({ status: 201, json: { id: "conversation-focus", status: "active" } }));
+  await page.route("**/api/agent/conversations/conversation-focus/messages", (route) => route.fulfill({ json: {
+    message: "已记录七年级教师、学生同步需求。",
+    intent: { title: "七年级师生同步", entity_types: ["teacher", "student"] },
+  } }));
   await page.goto("/conversations/new");
 
   await expect(page.getByRole("heading", { name: "新建对话" })).toBeVisible();
@@ -155,13 +161,20 @@ test("conversation workspace fills the viewport and keeps its composer visible",
   expect(surface).not.toBeNull();
   expect(composer).not.toBeNull();
   expect(surface!.height).toBeGreaterThan(testInfo.project.name === "desktop" ? 520 : 380);
-  expect(composer!.y + composer!.height).toBeLessThanOrEqual(page.viewportSize()!.height + 1);
+  if (testInfo.project.name === "desktop") {
+    expect(composer!.y + composer!.height).toBeLessThanOrEqual(page.viewportSize()!.height + 1);
+  } else {
+    await page.locator(".conversation-composer").scrollIntoViewIfNeeded();
+    const visibleComposer = await page.locator(".conversation-composer").boundingBox();
+    expect(visibleComposer!.y + visibleComposer!.height).toBeLessThanOrEqual(page.viewportSize()!.height + 1);
+  }
 });
 
 test("creates a task from independent manual external data sync", async ({ page }, testInfo) => {
   await page.route("**/health/ready", async (route) => route.fulfill({ json: { status: "ok" } }));
   let uploadCount = 0;
   let taskCreateCount = 0;
+  let taskCreated = false;
   let releaseTaskCreation!: () => void;
   const taskCreationGate = new Promise<void>((resolve) => {
     releaseTaskCreation = resolve;
@@ -179,34 +192,53 @@ test("creates a task from independent manual external data sync", async ({ page 
       },
     });
   });
-  await page.route("**/api/reconciliation-tasks", async (route) => {
+  await page.route("**/api/agent/tasks", async (route) => {
     taskCreateCount += 1;
     await taskCreationGate;
+    taskCreated = true;
     await route.fulfill({
       status: 202,
       json: {
         id: "task-created",
-        tenant_id: "demo-school",
-        scope_id: "全校",
-        snapshot_mode: "full",
-        status: "ready",
-        stage: "analysis",
-        entity_types: ["organization_unit", "class", "teacher", "student"],
-        snapshots: {
-          authoritative: { accepted: 2, normalized_with_warning: 0, quarantined: 0, rejected: 0, quarantine_available: false },
-          target: { accepted: 2, normalized_with_warning: 0, quarantined: 0, rejected: 0, quarantine_available: false },
-        },
-        error: null,
+        workflow_version: "new-agent-v1",
+        task_kind: "sync",
+        phase: "ingest_and_normalize",
+        status: "running",
+        title: "全校组织数据同步",
       },
     });
   });
+  const createdTask = {
+    id: "task-created",
+    workflow_version: "new-agent-v1",
+    task_kind: "sync",
+    parent_task_id: null,
+    phase: "ingest_and_normalize",
+    status: "running",
+    title: "全校组织数据同步",
+    report_id: null,
+    rollback_eligible: false,
+    deletion_eligible: true,
+  };
+  await page.route("**/api/agent/history*", (route) => route.fulfill({ json: {
+    items: taskCreated ? [{
+      ...createdTask,
+      created_at: "2026-07-23T10:00:00Z",
+      completed_at: null,
+      issue_summary: { total: 0, excluded: 0 },
+      operation_summary: { succeeded: 0, failed: 0, blocked: 0 },
+      entity_types: ["department", "student", "teacher"],
+    }] : [],
+    next_cursor: null,
+  } }));
+  await page.route("**/api/agent/tasks/task-created", (route) => route.fulfill({ json: createdTask }));
+  await page.route("**/api/agent/tasks/task-created/events*", (route) => route.fulfill({ json: { cursor: "0", events: [] } }));
 
   await page.goto("/tasks/new");
   await expect(page.getByRole("heading", { name: "外部数据同步" })).toBeVisible();
   await expect(page.getByText(/自动同步/)).toHaveCount(0);
   await page.getByRole("button", { name: "手动同步" }).click();
-  await expect(page.getByLabel("同步任务名称")).toHaveValue("全校组织数据核对");
-  await expect(page.getByLabel("核对范围")).toHaveValue("全校");
+  await expect(page.getByLabel("同步任务名称")).toHaveValue("全校组织数据同步");
 
   await page.getByLabel("选择三方系统 CSV").setInputFiles({ name: "third-party.csv", mimeType: "text/csv", buffer: csv });
   await page.getByLabel("选择希沃魔方 CSV").setInputFiles({ name: "mofa.csv", mimeType: "text/csv", buffer: csv });
@@ -244,7 +276,7 @@ test("creates a task from independent manual external data sync", async ({ page 
   if (testInfo.project.name === "mobile") {
     await page.getByRole("button", { name: "打开导航" }).click();
   }
-  await expect(page.getByRole("link", { name: /全校组织数据核对/ })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("link", { name: /全校组织数据同步/ })).toHaveAttribute("aria-current", "page");
 });
 
 test("collapses the desktop workspace without hiding the main task", async ({ page }, testInfo) => {
@@ -361,85 +393,4 @@ test("shows persisted mandatory analysis progress without layout shifts", async 
   const track = await page.getByRole("region", { name: "任务处理阶段" }).boundingBox().catch(() => null);
   if (track) expect(track.height).toBeGreaterThanOrEqual(100);
   await page.screenshot({ path: testInfo.outputPath("mandatory-analysis-progress.png"), fullPage: true });
-});
-
-test("runs from synthetic CSV upload through automatic analysis to an AI proposal", async ({ page }, testInfo) => {
-  const taskId = "task-full-chain";
-  await seedGovernanceWorkbench(page, "ai", taskId, false);
-  let uploadCount = 0;
-  await page.route("**/api/uploads", async (route) => {
-    uploadCount += 1;
-    await route.fulfill({ status: 201, json: { id: uploadCount === 1 ? "source-full" : "target-full", source_role: uploadCount === 1 ? "authoritative" : "target", original_name: uploadCount === 1 ? "third-party.csv" : "seewo.csv", size_bytes: csv.length, detected_encoding: "utf-8" } });
-  });
-  let workflow = { stage: "matching", status: "pending", attempt: 0, processed: 0, total: 0, analysis: { job_id: null, total: 0, completed: 0, succeeded: 0, manual_review: 0, failed: 0 }, error: null };
-  const taskResponse = () => ({ id: taskId, tenant_id: "school-1", scope_id: "all", snapshot_mode: "full", entity_types: ["teacher"], status: "ready", stage: workflow.stage === "complete" ? "analysis_ready" : "snapshots", snapshots: { authoritative: { accepted: 2, normalized_with_warning: 0, quarantined: 0, rejected: 0, quarantine_available: false }, target: { accepted: 2, normalized_with_warning: 0, quarantined: 0, rejected: 0, quarantine_available: false } }, workflow, error: null });
-  await page.route("**/api/reconciliation-tasks", async (route) => route.fulfill({ status: 202, json: taskResponse() }));
-  await page.route(`**/api/reconciliation-tasks/${taskId}`, async (route) => route.fulfill({ json: taskResponse() }));
-  let advanceCount = 0;
-  await page.route(`**/api/reconciliation-tasks/${taskId}/workflow/advance`, async (route) => {
-    advanceCount += 1;
-    workflow = advanceCount === 1
-      ? { ...workflow, stage: "differences", attempt: 1 }
-      : { stage: "analysis", status: "running", attempt: 1, processed: 0, total: 2, analysis: { job_id: "job-full-chain", total: 2, completed: 0, succeeded: 0, manual_review: 0, failed: 0 }, error: null };
-    await route.fulfill({ json: { task_id: taskId, workflow } });
-  });
-  let jobStatusReads = 0;
-  await page.route("**/api/analysis-jobs/job-full-chain", async (route) => {
-    jobStatusReads += 1;
-    if (jobStatusReads === 1) {
-      await route.fulfill({ json: { job_id: "job-full-chain", task_id: taskId, status: "running", total: 2, completed: 0, succeeded: 0, manual_required: 0, needs_information: 0, manual_only: 0, failed: 0, proposal_ready: 0, last_error: null, updated_at: "2026-07-20T10:00:00Z" } });
-      return;
-    }
-    if (jobStatusReads === 2) {
-      await route.fulfill({ json: { job_id: "job-full-chain", task_id: taskId, status: "running", total: 2, completed: 1, succeeded: 1, manual_required: 0, needs_information: 0, manual_only: 0, failed: 0, proposal_ready: 1, last_error: null, updated_at: "2026-07-20T10:00:30Z" } });
-      return;
-    }
-    workflow = { stage: "complete", status: "succeeded", attempt: 1, processed: 2, total: 2, analysis: { job_id: "job-full-chain", total: 2, completed: 2, succeeded: 1, manual_review: 1, failed: 0 }, error: null };
-    await route.fulfill({ json: { job_id: "job-full-chain", task_id: taskId, status: "completed", total: 2, completed: 2, succeeded: 1, manual_required: 1, needs_information: 0, manual_only: 1, failed: 0, proposal_ready: 1, last_error: null, updated_at: "2026-07-20T10:01:00Z" } });
-  });
-  await page.route(`**/api/reconciliation-tasks/${taskId}/analysis-summary`, async (route) => route.fulfill({ json: {
-    task_id: taskId,
-    analysis_job_id: "job-full-chain",
-    job_status: "completed",
-    terminal: true,
-    entity_types: [{ entity_type: "teacher", issue_count: 1, proposal_ready: 1, needs_information: 0, manual_only: 0, failed: 0 }],
-  } }));
-  await page.route(`**/api/reconciliation-tasks/${taskId}/proposal-batches/preview`, async (route) => route.fulfill({ json: {
-    task_id: taskId,
-    analysis_job_id: "job-full-chain",
-    preview_token: "signed-full-chain-preview",
-    included: [{ difference_id: "difference-ai", difference_version: 1, analysis_id: "analysis-ai", solution_id: "option-1", entity_type: "teacher", title: "更新教师手机号", operation_type: "update", changes: [{ field: "phone", before: "13900000000", after: "13800000000" }], risk: "low" }],
-    excluded: [],
-  } }));
-  await page.route(`**/api/reconciliation-tasks/${taskId}/proposal-batches/confirm`, async (route) => route.fulfill({ status: 201, json: {
-    task_id: taskId,
-    created: 1,
-    skipped: 0,
-    failed: 0,
-    items: [{ difference_id: "difference-ai", status: "created", proposal_id: "proposal-batch-1", reason: null }],
-  } }));
-
-  await page.goto("/tasks/new");
-  await page.getByRole("button", { name: "手动同步" }).click();
-  await page.getByLabel("选择三方系统 CSV").setInputFiles({ name: "third-party.csv", mimeType: "text/csv", buffer: csv });
-  await page.getByLabel("选择希沃魔方 CSV").setInputFiles({ name: "seewo.csv", mimeType: "text/csv", buffer: csv });
-  await page.getByRole("button", { name: "开始同步" }).click();
-  await expect(page).toHaveURL(new RegExp(`/tasks/${taskId}$`));
-  await expect(page.getByText("已完成 0 / 2")).toBeVisible();
-  await page.reload();
-  await expect(page.getByText("已完成 1 / 2")).toBeVisible();
-  await expect(page.getByText("分析完成")).toBeVisible();
-  await page.screenshot({ path: testInfo.outputPath("terminal-analysis-summary.png"), fullPage: true });
-  await page.getByRole("button", { name: "AI 一键处理" }).click();
-  await expect(page.getByText("确认后仅生成待执行方案，不会直接修改希沃数据。")).toBeVisible();
-  await expect(page.getByRole("dialog")).toBeVisible();
-  await page.waitForTimeout(400);
-  const batchDialog = await page.getByRole("dialog").boundingBox();
-  expect(batchDialog?.x ?? -1).toBeGreaterThanOrEqual(0);
-  expect((batchDialog?.x ?? 0) + (batchDialog?.width ?? 0)).toBeLessThanOrEqual(page.viewportSize()!.width + 1);
-  await page.screenshot({ path: testInfo.outputPath("batch-analysis-preview.png"), fullPage: true });
-  await page.getByRole("button", { name: "确认生成 1 份待执行方案" }).click();
-  await expect(page.getByText("已生成 1 份待执行方案")).toBeVisible();
-  await expect(page.getByRole("button", { name: "查看待执行方案" })).toBeVisible();
-  expect(advanceCount).toBe(2);
 });

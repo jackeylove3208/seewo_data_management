@@ -12,6 +12,16 @@ class AgentModelOutputError(ValueError):
     pass
 
 
+_ALLOWED_OPERATIONS: dict[str, frozenset[str]] = {
+    "target_extra": frozenset({"delete", "retain"}),
+    "target_duplicate": frozenset({"delete", "retain"}),
+    "target_missing": frozenset({"create", "retain"}),
+    "field_difference": frozenset({"update", "retain"}),
+    "authority_invalid": frozenset({"skip"}),
+    "identity_conflict": frozenset({"update", "delete", "retain"}),
+}
+
+
 def validate_agent_model_output(
     output: Mapping[str, object],
     expected_work_item_ids: tuple[UUID, ...],
@@ -45,4 +55,11 @@ def validate_agent_model_output(
                 raise AgentModelOutputError(
                     "invalid authoritative rows require a read-only authority-invalid solution"
                 )
+        allowed = _ALLOWED_OPERATIONS.get(finding.kind)
+        if allowed is None or any(
+            solution.operation not in allowed for solution in finding.solutions
+        ):
+            raise AgentModelOutputError(
+                "model solution operation is incompatible with the persisted finding"
+            )
     return findings

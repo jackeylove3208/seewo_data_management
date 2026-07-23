@@ -3,15 +3,14 @@ import { ArrowUp, Bot, MessageSquareText, UserRound } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 
 import { agentApi as defaultAgentApi, type AgentConversationApi, type AgentIntent, type AgentStartConfirmation, type AgentTask, type AgentTaskEvent } from "../../api/agent";
-import { createEmptyTaskIntentDraft } from "./assistant";
-import { clearTaskIntentDraft } from "./draftHandoff";
-import type {
-  ConversationMessage,
-  ConversationState,
-  TaskCreationAssistant,
-  TaskIntentDraft,
-} from "./types";
-import { isAssistantResponse, isTaskIntentDraft, isTaskIntentReady } from "./types";
+
+type ConversationState = "idle" | "collecting" | "needs-input" | "draft-ready" | "submitting" | "failed" | "created";
+interface ConversationMessage {
+  id: string;
+  role: "assistant" | "user";
+  text: string;
+  kind?: "normal" | "guardrail" | "error";
+}
 
 const initialMessages: ConversationMessage[] = [{
   id: "assistant-welcome",
@@ -28,13 +27,10 @@ function sessionKey() {
 }
 
 export function ConversationCreatePage({
-  assistant,
   agentApi,
 }: {
-  assistant?: TaskCreationAssistant;
   agentApi?: AgentConversationApi;
 }) {
-  const [draft, setDraft] = useState<TaskIntentDraft>(() => createEmptyTaskIntentDraft());
   const [messages, setMessages] = useState<ConversationMessage[]>(initialMessages);
   const [input, setInput] = useState("");
   const [state, setState] = useState<ConversationState>("idle");
@@ -51,8 +47,6 @@ export function ConversationCreatePage({
   const backendApi = agentApi ?? defaultAgentApi;
 
   useEffect(() => {
-    clearTaskIntentDraft();
-    if (assistant) return;
     void backendApi.createConversation().then((conversation) => setConversationId(conversation.id)).catch(() => {
       setState("failed");
       setMessages((current) => [...current, {
@@ -62,7 +56,7 @@ export function ConversationCreatePage({
         kind: "error",
       }]);
     });
-  }, [agentApi, assistant, backendApi]);
+  }, [agentApi, backendApi]);
 
   useEffect(() => {
     if (!task || !backendApi.events) return;
@@ -77,6 +71,13 @@ export function ConversationCreatePage({
           return [...current, ...page.events.filter((item) => !known.has(item.id))];
         });
         const latest = page.events.at(-1);
+        if (latest?.phase || latest?.status) {
+          setTask((current) => current ? {
+            ...current,
+            phase: latest.phase ?? current.phase,
+            status: latest.status ?? current.status,
+          } : current);
+        }
         if (latest?.type === "clarification_required") setClarificationOpen(true);
         if (["completed", "terminated", "failed"].includes(latest?.status ?? "")) setState("created");
       } catch {
@@ -99,21 +100,6 @@ export function ConversationCreatePage({
     setState("collecting");
     setMessages((current) => [...current, { id: messageId(), role: "user", text: message }]);
     try {
-      if (assistant) {
-        const response = await assistant.respond({ draft, message });
-        if (!isAssistantResponse(response)) throw new Error("Invalid assistant response");
-        const nextDraft = { ...draft, ...response.patch };
-        if (!isTaskIntentDraft(nextDraft)) throw new Error("Invalid assistant draft");
-        setDraft(nextDraft);
-        setMessages((current) => [...current, {
-          id: messageId(),
-          role: "assistant",
-          text: response.message,
-          kind: response.kind,
-        }]);
-        setState(isTaskIntentReady(nextDraft) ? "draft-ready" : "needs-input");
-        return;
-      }
       if (task && clarificationOpen && backendApi.clarify) {
         await backendApi.clarify(task.id, message);
         setClarificationOpen(false);
@@ -129,13 +115,7 @@ export function ConversationCreatePage({
         conversationId ?? await createConversation(),
         message,
       );
-      const nextDraft: TaskIntentDraft = {
-        ...draft,
-        title: response.intent.title,
-        entityTypes: response.intent.entity_types.map((type) => type === "department" ? "organization_unit" : type),
-      };
       setAgentIntent(response.intent);
-      setDraft(nextDraft);
       setMessages((current) => [...current, {
         id: messageId(),
         role: "assistant",
@@ -168,7 +148,7 @@ export function ConversationCreatePage({
     setState("submitting");
     try {
       const created = await backendApi.startTask(conversationId, {
-        title: draft.title || confirmation.title,
+        title: agentIntent?.title || confirmation.title,
         entity_types: confirmation.entity_types,
         source: agentIntent?.source,
         target: agentIntent?.target,

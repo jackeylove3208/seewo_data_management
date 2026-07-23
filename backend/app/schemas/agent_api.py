@@ -1,0 +1,184 @@
+from datetime import datetime
+from enum import StrEnum
+from typing import Any, Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from app.agent_runtime.state_machine import AgentPhase
+
+
+class AgentEntityType(StrEnum):
+    DEPARTMENT = "department"
+    STUDENT = "student"
+    TEACHER = "teacher"
+
+
+class AgentConnectorSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["csv", "api", "database"]
+    upload_id: UUID | None = None
+    configuration_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_reference(self) -> "AgentConnectorSelection":
+        if self.kind == "csv":
+            if self.upload_id is None or self.configuration_id is not None:
+                raise ValueError("CSV connector requires only upload_id")
+        elif self.configuration_id is None or self.upload_id is not None:
+            raise ValueError("configured connector requires only configuration_id")
+        return self
+
+
+class AgentTaskIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=255)
+    entity_types: frozenset[AgentEntityType] = Field(min_length=1)
+    source: AgentConnectorSelection
+    target: AgentConnectorSelection
+
+
+class AgentConversationResponse(BaseModel):
+    id: UUID
+    status: Literal["active", "closed"]
+
+
+class AgentMessageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=2000)
+
+
+class AgentIntentView(BaseModel):
+    title: str
+    entity_types: tuple[AgentEntityType, ...]
+    source: AgentConnectorSelection | None = None
+    target: AgentConnectorSelection | None = None
+
+
+class AgentStartConfirmation(BaseModel):
+    title: str
+    summary: str
+    entity_types: tuple[AgentEntityType, ...]
+
+
+class AgentMessageResponse(BaseModel):
+    message: str
+    intent: AgentIntentView
+    start_confirmation: AgentStartConfirmation | None = None
+
+
+class AgentTaskResponse(BaseModel):
+    id: UUID
+    workflow_version: Literal["new-agent-v1"]
+    task_kind: Literal["sync", "rollback"]
+    parent_task_id: UUID | None = None
+    phase: AgentPhase
+    status: str
+    title: str | None = None
+    report_id: UUID | None = None
+    rollback_eligible: bool = False
+    deletion_eligible: bool = True
+
+
+class AgentTaskEventResponse(BaseModel):
+    id: UUID
+    cursor: str
+    type: str
+    phase: AgentPhase | None = None
+    status: str | None = None
+    payload: dict[str, Any]
+    created_at: datetime
+
+
+class AgentEventPage(BaseModel):
+    cursor: str
+    events: tuple[AgentTaskEventResponse, ...]
+
+
+class AgentCommandResponse(BaseModel):
+    status: str
+
+
+class AgentActiveLockResponse(BaseModel):
+    active: bool
+    owner_task_id: UUID | None = None
+    owner_run_id: UUID | None = None
+    acquired_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+
+
+class AgentHistoryItem(AgentTaskResponse):
+    created_at: datetime
+    completed_at: datetime | None = None
+    issue_summary: dict[str, int]
+    operation_summary: dict[str, int]
+    rollback_eligible: bool
+    deletion_eligible: bool
+    entity_types: tuple[AgentEntityType, ...]
+
+
+class AgentHistoryPage(BaseModel):
+    items: tuple[AgentHistoryItem, ...]
+    next_cursor: str | None = None
+
+
+class ApprovalDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+class ClarificationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=500)
+
+
+class ClarificationConfirmationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirmed: bool = True
+
+
+class AgentRollbackPreviewResponse(BaseModel):
+    task_id: UUID
+    source_task_id: UUID
+    target_version_id: UUID
+    operation_count: int
+    requires_confirmation: bool = True
+
+
+class AgentApprovalGroupView(BaseModel):
+    id: UUID
+    status: str
+    issue_kind: str
+    entity_kind: str
+    operation: str
+    item_count: int
+
+
+class AgentClarificationView(BaseModel):
+    id: UUID
+    status: str
+    masked_candidates: tuple[dict[str, Any], ...]
+    allowed_outcomes: tuple[str, ...]
+
+
+class AgentInteractionResponse(BaseModel):
+    approval_groups: tuple[AgentApprovalGroupView, ...]
+    clarifications: tuple[AgentClarificationView, ...]
+
+
+class AgentReportResponse(BaseModel):
+    id: UUID
+    task_id: UUID
+    kind: str
+    terminal_state: str
+    facts: dict[str, Any]
+    content: dict[str, Any]
+    rollback_eligible: bool
+    deletion_eligible: bool
+    created_at: datetime

@@ -61,3 +61,30 @@ def test_rejects_model_finding_kind_that_does_not_match_persisted_work() -> None
             (work_item_id,),
             expected_kinds={work_item_id: "target_missing"},
         )
+
+
+@pytest.mark.parametrize(
+    ("kind", "operation"),
+    (
+        ("target_extra", "update"),
+        ("target_duplicate", "create"),
+        ("target_missing", "delete"),
+        ("field_difference", "delete"),
+    ),
+)
+def test_rejects_operation_that_is_incompatible_with_persisted_finding(
+    kind: str,
+    operation: str,
+) -> None:
+    work_item_id = uuid4()
+    output = _output(work_item_id)
+    output["findings"][0]["kind"] = kind
+    output["findings"][0]["solutions"][0]["operation"] = operation
+
+    with pytest.raises(AgentModelOutputError, match="operation"):
+        validate_agent_model_output(
+            output,
+            (work_item_id,),
+            authority_invalid_ids=set(),
+            expected_kinds={work_item_id: kind},
+        )

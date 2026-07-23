@@ -9,6 +9,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent_runtime.repository import AgentRuntimeRepository
 from app.models.agent_analysis import (
     AgentIdentityPostingRecord,
     AgentInputMarkRecord,
@@ -16,8 +17,10 @@ from app.models.agent_analysis import (
     AgentWorkItemRecord,
 )
 from app.models.agent_runtime import AgentRunRecord
+from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import Snapshot
 from app.repositories.agent_analysis import AgentAnalysisRepository
+from app.repositories.agent_governance import AgentGovernanceRepository
 from app.schemas.agent_ingestion import AgentContractRecord, AgentEntityKind
 
 
@@ -116,13 +119,38 @@ class AgentIdentityIndexBuilder:
                 )
                 continue
             if len(candidate_ids) != 1:
-                await self._persist_work(
+                work = await self._persist_work(
                     run,
                     source,
                     target,
                     target_record,
                     "identity_conflict",
                     tuple(sorted(candidate_ids)),
+                )
+                task = await self._session.get(ReconciliationTask, run.task_id)
+                if task is None:
+                    raise LookupError("Agent task not found")
+                clarification = await AgentGovernanceRepository(
+                    self._session
+                ).create_clarification(
+                    run=run,
+                    task=task,
+                    work_item_id=work.id,
+                    candidates=tuple(
+                        _masked_candidate(authority_by_id[candidate_id])
+                        for candidate_id in sorted(candidate_ids, key=str)
+                    ),
+                    allowed_outcomes=("use_candidate", "target_extra"),
+                )
+                await AgentRuntimeRepository(self._session).append_event(
+                    run.id,
+                    "clarification_required",
+                    {
+                        "clarification_id": str(clarification.id),
+                        "work_item_id": str(work.id),
+                        "masked_evidence": clarification.masked_candidates,
+                        "allowed_outcomes": clarification.allowed_outcomes,
+                    },
                 )
                 continue
             authority_id = next(iter(candidate_ids))
@@ -212,3 +240,15 @@ def _hash(value: object) -> str:
     return hashlib.sha256(
         json.dumps(value, default=str, ensure_ascii=False, sort_keys=True).encode()
     ).hexdigest()
+
+
+def _masked_candidate(record: AgentInputRecord) -> dict[str, object]:
+    return {
+        "id": str(record.id),
+        "entity_kind": record.entity_kind,
+        "name": record.name,
+        "number": record.number,
+        "class_name": record.class_name,
+        "phone": "***" + record.phone[-4:] if record.phone else None,
+        "email": record.email,
+    }

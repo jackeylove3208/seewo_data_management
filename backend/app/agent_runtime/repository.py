@@ -284,6 +284,24 @@ class AgentRuntimeRepository:
         await self.session.flush()
         return checkpoint
 
+    async def get_checkpoint(
+        self,
+        run_id: UUID,
+        *,
+        phase: AgentPhase,
+        checkpoint_key: str,
+    ) -> AgentCheckpointRecord | None:
+        return cast(
+            AgentCheckpointRecord | None,
+            await self.session.scalar(
+                select(AgentCheckpointRecord).where(
+                    AgentCheckpointRecord.run_id == run_id,
+                    AgentCheckpointRecord.phase == phase.value,
+                    AgentCheckpointRecord.checkpoint_key == checkpoint_key,
+                )
+            ),
+        )
+
     async def record_failure(
         self,
         run_id: UUID,

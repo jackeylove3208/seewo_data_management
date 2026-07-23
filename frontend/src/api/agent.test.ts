@@ -41,4 +41,15 @@ describe("Agent API", () => {
       "/api/agent/tasks/task-1/approval-groups/group-1/approve",
     ]);
   });
+
+  it("keeps rollback preview and human confirmation as separate commands", async () => {
+    await agentApi.previewRollback("source-task-1");
+    await agentApi.confirmRollback("rollback-task-1");
+    await agentApi.rejectRollback("rollback-task-2");
+
+    const calls = vi.mocked(fetch).mock.calls;
+    expect(calls[0]?.[0]).toBe("/api/agent/tasks/source-task-1/rollback-preview");
+    expect(calls[1]?.[0]).toBe("/api/agent/rollback-tasks/rollback-task-1/confirm");
+    expect(calls[2]?.[0]).toBe("/api/agent/rollback-tasks/rollback-task-2/reject");
+  });
 });

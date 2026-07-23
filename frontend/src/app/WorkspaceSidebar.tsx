@@ -44,9 +44,11 @@ export function WorkspaceSidebar({
   closeButtonRef?: RefObject<HTMLButtonElement | null>;
 }) {
   const location = useLocation();
-  const deletion = useTaskDeletion();
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSED_KEY) === "true");
   const [tasks, setTasks] = useState(() => allTasks().slice(0, RECENT_TASK_LIMIT));
+  const deletion = useTaskDeletion((taskId) => {
+    setTasks((current) => current.filter((task) => task.id !== taskId));
+  });
 
   useEffect(() => {
     const refresh = () => setTasks(allTasks().slice(0, RECENT_TASK_LIMIT));
@@ -64,7 +66,7 @@ export function WorkspaceSidebar({
       .then((page) => setTasks([...page.items.map(toTaskHistoryItem), ...allTasks().filter((task) => task.isDemo)].slice(0, RECENT_TASK_LIMIT)))
       .catch(() => undefined);
     return () => controller.abort();
-  }, []);
+  }, [location.pathname]);
 
   useEffect(() => {
     if (mobileOpen) closeButtonRef?.current?.focus();

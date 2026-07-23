@@ -58,6 +58,15 @@ _COLUMN_NAMES = {
     "container_source_id": "container_id",
 }
 
+_AGENT_COLUMN_ALIASES = {
+    "category": ("category", "类别", "entity_type", "实体类型"),
+    "name": ("name", "姓名", "名称"),
+    "number": ("number", "编号", "工号", "学号"),
+    "class_name": ("class_name", "class", "班级"),
+    "phone": ("phone", "电话", "手机号"),
+    "email": ("email", "邮箱", "电子邮箱"),
+}
+
 
 class CsvTargetVersioner:
     def __init__(
@@ -120,7 +129,7 @@ class CsvTargetMutationSession:
     async def apply_operation(self, operation: GovernanceOperation) -> None:
         self._require_open()
         for field in operation.after or {}:
-            column = _column_for(field)
+            column = _column_for(field, self.fieldnames)
             if column not in self.fieldnames:
                 self.fieldnames.append(column)
         self.rows = apply_operation(self.rows, operation, self.fieldnames)
@@ -272,10 +281,15 @@ def _read_csv(path: Path) -> tuple[tuple[str, ...], list[dict[str, str]]]:
     try:
         with path.open(encoding="utf-8-sig", newline="") as handle:
             reader = csv.DictReader(handle)
-            if reader.fieldnames is None or "id" not in reader.fieldnames:
-                raise CsvMutationError("target CSV requires an id column")
+            if reader.fieldnames is None:
+                raise CsvMutationError("target CSV requires a header row")
             rows = [dict(row) for row in reader]
-            return tuple(reader.fieldnames), rows
+            fieldnames = list(reader.fieldnames)
+            if "id" not in fieldnames:
+                fieldnames.append("id")
+                for physical_row_number, row in enumerate(rows, start=2):
+                    row["id"] = f"csv:{physical_row_number}"
+            return tuple(fieldnames), rows
     except UnicodeDecodeError as error:
         raise CsvMutationError("target CSV must use UTF-8 for execution") from error
 
@@ -288,14 +302,14 @@ def _apply_after(row: dict[str, str], after: Mapping[str, object]) -> None:
     for field, value in after.items():
         if field == "entity_type":
             continue
-        row[_column_for(field)] = "" if value is None else str(value)
+        row[_column_for(field, row)] = "" if value is None else str(value)
 
 
 def _require_before(row: Mapping[str, str], before: Mapping[str, object]) -> None:
     mismatches = [
         field
         for field, expected in before.items()
-        if not json_values_equal(row.get(_column_for(field)), _csv_expected(expected))
+        if not json_values_equal(row.get(_column_for(field, row)), _csv_expected(expected))
     ]
     if mismatches:
         raise CsvMutationError(f"target before value changed: {', '.join(sorted(mismatches))}")
@@ -305,12 +319,19 @@ def _csv_expected(value: object) -> object:
     return "" if value is None else str(value)
 
 
-def _column_for(field: str) -> str:
-    return _COLUMN_NAMES.get(field, field)
+def _column_for(field: str, columns: Mapping[str, object] | Sequence[str]) -> str:
+    available = set(columns)
+    canonical = _COLUMN_NAMES.get(field, field)
+    for candidate in _AGENT_COLUMN_ALIASES.get(canonical, (canonical,)):
+        if candidate in available:
+            return candidate
+    return canonical
 
 
 def _canonical_row(row: Mapping[str, str]) -> dict[str, object]:
     facts: dict[str, object] = dict(row)
+    for canonical, aliases in _AGENT_COLUMN_ALIASES.items():
+        facts[canonical] = next((row[item] for item in aliases if item in row), "")
     facts["source_id"] = row.get("id", "")
     parent = row.get("parent_id", "")
     facts["parent_source_id"] = parent

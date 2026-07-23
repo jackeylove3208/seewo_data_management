@@ -6,7 +6,7 @@ import { agentApi } from "../../api/agent";
 import { removeStoredTask } from "../../data/taskHistory";
 import type { TaskHistoryItem } from "../../types/domain";
 
-export function useTaskDeletion() {
+export function useTaskDeletion(onDeleted?: (taskId: string) => void) {
   const [selectedTask, setSelectedTask] = useState<TaskHistoryItem>();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
@@ -19,6 +19,7 @@ export function useTaskDeletion() {
       if (selectedTask.workflowVersion === "new-agent-v1") await agentApi.deleteTask(selectedTask.id);
       else await ingestionApi.deleteTask(selectedTask.id);
       removeStoredTask(selectedTask.id);
+      onDeleted?.(selectedTask.id);
       setSelectedTask(undefined);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "删除任务失败，请稍后重试");

@@ -2,7 +2,7 @@ import pytest
 from sqlalchemy import select
 
 from app.agent_runtime.repository import AgentRuntimeRepository
-from app.agent_runtime.service import AgentSupervisorService
+from app.agent_runtime.service import AgentSupervisorService, _termination_mutations
 from app.agent_runtime.state_machine import AgentPhase, AgentRunStatus
 from app.core.security import OperatorContext
 from app.models.agent_runtime import AgentFailureRecord, SchoolTaskLockRecord
@@ -111,6 +111,31 @@ async def test_termination_persists_terminal_summary_before_releasing_school_loc
     events = await AgentRuntimeRepository(session).list_events(run.id)
     assert events[-2].event_type == "termination.report.persisted"
     assert events[-1].event_type == "run.terminated"
+
+
+def test_termination_summary_preserves_only_verified_mutation_facts() -> None:
+    class Operation:
+        id = "op-1"
+        status = "succeeded"
+        operation_type = "update"
+        entity_kind = "student"
+        target_source_identifier = "csv:2"
+        before = {"name": "旧姓名"}
+        actual_after = {"name": "新姓名"}
+        verification = {"valid": True}
+
+    assert _termination_mutations((Operation(),)) == [
+        {
+            "id": "op-1",
+            "status": "succeeded",
+            "operation": "update",
+            "entity_kind": "student",
+            "target_source_identifier": "csv:2",
+            "before": {"name": "旧姓名"},
+            "after": {"name": "新姓名"},
+            "verification": {"valid": True},
+        }
+    ]
 
 
 @pytest.mark.asyncio

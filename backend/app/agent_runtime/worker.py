@@ -1,13 +1,18 @@
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from time import monotonic
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.agent_runtime.observability import agent_observability
 from app.agent_runtime.repository import AgentRuntimeRepository, run_claim_is_active
 from app.agent_runtime.state_machine import AgentPhase, AgentRunStatus
+from app.models.agent_runtime import SchoolTaskLockRecord
 
 
 class AgentLeaseLost(RuntimeError):
@@ -139,6 +144,42 @@ class AgentWorker:
                     attempt_count=claimed.attempt_count,
                     lease_token=claimed.lease_token,
                 )
+                created_at = claimed.created_at
+                lock = await claim_session.scalar(
+                    select(SchoolTaskLockRecord).where(
+                        SchoolTaskLockRecord.tenant_id == claimed.tenant_id,
+                        SchoolTaskLockRecord.owner_run_id == claimed.id,
+                        SchoolTaskLockRecord.active.is_(True),
+                    )
+                )
+
+        now = datetime.now(UTC)
+        queue_origin = (
+            created_at.replace(tzinfo=UTC)
+            if created_at.tzinfo is None
+            else created_at.astimezone(UTC)
+        )
+        agent_observability.observe(
+            "phase_started",
+            task_id=context.task_id,
+            run_id=context.run_id,
+            phase=context.phase.value,
+            queue_age_ms=max(0.0, (now - queue_origin).total_seconds() * 1000),
+            retry_count=max(0, context.attempt_count - 1),
+        )
+        if lock is not None:
+            acquired_at = (
+                lock.acquired_at.replace(tzinfo=UTC)
+                if lock.acquired_at.tzinfo is None
+                else lock.acquired_at.astimezone(UTC)
+            )
+            agent_observability.observe(
+                "lock_observed",
+                task_id=context.task_id,
+                run_id=context.run_id,
+                owner_task_id=lock.owner_task_id,
+                lock_age_ms=max(0.0, (now - acquired_at).total_seconds() * 1000),
+            )
 
         heartbeat_stopped = asyncio.Event()
         heartbeat_task = asyncio.create_task(
@@ -149,6 +190,7 @@ class AgentWorker:
                 stopped=heartbeat_stopped,
             )
         )
+        started_at = monotonic()
         try:
             result = await self._run_fenced_handler(
                 handler=self.handlers[context.phase],
@@ -179,13 +221,36 @@ class AgentWorker:
                         "phase.transitioned",
                         {"phase": transitioned.phase, "status": transitioned.status},
                     )
+                    if transitioned.phase == AgentPhase.TERMINAL.value:
+                        await repository.release_school_lock(
+                            tenant_id=context.tenant_id,
+                            run_id=context.run_id,
+                            reason="completed",
+                        )
                     await repository.release_run_claim(
                         context.run_id,
                         worker_id=self.worker_id,
                         lease_token=context.lease_token,
                     )
+            agent_observability.observe(
+                "phase_completed",
+                task_id=context.task_id,
+                run_id=context.run_id,
+                phase=context.phase.value,
+                duration_ms=(monotonic() - started_at) * 1000,
+                outcome="succeeded",
+            )
             return True
-        except BaseException:
+        except BaseException as error:
+            agent_observability.observe(
+                "phase_failed",
+                task_id=context.task_id,
+                run_id=context.run_id,
+                phase=context.phase.value,
+                duration_ms=(monotonic() - started_at) * 1000,
+                outcome="failed",
+                error_code=type(error).__name__,
+            )
             heartbeat_stopped.set()
             await asyncio.gather(heartbeat_task, return_exceptions=True)
             async with self.session_factory() as release_session:

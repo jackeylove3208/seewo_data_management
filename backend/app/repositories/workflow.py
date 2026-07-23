@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,16 +28,20 @@ class WorkflowRunRepository:
         *,
         total: int = 0,
     ) -> WorkflowStageRun:
-        latest_attempt = await self.session.scalar(
-            select(func.max(WorkflowStageRun.attempt)).where(
+        latest = await self.session.scalar(
+            select(WorkflowStageRun)
+            .where(
                 WorkflowStageRun.task_id == task_id,
                 WorkflowStageRun.stage == stage.value,
             )
+            .order_by(WorkflowStageRun.attempt.desc(), WorkflowStageRun.id.desc())
         )
+        if latest is not None and latest.status != WorkflowStatus.FAILED.value:
+            raise ConcurrentStageRunError("workflow stage is already advancing or completed")
         run = WorkflowStageRun(
             task_id=task_id,
             stage=stage.value,
-            attempt=(latest_attempt or 0) + 1,
+            attempt=(latest.attempt if latest is not None else 0) + 1,
             status=WorkflowStatus.RUNNING.value,
             total=total,
             started_at=datetime.now(UTC),

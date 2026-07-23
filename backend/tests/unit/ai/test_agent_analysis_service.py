@@ -54,3 +54,8 @@ async def test_model_input_tokenizes_student_phone_and_validates_response_member
     request_content = provider.requests[0].messages[-1].content
     assert "13800138000" not in request_content
     assert "STUDENT_PHONE_" in request_content
+    system_content = provider.requests[0].messages[0].content
+    assert "不得修改第三方数据" in system_content
+    assert "不得使用姓名或班级建立身份对应" in system_content
+    assert provider.requests[0].response_schema["additionalProperties"] is False
+    assert "AgentSolutionPayload" in provider.requests[0].response_schema["$defs"]

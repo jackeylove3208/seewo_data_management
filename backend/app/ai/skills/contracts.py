@@ -104,7 +104,11 @@ class AgentFinding(StrictContract):
     finding_id: UUID
     work_item_id: UUID
     disposition: Literal[
-        "target_extra", "target_duplicate", "target_missing", "field_difference", "clarify"
+        "target_extra",
+        "target_duplicate",
+        "target_missing",
+        "field_difference",
+        "identity_conflict",
     ]
     category_zh: str = Field(min_length=1)
     analysis_zh: str = Field(min_length=1)

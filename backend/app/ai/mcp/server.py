@@ -6,6 +6,8 @@ from mcp.server.fastmcp import Context, FastMCP
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai.mcp.agent_authorization import AgentCapability, AgentToolContext
+from app.ai.mcp.agent_gateway import AgentPhaseToolGateway
 from app.ai.mcp.authorization import (
     ToolAuthorizationError,
     ToolContext,
@@ -89,6 +91,7 @@ class MCPToolGateway:
 
 
 ToolContextProvider = Callable[[Context[Any, Any, Any]], ToolContext]
+AgentToolContextProvider = Callable[[Context[Any, Any, Any]], AgentToolContext]
 
 
 def create_fastmcp_server(
@@ -157,6 +160,38 @@ def create_fastmcp_server(
         )
         return result.payload
 
+    return server
+
+
+def create_agent_fastmcp_server(
+    gateway: AgentPhaseToolGateway,
+    context_provider: AgentToolContextProvider,
+) -> FastMCP[Any]:
+    """Expose only server-registered, phase-authorized ``new-agent-v1`` capabilities."""
+    server: FastMCP[Any] = FastMCP(
+        "organization-reconciliation-agent",
+        instructions="Phase-scoped new-agent-v1 tools; no generic infrastructure access",
+    )
+
+    def register(capability: AgentCapability) -> None:
+        @server.tool(name=capability.value)
+        async def phase_tool(
+            arguments: dict[str, Any],
+            ctx: Context[Any, Any, Any],
+            resource_id: str | None = None,
+            connector_id: str | None = None,
+        ) -> dict[str, Any]:
+            parsed_resource = UUID(resource_id) if resource_id is not None else None
+            return await gateway.call(
+                capability,
+                context=context_provider(ctx),
+                arguments=arguments,
+                resource_id=parsed_resource,
+                connector_id=connector_id,
+            )
+
+    for capability in AgentCapability:
+        register(capability)
     return server
 
 

@@ -44,7 +44,7 @@ class AgentFindingPayload(BaseModel):
 
     work_item_id: UUID
     kind: str = Field(
-        pattern="^(target_extra|target_duplicate|target_missing|field_difference|authority_invalid|clarify)$"
+        pattern="^(target_extra|target_duplicate|target_missing|field_difference|authority_invalid|identity_conflict)$"
     )
     category_zh: str = Field(min_length=1, max_length=255)
     analysis_zh: str = Field(min_length=1, max_length=8000)

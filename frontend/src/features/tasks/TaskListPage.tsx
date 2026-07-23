@@ -25,8 +25,10 @@ function formatTime(value: string) {
 
 export function TaskListPage() {
   const navigate = useNavigate();
-  const deletion = useTaskDeletion();
   const [backendTasks, setBackendTasks] = useState<ReturnType<typeof allTasks>>();
+  const deletion = useTaskDeletion((taskId) => {
+    setBackendTasks((current) => current?.filter((task) => task.id !== taskId));
+  });
   useEffect(() => {
     const controller = new AbortController();
     void agentApi.history(undefined, controller.signal)
