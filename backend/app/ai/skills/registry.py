@@ -10,6 +10,26 @@ from app.ai.skills.contracts import AGENT_SKILL_SCHEMAS
 READ_ONLY_TOOL_NAMES = frozenset(
     {"difference_context", "candidate_search", "mapping_rules", "execution_context"}
 )
+GRAPH_SKILL_TOOLS_BY_PHASE: dict[str, frozenset[str]] = {
+    "ingest_and_normalize": frozenset(
+        {
+            "inspect_configured_source",
+            "read_connector_page",
+            "submit_input_contract_verdict",
+            "submit_input_marks",
+            "submit_normalized_batch",
+        }
+    ),
+    "analyze_batches": frozenset(
+        {
+            "query_identity_postings",
+            "read_claim_state",
+            "read_paired_record_evidence",
+            "read_work_item",
+            "submit_finding_batch",
+        }
+    ),
+}
 
 
 class SkillNotFound(LookupError):
@@ -63,6 +83,7 @@ class SkillRegistry:
                 allowed_tools = {
                     capability.value for capability in PHASE_CAPABILITIES.get(phase, frozenset())
                 }
+                allowed_tools.update(GRAPH_SKILL_TOOLS_BY_PHASE.get(definition.phase, ()))
             if not set(definition.allowed_tools) <= allowed_tools:
                 raise UnsafeSkillError(name)
         return definition

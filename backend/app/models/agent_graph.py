@@ -167,6 +167,7 @@ class AgentSubAgentInvocationRecord(Base, TimestampMixin):
             "graph_run_id",
             "cursor",
             "action_id",
+            "skill_name",
             "attempt",
             name="uq_agent_subagent_invocation_attempt",
         ),

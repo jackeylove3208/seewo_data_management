@@ -345,6 +345,30 @@ class AgentGraphRepository:
         await self.session.flush()
         return record
 
+    async def finalize_invocation(
+        self,
+        invocation_id: UUID,
+        *,
+        status: str,
+        output_hash: str,
+        model_provenance: dict[str, Any],
+    ) -> AgentSubAgentInvocationRecord:
+        if status not in {"completed", "failed"}:
+            raise ValueError("sub-agent invocation status must be terminal")
+        record = await self.session.get(
+            AgentSubAgentInvocationRecord,
+            invocation_id,
+        )
+        if record is None:
+            raise AgentGraphNotFound(f"sub-agent invocation not found: {invocation_id}")
+        if record.status != "running":
+            raise GraphFactConflict("sub-agent invocation is already terminal")
+        record.status = status
+        record.output_hash = output_hash
+        record.model_provenance = model_provenance
+        await self.session.flush()
+        return record
+
     async def record_human_gate(
         self,
         *,

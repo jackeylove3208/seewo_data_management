@@ -10,7 +10,7 @@ EntityKind = Literal["department", "student", "teacher"]
 ConnectorKind = Literal["csv", "api", "database"]
 SourceRole = Literal["authoritative", "target"]
 RiskLevel = Literal["low", "medium", "high"]
-OperationKind = Literal["create", "update", "delete", "retain"]
+OperationKind = Literal["create", "update", "delete", "retain", "skip"]
 
 
 class StrictContract(BaseModel):
@@ -78,12 +78,14 @@ class SourceInspectionResult(AgentSkillOutput):
 
 class NormalizeOrganizationBatchInput(AgentSkillInput):
     source_role: SourceRole
+    batch_resource_ids: tuple[str, ...] = Field(default=(), max_length=50)
     records: tuple[RawRecord, ...] = Field(max_length=50)
 
 
 class NormalizedRecord(StrictContract):
     locator: str
     entity_kind: EntityKind | None
+    category: str | None
     name: str | None
     number: str | None
     phone_token: str | None
@@ -110,6 +112,7 @@ class AgentFinding(StrictContract):
         "target_missing",
         "field_difference",
         "identity_conflict",
+        "authority_invalid",
     ]
     category_zh: str = Field(min_length=1)
     analysis_zh: str = Field(min_length=1)

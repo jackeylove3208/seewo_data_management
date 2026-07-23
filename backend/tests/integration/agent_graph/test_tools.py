@@ -9,6 +9,7 @@ from app.agent_graph.tools import (
     GraphPhaseToolGateway,
     GraphToolAuthorizationError,
     GraphToolContext,
+    GraphToolExecutionError,
 )
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentPhase, AgentRunKind
@@ -189,3 +190,29 @@ async def test_graph_tool_rejects_tenant_override(session) -> None:
             resource_id="work-item:1",
         )
 
+
+@pytest.mark.asyncio
+async def test_authorized_tool_failure_is_audited_without_leaking_error(session) -> None:
+    context = await _tool_fixture(session)
+
+    async def failing_tool(_context, _arguments):
+        raise RuntimeError("sensitive connector detail")
+
+    gateway = GraphPhaseToolGateway(
+        session,
+        operator=OperatorContext(operator_id="demo-operator", tenant_id="school-1"),
+        tools={"read_work_item": failing_tool},
+    )
+
+    with pytest.raises(GraphToolExecutionError, match="failed safely"):
+        await gateway.call(
+            "read_work_item",
+            context=context,
+            arguments={"resource_id": "work-item:1"},
+            resource_id="work-item:1",
+        )
+
+    record = await session.scalar(select(AgentToolCallRecord))
+    assert record is not None
+    assert record.authorized is True
+    assert record.status == "failed"

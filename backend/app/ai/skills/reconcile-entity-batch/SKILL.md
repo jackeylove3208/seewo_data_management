@@ -2,7 +2,7 @@
 name: reconcile-entity-batch
 version: 1.0.0
 phase: analyze_batches
-allowed_tools: [read_identity_evidence, persist_finding]
+allowed_tools: [read_work_item, read_paired_record_evidence, query_identity_postings, read_claim_state, submit_finding_batch]
 input_schema: ReconcileEntityBatchInput
 output_schema: AgentFindingBatch
 ---
@@ -47,6 +47,10 @@ output_schema: AgentFindingBatch
 8. 被标记的第三方异常行从身份索引中不可见，按 `authority_invalid` 单独生成 AI 异常分析；
    只能建议修复权威源后重跑并输出 `skip`，不能把它当作希沃修改依据。
 9. 已确认身份且全部适用字段一致的正确数据保持静默，不产生 finding、方案或前端记录。
+10. 需要字段证据时，先用 `read_work_item` 确认工作项，再用
+    `read_paired_record_evidence` 读取 manifest 中的完整双边记录；只有服务端提供的
+    `query_identity_postings` 和 `read_claim_state` 可用于解释身份命中与认领状态。
+    `submit_finding_batch` 只用于预校验当前批次，最终结果仍必须符合输出 schema。
 
 ## 决策规则
 

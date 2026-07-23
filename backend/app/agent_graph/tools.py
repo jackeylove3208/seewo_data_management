@@ -30,6 +30,10 @@ class GraphToolAuthorizationError(PermissionError):
     pass
 
 
+class GraphToolExecutionError(RuntimeError):
+    pass
+
+
 class GraphToolContext(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -183,11 +187,6 @@ class GraphPhaseToolGateway:
                 raise GraphToolAuthorizationError(
                     "phase tool has no registered server handler"
                 )
-            payload = await handler(context, arguments)
-            if not isinstance(payload, dict):
-                raise GraphToolAuthorizationError(
-                    "phase tool returned an invalid server payload"
-                )
         except (GraphToolAuthorizationError, EvidenceMembershipError) as error:
             await self._repository.record_tool_call(
                 invocation_id=context.invocation_id,
@@ -203,6 +202,21 @@ class GraphPhaseToolGateway:
                     f"evidence membership rejected: {error}"
                 ) from error
             raise
+        try:
+            payload = await handler(context, arguments)
+            if not isinstance(payload, dict):
+                raise ValueError("phase tool returned an invalid server payload")
+        except Exception as error:
+            await self._repository.record_tool_call(
+                invocation_id=context.invocation_id,
+                tool_name=tool_name,
+                arguments_hash=arguments_hash,
+                result_hash=_safe_hash({"error": type(error).__name__}),
+                authorized=True,
+                status="failed",
+                trace_id=trace_id,
+            )
+            raise GraphToolExecutionError("authorized phase tool failed safely") from error
         await self._repository.record_tool_call(
             invocation_id=context.invocation_id,
             tool_name=tool_name,

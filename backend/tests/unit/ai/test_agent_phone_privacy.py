@@ -14,6 +14,7 @@ def test_tokenizes_student_phone_with_task_scoped_opaque_token() -> None:
 
     assert token.startswith("STUDENT_PHONE_")
     assert "13800138000" not in token
+    assert tokenizer.detokenize(token) == "13800138000"
     assert tokenizer.tokenize("13800138000", entity_kind="teacher") == "13800138000"
 
 
@@ -24,3 +25,5 @@ def test_rejects_unknown_model_phone_token() -> None:
 
     with pytest.raises(UnknownStudentPhoneToken):
         tokenizer.assert_known_tokens({"STUDENT_PHONE_000000000000"})
+    with pytest.raises(UnknownStudentPhoneToken):
+        tokenizer.detokenize("13800138000")
