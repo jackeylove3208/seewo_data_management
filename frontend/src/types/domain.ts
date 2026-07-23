@@ -38,6 +38,11 @@ export interface TaskHistoryItem {
   selectedEntityTypes: EntityType[];
   entityCounts?: Partial<Record<EntityType, { source: number; target: number }>>;
   isDemo?: boolean;
+  workflowVersion?: string;
+  taskKind?: "sync" | "rollback";
+  reportId?: string | null;
+  rollbackEligible?: boolean;
+  deletionEligible?: boolean;
 }
 
 export interface EntitySummary {

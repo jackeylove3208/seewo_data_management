@@ -112,12 +112,12 @@ Before a new conversation begins, its owner SHALL record the current mainline co
 
 ## 11. Frontend migration
 
-- [ ] 11.1 Replace the deterministic local assistant in `ConversationCreatePage` with the backend conversation/event APIs while keeping the existing large chat layout and adding the explicit pre-start confirmation card.
-- [ ] 11.2 After submission, disable ordinary conversation input and show only live phase progress plus termination, reopening input solely for typed conflict clarification and closing it after response submission.
-- [ ] 11.3 Render grouped high-risk agree/reject cards, masked conflict evidence, natural-language clarification, interpreted-decision second confirmation, model retry errors, and terminal/termination reports in the conversation timeline.
-- [ ] 11.4 Route `TaskCreatePage` external-data sync through the same Agent start API, remove reconciliation scope and processing-mode controls, keep department/student/teacher selection, and support CSV/API/database source and target configuration.
-- [ ] 11.5 Replace localStorage task history as the source of truth with backend history, show completed/terminated/failed/rollback relationships, and enable delete only from server-provided eligibility.
-- [ ] 11.6 Update task detail, execution detail, reporting, and restore screens to display the new phases and findings while preserving legacy rendering for historical workflow versions.
+- [x] 11.1 Replace the deterministic local assistant in `ConversationCreatePage` with the backend conversation/event APIs while keeping the existing large chat layout and adding the explicit pre-start confirmation card.
+- [x] 11.2 After submission, disable ordinary conversation input and show only live phase progress plus termination, reopening input solely for typed conflict clarification and closing it after response submission.
+- [x] 11.3 Render grouped high-risk agree/reject cards, masked conflict evidence, natural-language clarification, interpreted-decision second confirmation, model retry errors, and terminal/termination reports in the conversation timeline.
+- [x] 11.4 Route `TaskCreatePage` external-data sync through the same Agent start API, remove reconciliation scope and processing-mode controls, keep department/student/teacher selection, and support CSV/API/database source and target configuration.
+- [x] 11.5 Replace localStorage task history as the source of truth with backend history, show completed/terminated/failed/rollback relationships, and enable delete only from server-provided eligibility.
+- [x] 11.6 Update task detail, execution detail, reporting, and restore screens to display the new phases and findings while preserving legacy rendering for historical workflow versions.
 - [ ] 11.7 Add React unit/integration tests and Playwright journeys for both entry points, exclusive-lock blocking, grouped approval, conflict dialogue, termination, abnormal input, partial execution, report history, deletion protection, and confirmed rollback.
 
 ## 12. Rollout, observability, and quality gates

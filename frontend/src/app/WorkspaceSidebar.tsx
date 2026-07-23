@@ -13,7 +13,8 @@ import { useEffect, useState, type RefObject } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 
 import { ConnectionStatus } from "../components/ConnectionStatus";
-import { allTasks, TASK_HISTORY_UPDATED_EVENT } from "../data/taskHistory";
+import { allTasks, TASK_HISTORY_UPDATED_EVENT, toTaskHistoryItem } from "../data/taskHistory";
+import { agentApi } from "../api/agent";
 import type { TaskStatus } from "../types/domain";
 import { useTaskDeletion } from "../features/tasks/useTaskDeletion";
 import appIcon from "../assets/mofa-app-icon.png";
@@ -55,6 +56,14 @@ export function WorkspaceSidebar({
       window.removeEventListener(TASK_HISTORY_UPDATED_EVENT, refresh);
       window.removeEventListener("storage", refresh);
     };
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void agentApi.history(undefined, controller.signal)
+      .then((page) => setTasks([...page.items.map(toTaskHistoryItem), ...allTasks().filter((task) => task.isDemo)].slice(0, RECENT_TASK_LIMIT)))
+      .catch(() => undefined);
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
@@ -128,7 +137,7 @@ export function WorkspaceSidebar({
                   </span>
                   <ChevronRight className="workspace-label" size={14} />
                 </NavLink>
-                {!task.isDemo && (
+                {!task.isDemo && task.deletionEligible !== false && (
                   <button
                     className="history-delete-button"
                     type="button"

@@ -2,6 +2,7 @@ import { Alert, Modal } from "antd";
 import { useState } from "react";
 
 import { ingestionApi } from "../../api/ingestion";
+import { agentApi } from "../../api/agent";
 import { removeStoredTask } from "../../data/taskHistory";
 import type { TaskHistoryItem } from "../../types/domain";
 
@@ -15,7 +16,8 @@ export function useTaskDeletion() {
     setPending(true);
     setError(undefined);
     try {
-      await ingestionApi.deleteTask(selectedTask.id);
+      if (selectedTask.workflowVersion === "new-agent-v1") await agentApi.deleteTask(selectedTask.id);
+      else await ingestionApi.deleteTask(selectedTask.id);
       removeStoredTask(selectedTask.id);
       setSelectedTask(undefined);
     } catch (caught) {

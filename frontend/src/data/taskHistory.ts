@@ -1,7 +1,28 @@
 import type { TaskHistoryItem } from "../types/domain";
+import type { AgentHistoryItem } from "../api/agent";
 
 const STORAGE_KEY = "mofa-reconciliation-tasks";
 export const TASK_HISTORY_UPDATED_EVENT = "mofa-task-history-updated";
+
+export function toTaskHistoryItem(item: AgentHistoryItem): TaskHistoryItem {
+  return {
+    id: item.id,
+    title: item.title ?? (item.task_kind === "rollback" ? "回滚任务" : "Agent 同步任务"),
+    createdAt: item.created_at,
+    sourceFile: item.task_kind === "rollback" ? "治理执行事实" : "后端连接器",
+    targetFile: item.task_kind === "rollback" ? "目标恢复版本" : "希沃目标",
+    sourceAccepted: 0,
+    targetAccepted: 0,
+    issueCount: item.issue_summary.total,
+    status: ["completed", "terminated"].includes(item.status) ? "ready" : item.status === "failed" ? "failed" : "processing",
+    selectedEntityTypes: (item.entity_types ?? []).map((type) => type === "department" ? "organization_unit" : type),
+    workflowVersion: item.workflow_version,
+    taskKind: item.task_kind,
+    reportId: item.report_id,
+    rollbackEligible: item.rollback_eligible,
+    deletionEligible: item.deletion_eligible,
+  };
+}
 
 export const demoTasks: TaskHistoryItem[] = [
   {

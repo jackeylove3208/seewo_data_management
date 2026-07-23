@@ -5,6 +5,7 @@ import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import { queryKeys } from "../../api/queryKeys";
+import { agentApi } from "../../api/agent";
 import { reconciliationApi, type WorkflowStage } from "../../api/reconciliation";
 import { BackButton } from "../../components/BackButton";
 import { demoEntitySummaries, differencesFor, entityLabels } from "../../data/demoDifferences";
@@ -17,6 +18,7 @@ import { useAnalysisJob } from "../workflow/useAnalysisJob";
 import { useReconciliationWorkflow } from "../workflow/useReconciliationWorkflow";
 import { useRematchingJob } from "../workflow/useRematchingJob";
 import { MatchingRecoveryPanel } from "./MatchingRecoveryPanel";
+import { AgentTaskDetailPage } from "./AgentTaskDetailPage";
 
 const stages = [
   { id: "ingestion", label: "数据接入", icon: FileInput },
@@ -48,6 +50,12 @@ export function TaskDetailPage() {
   const { taskId = "" } = useParams();
   const navigate = useNavigate();
   const historyTask = findTask(taskId);
+  const agentTask = useQuery({
+    queryKey: ["agent-task", taskId],
+    queryFn: ({ signal }) => agentApi.task(taskId, signal),
+    enabled: !historyTask || historyTask.workflowVersion === "new-agent-v1",
+  });
+  const isAgentTask = agentTask.data?.workflow_version === "new-agent-v1";
   const demo = Boolean(historyTask?.isDemo);
   const workflow = useReconciliationWorkflow(taskId, !demo);
   const [batchOpen, setBatchOpen] = useState(false);
@@ -68,6 +76,8 @@ export function TaskDetailPage() {
     queryFn: ({ signal }) => reconciliationApi.getAnalysisSummary(taskId, signal),
     enabled: !demo && analysisTerminal,
   });
+
+  if (isAgentTask) return <AgentTaskDetailPage taskId={taskId} initialTask={agentTask.data} />;
 
   if (!demo && !task && workflow.task.isLoading) {
     return <main className="page-shell task-detail-page"><BackButton fallback="/tasks" label="返回任务列表" /><Skeleton active paragraph={{ rows: 8 }} /></main>;

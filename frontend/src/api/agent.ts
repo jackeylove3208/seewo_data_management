@@ -1,0 +1,218 @@
+import { requestJson } from "./client";
+
+export type AgentEntityType = "department" | "student" | "teacher";
+export type AgentPhase =
+  | "intent_confirmed"
+  | "acquire_school_lock"
+  | "ingest_and_normalize"
+  | "build_identity_work"
+  | "analyze_batches"
+  | "clarify_identity_conflicts"
+  | "aggregate_risk_and_approvals"
+  | "compile_execution_plan"
+  | "execute_and_verify"
+  | "generate_report"
+  | "plan_restore"
+  | "clarify_restore_conflicts"
+  | "approve_restore"
+  | "execute_restore"
+  | "report_restore"
+  | "terminal";
+
+export interface AgentConversation {
+  id: string;
+  status: "active" | "closed";
+}
+
+export interface AgentIntent {
+  title: string;
+  entity_types: AgentEntityType[];
+  source?: AgentConnectorSelection;
+  target?: AgentConnectorSelection;
+}
+
+export interface AgentConnectorSelection {
+  kind: "csv" | "api" | "database";
+  upload_id?: string;
+  configuration_id?: string;
+}
+
+export interface AgentStartConfirmation {
+  title: string;
+  summary: string;
+  entity_types: AgentEntityType[];
+}
+
+export interface AgentMessageResponse {
+  message: string;
+  intent: AgentIntent;
+  start_confirmation?: AgentStartConfirmation;
+}
+
+export interface AgentTask {
+  id: string;
+  workflow_version: string;
+  task_kind?: "sync" | "rollback";
+  phase: AgentPhase;
+  status: string;
+  title?: string;
+  report_id?: string | null;
+}
+
+export interface AgentTaskEvent {
+  id: string;
+  cursor: string;
+  type: string;
+  phase?: AgentPhase;
+  status?: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface AgentEventPage {
+  cursor: string;
+  events: AgentTaskEvent[];
+}
+
+export interface AgentConversationApi {
+  createConversation(): Promise<AgentConversation>;
+  sendMessage(conversationId: string, message: string): Promise<AgentMessageResponse>;
+  startTask(conversationId: string, intent: AgentIntent, idempotencyKey: string): Promise<AgentTask>;
+  events(taskId: string, cursor?: string, signal?: AbortSignal): Promise<AgentEventPage>;
+  terminate(taskId: string): Promise<{ status: string }>;
+  approveGroup?(taskId: string, groupId: string): Promise<unknown>;
+  rejectGroup?(taskId: string, groupId: string, reason?: string): Promise<unknown>;
+  clarify?(taskId: string, message: string): Promise<unknown>;
+  confirmClarification?(taskId: string, decisionId: string): Promise<unknown>;
+}
+
+export interface AgentManualTaskApi {
+  startManualTask(intent: AgentIntent, idempotencyKey: string): Promise<AgentTask>;
+}
+
+export interface AgentHistoryItem extends AgentTask {
+  created_at: string;
+  completed_at: string | null;
+  issue_summary: { total: number; excluded: number };
+  operation_summary: { succeeded: number; failed: number; blocked: number };
+  rollback_eligible: boolean;
+  deletion_eligible: boolean;
+  entity_types?: AgentEntityType[];
+}
+
+export interface AgentHistoryPage {
+  items: AgentHistoryItem[];
+  next_cursor: string | null;
+}
+
+const jsonHeaders = { "Content-Type": "application/json" };
+
+async function createConversation() {
+  return requestJson<AgentConversation>("/api/agent/conversations", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({}),
+  });
+}
+
+async function sendMessage(conversationId: string, message: string) {
+  return requestJson<AgentMessageResponse>(`/api/agent/conversations/${conversationId}/messages`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ message }),
+  });
+}
+
+async function startTask(conversationId: string, intent: AgentIntent, idempotencyKey: string) {
+  return requestJson<AgentTask>(`/api/agent/conversations/${conversationId}/tasks`, {
+    method: "POST",
+    headers: { ...jsonHeaders, "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(intent),
+  });
+}
+
+async function startManualTask(intent: AgentIntent, idempotencyKey: string) {
+  return requestJson<AgentTask>("/api/agent/tasks", {
+    method: "POST",
+    headers: { ...jsonHeaders, "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(intent),
+  });
+}
+
+async function events(taskId: string, cursor?: string, signal?: AbortSignal) {
+  const suffix = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+  return requestJson<AgentEventPage>(`/api/agent/tasks/${taskId}/events${suffix}`, { signal });
+}
+
+async function terminate(taskId: string) {
+  return requestJson<{ status: string }>(`/api/agent/tasks/${taskId}/terminate`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({}),
+  });
+}
+
+async function approveGroup(taskId: string, groupId: string) {
+  return requestJson(`/api/agent/tasks/${taskId}/approval-groups/${groupId}/approve`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({}),
+  });
+}
+
+async function rejectGroup(taskId: string, groupId: string, reason?: string) {
+  return requestJson(`/api/agent/tasks/${taskId}/approval-groups/${groupId}/reject`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ reason }),
+  });
+}
+
+async function clarify(taskId: string, message: string) {
+  return requestJson(`/api/agent/tasks/${taskId}/clarification`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ message }),
+  });
+}
+
+async function confirmClarification(taskId: string, decisionId: string) {
+  return requestJson(`/api/agent/tasks/${taskId}/clarification/${decisionId}/confirm`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({}),
+  });
+}
+
+async function history(cursor?: string, signal?: AbortSignal) {
+  const suffix = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+  return requestJson<AgentHistoryPage>(`/api/agent/history${suffix}`, { signal });
+}
+
+async function task(taskId: string, signal?: AbortSignal) {
+  return requestJson<AgentTask>(`/api/agent/tasks/${taskId}`, { signal });
+}
+
+async function deleteTask(taskId: string) {
+  return requestJson<void>(`/api/agent/tasks/${taskId}`, { method: "DELETE" });
+}
+
+export const agentApi: AgentConversationApi & AgentManualTaskApi & {
+  history: typeof history;
+  task: typeof task;
+  deleteTask: typeof deleteTask;
+} = {
+  createConversation,
+  sendMessage,
+  startTask,
+  startManualTask,
+  events,
+  terminate,
+  approveGroup,
+  rejectGroup,
+  clarify,
+  confirmClarification,
+  history,
+  task,
+  deleteTask,
+};

@@ -1,16 +1,18 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AssistantRequest, TaskCreationAssistant } from "./types";
+import { deterministicTaskAssistant } from "./assistant";
 import { TASK_INTENT_STORAGE_KEY } from "./draftHandoff";
 import { ConversationCreatePage } from "./ConversationCreatePage";
+import type { AgentConversationApi } from "../../api/agent";
 
 function renderPage(assistant?: TaskCreationAssistant) {
   return render(
     <MemoryRouter>
-      <ConversationCreatePage assistant={assistant} />
+      <ConversationCreatePage assistant={assistant ?? deterministicTaskAssistant} />
     </MemoryRouter>,
   );
 }
@@ -140,6 +142,70 @@ describe("independent agent conversation", () => {
     }));
     expect(await screen.findByText("已记录高中部教师同步需求。")).toBeInTheDocument();
     expect(composer).toBeEnabled();
+  });
+
+  it("shows backend start confirmation and locks ordinary input after starting", async () => {
+    const api: AgentConversationApi = {
+      createConversation: vi.fn().mockResolvedValue({ id: "conversation-1", status: "active" }),
+      sendMessage: vi.fn().mockResolvedValue({
+        message: "已整理好全校教师同步需求。",
+        intent: { title: "全校教师同步", entity_types: ["teacher"] },
+        start_confirmation: {
+          title: "全校教师同步",
+          summary: "将同步三方系统与希沃魔方的教师数据",
+          entity_types: ["teacher"],
+        },
+      }),
+      startTask: vi.fn().mockResolvedValue({
+        id: "task-1",
+        workflow_version: "new-agent-v1",
+        phase: "ingest_and_normalize",
+        status: "running",
+      }),
+      events: vi.fn().mockResolvedValue({ cursor: "cursor-1", events: [] }),
+      terminate: vi.fn().mockResolvedValue({ status: "terminating" }),
+    };
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={api} />);
+
+    await user.type(screen.getByLabelText("对账目标"), "同步全校教师");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(await screen.findByRole("button", { name: "确认开始同步" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "确认开始同步" }));
+
+    expect(await screen.findByText(/数据接入/)).toBeInTheDocument();
+    expect(screen.getByLabelText("对账目标")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "终止任务" })).toBeInTheDocument();
+    expect(api.startTask).toHaveBeenCalledWith("conversation-1", expect.anything(), expect.any(String));
+  });
+
+  it("renders approval controls and masked conflict evidence from persisted events", async () => {
+    const api: AgentConversationApi = {
+      createConversation: vi.fn().mockResolvedValue({ id: "conversation-2", status: "active" }),
+      sendMessage: vi.fn().mockResolvedValue({
+        message: "已整理同步需求。",
+        intent: { title: "全校同步", entity_types: ["student"] },
+        start_confirmation: { title: "全校同步", summary: "将同步学生数据", entity_types: ["student"] },
+      }),
+      startTask: vi.fn().mockResolvedValue({ id: "task-2", workflow_version: "new-agent-v1", phase: "analyze_batches", status: "running" }),
+      events: vi.fn().mockResolvedValue({ cursor: "cursor-2", events: [
+        { id: "approval-1", cursor: "cursor-2", type: "approval_required", payload: { group_id: "group-1" }, created_at: "" },
+        { id: "conflict-1", cursor: "cursor-2", type: "clarification_required", payload: { masked_evidence: "手机号尾号 ****" }, created_at: "" },
+      ] }),
+      terminate: vi.fn().mockResolvedValue({ status: "terminating" }),
+      approveGroup: vi.fn().mockResolvedValue({}),
+    };
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={api} />);
+
+    await user.type(screen.getByLabelText("对账目标"), "同步学生");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await user.click(await screen.findByRole("button", { name: "确认开始同步" }));
+
+    expect(await screen.findByText(/手机号尾号/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "同意本组" }));
+    expect(api.approveGroup).toHaveBeenCalledWith("task-2", "group-1");
   });
 
   it("clears a stale handoff when a fresh conversation starts without mutating history", async () => {
