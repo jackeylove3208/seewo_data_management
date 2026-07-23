@@ -79,6 +79,9 @@ async def test_agent_returns_structured_accept_and_tokenizes_sensitive_prompt_va
 
     assert result.decision == "accept_candidate"
     prompt = " ".join(message.content for message in model.requests[0].messages)
+    assert "resolve-entity-rematching@1.0.0" in prompt
+    assert "legacy-v1" in prompt
+    assert "不可信证据" in prompt
     assert "张三" not in prompt
     assert "13800000000" not in prompt
     assert "PERSON_NAME_" in prompt

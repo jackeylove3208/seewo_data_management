@@ -11,12 +11,14 @@ from app.agent_runtime.repository import AgentRuntimeRepository, SchoolLockConfl
 from app.agent_runtime.service import AgentSupervisorService
 from app.core.config import Settings
 from app.core.security import OperatorContext
+from app.local_sources.service import LocalSourceService
 from app.models.agent_runtime import AgentRunRecord, SchoolTaskLockRecord
 from app.models.reconciliation import ReconciliationTask
 from app.models.reporting import AgentReportRecord
 from app.models.snapshots import Snapshot, SourceFile
 from app.repositories.files import FileRepository
 from app.schemas.agent_api import AgentTaskIntent
+from app.schemas.canonical_entities import SourceRole
 
 
 class AgentTaskConflict(ValueError):
@@ -97,6 +99,12 @@ class AgentTaskService:
                 source_id=intent.source.upload_id,
                 target_id=intent.target.upload_id,
             )
+        if intent.source.kind == "local" and intent.target.kind == "local":
+            await self._bind_local_pair(
+                task,
+                source_ref=intent.source.source_ref,
+                target_ref=intent.target.source_ref,
+            )
         run = await AgentSupervisorService(
             self.session, operator=self.operator, repository=self.runtime
         ).start(task_id=task.id, conversation_id=conversation_id)
@@ -106,7 +114,7 @@ class AgentTaskService:
         configured = tuple(
             selection
             for selection in (intent.source, intent.target)
-            if selection.kind != "csv"
+            if selection.kind not in {"csv", "local"}
         )
         if not configured:
             return
@@ -123,6 +131,45 @@ class AgentTaskService:
         raise AgentConnectorCapabilityFailure(
             "Configured API/database connector is not available in the durable Agent runtime"
         )
+
+    async def _bind_local_pair(
+        self,
+        task: ReconciliationTask,
+        *,
+        source_ref: str | None,
+        target_ref: str | None,
+    ) -> None:
+        if self.settings is None or source_ref is None or target_ref is None:
+            raise ValueError("local Agent task requires configured source references")
+        sources = LocalSourceService(self.settings)
+        source_material = sources.describe(source_ref)
+        target_material = sources.describe(target_ref)
+        if source_material.path == target_material.path:
+            raise ValueError("Agent task requires two different local sources")
+        files = FileRepository(self.session)
+        source = await files.create(
+            source_role=SourceRole.AUTHORITATIVE,
+            original_name=source_material.path.name,
+            storage_name=f"local-{uuid4().hex}",
+            storage_path=source_material.path,
+            sha256=source_material.sha256,
+            size_bytes=source_material.size_bytes,
+            detected_encoding="utf-8",
+        )
+        target = await files.create(
+            source_role=SourceRole.TARGET,
+            original_name=target_material.path.name,
+            storage_name=f"local-{uuid4().hex}",
+            storage_path=target_material.path,
+            sha256=target_material.sha256,
+            size_bytes=target_material.size_bytes,
+            detected_encoding="utf-8",
+        )
+        await self.session.flush()
+        await files.bind_to_task(source.id, task.id)
+        await files.bind_to_task(target.id, task.id)
+        self.session.add_all((_agent_snapshot(task.id, source), _agent_snapshot(task.id, target)))
+        await self.session.flush()
 
     async def get(self, task_id: UUID) -> tuple[ReconciliationTask, AgentRunRecord]:
         task = await self.session.scalar(

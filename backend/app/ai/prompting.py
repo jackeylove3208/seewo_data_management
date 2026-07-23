@@ -1,6 +1,7 @@
 import json
 from typing import Any
 
+from app.ai.agent_prompting import render_agent_system_prompt
 from app.ai.providers.base import Message
 from app.ai.skills.registry import SkillDefinition
 
@@ -50,7 +51,7 @@ def build_messages(
         Message(
             role="system",
             content=(
-                f"{skill.instructions}\n"
+                f"{render_agent_system_prompt((skill,))}\n"
                 "Return one JSON object with a result property. The result must either "
                 f"match output schema {skill.output_schema}, or request one allowed tool "
                 'using {"result":{"tool_call":{"name":"...","arguments":{...}}}}. '

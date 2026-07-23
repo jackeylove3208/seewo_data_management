@@ -17,16 +17,32 @@ class AgentEntityType(StrEnum):
 class AgentConnectorSelection(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["csv", "api", "database"]
+    kind: Literal["csv", "api", "database", "local"]
     upload_id: UUID | None = None
     configuration_id: str | None = Field(default=None, min_length=1, max_length=128)
+    source_ref: str | None = Field(default=None, min_length=1, max_length=512)
 
     @model_validator(mode="after")
     def validate_reference(self) -> "AgentConnectorSelection":
         if self.kind == "csv":
-            if self.upload_id is None or self.configuration_id is not None:
+            if (
+                self.upload_id is None
+                or self.configuration_id is not None
+                or self.source_ref is not None
+            ):
                 raise ValueError("CSV connector requires only upload_id")
-        elif self.configuration_id is None or self.upload_id is not None:
+        elif self.kind == "local":
+            if (
+                self.source_ref is None
+                or self.upload_id is not None
+                or self.configuration_id is not None
+            ):
+                raise ValueError("local connector requires only source_ref")
+        elif (
+            self.configuration_id is None
+            or self.upload_id is not None
+            or self.source_ref is not None
+        ):
             raise ValueError("configured connector requires only configuration_id")
         return self
 

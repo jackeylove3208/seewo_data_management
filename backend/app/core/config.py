@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     snapshot_root: Path = Path("storage/snapshots")
     quarantine_root: Path = Path("storage/quarantine")
     export_root: Path = Path("storage/exports")
+    agent_local_read_roots: tuple[Path, ...] = ()
     max_upload_bytes: PositiveInt = 50 * 1024 * 1024
     demo_operator_id: str = "demo-operator"
     demo_tenant_id: str = "school-1"
@@ -113,6 +114,13 @@ class Settings(BaseSettings):
         if not stripped or any(character in stripped for character in "\r\n"):
             raise ValueError("LLM gateway setting must be a non-blank single line")
         return stripped
+
+    @field_validator("agent_local_read_roots")
+    @classmethod
+    def canonicalize_agent_local_read_roots(
+        cls, values: tuple[Path, ...]
+    ) -> tuple[Path, ...]:
+        return tuple(path.expanduser().resolve() for path in values)
 
     @field_validator("llm_auth_scheme", "embedding_auth_scheme")
     @classmethod
