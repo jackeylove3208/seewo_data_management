@@ -2941,6 +2941,65 @@ body {
   letter-spacing: 0;
 }
 
+.conversation-card {
+  display: grid;
+  gap: 8px;
+  margin: 12px 14px;
+  padding: 16px;
+  border: 1px solid var(--v2-line);
+  border-radius: 8px;
+  background: #fbfcfc;
+}
+
+.conversation-card p,
+.conversation-card small {
+  margin: 0;
+  color: var(--v2-ink-muted);
+  line-height: 1.6;
+}
+
+.start-confirmation {
+  border-color: #b9d8cc;
+  background: #f4fbf7;
+}
+
+.conversation-card button,
+.agent-event-actions button {
+  justify-self: start;
+  border: 1px solid var(--v2-line-strong);
+  border-radius: 5px;
+  padding: 6px 10px;
+  color: var(--v2-ink);
+  background: var(--v2-surface);
+  cursor: pointer;
+}
+
+.agent-event-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.agent-event {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border-left: 3px solid #c9d8d3;
+  color: var(--v2-ink-muted);
+  font-size: 12px;
+}
+
+.agent-event-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-event-error {
+  color: #a3473d;
+}
+
 .conversation-message strong {
   font-size: 12px;
 }

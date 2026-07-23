@@ -1,47 +1,63 @@
 import { Alert, Button, Checkbox, Spin } from "antd";
-import {
-  Check,
-  FileSpreadsheet,
-  FileUp,
-  Paperclip,
-  RefreshCw,
-} from "lucide-react";
+import { Check, FileSpreadsheet, FileUp, Paperclip, RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { entityLabels } from "../../data/demoDifferences";
-import type { EntityType } from "../../types/domain";
-import { createInitialDraft } from "./assistant";
-import { summarizeCsv } from "./csvSummary";
+import { agentApi as defaultAgentApi, type AgentConnectorSelection, type AgentEntityType, type AgentManualTaskApi } from "../../api/agent";
+import { ingestionApi } from "../../api/ingestion";
+import { summarizeCsv, type CsvSummary } from "./csvSummary";
 import { clearTaskIntentDraft } from "./draftHandoff";
-import { createTaskAttempt, type TaskCreationAttempt } from "./taskCreationService";
-import type { DraftAttachment, ManualSyncDraft } from "./types";
-import { isDraftReady } from "./types";
 
-const entityTypes: EntityType[] = ["organization_unit", "class", "teacher", "student"];
+type ConnectorKind = AgentConnectorSelection["kind"];
+type ConnectorDraft = {
+  kind: ConnectorKind;
+  file?: File;
+  summary?: CsvSummary;
+  configurationId?: string;
+  error?: string;
+};
+
+interface ManualAgentDraft {
+  title: string;
+  entityTypes: AgentEntityType[];
+  source?: ConnectorDraft;
+  target?: ConnectorDraft;
+}
 
 type SubmissionState = "idle" | "submitting" | "failed" | "created";
 
+const entityTypes: AgentEntityType[] = ["department", "student", "teacher"];
+const entityLabels: Record<AgentEntityType, string> = {
+  department: "部门",
+  student: "学生",
+  teacher: "教师",
+};
+
 function sessionKey() {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function readyConnector(connector?: ConnectorDraft) {
+  if (!connector || connector.error) return false;
+  return connector.kind === "csv" ? Boolean(connector.file && connector.summary) : Boolean(connector.configurationId?.trim());
 }
 
 function AttachmentPicker({
   label,
   inputLabel,
   tone,
-  attachment,
+  connector,
   disabled,
   onChange,
 }: {
   label: string;
   inputLabel: string;
   tone: "source" | "target";
-  attachment?: DraftAttachment;
+  connector?: ConnectorDraft;
   disabled?: boolean;
   onChange: (file: File) => void;
 }) {
-  const statusId = `sync-${tone}-file-status`;
+  const statusId = `agent-${tone}-file-status`;
   return (
     <label className={`sync-attachment attachment-${tone}`}>
       <input
@@ -55,48 +71,58 @@ function AttachmentPicker({
           if (file) onChange(file);
         }}
       />
-      <span className="attachment-icon">{attachment?.summary ? <Check size={16} /> : attachment ? <Spin size="small" /> : <Paperclip size={16} />}</span>
+      <span className="attachment-icon">{connector?.summary ? <Check size={16} /> : connector?.file ? <Spin size="small" /> : <Paperclip size={16} />}</span>
       <span className="attachment-copy">
-        <strong>{attachment?.file.name ?? label}</strong>
-        <small id={statusId} role={attachment?.error ? "alert" : "status"}>
-          {attachment?.error ?? (attachment?.summary ? `${attachment.summary.total} 条数据` : "选择 CSV")}
+        <strong>{connector?.file?.name ?? label}</strong>
+        <small id={statusId} role={connector?.error ? "alert" : "status"}>
+          {connector?.error ?? (connector?.summary ? `${connector.summary.total} 条数据` : "选择 CSV")}
         </small>
       </span>
-      {attachment?.summary && <FileSpreadsheet size={16} />}
+      {connector?.summary && <FileSpreadsheet size={16} />}
     </label>
   );
 }
 
-export function TaskCreatePage() {
+export function TaskCreatePage({
+  api = defaultAgentApi,
+}: {
+  api?: AgentManualTaskApi;
+}) {
   const navigate = useNavigate();
   const [syncMethod, setSyncMethod] = useState<"manual" | null>(null);
-  const [draft, setDraft] = useState<ManualSyncDraft>(() => createInitialDraft());
+  const [draft, setDraft] = useState<ManualAgentDraft>({
+    title: "全校组织数据同步",
+    entityTypes: [...entityTypes],
+    source: { kind: "csv" },
+    target: { kind: "csv" },
+  });
   const [submissionState, setSubmissionState] = useState<SubmissionState>("idle");
   const [submitError, setSubmitError] = useState<string>();
-  const attemptRef = useRef<TaskCreationAttempt | undefined>(undefined);
   const fileRequestTokens = useRef({ source: 0, target: 0 });
 
-  useEffect(() => {
-    clearTaskIntentDraft();
-  }, []);
+  useEffect(() => clearTaskIntentDraft(), []);
 
   async function prepareFile(role: "source" | "target", file: File) {
     const requestToken = ++fileRequestTokens.current[role];
-    setDraft((current) => ({ ...current, [role]: { file } }));
+    setDraft((current) => ({ ...current, [role]: { kind: "csv", file } }));
     try {
       const summary = await summarizeCsv(file);
       if (fileRequestTokens.current[role] !== requestToken) return;
-      setDraft((current) => ({ ...current, [role]: { file, summary } }));
+      setDraft((current) => ({ ...current, [role]: { kind: "csv", file, summary } }));
     } catch (error) {
       if (fileRequestTokens.current[role] !== requestToken) return;
       setDraft((current) => ({
         ...current,
-        [role]: { file, error: error instanceof Error ? error.message : "文件读取失败" },
+        [role]: { kind: "csv", file, error: error instanceof Error ? error.message : "文件读取失败" },
       }));
     }
   }
 
-  function toggleType(entityType: EntityType, checked: boolean) {
+  function setConnectorKind(role: "source" | "target", kind: ConnectorKind) {
+    setDraft((current) => ({ ...current, [role]: { kind } }));
+  }
+
+  function toggleType(entityType: AgentEntityType, checked: boolean) {
     setDraft((current) => ({
       ...current,
       entityTypes: checked
@@ -106,14 +132,18 @@ export function TaskCreatePage() {
   }
 
   async function createTask() {
-    if (!isDraftReady(draft) || submissionState === "submitting") return;
+    if (!draft.title.trim() || !draft.entityTypes.length || !readyConnector(draft.source) || !readyConnector(draft.target) || submissionState === "submitting") return;
     setSubmissionState("submitting");
     setSubmitError(undefined);
     try {
-      if (!attemptRef.current || attemptRef.current.draft !== draft) {
-        attemptRef.current = createTaskAttempt(draft, sessionKey());
-      }
-      const task = await attemptRef.current.run();
+      const source = await uploadConnector(draft.source!, "authoritative");
+      const target = await uploadConnector(draft.target!, "target");
+      const task = await api.startManualTask({
+        title: draft.title.trim(),
+        entity_types: draft.entityTypes,
+        source,
+        target,
+      }, sessionKey());
       setSubmissionState("created");
       clearTaskIntentDraft();
       navigate(`/tasks/${task.id}`);
@@ -123,8 +153,15 @@ export function TaskCreatePage() {
     }
   }
 
-  const ready = isDraftReady(draft);
+  async function uploadConnector(connector: ConnectorDraft, role: "authoritative" | "target") {
+    if (connector.kind !== "csv") return { kind: connector.kind, configuration_id: connector.configurationId } satisfies AgentConnectorSelection;
+    if (!connector.file) throw new Error("CSV 文件尚未选择");
+    const upload = await ingestionApi.upload(connector.file, role);
+    return { kind: "csv", upload_id: upload.id } satisfies AgentConnectorSelection;
+  }
+
   const isSubmitting = submissionState === "submitting";
+  const ready = Boolean(draft.title.trim() && draft.entityTypes.length && readyConnector(draft.source) && readyConnector(draft.target));
 
   return (
     <main className="page-shell external-sync-page">
@@ -132,92 +169,42 @@ export function TaskCreatePage() {
         <span className="page-heading-mark sync-heading-mark"><RefreshCw size={20} /></span>
         <div>
           <h1>外部数据同步</h1>
-          <p>通过手动文件同步创建对账任务，后续处理流程保持不变。</p>
+          <p>配置数据连接后，由 Agent 负责全校数据接入、分析、治理和报告。</p>
         </div>
       </header>
 
       <section className="sync-methods" aria-labelledby="sync-method-title">
-        <div className="section-title-row">
-          <div>
-            <h2 id="sync-method-title">选择同步方式</h2>
-            <p>先选择数据进入方式，再配置本次同步范围。</p>
-          </div>
-        </div>
+        <div className="section-title-row"><div><h2 id="sync-method-title">选择同步方式</h2><p>当前支持手动配置数据连接。</p></div></div>
         <div className="sync-method-entry">
-          <button
-            className={syncMethod === "manual" ? "sync-method active" : "sync-method"}
-            type="button"
-            aria-label="手动同步"
-            aria-pressed={syncMethod === "manual"}
-            disabled={isSubmitting}
-            onClick={() => setSyncMethod("manual")}
-          >
-            <FileUp size={20} />
-            <span><strong>手动同步</strong><small>上传三方系统与希沃魔方 CSV</small></span>
+          <button className={syncMethod === "manual" ? "sync-method active" : "sync-method"} type="button" aria-label="手动同步" aria-pressed={syncMethod === "manual"} disabled={isSubmitting} onClick={() => setSyncMethod("manual")}>
+            <FileUp size={20} /><span><strong>手动同步</strong><small>配置三方系统与希沃魔方数据</small></span>
           </button>
         </div>
       </section>
 
       {syncMethod === "manual" && (
         <section className="manual-sync-form" aria-label="手动同步配置">
-          <div className="sync-attachments" aria-label="任务数据">
-            <AttachmentPicker label="三方系统数据" inputLabel="选择三方系统 CSV" tone="source" attachment={draft.source} disabled={isSubmitting} onChange={(file) => void prepareFile("source", file)} />
-            <AttachmentPicker label="希沃魔方数据" inputLabel="选择希沃魔方 CSV" tone="target" attachment={draft.target} disabled={isSubmitting} onChange={(file) => void prepareFile("target", file)} />
-          </div>
-
           <div className="sync-settings-grid">
-            <label className="draft-field">
-              <span>任务名称</span>
-              <input aria-label="同步任务名称" disabled={isSubmitting} value={draft.title} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} />
-            </label>
-            <label className="draft-field">
-              <span>核对范围</span>
-              <input aria-label="核对范围" disabled={isSubmitting} value={draft.scopeLabel} onChange={(event) => setDraft((current) => ({ ...current, scopeLabel: event.target.value }))} />
-            </label>
-
-            <fieldset className="draft-fieldset">
-              <legend>处理模式</legend>
-              <div className="draft-segmented">
-                <button className={draft.snapshotMode === "full" ? "active" : ""} type="button" aria-pressed={draft.snapshotMode === "full"} disabled={isSubmitting} onClick={() => setDraft((current) => ({ ...current, snapshotMode: "full" }))}>全量对账</button>
-                <button className={draft.snapshotMode === "partial" ? "active" : ""} type="button" aria-pressed={draft.snapshotMode === "partial"} disabled={isSubmitting} onClick={() => setDraft((current) => ({ ...current, snapshotMode: "partial" }))}>指定范围</button>
-              </div>
-            </fieldset>
-
-            <fieldset className="draft-fieldset entity-checks">
-              <legend>实体类型</legend>
-              <div className="draft-entity-grid">
-                {entityTypes.map((entityType) => (
-                  <Checkbox
-                    key={entityType}
-                    aria-label={entityLabels[entityType]}
-                    checked={draft.entityTypes.includes(entityType)}
-                    disabled={isSubmitting}
-                    onChange={(event) => toggleType(entityType, event.target.checked)}
-                  >{entityLabels[entityType]}</Checkbox>
-                ))}
-              </div>
-              <button className="text-button" type="button" disabled={isSubmitting} onClick={() => setDraft((current) => ({ ...current, entityTypes: [] }))}>清空选择</button>
-            </fieldset>
+            <label className="draft-field"><span>任务名称</span><input aria-label="同步任务名称" disabled={isSubmitting} value={draft.title} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} /></label>
+            {(["source", "target"] as const).map((role) => {
+              const connector = draft[role];
+              const label = role === "source" ? "三方系统" : "希沃魔方";
+              return (
+                <fieldset className="draft-fieldset" key={role}>
+                  <legend>{label}连接方式</legend>
+                  <select aria-label={`${label}连接方式`} disabled={isSubmitting} value={connector?.kind ?? "csv"} onChange={(event) => setConnectorKind(role, event.target.value as ConnectorKind)}>
+                    <option value="csv">CSV 文件</option><option value="api">API 连接</option><option value="database">数据库连接</option>
+                  </select>
+                  {connector?.kind === "csv" && <AttachmentPicker label={`${label} CSV`} inputLabel={`选择${label} CSV`} tone={role === "source" ? "source" : "target"} connector={connector} disabled={isSubmitting} onChange={(file) => void prepareFile(role, file)} />}
+                  {connector?.kind !== "csv" && <input aria-label={`${label}配置 ID`} placeholder="输入后端配置 ID" disabled={isSubmitting} value={connector?.configurationId ?? ""} onChange={(event) => setDraft((current) => ({ ...current, [role]: { kind: connector?.kind ?? "api", configurationId: event.target.value } }))} />}
+                </fieldset>
+              );
+            })}
+            <fieldset className="draft-fieldset entity-checks"><legend>同步对象</legend><div className="draft-entity-grid">{entityTypes.map((entityType) => <Checkbox key={entityType} aria-label={entityLabels[entityType]} checked={draft.entityTypes.includes(entityType)} disabled={isSubmitting} onChange={(event) => toggleType(entityType, event.target.checked)}>{entityLabels[entityType]}</Checkbox>)}</div><button className="text-button" type="button" disabled={isSubmitting} onClick={() => setDraft((current) => ({ ...current, entityTypes: [] }))}>清空选择</button></fieldset>
           </div>
-
-          <div className="draft-data-summary">
-            <span>数据状态</span>
-            <div><strong>三方系统</strong><small>{draft.source?.summary ? `${draft.source.summary.total} 条` : "待补充"}</small></div>
-            <div><strong>希沃魔方</strong><small>{draft.target?.summary ? `${draft.target.summary.total} 条` : "待补充"}</small></div>
-          </div>
-
           {submitError && <Alert className="draft-error" type="error" showIcon message={submitError} />}
-          <Button
-            className="sync-start-button"
-            type="primary"
-            size="large"
-            loading={isSubmitting}
-            disabled={!ready || isSubmitting}
-            onClick={() => void createTask()}
-          >
-            开始同步
-          </Button>
-          <p className="draft-footnote">创建后进入实体解析与差异检测，不会直接修改数据。</p>
+          <Button className="sync-start-button" type="primary" size="large" loading={isSubmitting} disabled={!ready || isSubmitting} onClick={() => void createTask()}>开始同步</Button>
+          <p className="draft-footnote">提交后进入 Agent 持久化进度，不会由浏览器直接修改数据。</p>
         </section>
       )}
     </main>

@@ -1,8 +1,11 @@
 import { Button, Tag } from "antd";
 import { ArrowRight, CircleCheck, Clock3, FileCheck2, Plus, RefreshCcw, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { allTasks } from "../../data/taskHistory";
+import { agentApi } from "../../api/agent";
+import { toTaskHistoryItem } from "../../data/taskHistory";
 import { useTaskDeletion } from "./useTaskDeletion";
 
 const statusCopy = {
@@ -23,7 +26,15 @@ function formatTime(value: string) {
 export function TaskListPage() {
   const navigate = useNavigate();
   const deletion = useTaskDeletion();
-  const tasks = allTasks();
+  const [backendTasks, setBackendTasks] = useState<ReturnType<typeof allTasks>>();
+  useEffect(() => {
+    const controller = new AbortController();
+    void agentApi.history(undefined, controller.signal)
+      .then((page) => setBackendTasks([...page.items.map(toTaskHistoryItem), ...allTasks().filter((task) => task.isDemo)]))
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, []);
+  const tasks = backendTasks ?? allTasks();
   const issueCount = tasks.reduce((sum, task) => sum + task.issueCount, 0);
 
   return (
@@ -80,7 +91,7 @@ export function TaskListPage() {
               </span>
               <ArrowRight className="task-arrow" size={18} />
             </button>
-            {!task.isDemo && (
+            {!task.isDemo && task.deletionEligible !== false && (
               <button
                 className="task-delete-button"
                 type="button"
