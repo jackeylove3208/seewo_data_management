@@ -1,6 +1,8 @@
 """Safe discovery and bounded reading for deployment-approved local source files."""
 
 import csv
+import hashlib
+from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
 
@@ -16,6 +18,14 @@ _MAX_PAGE_SIZE = 50
 
 class LocalSourceAccessError(ValueError):
     """A stable, public-safe local source access failure."""
+
+
+@dataclass(frozen=True)
+class LocalSourceMaterial:
+    source_ref: str
+    path: Path
+    sha256: str
+    size_bytes: int
 
 
 class LocalSourceSummary(BaseModel):
@@ -57,7 +67,7 @@ class LocalSourceService:
     ) -> LocalSourcePage:
         if offset < 0:
             raise LocalSourceAccessError("invalid_page_offset")
-        path = self._resolve(source_ref)
+        path = self.describe(source_ref).path
         page_size = min(max(limit, 1), _MAX_PAGE_SIZE)
         with path.open("r", encoding="utf-8", newline="") as stream:
             reader = csv.DictReader(stream)
@@ -71,6 +81,15 @@ class LocalSourceService:
             source_ref=self._source_ref(path),
             records=rows,
             next_offset=offset + len(rows) if has_next else None,
+        )
+
+    def describe(self, source_ref: str) -> LocalSourceMaterial:
+        path = self._resolve(source_ref)
+        return LocalSourceMaterial(
+            source_ref=self._source_ref(path),
+            path=path,
+            sha256=_file_sha256(path),
+            size_bytes=path.stat().st_size,
         )
 
     def _resolve(self, source_ref: str) -> Path:
@@ -110,3 +129,8 @@ def _is_within(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _file_sha256(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()

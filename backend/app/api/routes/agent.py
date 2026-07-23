@@ -213,12 +213,39 @@ async def start_conversation_agent_task(
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=128)],
 ) -> AgentTaskResponse:
     _require_enabled(request)
+    del body
+    conversation = await AgentRuntimeRepository(session).get_active_conversation(
+        conversation_id, tenant_id=operator.tenant_id
+    )
+    if conversation is None:
+        raise HTTPException(404, detail=_error("conversation_not_found", "Conversation not found"))
+    try:
+        intent = AgentTaskIntent.model_validate(
+            {
+                key: conversation.context.get(key)
+                for key in ("title", "entity_types", "source", "target")
+            }
+        )
+    except ValueError as error:
+        raise HTTPException(
+            409,
+            detail=_error(
+                "start_confirmation_missing", "Conversation has no confirmed Agent intent"
+            ),
+        ) from error
+    if conversation.context.get("decision_kind") != "start_confirmation":
+        raise HTTPException(
+            409,
+            detail=_error(
+                "start_confirmation_missing", "Conversation has no confirmed Agent intent"
+            ),
+        )
     service = AgentTaskService(
         session, operator=operator, settings=request.app.state.settings
     )
     try:
         task, _run = await service.create(
-            body, idempotency_key=idempotency_key, conversation_id=conversation_id
+            intent, idempotency_key=idempotency_key, conversation_id=conversation_id
         )
         return await _task_response(service, task.id)
     except SchoolLockConflict as error:

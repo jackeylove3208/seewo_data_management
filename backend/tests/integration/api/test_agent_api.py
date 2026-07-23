@@ -196,45 +196,6 @@ def test_configured_connector_is_rejected_before_task_and_lock_are_created(
     assert agent_client.get("/api/agent/history").json()["items"] == []
 
 
-def test_conversation_collects_intent_and_can_start_the_same_agent_workflow(
-    agent_client: TestClient,
-    tmp_path: Path,
-) -> None:
-    conversation = agent_client.post("/api/agent/conversations")
-    assert conversation.status_code == 201
-    conversation_id = conversation.json()["id"]
-
-    message = agent_client.post(
-        f"/api/agent/conversations/{conversation_id}/messages",
-        json={"message": "请同步全校学生和老师数据"},
-    )
-    assert message.status_code == 200
-    assert message.json()["intent"]["entity_types"] == ["student", "teacher"]
-    assert message.json()["start_confirmation"] is None
-
-    source_id = _upload(agent_client, tmp_path, "authoritative", "conversation-source.csv")
-    target_id = _upload(agent_client, tmp_path, "target", "conversation-target.csv")
-    created = agent_client.post(
-        f"/api/agent/conversations/{conversation_id}/tasks",
-        headers={"Idempotency-Key": "agent-conversation-1"},
-        json={
-            "title": "对话发起同步",
-            "entity_types": ["student", "teacher"],
-            "source": {"kind": "csv", "upload_id": source_id},
-            "target": {"kind": "csv", "upload_id": target_id},
-        },
-    )
-    assert created.status_code == 202, created.text
-    assert created.json()["workflow_version"] == "new-agent-v1"
-
-    locked_message = agent_client.post(
-        f"/api/agent/conversations/{conversation_id}/messages",
-        json={"message": "再改一下范围"},
-    )
-    assert locked_message.status_code == 409
-    assert locked_message.json()["detail"]["code"] == "invalid_state"
-
-
 def test_conversation_uses_model_discovered_local_sources(
     agent_client: TestClient,
     tmp_path: Path,
@@ -263,6 +224,21 @@ def test_conversation_uses_model_discovered_local_sources(
         "kind": "local", "source_ref": "third-party/roster.csv"
     }
     assert "converse-school-data-sync@1.0.0" in provider.requests[0].messages[0].content
+
+    created = agent_client.post(
+        f"/api/agent/conversations/{conversation.json()['id']}/tasks",
+        headers={"Idempotency-Key": "agent-local-conversation-1"},
+        json={
+            "title": "浏览器篡改标题",
+            "entity_types": ["teacher"],
+            "source": {"kind": "local", "source_ref": "third-party/other.csv"},
+            "target": {"kind": "local", "source_ref": "seewo/other.csv"},
+        },
+    )
+
+    assert created.status_code == 202, created.text
+    assert created.json()["title"] == "本地学生同步"
+    assert agent_client.get("/api/agent/history").json()["items"][0]["id"] == created.json()["id"]
 
 
 def test_termination_persists_history_before_releasing_school_lock(
