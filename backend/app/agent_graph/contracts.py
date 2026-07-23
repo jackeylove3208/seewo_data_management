@@ -18,6 +18,7 @@ class SingleActionReasonCode(StrEnum):
 
 class AllowedActionV1(StrictGraphContract):
     action_id: str = Field(min_length=1, max_length=128)
+    graph_action_kind: str | None = Field(default=None, min_length=1, max_length=128)
     kind: Literal[
         "dispatch_sub_agent",
         "run_deterministic",

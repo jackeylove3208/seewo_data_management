@@ -97,6 +97,7 @@ def validate_supervisor_decision(
 def _semantic_fingerprint(action: AllowedActionV1) -> tuple[object, ...]:
     return (
         action.kind,
+        action.graph_action_kind,
         action.sub_agent,
         action.resource_ids,
         action.required_evidence,

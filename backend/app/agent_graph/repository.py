@@ -83,6 +83,22 @@ class AgentGraphRepository:
             await self.session.scalar(statement),
         )
 
+    async def get_run_state_for_agent_run(
+        self,
+        run_id: UUID,
+        *,
+        for_update: bool = False,
+    ) -> AgentGraphRunRecord | None:
+        statement = select(AgentGraphRunRecord).where(
+            AgentGraphRunRecord.run_id == run_id
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        return cast(
+            AgentGraphRunRecord | None,
+            await self.session.scalar(statement),
+        )
+
     async def record_candidate_set(
         self,
         *,

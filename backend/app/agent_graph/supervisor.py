@@ -41,20 +41,7 @@ class SupervisorDecisionService:
             candidate_evaluations=candidate_evaluations,
             action_set=action_set,
         )
-        context = SupervisorContextV1(
-            tenant_ref=f"tenant-ref:{state.id}",
-            task_id=str(parent_run.task_id),
-            run_id=str(parent_run.id),
-            run_kind=parent_run.kind,
-            workflow_version="agent-graph-v1",
-            graph_version=state.graph_version,
-            current_node=state.current_node,
-            graph_cursor=state.cursor,
-            status=state.status,
-            action_set=action_set,
-            retry_and_replan_budget=max(0, 3 - state.replan_count),
-            termination_requested=state.termination_requested,
-        )
+        context = build_supervisor_context(state, parent_run, action_set)
         result = await self._agent.decide_with_provenance(context)
         return await self._repository.record_decision(
             candidate_set_id=candidate_record.id,
@@ -66,3 +53,24 @@ class SupervisorDecisionService:
                 "attempt_count": result.attempt_count,
             },
         )
+
+
+def build_supervisor_context(
+    state: AgentGraphRunRecord,
+    parent_run: AgentRunRecord,
+    action_set: AllowedActionSetV1,
+) -> SupervisorContextV1:
+    return SupervisorContextV1(
+        tenant_ref=f"tenant-ref:{state.id}",
+        task_id=str(parent_run.task_id),
+        run_id=str(parent_run.id),
+        run_kind=parent_run.kind,
+        workflow_version="agent-graph-v1",
+        graph_version=state.graph_version,
+        current_node=state.current_node,
+        graph_cursor=state.cursor,
+        status=state.status,
+        action_set=action_set,
+        retry_and_replan_budget=max(0, 3 - state.replan_count),
+        termination_requested=state.termination_requested,
+    )

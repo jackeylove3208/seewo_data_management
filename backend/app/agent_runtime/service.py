@@ -6,6 +6,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent_graph.repository import AgentGraphRepository
 from app.agent_runtime.repository import AgentRunNotFound, AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentPhase, AgentRunKind, AgentRunStatus
 from app.core.security import OperatorContext
@@ -77,9 +78,33 @@ class AgentSupervisorService:
             "run.created",
             {"phase": run.phase, "status": run.status, "workflow_version": run.workflow_version},
         )
+        graph_repository = (
+            AgentGraphRepository(self.session)
+            if task.workflow_version == "agent-graph-v1"
+            else None
+        )
+        graph_state = (
+            await graph_repository.create_run_state(
+                run_id=run.id,
+                graph_version="agent-sync-graph-v1",
+                initial_node="intent_confirmed",
+            )
+            if graph_repository is not None
+            else None
+        )
         run = await self.repository.transition_run(
             run.id, requested_phase=AgentPhase.ACQUIRE_SCHOOL_LOCK
         )
+        if graph_repository is not None and graph_state is not None:
+            await graph_repository.record_transition(
+                graph_state.id,
+                expected_cursor=0,
+                from_node="intent_confirmed",
+                to_node="acquire_school_lock",
+                action_id="acquire_school_lock",
+                guard_results={"workflow_version": "passed", "tenant": "passed"},
+                fencing_token=run.attempt_count,
+            )
         await self.repository.acquire_school_lock(
             tenant_id=tenant_id,
             task_id=task.id,
@@ -93,6 +118,16 @@ class AgentSupervisorService:
         run = await self.repository.transition_run(
             run.id, requested_phase=AgentPhase.INGEST_AND_NORMALIZE
         )
+        if graph_repository is not None and graph_state is not None:
+            await graph_repository.record_transition(
+                graph_state.id,
+                expected_cursor=1,
+                from_node="acquire_school_lock",
+                to_node="inspect_sources",
+                action_id="inspect_sources",
+                guard_results={"school_lock": "passed"},
+                fencing_token=run.attempt_count,
+            )
         await self.repository.append_event(
             run.id,
             "phase.started",
