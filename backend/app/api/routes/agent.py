@@ -1,4 +1,5 @@
 import re
+from datetime import UTC, datetime
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -6,6 +7,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, s
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent_graph.repository import AgentGraphRepository
 from app.agent_reporting.service import AgentReportingService
 from app.agent_runtime.observability import agent_observability
 from app.agent_runtime.repository import AgentRuntimeRepository, SchoolLockConflict
@@ -23,6 +25,7 @@ from app.core.security import OperatorContext
 from app.governance.agent_governance import interpret_clarification
 from app.local_sources.service import LocalSourceService
 from app.models.agent_analysis import AgentApprovalGroupRecord, AgentClarificationRecord
+from app.models.agent_graph import AgentGraphRunRecord, AgentHumanGateRecord
 from app.models.agent_runtime import AgentRunRecord, SchoolTaskLockRecord
 from app.models.reconciliation import ReconciliationTask
 from app.models.reporting import AgentReportRecord
@@ -54,6 +57,12 @@ from app.schemas.agent_api import (
     ClarificationRequest,
 )
 from app.schemas.agent_conversation import ConversationAgentContext
+from app.schemas.agent_graph_api import (
+    AgentGraphGateDecisionRequest,
+    AgentGraphGateDecisionResponse,
+    AgentGraphHumanGateView,
+    AgentGraphProgressResponse,
+)
 from app.tasks.deletion_service import (
     TaskDeletionBlocked,
     TaskDeletionNotFound,
@@ -62,9 +71,67 @@ from app.tasks.deletion_service import (
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
+_GRAPH_STAGE_BY_NODE = {
+    "inspect_sources": "data_ingestion",
+    "normalize_input_batches": "data_ingestion",
+    "validate_input_contract": "data_ingestion",
+    "build_identity_index": "agent_analysis",
+    "construct_identity_work": "agent_analysis",
+    "analyze_actionable_batches": "agent_analysis",
+    "repair_analysis_batch": "agent_analysis",
+    "resolve_identity_conflicts": "agent_analysis",
+    "aggregate_risk": "governance_execution",
+    "wait_high_risk_approvals": "governance_execution",
+    "compile_execution_plan": "governance_execution",
+    "preflight_execution": "governance_execution",
+    "execute_ready_operations": "governance_execution",
+    "verify_operations": "governance_execution",
+    "generate_terminal_report": "report_and_rollback",
+    "termination_report": "report_and_rollback",
+    "abnormal_input_report": "report_and_rollback",
+    "load_verified_mutations": "report_and_rollback",
+    "assess_restore_impact": "report_and_rollback",
+    "wait_restore_conflicts": "report_and_rollback",
+    "wait_rollback_approval": "report_and_rollback",
+    "compile_restore_plan": "report_and_rollback",
+    "preflight_restore": "report_and_rollback",
+    "execute_restore_operations": "report_and_rollback",
+    "verify_restore_operations": "report_and_rollback",
+    "generate_rollback_report": "report_and_rollback",
+    "terminal": "terminal",
+}
+
+_GRAPH_ACTION_LABELS = {
+    "inspect_sources": "正在检查第三方与希沃数据来源",
+    "normalize_input_batches": "正在分批理解并规范化组织数据",
+    "validate_input_contract": "正在校验数据接入结果",
+    "build_identity_index": "正在建立身份索引",
+    "construct_identity_work": "正在构建对账工作项",
+    "analyze_actionable_batches": "正在生成 AI 分析与治理方案",
+    "resolve_identity_conflicts": "正在等待身份冲突说明",
+    "wait_high_risk_approvals": "正在等待高风险操作审批",
+    "compile_execution_plan": "正在编译治理执行计划",
+    "execute_ready_operations": "正在执行并验证已批准操作",
+    "generate_terminal_report": "正在生成任务报告",
+    "load_verified_mutations": "正在读取可回滚执行事实",
+    "wait_rollback_approval": "正在等待回滚确认",
+    "execute_restore_operations": "正在执行并验证回滚",
+    "generate_rollback_report": "正在生成回滚报告",
+    "blocked_model_error": "AI 模型连续失败，等待终止任务",
+    "terminal": "任务已结束",
+}
+
 
 def _error(code: str, message: str, **details: object) -> dict[str, object]:
     return {"code": code, "message": message, **details}
+
+
+def _graph_business_stage(node: str) -> str:
+    return _GRAPH_STAGE_BY_NODE.get(node, "agent_analysis")
+
+
+def _graph_action_label(node: str) -> str:
+    return _GRAPH_ACTION_LABELS.get(node, "Agent 正在安全处理当前阶段")
 
 
 def _require_enabled(request: Request) -> None:
@@ -337,6 +404,148 @@ async def get_agent_task(
         return await _task_response(AgentTaskService(session, operator=operator), task_id)
     except LookupError as error:
         raise HTTPException(404, detail=_error("agent_task_not_found", str(error))) from error
+
+
+@router.get(
+    "/tasks/{task_id}/graph",
+    response_model=AgentGraphProgressResponse,
+)
+async def get_agent_graph_progress(
+    task_id: UUID,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    operator: Annotated[OperatorContext, Depends(get_operator_context)],
+) -> AgentGraphProgressResponse:
+    _require_enabled(request)
+    try:
+        task, run = await AgentTaskService(session, operator=operator).get(task_id)
+    except LookupError as error:
+        raise HTTPException(
+            404, detail=_error("agent_task_not_found", str(error))
+        ) from error
+    if task.workflow_version != "agent-graph-v1":
+        raise HTTPException(
+            409,
+            detail=_error(
+                "graph_not_available",
+                "Task does not use the controlled Agent graph",
+            ),
+        )
+    graph = await AgentGraphRepository(session).get_run_state_for_agent_run(run.id)
+    if graph is None:
+        raise HTTPException(
+            409,
+            detail=_error("graph_state_missing", "Agent graph state is missing"),
+        )
+    gates = tuple(
+        await session.scalars(
+            select(AgentHumanGateRecord)
+            .where(AgentHumanGateRecord.graph_run_id == graph.id)
+            .order_by(
+                AgentHumanGateRecord.created_at,
+                AgentHumanGateRecord.id,
+            )
+        )
+    )
+    terminal = run.status in {"completed", "terminated", "failed"}
+    return AgentGraphProgressResponse(
+        task_id=task.id,
+        workflow_version="agent-graph-v1",
+        graph_version=graph.graph_version,
+        graph_cursor=graph.cursor,
+        current_node=graph.current_node,
+        business_stage=_graph_business_stage(graph.current_node),
+        current_action_zh=_graph_action_label(graph.current_node),
+        status=run.status,
+        can_terminate=not terminal,
+        human_gates=tuple(
+            AgentGraphHumanGateView(
+                id=gate.id,
+                kind=gate.gate_kind,
+                status=gate.status,
+                item_count=len(gate.member_ids),
+            )
+            for gate in gates
+        ),
+    )
+
+
+@router.post(
+    "/tasks/{task_id}/graph/gates/{gate_id}/decision",
+    response_model=AgentGraphGateDecisionResponse,
+)
+async def decide_agent_graph_gate(
+    task_id: UUID,
+    gate_id: UUID,
+    body: AgentGraphGateDecisionRequest,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    operator: Annotated[OperatorContext, Depends(get_operator_context)],
+) -> AgentGraphGateDecisionResponse:
+    _require_enabled(request)
+    try:
+        task, run = await AgentTaskService(session, operator=operator).get(task_id)
+    except LookupError as error:
+        raise HTTPException(
+            404, detail=_error("agent_task_not_found", str(error))
+        ) from error
+    if task.workflow_version != "agent-graph-v1":
+        raise HTTPException(
+            409,
+            detail=_error("graph_not_available", "Task does not use Agent graph"),
+        )
+    row = (
+        await session.execute(
+            select(AgentHumanGateRecord, AgentGraphRunRecord)
+            .join(
+                AgentGraphRunRecord,
+                AgentGraphRunRecord.id == AgentHumanGateRecord.graph_run_id,
+            )
+            .where(
+                AgentHumanGateRecord.id == gate_id,
+                AgentGraphRunRecord.run_id == run.id,
+                AgentGraphRunRecord.tenant_id == operator.tenant_id,
+            )
+            .with_for_update()
+        )
+    ).one_or_none()
+    if row is None:
+        raise HTTPException(
+            404, detail=_error("graph_gate_not_found", "Agent graph gate not found")
+        )
+    gate, graph = row
+    if gate.status != "pending":
+        raise HTTPException(
+            409, detail=_error("graph_gate_already_decided", "Gate is already decided")
+        )
+    if gate.cursor != graph.cursor:
+        raise HTTPException(
+            409, detail=_error("stale_graph_gate", "Gate cursor is stale")
+        )
+    status_value = "approved" if body.decision == "approve" else "rejected"
+    gate.status = status_value
+    gate.decision = {
+        "decision": body.decision,
+        "reason": body.reason,
+        "graph_cursor": graph.cursor,
+    }
+    gate.decided_by = operator.operator_id
+    gate.decided_at = datetime.now(UTC)
+    await AgentRuntimeRepository(session).append_event(
+        run.id,
+        "graph.gate_decided",
+        {
+            "gate_id": str(gate.id),
+            "gate_kind": gate.gate_kind,
+            "status": status_value,
+            "graph_cursor": graph.cursor,
+        },
+    )
+    return AgentGraphGateDecisionResponse(
+        gate_id=gate.id,
+        status=status_value,
+        graph_cursor=graph.cursor,
+    )
 
 
 @router.get("/tasks/{task_id}/events", response_model=AgentEventPage)
