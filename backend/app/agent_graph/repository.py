@@ -244,9 +244,11 @@ class AgentGraphRepository:
         action_id: str,
         manifest: dict[str, Any],
         content_hash: str,
+        record_id: UUID | None = None,
     ) -> AgentEvidenceManifestRecord:
         state = await self._require_state_at_cursor(graph_run_id, cursor)
         record = AgentEvidenceManifestRecord(
+            id=record_id,
             graph_run_id=state.id,
             tenant_id=state.tenant_id,
             cursor=cursor,
