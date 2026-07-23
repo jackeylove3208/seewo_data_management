@@ -23,6 +23,8 @@ class ReconciliationTask(Base, TimestampMixin):
     task_kind: Mapped[str] = mapped_column(
         String(32), default="sync", server_default="sync", index=True
     )
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    agent_intent: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     parent_task_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("reconciliation_tasks.id"), nullable=True, index=True
     )

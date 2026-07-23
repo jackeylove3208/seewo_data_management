@@ -119,7 +119,14 @@ def transition(
         current_index = phases.index(current_phase)
     except ValueError as error:
         raise InvalidAgentTransition("current phase does not belong to run kind") from error
-    if current_index + 1 >= len(phases) or phases[current_index + 1] is not requested_phase:
+    abnormal_input_jump = (
+        kind is AgentRunKind.SYNC
+        and current_phase is AgentPhase.INGEST_AND_NORMALIZE
+        and requested_phase is AgentPhase.GENERATE_REPORT
+    )
+    if not abnormal_input_jump and (
+        current_index + 1 >= len(phases) or phases[current_index + 1] is not requested_phase
+    ):
         raise InvalidAgentTransition(
             f"illegal agent transition: {current_phase.value} -> {requested_phase.value}"
         )

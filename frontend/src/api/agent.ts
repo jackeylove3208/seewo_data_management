@@ -53,10 +53,13 @@ export interface AgentTask {
   id: string;
   workflow_version: string;
   task_kind?: "sync" | "rollback";
+  parent_task_id?: string | null;
   phase: AgentPhase;
   status: string;
   title?: string;
   report_id?: string | null;
+  rollback_eligible?: boolean;
+  deletion_eligible?: boolean;
 }
 
 export interface AgentTaskEvent {
@@ -103,6 +106,18 @@ export interface AgentHistoryItem extends AgentTask {
 export interface AgentHistoryPage {
   items: AgentHistoryItem[];
   next_cursor: string | null;
+}
+
+export interface AgentReport {
+  id: string;
+  task_id: string;
+  kind: "sync" | "rollback";
+  terminal_state: string;
+  facts: Record<string, unknown>;
+  content: Record<string, unknown>;
+  rollback_eligible: boolean;
+  deletion_eligible: boolean;
+  created_at: string;
 }
 
 const jsonHeaders = { "Content-Type": "application/json" };
@@ -193,14 +208,54 @@ async function task(taskId: string, signal?: AbortSignal) {
   return requestJson<AgentTask>(`/api/agent/tasks/${taskId}`, { signal });
 }
 
+async function report(taskId: string, signal?: AbortSignal) {
+  return requestJson<AgentReport>(`/api/agent/tasks/${taskId}/report`, { signal });
+}
+
 async function deleteTask(taskId: string) {
   return requestJson<void>(`/api/agent/tasks/${taskId}`, { method: "DELETE" });
+}
+
+export interface AgentRollbackPreview {
+  task_id: string;
+  source_task_id: string;
+  target_version_id: string;
+  operation_count: number;
+  requires_confirmation: boolean;
+}
+
+async function previewRollback(taskId: string) {
+  return requestJson<AgentRollbackPreview>(`/api/agent/tasks/${taskId}/rollback-preview`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({}),
+  });
+}
+
+async function confirmRollback(taskId: string) {
+  return requestJson<AgentTask>(`/api/agent/rollback-tasks/${taskId}/confirm`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({}),
+  });
+}
+
+async function rejectRollback(taskId: string) {
+  return requestJson<AgentTask>(`/api/agent/rollback-tasks/${taskId}/reject`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({}),
+  });
 }
 
 export const agentApi: AgentConversationApi & AgentManualTaskApi & {
   history: typeof history;
   task: typeof task;
+  report: typeof report;
   deleteTask: typeof deleteTask;
+  previewRollback: typeof previewRollback;
+  confirmRollback: typeof confirmRollback;
+  rejectRollback: typeof rejectRollback;
 } = {
   createConversation,
   sendMessage,
@@ -214,5 +269,9 @@ export const agentApi: AgentConversationApi & AgentManualTaskApi & {
   confirmClarification,
   history,
   task,
+  report,
   deleteTask,
+  previewRollback,
+  confirmRollback,
+  rejectRollback,
 };

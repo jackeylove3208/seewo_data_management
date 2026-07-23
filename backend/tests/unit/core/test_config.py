@@ -77,3 +77,28 @@ def test_connector_execution_flags_require_server_side_connector_configuration()
 def test_agent_batch_size_cannot_exceed_connector_contract_limit() -> None:
     with pytest.raises(ValueError, match="less than or equal to 50"):
         Settings(analysis_batch_size=51, _env_file=None)
+
+
+def test_agent_worker_configuration_requires_gateway_retry_and_privacy_contract() -> None:
+    settings = Settings(
+        new_agent_enabled=True,
+        llm_url="https://gateway.example.test/v1/chat/completions",
+        llm_api_key="test-key",
+        tokenization_secret="long-tokenization-secret",
+        model_retry_attempts=3,
+        agent_privacy_policy_version="student-phone-v1",
+        _env_file=None,
+    )
+
+    settings.validate_agent_worker_configuration()
+
+    with pytest.raises(ValueError, match="retry"):
+        settings.model_copy(
+            update={"model_retry_attempts": 2}
+        ).validate_agent_worker_configuration()
+    with pytest.raises(ValueError, match="privacy"):
+        settings.model_copy(
+            update={"agent_privacy_policy_version": "unknown"}
+        ).validate_agent_worker_configuration()
+    with pytest.raises(ValueError, match="gateway"):
+        settings.model_copy(update={"llm_api_key": None}).validate_agent_worker_configuration()

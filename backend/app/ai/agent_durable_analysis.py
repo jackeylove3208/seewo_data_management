@@ -6,6 +6,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent_runtime.observability import agent_observability
 from app.ai.agent_analysis_service import AgentAnalysisService, AgentAnalysisWorkItem
 from app.models.agent_analysis import (
     AgentInputRecord,
@@ -60,10 +61,27 @@ class DurableAgentBatchAnalyzer:
                 raise RuntimeError("Agent model batch is not claimable")
             try:
                 work_items = await self._load_work_items(claim.id)
+                agent_observability.observe(
+                    "model_attempt",
+                    task_id=claim.task_id,
+                    run_id=claim.run_id,
+                    phase="analyze_batches",
+                    batch_size=len(work_items),
+                    retry_count=_attempt,
+                )
                 findings = await self._service.analyze(
                     tenant_id=claim.tenant_id,
                     task_id=claim.task_id,
                     work_items=work_items,
+                )
+                agent_observability.observe(
+                    "analysis_batch",
+                    task_id=claim.task_id,
+                    run_id=claim.run_id,
+                    phase="analyze_batches",
+                    batch_size=len(work_items),
+                    retry_count=_attempt,
+                    outcome="succeeded",
                 )
                 return await self._repository.finalize_batch(
                     batch_id=claim.id,

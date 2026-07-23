@@ -91,6 +91,7 @@ class Settings(BaseSettings):
     matching_quality_max_disable_ratio: float = Field(default=0.2, ge=0, le=1)
     model_retry_attempts: PositiveInt = 3
     model_retry_wait_seconds: NonNegativeFloat = 0.2
+    agent_privacy_policy_version: str = "student-phone-v1"
     new_agent_enabled: bool = False
     new_agent_analysis_only: bool = True
     new_agent_csv_execution_enabled: bool = False
@@ -195,6 +196,18 @@ class Settings(BaseSettings):
     @property
     def new_task_workflow_version(self) -> str:
         return "new-agent-v1" if self.new_agent_enabled else "legacy-v1"
+
+    def validate_agent_worker_configuration(self) -> None:
+        if not self.new_agent_enabled:
+            raise ValueError("new Agent workflow flag is disabled")
+        if not self.model_gateway_configured:
+            raise ValueError("Agent model gateway and tokenization must be configured")
+        if self.analysis_batch_size > 50:
+            raise ValueError("Agent analysis batch maximum is 50")
+        if self.model_retry_attempts != 3:
+            raise ValueError("Agent model retry count must be exactly three")
+        if self.agent_privacy_policy_version != "student-phone-v1":
+            raise ValueError("unsupported Agent privacy policy version")
 
     def ensure_storage_directories(self) -> None:
         for directory in (

@@ -148,6 +148,20 @@ class AgentReportingService:
         )
         if active is not None:
             raise ValueError(f"school lock is owned by task {active.owner_task_id}")
+        idempotency_key = f"rollback:{source_task_id}:{target_version_id}"
+        existing_task = await self.session.scalar(
+            select(ReconciliationTask).where(
+                ReconciliationTask.idempotency_key == idempotency_key
+            )
+        )
+        if existing_task is not None:
+            return RollbackTaskPreview(
+                task_id=existing_task.id,
+                task_kind=existing_task.task_kind,
+                report_id=None,
+                target_version_id=target_version_id,
+                operations=tuple((existing_task.agent_intent or {}).get("operations", [])),
+            )
         source = await self.session.get(ReconciliationTask, source_task_id)
         if source is None:
             raise LookupError("source Agent task not found")
@@ -156,7 +170,13 @@ class AgentReportingService:
             snapshot_mode=source.snapshot_mode, entity_types=list(source.entity_types),
             status="created", stage="rollback", workflow_version="new-agent-v1",
             task_kind="rollback", parent_task_id=source_task_id,
-            idempotency_key=f"rollback:{source_task_id}:{target_version_id}",
+            title=f"回滚：{source.title or source_task_id}",
+            agent_intent={
+                "source_task_id": str(source_task_id),
+                "target_version_id": str(target_version_id),
+                "operations": [],
+            },
+            idempotency_key=idempotency_key,
             request_hash=_hash(
                 {"source_task_id": str(source_task_id), "target_version_id": str(target_version_id)}
             ),
@@ -167,7 +187,6 @@ class AgentReportingService:
         run = await runtime.create_run(
             task_id=task.id, tenant_id=tenant_id, conversation_id=None, kind=AgentRunKind.ROLLBACK
         )
-        await runtime.acquire_school_lock(tenant_id=tenant_id, task_id=task.id, run_id=run.id)
         evidence = report.facts["rollback_evidence"]["successful_mutations"]
         await runtime.append_event(
             run.id,
@@ -188,6 +207,11 @@ class AgentReportingService:
             }
             for mutation in evidence
         )
+        task.agent_intent = {
+            "source_task_id": str(source_task_id),
+            "target_version_id": str(target_version_id),
+            "operations": list(operations),
+        }
         return RollbackTaskPreview(
             task_id=task.id,
             task_kind=task.task_kind,

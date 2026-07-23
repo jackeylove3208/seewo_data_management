@@ -1,4 +1,6 @@
 import re
+from collections.abc import Iterable
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -7,7 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agent_runtime.repository import AgentRunNotFound, AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentPhase, AgentRunKind, AgentRunStatus
 from app.core.security import OperatorContext
-from app.models.agent_runtime import AgentRunRecord
+from app.models.agent_analysis import AgentGovernanceOperationRecord
+from app.models.agent_runtime import AgentRunRecord, SchoolTaskLockRecord
 from app.models.reconciliation import ReconciliationTask
 
 MODEL_FAILURES = {
@@ -149,6 +152,50 @@ class AgentSupervisorService:
         )
         return blocked
 
+    async def confirm_rollback(self, *, task_id: UUID) -> AgentRunRecord:
+        task = await self.session.scalar(
+            select(ReconciliationTask)
+            .where(
+                ReconciliationTask.id == task_id,
+                ReconciliationTask.tenant_id == self.operator.tenant_id,
+                ReconciliationTask.workflow_version == "new-agent-v1",
+                ReconciliationTask.task_kind == AgentRunKind.ROLLBACK.value,
+            )
+            .with_for_update()
+        )
+        if task is None:
+            raise LookupError("rollback Agent task not found")
+        run = await self.repository.get_run_for_task(task.id, for_update=True)
+        if run is None or run.kind != AgentRunKind.ROLLBACK.value:
+            raise LookupError("rollback Agent runtime not found")
+        if (
+            run.phase != AgentPhase.INTENT_CONFIRMED.value
+            or run.status != AgentRunStatus.PENDING.value
+        ):
+            raise ValueError("rollback Agent task is already confirmed")
+        run = await self.repository.transition_run(
+            run.id, requested_phase=AgentPhase.ACQUIRE_SCHOOL_LOCK
+        )
+        await self.repository.acquire_school_lock(
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            run_id=run.id,
+        )
+        await self.repository.append_event(
+            run.id,
+            "rollback.confirmed",
+            {"phase": run.phase, "status": run.status},
+        )
+        run = await self.repository.transition_run(
+            run.id, requested_phase=AgentPhase.PLAN_RESTORE
+        )
+        await self.repository.append_event(
+            run.id,
+            "phase.started",
+            {"phase": run.phase, "status": run.status},
+        )
+        return run
+
     async def terminate(self, *, run_id: UUID, reason: str) -> AgentRunRecord:
         """Persist a deterministic terminal summary before releasing the school lock."""
         run = await self.repository.get_run(run_id, for_update=True)
@@ -172,6 +219,35 @@ class AgentSupervisorService:
                 "mutations_preserved": True,
             },
         )
+        from app.agent_reporting.service import AgentReportingService
+
+        operations = tuple(
+            await self.session.scalars(
+                select(AgentGovernanceOperationRecord).where(
+                    AgentGovernanceOperationRecord.run_id == run.id
+                )
+            )
+        )
+        mutations = _termination_mutations(operations)
+        if run.kind == AgentRunKind.ROLLBACK.value:
+            checkpoint = await self.repository.get_checkpoint(
+                run.id,
+                phase=AgentPhase.EXECUTE_RESTORE,
+                checkpoint_key="agent-csv-rollback-execution-v1",
+            )
+            if checkpoint is not None:
+                mutations = list(checkpoint.payload.get("mutations", mutations))
+        await AgentReportingService(self.session).generate(
+            task_id=run.task_id,
+            tenant_id=run.tenant_id,
+            kind=run.kind,
+            terminal_state="terminated",
+            facts={"mutations": mutations, "termination_reason": reason[:128]},
+        )
+        task = await self.session.get(ReconciliationTask, run.task_id)
+        if task is not None:
+            task.status = "terminated"
+            task.stage = "terminal"
         run = await self.repository.transition_run(
             run_id, requested_status=AgentRunStatus.TERMINATED
         )
@@ -180,9 +256,37 @@ class AgentSupervisorService:
             "run.terminated",
             {"phase": run.phase, "status": run.status, "reason": reason[:128]},
         )
-        await self.repository.release_school_lock(
-            tenant_id=self.operator.tenant_id,
-            run_id=run_id,
-            reason="terminated",
+        active_lock = await self.session.scalar(
+            select(SchoolTaskLockRecord.id).where(
+                SchoolTaskLockRecord.tenant_id == self.operator.tenant_id,
+                SchoolTaskLockRecord.owner_run_id == run_id,
+                SchoolTaskLockRecord.active.is_(True),
+            )
         )
+        if active_lock is not None:
+            await self.repository.release_school_lock(
+                tenant_id=self.operator.tenant_id,
+                run_id=run_id,
+                reason="terminated",
+            )
         return run
+
+
+def _termination_mutations(
+    operations: Iterable[AgentGovernanceOperationRecord | Any],
+) -> list[dict[str, object]]:
+    """Convert persisted outcomes to report facts without inventing execution results."""
+    return [
+        {
+            "id": str(operation.id),
+            "status": str(operation.status),
+            "operation": str(operation.operation_type),
+            "entity_kind": str(operation.entity_kind),
+            "target_source_identifier": operation.target_source_identifier,
+            "before": operation.before,
+            "after": operation.actual_after,
+            "verification": operation.verification
+            or {"valid": operation.status == "succeeded"},
+        }
+        for operation in operations
+    ]

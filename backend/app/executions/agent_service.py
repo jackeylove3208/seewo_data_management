@@ -129,6 +129,7 @@ class AgentExecutionService:
                         status=result.status,
                         attempts=result.attempts,
                         actual_after=result.actual_after,
+                        verification={"valid": result.status == "succeeded"},
                         error_code=result.error_code,
                     )
                 committed = committed or results[operation.id].status == "succeeded"
@@ -156,11 +157,16 @@ class AgentExecutionService:
             attempts += 1
             try:
                 await session.apply_operation(converted)
-                actual = await session.read_entity(operation.target_source_identifier or "")
+                identifier = operation.target_source_identifier
+                if operation.operation == AgentOperation.CREATE:
+                    identifier = str((operation.after or {}).get("source_id") or "")
+                actual = await session.read_entity(identifier or "")
                 if operation.operation == AgentOperation.DELETE:
                     valid = actual is None
                 else:
-                    expected = operation.after or {}
+                    expected = dict(operation.after or {})
+                    if operation.operation == AgentOperation.CREATE:
+                        expected.pop("source_id", None)
                     valid = actual is not None and all(
                         actual.get(field) == value for field, value in expected.items()
                     )
@@ -207,9 +213,6 @@ class ConfiguredConnectorAgentTarget:
         self._connector = connector
 
     async def begin(self, target_version: str, *, plan_id: UUID) -> AgentTargetSession:
-        current = await self._connector.version()
-        if current.value != target_version:
-            raise AgentTargetError("configured connector target version is stale")
         return _ConfiguredConnectorSession(
             connector=self._connector,
             current_version=target_version,
@@ -235,16 +238,20 @@ class _ConfiguredConnectorSession:
             OperationType.UPDATE: "update",
             OperationType.DISABLE: "delete",
         }.get(operation.operation_type)
-        if kind is None or operation.target_source_identifier is None:
+        after = dict(operation.after or {})
+        identifier = operation.target_source_identifier
+        if kind == "create":
+            identifier = str(after.pop("source_id", "") or "")
+        if kind is None or not identifier:
             raise AgentTargetError("configured connector operation is invalid")
         try:
             output = await self._connector.apply(
                 [
                     {
                         "operation": kind,
-                        "id": operation.target_source_identifier,
+                        "id": identifier,
                         "before": operation.before or {},
-                        "after": operation.after or {},
+                        "after": after,
                     }
                 ],
                 idempotency_key=f"agent:{self._plan_id}:{operation.id}",
