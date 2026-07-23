@@ -277,7 +277,7 @@ async def _task_response(
     )
     return AgentTaskResponse(
         id=task.id,
-        workflow_version="new-agent-v1",
+        workflow_version=task.workflow_version,
         task_kind=task.task_kind,
         parent_task_id=task.parent_task_id,
         phase=run.phase,
@@ -490,7 +490,9 @@ async def get_agent_history(
                 .outerjoin(AgentReportRecord, AgentReportRecord.task_id == ReconciliationTask.id)
                 .where(
                     ReconciliationTask.tenant_id == operator.tenant_id,
-                    ReconciliationTask.workflow_version == "new-agent-v1",
+                    ReconciliationTask.workflow_version.in_(
+                        ("new-agent-v1", "agent-graph-v1")
+                    ),
                 )
                 .order_by(ReconciliationTask.created_at.desc(), ReconciliationTask.id.desc())
             )
@@ -502,7 +504,7 @@ async def get_agent_history(
         items.append(
             AgentHistoryItem(
                 id=task.id,
-                workflow_version="new-agent-v1",
+                workflow_version=task.workflow_version,
                 task_kind=task.task_kind,
                 parent_task_id=task.parent_task_id,
                 phase=run.phase,

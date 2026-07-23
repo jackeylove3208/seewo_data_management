@@ -98,6 +98,7 @@ class AgentRuntimeRepository:
         tenant_id: str,
         conversation_id: UUID | None,
         kind: AgentRunKind,
+        workflow_version: str = "new-agent-v1",
     ) -> AgentRunRecord:
         record = AgentRunRecord(
             id=uuid4(),
@@ -105,7 +106,7 @@ class AgentRuntimeRepository:
             tenant_id=tenant_id,
             conversation_id=conversation_id,
             kind=kind.value,
-            workflow_version="new-agent-v1",
+            workflow_version=workflow_version,
             phase=AgentPhase.INTENT_CONFIRMED.value,
             status=AgentRunStatus.PENDING.value,
             version=1,

@@ -51,7 +51,7 @@ class AgentSupervisorService:
         )
         if task is None:
             raise LookupError(f"reconciliation task not found: {task_id}")
-        if task.workflow_version != "new-agent-v1":
+        if task.workflow_version not in {"new-agent-v1", "agent-graph-v1"}:
             raise ValueError(
                 f"Agent supervisor cannot process task version {task.workflow_version}"
             )
@@ -70,6 +70,7 @@ class AgentSupervisorService:
             tenant_id=tenant_id,
             conversation_id=conversation_id,
             kind=AgentRunKind.SYNC,
+            workflow_version=task.workflow_version,
         )
         await self.repository.append_event(
             run.id,
