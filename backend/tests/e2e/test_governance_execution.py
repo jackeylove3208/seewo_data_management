@@ -23,6 +23,7 @@ def governance_client(tmp_path: Path):
         quarantine_root=tmp_path / "quarantine",
         export_root=tmp_path / "exports",
         auto_create_schema=True,
+        _env_file=None,
     )
     with TestClient(create_app(settings)) as client:
         yield client
@@ -32,6 +33,7 @@ def test_reviewed_manual_proposal_produces_verified_derived_csv(
     governance_client: TestClient,
     tmp_path: Path,
 ) -> None:
+    assert governance_client.app.state.settings.llm_url is None
     header = (
         "entity_type,id,name,parent_id,grade,class_name,subject,employee_number,phone,email,extra\n"
     )

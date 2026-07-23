@@ -23,12 +23,14 @@ def restore_client(tmp_path: Path):
         quarantine_root=tmp_path / "quarantine",
         export_root=tmp_path / "exports",
         auto_create_schema=True,
+        _env_file=None,
     )
     with TestClient(create_app(settings)) as client:
         yield client
 
 
 def test_preview_and_confirm_historical_restore(restore_client: TestClient) -> None:
+    assert restore_client.app.state.settings.llm_url is None
     batch = _executed_batch(restore_client)
     detail = restore_client.get(f"/api/execution-records/{batch['id']}").json()
     task_id = detail["task_id"]
