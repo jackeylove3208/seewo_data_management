@@ -1,11 +1,18 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from uuid import uuid4
 
 import pytest
 
+from app.connectors.configured import (
+    ConfiguredApiConnector,
+    ConnectorCapabilities,
+    DatabaseConnectorConfiguration,
+    InMemoryConnectorStore,
+)
 from app.executions.agent_service import (
     AgentExecutionService,
     AgentRetryableTargetError,
+    ConfiguredConnectorAgentTarget,
 )
 from app.governance.agent_governance import AgentGovernanceOperation, AgentOperation
 
@@ -106,3 +113,35 @@ async def test_authority_target_is_rejected_before_any_write() -> None:
             target=FakeTarget(FakeSession({}, [])),
             target_role="authoritative",
         )
+
+
+@pytest.mark.asyncio
+async def test_configured_target_adapter_uses_connector_version_and_read_after_write() -> None:
+    connector = ConfiguredApiConnector(
+        configuration=DatabaseConnectorConfiguration(
+            credential_reference="secret://connectors/seewo-db",
+            table_name="seewo_people",
+            primary_key="id",
+            version_column="version",
+            field_columns={"name": "name"},
+            capabilities=ConnectorCapabilities(read=True, update=True, optimistic_version=True),
+        ),
+        store=InMemoryConnectorStore(records=[{"id": "student-1", "version": "v1", "name": "old"}]),
+    )
+    operation_to_apply = operation(name="new")
+    operation_to_apply = replace(
+        operation_to_apply,
+        target_source_identifier="student-1",
+        before={"name": "old"},
+        target_version="v1",
+    )
+
+    result = await AgentExecutionService().execute(
+        plan_id=uuid4(),
+        target_version="v1",
+        operations=(operation_to_apply,),
+        target=ConfiguredConnectorAgentTarget(connector),
+    )
+
+    assert result.status == "succeeded"
+    assert result.output_target_version is not None

@@ -109,6 +109,25 @@ RECONCILIATION_LLM_AUTH_HEADER=X-API-Key
 RECONCILIATION_LLM_AUTH_SCHEME=
 ```
 
+## Configure Agent API and database connectors
+
+API and database connectors are disabled by default. Their JSON configuration maps contain only
+server-owned endpoint/table metadata and a `credential_reference`, such as
+`secret://connectors/seewo-api`; do not put API tokens, passwords, DSNs, arbitrary SQL, or mutable
+table names in browser input, task events, or model context. A target connector must declare read,
+write, optimistic-version, and read-after-write capabilities before its rollout flag is enabled.
+
+```dotenv
+RECONCILIATION_NEW_AGENT_ENABLED=true
+RECONCILIATION_NEW_AGENT_ANALYSIS_ONLY=false
+RECONCILIATION_API_CONNECTOR_CONFIGURATIONS={"seewo":{"credential_reference":"secret://connectors/seewo-api","endpoint":"https://connector.example.com/v1/people","record_id_field":"id","version_field":"etag"}}
+RECONCILIATION_NEW_AGENT_API_CONNECTOR_ENABLED=true
+```
+
+The runtime resolves each credential reference through its server-side secret provider. Connector
+reads use a stable cursor and record ID; target writes require an idempotency key, current version,
+allow-listed operation, and read-after-write verification. Authoritative connectors remain read-only.
+
 Embedding access has the same gateway controls, but uses independent settings so
 the chat and embedding deployments can differ:
 

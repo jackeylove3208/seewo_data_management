@@ -15,6 +15,11 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.connectors.configured import (
+    ApiConnectorConfiguration,
+    DatabaseConnectorConfiguration,
+)
+
 DEFAULT_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 
 
@@ -57,7 +62,7 @@ class Settings(BaseSettings):
     llm_timeout_seconds: PositiveFloat = 20
     tokenization_secret: SecretStr | None = None
     proposal_preview_secret: SecretStr | None = None
-    analysis_batch_size: PositiveInt = 10
+    analysis_batch_size: PositiveInt = Field(default=10, le=50)
     analysis_worker_lease_seconds: PositiveInt = 60
     analysis_worker_concurrency: PositiveInt = 4
     analysis_worker_poll_seconds: PositiveFloat = 0.5
@@ -91,6 +96,8 @@ class Settings(BaseSettings):
     new_agent_csv_execution_enabled: bool = False
     new_agent_api_connector_enabled: bool = False
     new_agent_database_connector_enabled: bool = False
+    api_connector_configurations: dict[str, ApiConnectorConfiguration] = {}
+    database_connector_configurations: dict[str, DatabaseConnectorConfiguration] = {}
 
     @field_validator(
         "llm_auth_header",
@@ -165,8 +172,14 @@ class Settings(BaseSettings):
         )
         if any(child_flags) and not self.new_agent_enabled:
             raise ValueError("new_agent_enabled is required for Agent rollout flags")
-        if self.new_agent_analysis_only and self.new_agent_csv_execution_enabled:
+        if self.new_agent_analysis_only and any(child_flags):
             raise ValueError("new_agent_analysis_only cannot enable target execution")
+        if self.new_agent_api_connector_enabled and not self.api_connector_configurations:
+            raise ValueError("API connector configuration is required before enabling execution")
+        if self.new_agent_database_connector_enabled and not self.database_connector_configurations:
+            raise ValueError(
+                "database connector configuration is required before enabling execution"
+            )
         return self
 
     @property
