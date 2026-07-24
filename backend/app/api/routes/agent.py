@@ -26,12 +26,16 @@ from app.agent_runtime.task_service import (
     AgentTaskConflict,
     AgentTaskService,
 )
-from app.ai.conversation_agent import ConversationSupervisorAgent
+from app.ai.conversation_agent import (
+    ConversationModelResponseError,
+    ConversationSupervisorAgent,
+)
 from app.ai.graph_subagents import (
     GraphSkillInvocation,
     GraphSkillModelRunner,
     GraphSubAgentFailure,
 )
+from app.ai.providers.base import ModelProviderError
 from app.ai.providers.llm import HttpLLMProvider
 from app.ai.skills.contracts import ConflictInstructionInput
 from app.api.dependencies import get_operator_context, get_session
@@ -57,6 +61,8 @@ from app.schemas.agent_api import (
     AgentApprovalGroupView,
     AgentClarificationView,
     AgentCommandResponse,
+    AgentConversationCurrentResponse,
+    AgentConversationMessageView,
     AgentConversationResponse,
     AgentEventPage,
     AgentHistoryItem,
@@ -218,6 +224,84 @@ async def create_agent_conversation(
     return AgentConversationResponse(id=conversation.id, status="active")
 
 
+@router.get(
+    "/conversations/current",
+    response_model=AgentConversationCurrentResponse | None,
+)
+async def get_current_agent_conversation(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    operator: Annotated[OperatorContext, Depends(get_operator_context)],
+) -> AgentConversationCurrentResponse | None:
+    _require_enabled(request)
+    repository = AgentRuntimeRepository(session)
+    conversation = await repository.get_current_conversation(
+        tenant_id=operator.tenant_id,
+        created_by=operator.operator_id,
+    )
+    if conversation is None:
+        return None
+    messages = await repository.list_conversation_messages(
+        conversation_id=conversation.id,
+        tenant_id=operator.tenant_id,
+    )
+    run = await session.scalar(
+        select(AgentRunRecord)
+        .where(
+            AgentRunRecord.conversation_id == conversation.id,
+            AgentRunRecord.tenant_id == operator.tenant_id,
+        )
+        .order_by(AgentRunRecord.created_at.desc(), AgentRunRecord.id.desc())
+        .limit(1)
+    )
+    intent = AgentIntentView.model_validate(conversation.context) if conversation.context else None
+    confirmation = None
+    can_confirm = (
+        (run is None or run.status in {"completed", "terminated", "failed"})
+        and conversation.context.get("decision_kind") == "start_confirmation"
+        and intent is not None
+        and intent.source is not None
+        and intent.target is not None
+        and bool(intent.entity_types)
+    )
+    if can_confirm and intent is not None:
+        latest_assistant_text = next(
+            (
+                message.text
+                for message in reversed(messages)
+                if message.role == "assistant" and message.kind != "error"
+            ),
+            intent.title,
+        )
+        confirmation = AgentStartConfirmation(
+            title=intent.title,
+            summary=latest_assistant_text,
+            entity_types=intent.entity_types,
+        )
+    task = (
+        await _task_response(AgentTaskService(session, operator=operator), run.task_id)
+        if run is not None
+        else None
+    )
+    return AgentConversationCurrentResponse(
+        id=conversation.id,
+        status="active",
+        messages=tuple(
+            AgentConversationMessageView(
+                id=message.id,
+                role=message.role,
+                kind=message.kind,
+                text=message.text,
+                created_at=message.created_at,
+            )
+            for message in messages
+        ),
+        intent=intent,
+        start_confirmation=confirmation,
+        task=task,
+    )
+
+
 @router.post(
     "/conversations/{conversation_id}/messages",
     response_model=AgentMessageResponse,
@@ -250,36 +334,72 @@ async def send_agent_message(
             409,
             detail=_error("invalid_state", "Conversation is locked by an active task"),
         )
+    await repository.append_conversation_message(
+        conversation_id=conversation.id,
+        tenant_id=operator.tenant_id,
+        role="user",
+        text=body.message,
+    )
     sources = LocalSourceService(request.app.state.settings).list_sources()
     provider = getattr(
         request.app.state,
         "conversation_provider",
         HttpLLMProvider(settings=request.app.state.settings),
     )
-    decision = await ConversationSupervisorAgent(provider).reply(
-        ConversationAgentContext(
+    try:
+        decision = await ConversationSupervisorAgent(provider).reply(
+            ConversationAgentContext(
+                conversation_id=conversation.id,
+                tenant_id=operator.tenant_id,
+                message=body.message,
+                available_source_refs=tuple(source.source_ref for source in sources),
+                current_intent=dict(conversation.context),
+            )
+        )
+    except (ConversationModelResponseError, ModelProviderError) as error:
+        safe_message = "对话模型暂时无法生成有效回复，请稍后重试。"
+        await repository.append_conversation_message(
             conversation_id=conversation.id,
             tenant_id=operator.tenant_id,
-            message=body.message,
-            available_source_refs=tuple(source.source_ref for source in sources),
+            role="assistant",
+            kind="error",
+            text=safe_message,
         )
-    )
+        await session.commit()
+        raise HTTPException(
+            502,
+            detail=_error(
+                "conversation_model_error",
+                safe_message,
+            ),
+        ) from error
+    previous_intent = dict(conversation.context)
     intent = {
-        "title": decision.title or "全校组织数据同步",
-        "entity_types": [entity.value for entity in decision.entity_types],
+        "title": decision.title or previous_intent.get("title") or "全校组织数据同步",
+        "entity_types": (
+            [entity.value for entity in decision.entity_types]
+            if decision.entity_types
+            else previous_intent.get("entity_types", [])
+        ),
         "source": (
             {"kind": "local", "source_ref": decision.source_ref}
             if decision.source_ref is not None
-            else None
+            else previous_intent.get("source")
         ),
         "target": (
             {"kind": "local", "source_ref": decision.target_ref}
             if decision.target_ref is not None
-            else None
+            else previous_intent.get("target")
         ),
         "decision_kind": decision.kind,
     }
     conversation.context = intent
+    await repository.append_conversation_message(
+        conversation_id=conversation.id,
+        tenant_id=operator.tenant_id,
+        role="assistant",
+        text=decision.message_zh,
+    )
     view = AgentIntentView.model_validate(intent)
     confirmation = None
     can_confirm = (

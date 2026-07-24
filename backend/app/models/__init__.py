@@ -29,6 +29,7 @@ from app.models.agent_graph import (
 )
 from app.models.agent_runtime import (
     AgentCheckpointRecord,
+    AgentConversationMessageRecord,
     AgentConversationRecord,
     AgentFailureRecord,
     AgentRunRecord,
@@ -80,6 +81,7 @@ __all__ = [
     "AnalysisRecord",
     "AgentCheckpointRecord",
     "AgentConnectorCapabilityRecord",
+    "AgentConversationMessageRecord",
     "AgentConversationRecord",
     "AgentFailureRecord",
     "AgentEvidenceManifestRecord",

@@ -72,3 +72,39 @@ async def test_supervisor_rejects_source_not_returned_by_server_discovery() -> N
 
     assert decision.kind == "clarification"
     assert decision.source_ref is None
+
+
+@pytest.mark.asyncio
+async def test_supervisor_accepts_flat_json_object_provider_response() -> None:
+    provider = CapturingProvider(
+        {
+            "type": "clarification",
+            "message_zh": "我是学校数据同步助手，可以帮助核对和治理组织数据。",
+        }
+    )
+
+    decision = await ConversationSupervisorAgent(provider).reply(
+        _context(message="你是谁", available_source_refs=())
+    )
+
+    assert decision.kind == "clarification"
+    assert decision.message_zh.startswith("我是学校数据同步助手")
+
+
+@pytest.mark.asyncio
+async def test_supervisor_ignores_known_non_executable_missing_info_hint() -> None:
+    provider = CapturingProvider(
+        {
+            "result": {
+                "kind": "clarification",
+                "message_zh": "我是学校数据同步助手，请告诉我需要同步哪些实体。",
+                "missing_info": ["entity_types"],
+            }
+        }
+    )
+
+    decision = await ConversationSupervisorAgent(provider).reply(
+        _context(message="你是谁", available_source_refs=())
+    )
+
+    assert decision.kind == "clarification"

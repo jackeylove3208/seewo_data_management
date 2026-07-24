@@ -32,9 +32,10 @@ export interface AgentIntent {
 }
 
 export interface AgentConnectorSelection {
-  kind: "csv" | "api" | "database";
+  kind: "csv" | "api" | "database" | "local";
   upload_id?: string;
   configuration_id?: string;
+  source_ref?: string;
 }
 
 export interface AgentStartConfirmation {
@@ -47,6 +48,21 @@ export interface AgentMessageResponse {
   message: string;
   intent: AgentIntent;
   start_confirmation?: AgentStartConfirmation;
+}
+
+export interface AgentConversationMessage {
+  id: string;
+  role: "assistant" | "user";
+  kind: "normal" | "guardrail" | "error";
+  text: string;
+  created_at: string;
+}
+
+export interface AgentConversationCurrent extends AgentConversation {
+  messages: AgentConversationMessage[];
+  intent?: AgentIntent | null;
+  start_confirmation?: AgentStartConfirmation | null;
+  task?: AgentTask | null;
 }
 
 export interface AgentTask {
@@ -120,11 +136,19 @@ export interface AgentClarificationConfirmation {
 }
 
 export interface AgentConversationApi {
+  currentConversation(): Promise<AgentConversationCurrent | null>;
   createConversation(): Promise<AgentConversation>;
   sendMessage(conversationId: string, message: string): Promise<AgentMessageResponse>;
   startTask(conversationId: string, intent: AgentIntent, idempotencyKey: string): Promise<AgentTask>;
   events(taskId: string, cursor?: string, signal?: AbortSignal): Promise<AgentEventPage>;
   terminate(taskId: string): Promise<{ status: string }>;
+  previewTermination?(taskId: string): Promise<AgentGraphHumanGate>;
+  decideGraphGate?(
+    taskId: string,
+    gateId: string,
+    decision: "approve" | "reject",
+    reason?: string,
+  ): Promise<{ gate_id: string; status: "approved" | "rejected"; graph_cursor: number }>;
   approveGroup?(taskId: string, groupId: string): Promise<unknown>;
   rejectGroup?(taskId: string, groupId: string, reason?: string): Promise<unknown>;
   clarify?(taskId: string, message: string): Promise<AgentClarificationInterpretation>;
@@ -173,6 +197,10 @@ async function createConversation() {
     headers: jsonHeaders,
     body: JSON.stringify({}),
   });
+}
+
+async function currentConversation() {
+  return requestJson<AgentConversationCurrent | null>("/api/agent/conversations/current");
 }
 
 async function sendMessage(conversationId: string, message: string) {
@@ -338,6 +366,7 @@ export const agentApi: AgentConversationApi & AgentManualTaskApi & {
   clarify: typeof clarify;
   confirmClarification: typeof confirmClarification;
 } = {
+  currentConversation,
   createConversation,
   sendMessage,
   startTask,

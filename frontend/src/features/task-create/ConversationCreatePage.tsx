@@ -1,8 +1,8 @@
-import { Spin } from "antd";
+import { Alert, Modal, Spin } from "antd";
 import { ArrowUp, Bot, MessageSquareText, UserRound } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 
-import { agentApi as defaultAgentApi, type AgentConversationApi, type AgentIntent, type AgentStartConfirmation, type AgentTask, type AgentTaskEvent } from "../../api/agent";
+import { agentApi as defaultAgentApi, type AgentConversationApi, type AgentGraphHumanGate, type AgentIntent, type AgentStartConfirmation, type AgentTask, type AgentTaskEvent } from "../../api/agent";
 
 type ConversationState = "idle" | "collecting" | "needs-input" | "draft-ready" | "submitting" | "failed" | "created";
 interface ConversationMessage {
@@ -43,19 +43,47 @@ export function ConversationCreatePage({
   const [clarificationOpen, setClarificationOpen] = useState(false);
   const [handledApprovalGroups, setHandledApprovalGroups] = useState<string[]>([]);
   const [confirmedClarifications, setConfirmedClarifications] = useState<string[]>([]);
+  const [terminationGate, setTerminationGate] = useState<AgentGraphHumanGate>();
+  const [terminationLoading, setTerminationLoading] = useState(false);
+  const [terminationError, setTerminationError] = useState<string>();
+  const [hydrating, setHydrating] = useState(true);
 
   const backendApi = agentApi ?? defaultAgentApi;
 
   useEffect(() => {
-    void backendApi.createConversation().then((conversation) => setConversationId(conversation.id)).catch(() => {
-      setState("failed");
-      setMessages((current) => [...current, {
-        id: messageId(),
-        role: "assistant",
-        text: "对话服务暂时不可用，请稍后重试。",
-        kind: "error",
-      }]);
-    });
+    let cancelled = false;
+    setHydrating(true);
+    void backendApi.currentConversation()
+      .then(async (current) => {
+        if (cancelled) return;
+        if (current) {
+          setConversationId(current.id);
+          setMessages(current.messages.length ? current.messages : initialMessages);
+          setAgentIntent(current.intent ?? undefined);
+          setConfirmation(current.start_confirmation ?? undefined);
+          setTask(current.task ?? undefined);
+          setState(current.task ? "created" : current.start_confirmation ? "draft-ready" : "idle");
+          return;
+        }
+        const conversation = await backendApi.createConversation();
+        if (!cancelled) setConversationId(conversation.id);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setState("failed");
+        setMessages((current) => [...current, {
+          id: messageId(),
+          role: "assistant",
+          text: "对话服务暂时不可用，请稍后重试。",
+          kind: "error",
+        }]);
+      })
+      .finally(() => {
+        if (!cancelled) setHydrating(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [agentApi, backendApi]);
 
   useEffect(() => {
@@ -95,7 +123,7 @@ export function ConversationCreatePage({
   async function sendMessage(event: FormEvent) {
     event.preventDefault();
     const message = input.trim();
-    if (!message || state === "collecting" || (task && !clarificationOpen)) return;
+    if (!message || hydrating || state === "collecting" || (task && !clarificationOpen)) return;
     setInput("");
     setState("collecting");
     setMessages((current) => [...current, { id: messageId(), role: "user", text: message }]);
@@ -125,11 +153,13 @@ export function ConversationCreatePage({
         setConfirmation(response.start_confirmation);
       }
       setState(response.start_confirmation ? "draft-ready" : "needs-input");
-    } catch {
+    } catch (error) {
       setMessages((current) => [...current, {
         id: messageId(),
         role: "assistant",
-        text: "没有理解这条要求，请换一种说法后重试。",
+        text: error instanceof Error
+          ? error.message
+          : "没有理解这条要求，请换一种说法后重试。",
         kind: "error",
       }]);
       setState("failed");
@@ -174,7 +204,47 @@ export function ConversationCreatePage({
 
   async function terminateTask() {
     if (!task) return;
-    await backendApi.terminate(task.id);
+    setTerminationLoading(true);
+    setTerminationError(undefined);
+    try {
+      if (task.workflow_version === "agent-graph-v1") {
+        if (!backendApi.previewTermination) {
+          throw new Error("当前客户端不支持受控任务终止确认");
+        }
+        setTerminationGate(await backendApi.previewTermination(task.id));
+      } else {
+        const result = await backendApi.terminate(task.id);
+        setTask((current) => current ? { ...current, status: result.status } : current);
+      }
+    } catch (error) {
+      setTerminationError(error instanceof Error ? error.message : "终止任务失败");
+    } finally {
+      setTerminationLoading(false);
+    }
+  }
+
+  async function decideTermination(decision: "approve" | "reject") {
+    if (!task || !terminationGate || !backendApi.decideGraphGate) return;
+    setTerminationLoading(true);
+    setTerminationError(undefined);
+    try {
+      await backendApi.decideGraphGate(
+        task.id,
+        terminationGate.id,
+        decision,
+        decision === "approve"
+          ? "操作人确认终止当前任务"
+          : "操作人取消终止当前任务",
+      );
+      setTerminationGate(undefined);
+      if (decision === "approve") {
+        setTask((current) => current ? { ...current, status: "terminating" } : current);
+      }
+    } catch (error) {
+      setTerminationError(error instanceof Error ? error.message : "终止确认未完成");
+    } finally {
+      setTerminationLoading(false);
+    }
   }
 
   function eventText(event: AgentTaskEvent) {
@@ -283,7 +353,8 @@ export function ConversationCreatePage({
                   );
                 })}
               </div>
-              {taskActive && <button type="button" onClick={() => void terminateTask()}>终止任务</button>}
+              {terminationError && <Alert type="error" showIcon message={terminationError} />}
+              {taskActive && <button type="button" disabled={terminationLoading} onClick={() => void terminateTask()}>终止任务</button>}
             </article>
           )}
           {state === "collecting" && <div className="assistant-thinking"><Spin size="small" /> 正在理解同步需求</div>}
@@ -294,15 +365,29 @@ export function ConversationCreatePage({
             aria-label="对账目标"
             placeholder="例如：只核对七年级的老师和学生"
             rows={2}
-            disabled={isCollecting || Boolean(taskActive && !clarificationOpen)}
+            disabled={hydrating || isCollecting || Boolean(taskActive && !clarificationOpen)}
             value={input}
             onChange={(event) => setInput(event.target.value)}
           />
-          <button type="submit" aria-label="发送" title="发送" disabled={!input.trim() || state === "collecting" || Boolean(taskActive && !clarificationOpen)}>
+          <button type="submit" aria-label="发送" title="发送" disabled={hydrating || !input.trim() || state === "collecting" || Boolean(taskActive && !clarificationOpen)}>
             <ArrowUp size={18} />
           </button>
         </form>
       </section>
+      <Modal
+        title="确认终止当前任务？"
+        open={Boolean(terminationGate)}
+        okText="确认终止"
+        cancelText="继续执行"
+        okButtonProps={{ danger: true }}
+        confirmLoading={terminationLoading}
+        closable={!terminationLoading}
+        maskClosable={false}
+        onOk={() => void decideTermination("approve")}
+        onCancel={() => void decideTermination("reject")}
+      >
+        <p>终止后不会启动新的处理动作，当前原子操作会安全结束；已经验证成功的数据修改不会自动回退，系统将生成终止报告。</p>
+      </Modal>
     </main>
   );
 }

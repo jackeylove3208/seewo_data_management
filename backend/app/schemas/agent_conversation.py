@@ -1,6 +1,6 @@
 """Strict contracts for the model-backed synchronization conversation."""
 
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -15,6 +15,7 @@ class ConversationAgentContext(BaseModel):
     tenant_id: str = Field(min_length=1)
     message: str = Field(min_length=1, max_length=2000)
     available_source_refs: tuple[str, ...] = ()
+    current_intent: dict[str, Any] = Field(default_factory=dict)
     active_task_id: UUID | None = None
 
 

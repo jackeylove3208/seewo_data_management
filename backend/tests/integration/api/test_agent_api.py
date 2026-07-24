@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from uuid import uuid4
 
@@ -6,7 +7,9 @@ from fastapi.testclient import TestClient
 
 from app.agent_reporting.service import AgentReportingService
 from app.ai.providers.base import LLMRequest, LLMResponse
+from app.api.dependencies import get_operator_context
 from app.core.config import Settings
+from app.core.security import OperatorContext
 from app.main import create_app
 from app.models.reconciliation import ReconciliationTask
 
@@ -31,6 +34,41 @@ class ConversationProvider:
             provider="stub",
             model="stub",
         )
+
+
+class InvalidConversationProvider:
+    async def complete_json_once(self, request: LLMRequest) -> LLMResponse:
+        del request
+        return LLMResponse(
+            output={"unexpected": "shape"},
+            provider="stub",
+            model="stub",
+        )
+
+
+class IncrementalConversationProvider:
+    def __init__(self) -> None:
+        self.requests: list[LLMRequest] = []
+
+    async def complete_json_once(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            output = {
+                "result": {
+                    "kind": "intent_update",
+                    "title": "学生同步",
+                    "entity_types": ["student"],
+                    "message_zh": "已记住要同步学生，请继续选择数据来源。",
+                }
+            }
+        else:
+            output = {
+                "result": {
+                    "kind": "clarification",
+                    "message_zh": "我会沿用上一轮已确认的学生范围。",
+                }
+            }
+        return LLMResponse(output=output, provider="stub", model="stub")
 
 
 @pytest.fixture
@@ -279,6 +317,209 @@ def test_conversation_uses_model_discovered_local_sources(
     assert created.status_code == 202, created.text
     assert created.json()["title"] == "本地学生同步"
     assert agent_client.get("/api/agent/history").json()["items"][0]["id"] == created.json()["id"]
+
+
+def test_conversation_returns_sanitized_error_for_invalid_model_output(
+    agent_client: TestClient,
+) -> None:
+    agent_client.app.state.conversation_provider = InvalidConversationProvider()
+    conversation = agent_client.post("/api/agent/conversations")
+
+    response = agent_client.post(
+        f"/api/agent/conversations/{conversation.json()['id']}/messages",
+        json={"message": "你是谁"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == {
+        "code": "conversation_model_error",
+        "message": "对话模型暂时无法生成有效回复，请稍后重试。",
+    }
+
+
+def test_current_conversation_restores_persisted_messages_and_active_task(
+    agent_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "resumable-local-sources"
+    for relative in ("third-party/roster.csv", "seewo/roster.csv"):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "类别,姓名,编号,班级,电话,邮箱\n学生,张三,S001,一班,13800000001,a@example.test\n",
+            encoding="utf-8",
+        )
+    agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
+    agent_client.app.state.conversation_provider = ConversationProvider()
+    conversation = agent_client.post("/api/agent/conversations").json()
+
+    message = agent_client.post(
+        f"/api/agent/conversations/{conversation['id']}/messages",
+        json={"message": "同步本地学生数据"},
+    )
+    assert message.status_code == 200, message.text
+    created = agent_client.post(
+        f"/api/agent/conversations/{conversation['id']}/tasks",
+        headers={"Idempotency-Key": "resumable-conversation-task"},
+        json={
+            "title": "客户端不会成为事实",
+            "entity_types": ["teacher"],
+            "source": {"kind": "local", "source_ref": "third-party/other.csv"},
+            "target": {"kind": "local", "source_ref": "seewo/other.csv"},
+        },
+    )
+    assert created.status_code == 202, created.text
+
+    current = agent_client.get("/api/agent/conversations/current")
+
+    assert current.status_code == 200, current.text
+    body = current.json()
+    assert body["id"] == conversation["id"]
+    assert [(item["role"], item["text"]) for item in body["messages"]] == [
+        ("user", "同步本地学生数据"),
+        ("assistant", "已确认两份本地数据。"),
+    ]
+    assert body["intent"]["title"] == "本地学生同步"
+    assert body["task"]["id"] == created.json()["id"]
+    assert body["start_confirmation"] is None
+
+
+def test_current_conversation_restores_an_unstarted_confirmation(
+    agent_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "confirmation-sources"
+    for relative in ("third-party/roster.csv", "seewo/roster.csv"):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("类别,姓名,编号,班级,电话,邮箱\n", encoding="utf-8")
+    agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
+    agent_client.app.state.conversation_provider = ConversationProvider()
+    conversation = agent_client.post("/api/agent/conversations").json()
+    sent = agent_client.post(
+        f"/api/agent/conversations/{conversation['id']}/messages",
+        json={"message": "同步本地学生数据"},
+    )
+    assert sent.status_code == 200, sent.text
+
+    current = agent_client.get("/api/agent/conversations/current")
+
+    assert current.status_code == 200
+    assert current.json()["task"] is None
+    assert current.json()["start_confirmation"] == {
+        "title": "本地学生同步",
+        "summary": "已确认两份本地数据。",
+        "entity_types": ["student"],
+    }
+
+
+def test_current_conversation_is_hidden_from_another_tenant(
+    agent_client: TestClient,
+) -> None:
+    created = agent_client.post("/api/agent/conversations")
+    assert created.status_code == 201
+
+    agent_client.app.dependency_overrides[get_operator_context] = lambda: OperatorContext(
+        operator_id="demo-operator",
+        tenant_id="other-school",
+    )
+    try:
+        current = agent_client.get("/api/agent/conversations/current")
+    finally:
+        agent_client.app.dependency_overrides.pop(get_operator_context, None)
+
+    assert current.status_code == 200
+    assert current.json() is None
+
+
+def test_current_conversation_prioritizes_the_school_lock_owner_over_a_new_empty_chat(
+    agent_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "locked-conversation-sources"
+    for relative in ("third-party/roster.csv", "seewo/roster.csv"):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "类别,姓名,编号,班级,电话,邮箱\n学生,张三,S001,一班,13800000001,a@example.test\n",
+            encoding="utf-8",
+        )
+    agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
+    agent_client.app.state.conversation_provider = ConversationProvider()
+    owner = agent_client.post("/api/agent/conversations").json()
+    message = agent_client.post(
+        f"/api/agent/conversations/{owner['id']}/messages",
+        json={"message": "同步本地学生数据"},
+    )
+    assert message.status_code == 200, message.text
+    started = agent_client.post(
+        f"/api/agent/conversations/{owner['id']}/tasks",
+        headers={"Idempotency-Key": "locked-conversation-owner"},
+        json={
+            "title": "客户端草案不作为事实",
+            "entity_types": ["teacher"],
+            "source": {"kind": "local", "source_ref": "third-party/other.csv"},
+            "target": {"kind": "local", "source_ref": "seewo/other.csv"},
+        },
+    )
+    assert started.status_code == 202, started.text
+
+    newer_empty = agent_client.post("/api/agent/conversations")
+    assert newer_empty.status_code == 201
+
+    current = agent_client.get("/api/agent/conversations/current")
+
+    assert current.status_code == 200
+    assert current.json()["id"] == owner["id"]
+    assert current.json()["task"]["id"] == started.json()["id"]
+
+
+def test_failed_conversation_reply_is_persisted_as_recoverable_message(
+    agent_client: TestClient,
+) -> None:
+    agent_client.app.state.conversation_provider = InvalidConversationProvider()
+    conversation = agent_client.post("/api/agent/conversations").json()
+
+    response = agent_client.post(
+        f"/api/agent/conversations/{conversation['id']}/messages",
+        json={"message": "你是谁"},
+    )
+    assert response.status_code == 502
+
+    current = agent_client.get("/api/agent/conversations/current")
+
+    assert [(item["role"], item["kind"]) for item in current.json()["messages"]] == [
+        ("user", "normal"),
+        ("assistant", "error"),
+    ]
+    assert "稍后重试" in current.json()["messages"][-1]["text"]
+
+
+def test_conversation_model_receives_private_intent_from_previous_turn(
+    agent_client: TestClient,
+) -> None:
+    provider = IncrementalConversationProvider()
+    agent_client.app.state.conversation_provider = provider
+    conversation = agent_client.post("/api/agent/conversations").json()
+
+    first = agent_client.post(
+        f"/api/agent/conversations/{conversation['id']}/messages",
+        json={"message": "我要同步学生"},
+    )
+    assert first.status_code == 200, first.text
+
+    second = agent_client.post(
+        f"/api/agent/conversations/{conversation['id']}/messages",
+        json={"message": "继续选择数据来源"},
+    )
+    assert second.status_code == 200, second.text
+    current = agent_client.get("/api/agent/conversations/current")
+    assert current.json()["intent"]["entity_types"] == ["student"]
+    assert current.json()["intent"]["title"] == "学生同步"
+
+    evidence = json.loads(provider.requests[1].messages[1].content)["untrusted_evidence"]
+    assert evidence["current_intent"]["entity_types"] == ["student"]
+    assert evidence["current_intent"]["title"] == "学生同步"
 
 
 def test_termination_persists_history_before_releasing_school_lock(
