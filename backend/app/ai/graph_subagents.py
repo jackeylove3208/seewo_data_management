@@ -17,7 +17,12 @@ from app.agent_graph.tools import (
     GraphToolAuthorizationError,
     GraphToolContext,
 )
-from app.ai.agent_prompting import extract_model_result, render_agent_system_prompt
+from app.ai.agent_prompting import (
+    build_json_repair_request,
+    extract_model_result,
+    render_agent_system_prompt,
+    response_example_from_schema,
+)
 from app.ai.providers.base import (
     LLMRequest,
     LLMResponse,
@@ -30,6 +35,13 @@ from app.core.security import OperatorContext
 
 class GraphSubAgentFailure(RuntimeError):
     """Raised after all bounded model attempts fail closed."""
+
+
+class _RepairableGraphModelOutput(RuntimeError):
+    def __init__(self, request: LLMRequest, error: Exception) -> None:
+        super().__init__("graph sub-agent model output violated its contract")
+        self.request = request
+        self.__cause__ = error
 
 
 class GraphSkillInvocation(BaseModel):
@@ -122,6 +134,7 @@ class GraphSkillModelRunner:
                 attempt_count=completed.attempt,
             )
         last_error: Exception | None = None
+        repair_request: LLMRequest | None = None
         total_attempts = self._max_retries + 1
         start_attempt = await self._repository.prepare_invocation_resume(
             graph_run_id=invocation.graph_run_id,
@@ -153,9 +166,9 @@ class GraphSkillModelRunner:
                     record.id,
                     skill,
                     input_payload,
+                    initial_request=repair_request,
+                    result_validator=result_validator,
                 )
-                if result_validator is not None:
-                    output = result_validator(output)
                 await self._repository.finalize_invocation(
                     record.id,
                     status="completed",
@@ -170,6 +183,11 @@ class GraphSkillModelRunner:
                 )
             except Exception as error:
                 last_error = error
+                repair_request = (
+                    error.request
+                    if isinstance(error, _RepairableGraphModelOutput)
+                    else None
+                )
                 await self._repository.finalize_invocation(
                     record.id,
                     status="failed",
@@ -191,8 +209,15 @@ class GraphSkillModelRunner:
         invocation_id: UUID,
         skill: SkillDefinition,
         input_payload: dict[str, Any],
+        *,
+        initial_request: LLMRequest | None = None,
+        result_validator: ResultValidator | None = None,
     ) -> tuple[BaseModel, dict[str, Any]]:
-        messages = _initial_messages(skill, invocation, input_payload)
+        messages = list(
+            initial_request.messages
+            if initial_request is not None
+            else _initial_messages(skill, invocation, input_payload)
+        )
         request_ids: list[str] = []
         input_tokens = 0
         output_tokens = 0
@@ -213,14 +238,16 @@ class GraphSkillModelRunner:
             allowed_tools=allowed_tools,
         )
         tool_calls = 0
+        response_schema = _response_schema(skill, self._skills)
+        response_example = response_example_from_schema(response_schema)
 
         while True:
-            response = await self._provider.complete_json_once(
-                LLMRequest(
-                    messages=tuple(messages),
-                    response_schema=_response_schema(skill, self._skills),
-                )
+            request = LLMRequest(
+                messages=tuple(messages),
+                response_schema=response_schema,
+                response_example=response_example,
             )
+            response = await self._provider.complete_json_once(request)
             provider = response.provider
             model = response.model
             input_tokens += response.usage.input_tokens
@@ -230,7 +257,15 @@ class GraphSkillModelRunner:
             result = extract_model_result(response.output)
             tool_call = result.get("tool_call")
             if tool_call is None:
-                output = self._skills.validate_output(skill, result)
+                try:
+                    output = self._skills.validate_output(skill, result)
+                    if result_validator is not None:
+                        output = result_validator(output)
+                except (ValidationError, UnsafeSkillError, ValueError) as error:
+                    raise _RepairableGraphModelOutput(
+                        build_json_repair_request(request, response.output, error),
+                        error,
+                    ) from error
                 return output, {
                     "provider": provider,
                     "model": model,

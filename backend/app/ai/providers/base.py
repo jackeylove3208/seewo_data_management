@@ -31,6 +31,7 @@ class LLMRequest(BaseModel):
 
     messages: tuple[Message, ...] = Field(min_length=1)
     response_schema: dict[str, Any] = Field(default_factory=dict)
+    response_example: dict[str, Any] | None = None
     temperature: float = Field(default=0, ge=0, le=2)
 
 

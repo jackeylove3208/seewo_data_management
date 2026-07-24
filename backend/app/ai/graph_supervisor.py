@@ -8,7 +8,11 @@ from app.agent_graph.actions import (
 )
 from app.agent_graph.contracts import SupervisorContextV1, SupervisorDecisionV1
 from app.ai.agent_analysis_service import SingleAttemptModelProvider
-from app.ai.agent_prompting import build_agent_request, extract_model_result
+from app.ai.agent_prompting import (
+    build_agent_request,
+    build_json_repair_request,
+    extract_model_result,
+)
 from app.ai.providers.base import LLMResponse, ModelProviderError
 from app.ai.skills.registry import SkillDefinition, SkillRegistry, UnsafeSkillError
 
@@ -56,6 +60,7 @@ class GraphSupervisorAgent:
             skill,
             context.model_dump(mode="json"),
             SupervisorDecisionV1,
+            response_example=_supervisor_response_example(context),
         )
         last_error: Exception | None = None
         invalid_decision = False
@@ -77,6 +82,7 @@ class GraphSupervisorAgent:
             except (ValidationError, UnsafeSkillError, InvalidSupervisorDecision) as error:
                 invalid_decision = True
                 last_error = error
+                request = build_json_repair_request(request, response.output, error)
         label = "invalid Supervisor decision" if invalid_decision else "Supervisor model failure"
         raise GraphSupervisorFailure(
             f"{label} after {total_attempts} attempts"
@@ -94,3 +100,25 @@ class GraphSupervisorAgent:
         if not isinstance(validated, SupervisorDecisionV1):
             raise UnsafeSkillError("orchestrate-controlled-agent-graph")
         return validated
+
+
+def _supervisor_response_example(context: SupervisorContextV1) -> dict[str, object]:
+    selected = context.allowed_actions[0]
+    alternatives = [
+        {
+            "action_id": action.action_id,
+            "reason_zh": "本轮先处理所选安全动作，后续由服务端重新计算候选。",
+        }
+        for action in context.allowed_actions[1:]
+    ]
+    return {
+        "result": {
+            "action_id": selected.action_id,
+            "reason_zh": "根据当前服务端证据选择该安全动作。",
+            "expected_result": selected.required_evidence[0],
+            "observed_blockers": list(context.active_blockers),
+            "risk_notes_zh": ["风险等级沿用服务端候选定义，不自行降级。"],
+            "why_not_other_actions_zh": alternatives,
+            "operator_message_zh": "正在执行当前安全步骤。",
+        }
+    }

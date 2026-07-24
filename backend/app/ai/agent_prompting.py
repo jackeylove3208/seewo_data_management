@@ -4,7 +4,7 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from app.ai.providers.base import LLMRequest, Message
 from app.ai.skills.registry import SkillDefinition
@@ -57,6 +57,8 @@ def build_agent_request(
     skill: SkillDefinition,
     input_payload: dict[str, Any],
     output_model: type[BaseModel],
+    *,
+    response_example: dict[str, Any] | None = None,
 ) -> LLMRequest:
     response_schema = output_model.model_json_schema()
     return LLMRequest(
@@ -81,6 +83,7 @@ def build_agent_request(
             "properties": {"result": response_schema},
             "required": ["result"],
         },
+        response_example=response_example,
     )
 
 
@@ -93,3 +96,109 @@ def extract_model_result(output: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(result, dict):
         raise ValueError("model response result must be an object")
     return result
+
+
+def build_json_repair_request(
+    request: LLMRequest,
+    output: dict[str, Any],
+    error: Exception,
+) -> LLMRequest:
+    """Ask the same provider to repair structure without persisting raw output."""
+
+    feedback = {
+        "instruction": (
+            "上一份 JSON 未通过服务端合同。只修复字段名、类型、必填项或候选约束，"
+            "不得改变证据事实，也不得增加 schema 外字段。"
+        ),
+        "validation_errors": _safe_validation_errors(error),
+    }
+    return request.model_copy(
+        update={
+            "messages": (
+                *request.messages,
+                Message(
+                    role="assistant",
+                    content=json.dumps(
+                        output,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        default=str,
+                    ),
+                ),
+                Message(
+                    role="user",
+                    content=json.dumps(
+                        feedback,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                ),
+            )
+        }
+    )
+
+
+def response_example_from_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Build a type-correct shape example for JSON-object-only providers."""
+
+    example = _schema_example(schema, schema)
+    return example if isinstance(example, dict) else {}
+
+
+def _safe_validation_errors(error: Exception) -> list[dict[str, str]]:
+    if isinstance(error, ValidationError):
+        return [
+            {
+                "path": ".".join(str(part) for part in item["loc"]),
+                "type": str(item["type"]),
+            }
+            for item in error.errors(include_url=False, include_context=False, include_input=False)
+        ]
+    return [{"path": "$", "type": type(error).__name__}]
+
+
+def _schema_example(schema: dict[str, Any], root: dict[str, Any]) -> Any:
+    reference = schema.get("$ref")
+    if isinstance(reference, str) and reference.startswith("#/$defs/"):
+        definition = root.get("$defs", {}).get(reference.removeprefix("#/$defs/"), {})
+        return _schema_example(definition, root)
+    if "const" in schema:
+        return schema["const"]
+    enum_values = schema.get("enum")
+    if isinstance(enum_values, list) and enum_values:
+        return enum_values[0]
+    for choice_key in ("anyOf", "oneOf"):
+        choices = schema.get(choice_key)
+        if isinstance(choices, list) and choices:
+            preferred = next(
+                (
+                    choice
+                    for choice in choices
+                    if isinstance(choice, dict) and choice.get("type") != "null"
+                ),
+                choices[0],
+            )
+            return _schema_example(preferred, root) if isinstance(preferred, dict) else None
+    schema_type = schema.get("type")
+    if schema_type == "object" or "properties" in schema:
+        properties = schema.get("properties", {})
+        required = schema.get("required", list(properties))
+        return {
+            key: _schema_example(properties[key], root)
+            for key in required
+            if key in properties
+        }
+    if schema_type == "array":
+        items = schema.get("items", {})
+        return [_schema_example(items, root)] if isinstance(items, dict) else []
+    if schema_type == "integer":
+        return int(schema.get("minimum", 0))
+    if schema_type == "number":
+        return float(schema.get("minimum", 0))
+    if schema_type == "boolean":
+        return False
+    if schema_type == "null":
+        return None
+    if schema.get("format") == "uuid":
+        return "00000000-0000-0000-0000-000000000000"
+    return "示例值"

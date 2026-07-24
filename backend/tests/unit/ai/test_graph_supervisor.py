@@ -120,6 +120,32 @@ async def test_graph_supervisor_accepts_flat_json_object_provider_response() -> 
 
 
 @pytest.mark.asyncio
+async def test_graph_supervisor_retries_with_contract_feedback_after_invalid_shape() -> None:
+    invalid = _decision("inspect_authority")
+    invalid["risk_notes_zh"] = "当前动作只读取服务端授权证据。"
+    invalid["why_not_other_actions_zh"] = [
+        {
+            "action_id": "inspect_target",
+            "reason": "另一个来源留到下一动作检查。",
+        }
+    ]
+    provider = ScriptedProvider(
+        [invalid, _decision("inspect_authority")],
+        flat=True,
+    )
+
+    decision = await GraphSupervisorAgent(provider, max_retries=1).decide(_context())
+
+    assert decision.action_id == "inspect_authority"
+    assert provider.requests[0].response_example is not None
+    repair_request = provider.requests[1]
+    assert len(repair_request.messages) > len(provider.requests[0].messages)
+    assert "risk_notes_zh" in repair_request.messages[-1].content
+    assert "reason_zh" in repair_request.messages[-1].content
+    assert "secret" not in repair_request.messages[-1].content
+
+
+@pytest.mark.asyncio
 async def test_different_model_choices_produce_different_decisions() -> None:
     first = await GraphSupervisorAgent(
         ScriptedProvider([_decision("inspect_authority")])

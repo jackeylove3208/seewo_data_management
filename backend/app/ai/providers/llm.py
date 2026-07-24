@@ -128,9 +128,27 @@ def _request_headers(settings: Settings, api_key: SecretStr) -> dict[str, str]:
 
 
 def _request_body(settings: Settings, request: LLMRequest) -> dict[str, Any]:
+    messages = [message.model_dump() for message in request.messages]
+    if (
+        settings.llm_response_mode.value == "json_object"
+        and request.response_schema
+    ):
+        contract = _json_object_contract(request)
+        system_index = next(
+            (
+                index
+                for index, message in enumerate(messages)
+                if message["role"] == "system"
+            ),
+            None,
+        )
+        if system_index is None:
+            messages.insert(0, {"role": "system", "content": contract})
+        else:
+            messages[system_index]["content"] += f"\n\n{contract}"
     body: dict[str, Any] = {
         "model": settings.llm_model,
-        "messages": [message.model_dump() for message in request.messages],
+        "messages": messages,
         "temperature": request.temperature,
         **settings.llm_extra_body_json,
     }
@@ -146,6 +164,29 @@ def _request_body(settings: Settings, request: LLMRequest) -> dict[str, Any]:
     elif settings.llm_response_mode.value == "json_object":
         body["response_format"] = {"type": "json_object"}
     return body
+
+
+def _json_object_contract(request: LLMRequest) -> str:
+    sections = [
+        "## JSON Schema\n"
+        "只返回符合下列 JSON Schema 的 JSON 对象；字段名、数组类型和嵌套结构必须完全一致。\n"
+        + json.dumps(
+            request.response_schema,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    ]
+    if request.response_example is not None:
+        sections.append(
+            "## 合法 JSON 示例\n"
+            "只模仿字段结构与类型，业务值仍必须来自本次输入。\n"
+            + json.dumps(
+                request.response_example,
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+    return "\n\n".join(sections)
 
 
 def _parse_response(payload: dict[str, Any], settings: Settings) -> LLMResponse:

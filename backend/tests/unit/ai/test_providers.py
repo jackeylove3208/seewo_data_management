@@ -235,6 +235,43 @@ async def test_llm_supports_enterprise_response_modes(
 
 
 @pytest.mark.asyncio
+async def test_json_object_request_includes_schema_and_concrete_example() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        system_content = payload["messages"][0]["content"]
+        assert "JSON Schema" in system_content
+        assert '"risk_notes_zh": ["只读操作"]' in system_content
+        assert '"type": "array"' in system_content
+        return httpx.Response(200, json={"output": {"cause": "ok"}}, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = HttpLLMProvider(
+            settings=Settings(
+                llm_url="https://gateway.example.test/v1/chat/completions",
+                llm_api_key="secret-token",
+                llm_response_mode="json_object",
+            ),
+            client=client,
+        )
+        await provider.complete_json_once(
+            LLMRequest(
+                messages=(Message(role="system", content="Return JSON."),),
+                response_schema={
+                    "type": "object",
+                    "properties": {
+                        "risk_notes_zh": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        }
+                    },
+                    "required": ["risk_notes_zh"],
+                },
+                response_example={"risk_notes_zh": ["只读操作"]},
+            )
+        )
+
+
+@pytest.mark.asyncio
 async def test_llm_merges_validated_enterprise_headers_and_body() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
