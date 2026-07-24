@@ -240,6 +240,60 @@ async def test_real_skill_invocation_uses_tool_and_records_model_provenance(sess
 
 
 @pytest.mark.asyncio
+async def test_real_skill_invocation_accepts_flat_json_object_response(session) -> None:
+    task, run, state, manifest = await _graph_invocation_fixture(
+        session,
+        node="inspect_sources",
+        action_id="inspect_authority:page-1",
+    )
+    provider = ScriptedProvider(
+        [
+            {
+                "schema_version": "agent-contract-v1",
+                "recognized": True,
+                "detected_fields": ["category", "name", "number"],
+                "entity_kinds": ["student"],
+                "safe_problem_codes": [],
+            }
+        ]
+    )
+    operator = OperatorContext(
+        operator_id="demo-operator",
+        tenant_id=task.tenant_id,
+    )
+    result = await GraphSkillModelRunner(
+        session,
+        provider=provider,
+        tool_gateway=GraphPhaseToolGateway(session, operator=operator, tools={}),
+        operator=operator,
+        max_retries=0,
+    ).run(
+        GraphSkillInvocation(
+            task_id=task.id,
+            run_id=run.id,
+            graph_run_id=state.id,
+            graph_node=state.current_node,
+            graph_cursor=state.cursor,
+            action_id="inspect_authority:page-1",
+            evidence_manifest_id=manifest.id,
+            skill_name="inspect-external-data-source",
+            skill_version="1.0.0",
+            input_payload={
+                "task_id": str(task.id),
+                "run_id": str(run.id),
+                "phase": "ingest_and_normalize",
+                "evidence_refs": ["source:authoritative:inspection"],
+                "connector_kind": "csv",
+                "connector_ref": "source:authoritative:page:1",
+            },
+        )
+    )
+
+    assert result.output.model_dump()["recognized"] is True
+    assert len(provider.requests) == 1
+
+
+@pytest.mark.asyncio
 async def test_model_exhaustion_records_four_failures_without_legacy_delegate(session) -> None:
     task, run, state, manifest = await _graph_invocation_fixture(
         session,

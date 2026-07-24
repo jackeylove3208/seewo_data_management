@@ -432,6 +432,71 @@ select {
   -webkit-backdrop-filter: blur(22px);
 }
 
+.apple-page .graph-live-progress,
+.apple-page .graph-approval-card {
+  color: var(--apple-ink);
+  border-color: var(--apple-border);
+  background:
+    linear-gradient(145deg, rgba(17, 37, 70, 0.96), rgba(27, 43, 84, 0.9));
+  box-shadow: var(--apple-shadow);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+}
+
+.apple-page .graph-live-progress strong,
+.apple-page .graph-approval-card h2,
+.apple-page .graph-approval-card label {
+  color: var(--apple-ink);
+}
+
+.apple-page .graph-live-progress small,
+.apple-page .graph-approval-card p {
+  color: var(--apple-ink-soft);
+}
+
+.apple-page .graph-approval-card {
+  border-color: rgba(160, 139, 255, 0.34);
+  background:
+    linear-gradient(145deg, rgba(32, 36, 78, 0.96), rgba(38, 43, 88, 0.9));
+}
+
+.apple-page .graph-clarification-card .ant-input,
+.apple-page .graph-clarification-card textarea {
+  color: var(--apple-ink);
+  border-color: var(--apple-border);
+  background: rgba(8, 21, 49, 0.72);
+}
+
+.apple-page .graph-clarification-card .ant-input::placeholder,
+.apple-page .graph-clarification-card textarea::placeholder {
+  color: var(--apple-ink-faint);
+}
+
+.apple-page .ant-alert {
+  color: var(--apple-ink-soft);
+  border-color: var(--apple-border);
+  background: rgba(18, 35, 68, 0.9);
+}
+
+.apple-page .ant-alert .ant-alert-message,
+.apple-page .ant-alert .ant-alert-description {
+  color: inherit;
+}
+
+.apple-page .agent-task-actions .ant-btn-dangerous {
+  color: #ffb9c5;
+  border-color: rgba(232, 105, 128, 0.48);
+  background: rgba(74, 35, 59, 0.84);
+  box-shadow: 0 12px 28px rgba(24, 7, 24, 0.24);
+}
+
+.apple-page .agent-task-actions .ant-btn-dangerous:hover,
+.apple-page .agent-task-actions .ant-btn-dangerous:focus {
+  color: #ffd7de;
+  border-color: rgba(255, 145, 164, 0.72);
+  background: rgba(92, 40, 67, 0.94);
+}
+
 .apple-page .agent-blocked-notice {
   border-color: rgba(220, 102, 125, 0.42);
   background: rgba(50, 29, 52, 0.88);
@@ -447,6 +512,41 @@ select {
 
 .apple-page .agent-event-history li {
   border-top-color: rgba(132, 153, 255, 0.16);
+}
+
+.apple-agent-modal .ant-modal-content,
+.apple-agent-modal .ant-modal-header {
+  color: var(--apple-ink);
+  border: 1px solid var(--apple-border);
+  background: rgba(20, 34, 70, 0.98);
+  box-shadow: 0 28px 80px rgba(2, 9, 28, 0.5);
+}
+
+.apple-agent-modal .ant-modal-header {
+  border: 0;
+  box-shadow: none;
+}
+
+.apple-agent-modal .ant-modal-title,
+.apple-agent-modal .ant-modal-body,
+.apple-agent-modal .ant-modal-close {
+  color: var(--apple-ink);
+}
+
+.apple-agent-modal .ant-modal-body p {
+  color: var(--apple-ink-soft);
+}
+
+.apple-agent-modal .ant-btn-default {
+  color: #dce5fb;
+  border-color: var(--apple-border);
+  background: rgba(44, 58, 105, 0.78);
+}
+
+.apple-agent-modal .ant-modal-mask {
+  background: rgba(3, 9, 26, 0.68);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 
 .apple-page .conversation-composer {

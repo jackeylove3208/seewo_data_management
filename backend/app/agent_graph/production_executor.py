@@ -819,32 +819,65 @@ class ProductionGraphActionExecutor:
                     for item in mutations
                     if isinstance(mutations, list)
                 )
-                await GraphReportExecutor(session, runner=runner).generate(
-                    GraphSkillInvocation(
+                invocation = GraphSkillInvocation(
+                    task_id=context.task_id,
+                    run_id=context.run_id,
+                    graph_run_id=context.graph_run_id,
+                    graph_node=context.current_node,
+                    graph_cursor=context.graph_cursor,
+                    action_id=action.action_id,
+                    evidence_manifest_id=manifest_id,
+                    skill_name="generate-agent-governance-report",
+                    skill_version="1.0.0",
+                    input_payload=GovernanceReportInput(
                         task_id=context.task_id,
                         run_id=context.run_id,
-                        graph_run_id=context.graph_run_id,
-                        graph_node=context.current_node,
-                        graph_cursor=context.graph_cursor,
-                        action_id=action.action_id,
-                        evidence_manifest_id=manifest_id,
-                        skill_name="generate-agent-governance-report",
-                        skill_version="1.0.0",
-                        input_payload=GovernanceReportInput(
-                            task_id=context.task_id,
-                            run_id=context.run_id,
-                            phase=AgentPhase.GENERATE_REPORT,
-                            evidence_refs=(fact_ref,),
-                            outcome=terminal_state,
-                            fact_refs=(fact_ref,),
-                        ).model_dump(mode="json"),
-                    ),
-                    tenant_id=context.tenant_id,
-                    kind="sync",
-                    terminal_state=terminal_state,
-                    facts=facts,
-                    expected_rollback_eligible=rollback_eligible,
+                        phase=AgentPhase.GENERATE_REPORT,
+                        evidence_refs=(fact_ref,),
+                        outcome=terminal_state,
+                        fact_refs=(fact_ref,),
+                    ).model_dump(mode="json"),
                 )
+                try:
+                    await GraphReportExecutor(session, runner=runner).generate(
+                        invocation,
+                        tenant_id=context.tenant_id,
+                        kind="sync",
+                        terminal_state=terminal_state,
+                        facts=facts,
+                        expected_rollback_eligible=rollback_eligible,
+                    )
+                except GraphSubAgentFailure:
+                    if terminal_state != "terminated":
+                        raise
+                    from app.agent_reporting.service import AgentReportingService
+
+                    await AgentReportingService(session).generate(
+                        task_id=context.task_id,
+                        tenant_id=context.tenant_id,
+                        kind="sync",
+                        terminal_state=terminal_state,
+                        facts=facts,
+                        narrative={
+                            "title_zh": "任务终止报告",
+                            "summary_zh": (
+                                "任务已按操作人要求终止。模型报告暂不可用，"
+                                "本报告仅保留服务端已验证事实。"
+                            ),
+                            "fact_refs": [fact_ref],
+                            "degraded": True,
+                        },
+                        generated_by="agent-graph-termination-fallback-v1",
+                    )
+                    await AgentRuntimeRepository(session).append_event(
+                        context.run_id,
+                        "termination.report.fallback",
+                        {
+                            "phase": AgentPhase.GENERATE_REPORT.value,
+                            "status": "terminating",
+                            "safe_error_code": "termination_report_model_unavailable",
+                        },
+                    )
         return _outcome(action)
 
     async def _plan_rollback(

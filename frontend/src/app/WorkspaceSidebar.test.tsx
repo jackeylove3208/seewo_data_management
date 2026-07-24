@@ -1,9 +1,10 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, vi } from "vitest";
 
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
+import { agentApi } from "../api/agent";
 import { saveStoredTask } from "../data/taskHistory";
 
 describe("workspace sidebar", () => {
@@ -118,8 +119,42 @@ describe("workspace sidebar", () => {
       selectedEntityTypes: ["teacher"],
     }));
 
-    expect(screen.getByRole("link", { name: /七年级教师核对/ })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByRole("link", { name: /七年级教师核对/ })).toBeInTheDocument();
+    });
     expect(screen.getByRole("button", { name: "删除七年级教师核对" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "删除三方全校数据核对" })).not.toBeInTheDocument();
+  });
+
+  it("does not restore stale local tasks after authoritative history refresh", async () => {
+    vi.spyOn(agentApi, "history").mockResolvedValue({
+      items: [],
+      next_cursor: null,
+    });
+    render(
+      <MemoryRouter>
+        <WorkspaceSidebar mobileOpen={false} onMobileClose={() => undefined} />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText("后端未连接")).toBeInTheDocument();
+
+    act(() => saveStoredTask({
+      id: "stale-task",
+      title: "已经从后端删除的旧任务",
+      createdAt: new Date().toISOString(),
+      sourceFile: "source.csv",
+      targetFile: "target.csv",
+      sourceAccepted: 0,
+      targetAccepted: 0,
+      issueCount: 0,
+      status: "ready",
+      selectedEntityTypes: ["teacher"],
+      workflowVersion: "agent-graph-v1",
+    }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("link", { name: /已经从后端删除的旧任务/ })).not.toBeInTheDocument();
+    });
+    expect(agentApi.history).toHaveBeenCalledTimes(2);
   });
 });

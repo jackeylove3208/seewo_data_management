@@ -14,7 +14,12 @@ from app.agent_graph.worker import AgentGraphWorker
 from app.agent_reporting.service import AgentReportingService
 from app.agent_runtime.service import AgentSupervisorService
 from app.ai.graph_supervisor import GraphSupervisorAgent
-from app.ai.providers.base import LLMRequest, LLMResponse, ModelUsage
+from app.ai.providers.base import (
+    LLMRequest,
+    LLMResponse,
+    ModelProviderError,
+    ModelUsage,
+)
 from app.core.security import OperatorContext
 from app.models.agent_analysis import AgentWorkItemRecord
 from app.models.agent_graph import (
@@ -305,6 +310,11 @@ class ScriptedSkillProvider:
                 }
             )
         raise AssertionError(f"unexpected graph Skill request: {system[:120]}")
+
+
+class UnavailableModelProvider:
+    async def complete_json_once(self, _request: LLMRequest) -> LLMResponse:
+        raise ModelProviderError("synthetic model outage")
 
 
 def _response(
@@ -612,3 +622,97 @@ def select_graph_run_id(run_id):
     return select(AgentGraphRunRecord.id).where(
         AgentGraphRunRecord.run_id == run_id
     ).scalar_subquery()
+
+
+@pytest.mark.asyncio
+async def test_graph_termination_releases_lock_when_report_model_is_unavailable(
+    database,
+    tmp_path: Path,
+) -> None:
+    operator = OperatorContext(
+        operator_id="demo-operator",
+        tenant_id="school-graph-termination-fallback",
+    )
+    async with database.session_factory() as session:
+        async with session.begin():
+            task = ReconciliationTask(
+                tenant_id=operator.tenant_id,
+                scope_id="all",
+                snapshot_mode="full",
+                entity_types=["student"],
+                status="running",
+                stage="analysis",
+                workflow_version="agent-graph-v1",
+                task_kind="sync",
+                title="终止降级报告测试",
+                idempotency_key=str(uuid4()),
+                request_hash=uuid4().hex * 2,
+            )
+            session.add(task)
+            await session.flush()
+            run = await AgentSupervisorService(
+                session,
+                operator=operator,
+            ).start(task_id=task.id, conversation_id=None)
+            graph = await session.scalar(
+                select(AgentGraphRunRecord).where(
+                    AgentGraphRunRecord.run_id == run.id
+                )
+            )
+            assert graph is not None
+            graph.current_node = "blocked_model_error"
+            graph.cursor = 3
+            graph.status = "blocked_model_error"
+            run.status = "blocked_model_error"
+            await AgentSupervisorService(
+                session,
+                operator=operator,
+            ).terminate(run_id=run.id, reason="operator_confirmed")
+            task_id = task.id
+            run_id = run.id
+
+    provider = UnavailableModelProvider()
+    worker = AgentGraphWorker(
+        database.session_factory,
+        worker_id="agent-graph-termination-worker",
+        lease_seconds=60,
+        supervisor=GraphSupervisorAgent(provider, max_retries=0),
+        candidate_provider=ProductionGraphCandidateProvider(
+            database.session_factory
+        ),
+        executor=ProductionGraphActionExecutor(
+            database.session_factory,
+            provider=provider,
+            tokenization_secret="graph-termination-tokenization-secret",
+            max_retries=0,
+            output_root=tmp_path / "outputs",
+            csv_execution_enabled=True,
+        ),
+    )
+
+    for _step in range(5):
+        await worker.run_once()
+        async with database.session_factory() as session:
+            current = await session.get(AgentRunRecord, run_id)
+            assert current is not None
+            if current.status == "terminated":
+                break
+    else:
+        pytest.fail("termination did not reach terminal state during model outage")
+
+    async with database.session_factory() as session:
+        active_lock = await session.scalar(
+            select(SchoolTaskLockRecord.id).where(
+                SchoolTaskLockRecord.owner_run_id == run_id,
+                SchoolTaskLockRecord.active.is_(True),
+            )
+        )
+        report = await session.scalar(
+            select(AgentReportRecord).where(
+                AgentReportRecord.task_id == task_id
+            )
+        )
+        assert active_lock is None
+        assert report is not None
+        assert report.terminal_state == "terminated"
+        assert report.generated_by == "agent-graph-termination-fallback-v1"

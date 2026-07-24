@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { agentApi } from "../../api/agent";
+import { ApiError } from "../../api/client";
 import { ingestionApi } from "../../api/ingestion";
 import { getStoredTasks, saveStoredTask } from "../../data/taskHistory";
 import type { TaskHistoryItem } from "../../types/domain";
@@ -76,6 +77,20 @@ describe("task deletion confirmation", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("该任务已有治理执行记录，不能删除");
     expect(getStoredTasks()).toHaveLength(1);
+  });
+
+  it("removes a stale local history item when the backend already deleted it", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(ingestionApi, "deleteTask").mockRejectedValue(
+      new ApiError("reconciliation task not found: task-1", 404),
+    );
+    render(<Harness />);
+
+    await user.click(screen.getByRole("button", { name: "删除真实任务" }));
+    await user.click(screen.getByRole("button", { name: "确认删除" }));
+
+    await waitFor(() => expect(getStoredTasks()).toHaveLength(0));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("deletes controlled graph tasks through the Agent API", async () => {

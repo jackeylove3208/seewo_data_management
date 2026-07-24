@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import { ingestionApi } from "../../api/ingestion";
 import { agentApi } from "../../api/agent";
+import { ApiError } from "../../api/client";
 import { removeStoredTask } from "../../data/taskHistory";
 import type { TaskHistoryItem } from "../../types/domain";
 
@@ -25,6 +26,12 @@ export function useTaskDeletion(onDeleted?: (taskId: string) => void) {
       onDeleted?.(selectedTask.id);
       setSelectedTask(undefined);
     } catch (caught) {
+      if (caught instanceof ApiError && caught.status === 404) {
+        removeStoredTask(selectedTask.id);
+        onDeleted?.(selectedTask.id);
+        setSelectedTask(undefined);
+        return;
+      }
       setError(caught instanceof Error ? caught.message : "删除任务失败，请稍后重试");
     } finally {
       setPending(false);
@@ -39,6 +46,7 @@ export function useTaskDeletion(onDeleted?: (taskId: string) => void) {
 
   const confirmation = (
     <Modal
+      rootClassName="apple-agent-modal"
       title="删除任务"
       open={Boolean(selectedTask)}
       okText="确认删除"

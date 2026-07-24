@@ -326,6 +326,7 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
       ) : !graph.data && !blocked && <Progress percent={terminal ? 100 : Math.round((completed / phases.length) * 100)} showInfo={false} />}
       {current.report_id && <Button onClick={() => navigate(`/tasks/${taskId}/report`)}>查看任务报告</Button>}
       <Modal
+        rootClassName="apple-agent-modal"
         title="确认创建独立回滚任务？"
         open={Boolean(rollbackPreview)}
         okText="确认回滚"
@@ -340,6 +341,7 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
         <p>将根据 {rollbackPreview?.operation_count ?? 0} 条已验证变更生成补偿操作。回滚会重新锁定全校数据，并生成独立报告。</p>
       </Modal>
       <Modal
+        rootClassName="apple-agent-modal"
         title="确认终止当前任务？"
         open={Boolean(activeTerminationGate)}
         okText="确认终止"

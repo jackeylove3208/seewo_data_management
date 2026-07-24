@@ -62,8 +62,12 @@ export function ConversationCreatePage({
           setMessages(current.messages.length ? current.messages : initialMessages);
           setAgentIntent(current.intent ?? undefined);
           setConfirmation(current.start_confirmation ?? undefined);
-          setTask(current.task ?? undefined);
-          setState(current.task ? "created" : current.start_confirmation ? "draft-ready" : "idle");
+          const activeTask = current.task
+            && !["completed", "terminated", "failed"].includes(current.task.status)
+            ? current.task
+            : undefined;
+          setTask(activeTask);
+          setState(activeTask ? "created" : current.start_confirmation ? "draft-ready" : "idle");
           return;
         }
         const conversation = await backendApi.createConversation();
@@ -92,8 +96,28 @@ export function ConversationCreatePage({
     let cancelled = false;
     const poll = async () => {
       try {
-        const page = await backendApi.events(task.id, eventCursor);
+        const [page, refreshedTask] = await Promise.all([
+          backendApi.events(task.id, eventCursor),
+          backendApi.task?.(task.id),
+        ]);
         if (cancelled) return;
+        if (
+          refreshedTask
+          && ["completed", "terminated", "failed"].includes(refreshedTask.status)
+        ) {
+          setTask(undefined);
+          setEvents([]);
+          setEventCursor(undefined);
+          setState("idle");
+          return;
+        }
+        if (refreshedTask) {
+          setTask((current) => current
+            && current.phase === refreshedTask.phase
+            && current.status === refreshedTask.status
+            ? current
+            : refreshedTask);
+        }
         setEventCursor(page.cursor);
         setEvents((current) => {
           const known = new Set(current.map((item) => item.id));
@@ -365,6 +389,7 @@ export function ConversationCreatePage({
         </form>
       </section>
       <Modal
+        rootClassName="apple-agent-modal"
         title="确认终止当前任务？"
         open={Boolean(terminationGate)}
         okText="确认终止"

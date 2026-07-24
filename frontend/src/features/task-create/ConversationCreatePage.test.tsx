@@ -25,6 +25,7 @@ function api(overrides: Partial<AgentConversationApi> = {}): AgentConversationAp
       status: "running",
     }),
     events: vi.fn().mockResolvedValue({ cursor: "cursor-1", events: [] }),
+    task: vi.fn().mockResolvedValue(undefined),
     terminate: vi.fn().mockResolvedValue({ status: "terminating" }),
     ...overrides,
   };
@@ -272,6 +273,37 @@ describe("backend Agent conversation", () => {
       "操作人确认终止当前任务",
     );
     expect(terminate).not.toHaveBeenCalled();
+  });
+
+  it("unlocks a new conversation after polling a terminated task", async () => {
+    const task = vi.fn().mockResolvedValue({
+      id: "task-terminated",
+      workflow_version: "agent-graph-v1",
+      phase: "terminal",
+      status: "terminated",
+    });
+    const backend = api({
+      currentConversation: vi.fn().mockResolvedValue({
+        id: "conversation-terminated",
+        status: "active",
+        messages: [
+          { id: "message-1", role: "user", kind: "normal", text: "同步学生", created_at: "" },
+        ],
+        task: {
+          id: "task-terminated",
+          workflow_version: "agent-graph-v1",
+          phase: "generate_report",
+          status: "running",
+        },
+      }),
+      task,
+    });
+
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    await waitFor(() => expect(task).toHaveBeenCalledWith("task-terminated"));
+    await waitFor(() => expect(screen.getByLabelText("对账目标")).toBeEnabled());
+    expect(screen.queryByRole("button", { name: "终止任务" })).not.toBeInTheDocument();
   });
 
   it("keeps direct termination for legacy Agent tasks", async () => {

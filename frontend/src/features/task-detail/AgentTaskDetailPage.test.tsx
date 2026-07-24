@@ -172,6 +172,7 @@ describe("controlled Agent graph task detail", () => {
     expect(
       await screen.findByRole("dialog", { name: "确认终止当前任务？" }),
     ).toBeInTheDocument();
+    expect(document.querySelector(".apple-agent-modal")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "确认终止" }));
 
     expect(decide).toHaveBeenCalledWith(

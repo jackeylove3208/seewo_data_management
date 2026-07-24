@@ -50,21 +50,29 @@ export function WorkspaceSidebar({
   });
 
   useEffect(() => {
-    const refresh = () => setTasks(allTasks().slice(0, RECENT_TASK_LIMIT));
+    const controller = new AbortController();
+    const refresh = () => {
+      void agentApi.history(undefined, controller.signal)
+        .then((page) => {
+          setTasks([
+            ...page.items.map(toTaskHistoryItem),
+            ...allTasks().filter((task) => task.isDemo),
+          ].slice(0, RECENT_TASK_LIMIT));
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) {
+            setTasks(allTasks().slice(0, RECENT_TASK_LIMIT));
+          }
+        });
+    };
+    refresh();
     window.addEventListener(TASK_HISTORY_UPDATED_EVENT, refresh);
     window.addEventListener("storage", refresh);
     return () => {
+      controller.abort();
       window.removeEventListener(TASK_HISTORY_UPDATED_EVENT, refresh);
       window.removeEventListener("storage", refresh);
     };
-  }, []);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    void agentApi.history(undefined, controller.signal)
-      .then((page) => setTasks([...page.items.map(toTaskHistoryItem), ...allTasks().filter((task) => task.isDemo)].slice(0, RECENT_TASK_LIMIT)))
-      .catch(() => undefined);
-    return () => controller.abort();
   }, [location.pathname]);
 
   useEffect(() => {

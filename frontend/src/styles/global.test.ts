@@ -10,6 +10,8 @@ describe("responsive analysis styles", () => {
     expect(appleCss).toMatch(/\.apple-sidebar/);
     expect(appleCss).toMatch(/prefers-reduced-motion/);
     expect(appleCss).toMatch(/@supports not/);
+    expect(appleCss).toMatch(/\.apple-page\s+\.graph-live-progress\s*,\s*\.apple-page\s+\.graph-approval-card/);
+    expect(appleCss).toMatch(/\.apple-agent-modal\s+\.ant-modal-content/);
     expect(appleCss).not.toMatch(/:has\(/);
   });
   it("allows mobile progress details to wrap", () => {

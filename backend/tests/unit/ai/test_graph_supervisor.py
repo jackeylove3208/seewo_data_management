@@ -10,9 +10,16 @@ from app.ai.providers.base import LLMRequest, LLMResponse, TransientModelError
 
 
 class ScriptedProvider:
-    def __init__(self, outputs: list[dict] | None = None, *, failures: int = 0) -> None:
+    def __init__(
+        self,
+        outputs: list[dict] | None = None,
+        *,
+        failures: int = 0,
+        flat: bool = False,
+    ) -> None:
         self.outputs = list(outputs or [])
         self.failures = failures
+        self.flat = flat
         self.requests: list[LLMRequest] = []
 
     async def complete_json_once(self, request: LLMRequest) -> LLMResponse:
@@ -20,8 +27,9 @@ class ScriptedProvider:
         if self.failures:
             self.failures -= 1
             raise TransientModelError("temporary")
+        output = self.outputs.pop(0)
         return LLMResponse(
-            output={"result": self.outputs.pop(0)},
+            output=output if self.flat else {"result": output},
             provider="scripted",
             model="test-supervisor",
             request_id=f"request-{len(self.requests)}",
@@ -100,6 +108,18 @@ async def test_graph_supervisor_uses_pinned_skill_and_returns_member_decision() 
 
 
 @pytest.mark.asyncio
+async def test_graph_supervisor_accepts_flat_json_object_provider_response() -> None:
+    provider = ScriptedProvider(
+        [_decision("inspect_authority")],
+        flat=True,
+    )
+
+    decision = await GraphSupervisorAgent(provider, max_retries=0).decide(_context())
+
+    assert decision.action_id == "inspect_authority"
+
+
+@pytest.mark.asyncio
 async def test_different_model_choices_produce_different_decisions() -> None:
     first = await GraphSupervisorAgent(
         ScriptedProvider([_decision("inspect_authority")])
@@ -138,4 +158,3 @@ async def test_graph_supervisor_fails_closed_after_retry_exhaustion() -> None:
 
     with pytest.raises(GraphSupervisorFailure, match="after 4 attempts"):
         await GraphSupervisorAgent(provider, max_retries=3).decide(_context())
-

@@ -17,7 +17,7 @@ from app.agent_graph.tools import (
     GraphToolAuthorizationError,
     GraphToolContext,
 )
-from app.ai.agent_prompting import render_agent_system_prompt
+from app.ai.agent_prompting import extract_model_result, render_agent_system_prompt
 from app.ai.providers.base import (
     LLMRequest,
     LLMResponse,
@@ -227,9 +227,7 @@ class GraphSkillModelRunner:
             output_tokens += response.usage.output_tokens
             if response.request_id:
                 request_ids.append(response.request_id)
-            result = response.output.get("result")
-            if not isinstance(result, dict):
-                raise ValueError("graph sub-agent response must contain an object result")
+            result = extract_model_result(response.output)
             tool_call = result.get("tool_call")
             if tool_call is None:
                 output = self._skills.validate_output(skill, result)

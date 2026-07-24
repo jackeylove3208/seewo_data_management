@@ -82,3 +82,14 @@ def build_agent_request(
             "required": ["result"],
         },
     )
+
+
+def extract_model_result(output: dict[str, Any]) -> dict[str, Any]:
+    """Accept strict-schema envelopes and JSON-object providers' flat payloads."""
+
+    if "result" not in output:
+        return output
+    result = output["result"]
+    if not isinstance(result, dict):
+        raise ValueError("model response result must be an object")
+    return result

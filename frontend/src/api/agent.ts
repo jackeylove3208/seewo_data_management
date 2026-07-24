@@ -140,6 +140,7 @@ export interface AgentConversationApi {
   createConversation(): Promise<AgentConversation>;
   sendMessage(conversationId: string, message: string): Promise<AgentMessageResponse>;
   startTask(conversationId: string, intent: AgentIntent, idempotencyKey: string): Promise<AgentTask>;
+  task?(taskId: string, signal?: AbortSignal): Promise<AgentTask>;
   events(taskId: string, cursor?: string, signal?: AbortSignal): Promise<AgentEventPage>;
   terminate(taskId: string): Promise<{ status: string }>;
   previewTermination?(taskId: string): Promise<AgentGraphHumanGate>;

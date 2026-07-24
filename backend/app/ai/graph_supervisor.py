@@ -8,7 +8,7 @@ from app.agent_graph.actions import (
 )
 from app.agent_graph.contracts import SupervisorContextV1, SupervisorDecisionV1
 from app.ai.agent_analysis_service import SingleAttemptModelProvider
-from app.ai.agent_prompting import build_agent_request
+from app.ai.agent_prompting import build_agent_request, extract_model_result
 from app.ai.providers.base import LLMResponse, ModelProviderError
 from app.ai.skills.registry import SkillDefinition, SkillRegistry, UnsafeSkillError
 
@@ -89,7 +89,7 @@ class GraphSupervisorAgent:
     ) -> SupervisorDecisionV1:
         validated = self._skills.validate_output(
             skill,
-            response.output.get("result"),
+            extract_model_result(response.output),
         )
         if not isinstance(validated, SupervisorDecisionV1):
             raise UnsafeSkillError("orchestrate-controlled-agent-graph")
