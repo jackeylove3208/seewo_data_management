@@ -23,7 +23,9 @@ describe("application shell", () => {
     expect(screen.getByRole("navigation", { name: "对账工作区" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /三方全校数据核对/ })).toHaveAttribute("aria-current", "page");
 
-    await user.click(screen.getByRole("link", { name: "外部数据同步" }));
+    expect(screen.queryByRole("link", { name: "外部数据同步" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("link", { name: "魔方 AI 数据治理" }));
+    await user.click(screen.getByRole("button", { name: "外部数据同步" }));
     expect(screen.getByRole("heading", { name: "外部数据同步" })).toBeInTheDocument();
   });
 
