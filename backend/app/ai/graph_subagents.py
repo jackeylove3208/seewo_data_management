@@ -470,6 +470,19 @@ def _response_schema(
 
 
 def _tool_arguments_schema(name: str) -> dict[str, Any]:
+    if name == "submit_conflict_interpretation":
+        from app.ai.skills.contracts import ConflictDecisionDraft
+
+        draft_schema = ConflictDecisionDraft.model_json_schema()
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "resource_id": {"type": "string", "minLength": 1},
+                **draft_schema["properties"],
+            },
+            "required": ["resource_id", *draft_schema["required"]],
+        }
     if name in {
         "inspect_configured_source",
         "read_connector_page",
@@ -525,6 +538,22 @@ def _tool_arguments_schema(name: str) -> dict[str, Any]:
 
 
 def _validate_tool_arguments(name: str, arguments: dict[str, Any]) -> None:
+    if name == "submit_conflict_interpretation":
+        from app.ai.skills.contracts import ConflictDecisionDraft
+
+        resource_id = arguments.get("resource_id")
+        if not isinstance(resource_id, str) or not resource_id:
+            raise ValueError(
+                "graph sub-agent tool arguments require resource_id"
+            )
+        ConflictDecisionDraft.model_validate(
+            {
+                key: value
+                for key, value in arguments.items()
+                if key != "resource_id"
+            }
+        )
+        return
     schema = _tool_arguments_schema(name)
     properties = schema.get("properties", {})
     required = schema.get("required", ())
