@@ -35,4 +35,19 @@ def test_rollback_graph_is_versioned_separately() -> None:
     assert graph.initial_node == "rollback_intent_confirmed"
     assert graph.node("wait_rollback_approval").kind is GraphNodeKind.HUMAN_GATE
     assert graph.node("generate_rollback_report").kind is GraphNodeKind.REPORT
+    conflict_wait = graph.node("wait_restore_conflicts")
+    assert {
+        (item.action_kind, item.successor_node)
+        for item in conflict_wait.action_templates
+    } == {("wait_rollback_approval", "wait_rollback_approval")}
 
+
+def test_every_non_terminal_graph_node_declares_at_least_one_legal_action() -> None:
+    for graph_version in ("agent-sync-graph-v1", "agent-rollback-graph-v1"):
+        graph = get_graph_definition(graph_version)
+        missing = {
+            node.node_id
+            for node in graph.nodes
+            if node.kind is not GraphNodeKind.TERMINAL and not node.action_templates
+        }
+        assert missing == set()

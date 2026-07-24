@@ -272,6 +272,28 @@ class AgentSupervisorService:
         current_status = AgentRunStatus(run.status)
         if current_status in {AgentRunStatus.COMPLETED, AgentRunStatus.TERMINATED}:
             return run
+        if run.workflow_version == "agent-graph-v1":
+            graph = await AgentGraphRepository(
+                self.session
+            ).get_run_state_for_agent_run(run.id, for_update=True)
+            if graph is None:
+                raise LookupError("Agent graph state is missing")
+            graph.termination_requested = True
+            if current_status in {
+                AgentRunStatus.WAITING_HUMAN,
+                AgentRunStatus.BLOCKED_MODEL_ERROR,
+            }:
+                run.status = AgentRunStatus.RUNNING.value
+            await self.repository.append_event(
+                run.id,
+                "graph.termination_requested",
+                {
+                    "reason": reason[:128],
+                    "current_node": graph.current_node,
+                    "drain_current_atomic_unit": True,
+                },
+            )
+            return run
         if current_status is not AgentRunStatus.TERMINATING:
             run = await self.repository.transition_run(
                 run_id, requested_status=AgentRunStatus.TERMINATING

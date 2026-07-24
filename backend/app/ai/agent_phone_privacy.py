@@ -43,6 +43,10 @@ class StudentPhoneTokenizationContext:
         if unknown:
             raise UnknownStudentPhoneToken("model response contains an unknown student-phone token")
 
+    @property
+    def issued_tokens(self) -> tuple[str, ...]:
+        return tuple(sorted(self._issued))
+
     def detokenize(self, value: str | None) -> str | None:
         if value is None:
             return None

@@ -1,30 +1,49 @@
 import re
 from datetime import UTC, datetime
+from hashlib import sha256
 from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent_graph.evidence import build_evidence_manifest
+from app.agent_graph.governance_executors import (
+    FrozenConflictDraft,
+    GraphConflictInstructionExecutor,
+    GraphConflictTools,
+)
 from app.agent_graph.repository import AgentGraphRepository
+from app.agent_graph.tools import GraphPhaseToolGateway
 from app.agent_reporting.service import AgentReportingService
 from app.agent_runtime.observability import agent_observability
 from app.agent_runtime.repository import AgentRuntimeRepository, SchoolLockConflict
 from app.agent_runtime.service import AgentSupervisorService
-from app.agent_runtime.state_machine import AgentRunStatus
+from app.agent_runtime.state_machine import AgentPhase, AgentRunStatus
 from app.agent_runtime.task_service import (
     AgentConnectorCapabilityFailure,
     AgentTaskConflict,
     AgentTaskService,
 )
 from app.ai.conversation_agent import ConversationSupervisorAgent
+from app.ai.graph_subagents import (
+    GraphSkillInvocation,
+    GraphSkillModelRunner,
+    GraphSubAgentFailure,
+)
 from app.ai.providers.llm import HttpLLMProvider
+from app.ai.skills.contracts import ConflictInstructionInput
 from app.api.dependencies import get_operator_context, get_session
 from app.core.security import OperatorContext
 from app.governance.agent_governance import interpret_clarification
 from app.local_sources.service import LocalSourceService
-from app.models.agent_analysis import AgentApprovalGroupRecord, AgentClarificationRecord
+from app.models.agent_analysis import (
+    AgentApprovalGroupRecord,
+    AgentClarificationRecord,
+    AgentGovernanceOperationRecord,
+    AgentModelBatchRecord,
+)
 from app.models.agent_graph import AgentGraphRunRecord, AgentHumanGateRecord
 from app.models.agent_runtime import AgentRunRecord, SchoolTaskLockRecord
 from app.models.reconciliation import ReconciliationTask
@@ -119,6 +138,22 @@ _GRAPH_ACTION_LABELS = {
     "generate_rollback_report": "正在生成回滚报告",
     "blocked_model_error": "AI 模型连续失败，等待终止任务",
     "terminal": "任务已结束",
+}
+
+_GRAPH_SUB_AGENT_LABELS = {
+    "inspect_sources": "数据接入 Agent",
+    "normalize_input_batches": "数据接入 Agent",
+    "analyze_actionable_batches": "对账分析 Agent",
+    "repair_analysis_batch": "对账分析 Agent",
+    "resolve_identity_conflicts": "冲突解释 Agent",
+    "wait_high_risk_approvals": "治理执行 Agent",
+    "execute_ready_operations": "执行监督 Agent",
+    "execute_remaining_independent": "执行监督 Agent",
+    "generate_terminal_report": "报告 Agent",
+    "assess_restore_impact": "回滚评估 Agent",
+    "wait_restore_conflicts": "回滚评估 Agent",
+    "execute_restore_operations": "回滚执行 Agent",
+    "generate_rollback_report": "报告 Agent",
 }
 
 
@@ -447,6 +482,12 @@ async def get_agent_graph_progress(
             )
         )
     )
+    progress_completed, progress_total = await _graph_progress_counts(
+        session,
+        run_id=run.id,
+        current_node=graph.current_node,
+        gates=gates,
+    )
     terminal = run.status in {"completed", "terminated", "failed"}
     return AgentGraphProgressResponse(
         task_id=task.id,
@@ -456,6 +497,9 @@ async def get_agent_graph_progress(
         current_node=graph.current_node,
         business_stage=_graph_business_stage(graph.current_node),
         current_action_zh=_graph_action_label(graph.current_node),
+        sub_agent_zh=_GRAPH_SUB_AGENT_LABELS.get(graph.current_node),
+        progress_completed=progress_completed,
+        progress_total=progress_total,
         status=run.status,
         can_terminate=not terminal,
         human_gates=tuple(
@@ -468,6 +512,75 @@ async def get_agent_graph_progress(
             for gate in gates
         ),
     )
+
+
+async def _graph_progress_counts(
+    session: AsyncSession,
+    *,
+    run_id: UUID,
+    current_node: str,
+    gates: tuple[AgentHumanGateRecord, ...],
+) -> tuple[int | None, int | None]:
+    pending_gates = tuple(gate for gate in gates if gate.status == "pending")
+    if pending_gates:
+        return 0, len(pending_gates)
+    if current_node in {"analyze_actionable_batches", "repair_analysis_batch"}:
+        total = int(
+            (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(AgentModelBatchRecord)
+                    .where(AgentModelBatchRecord.run_id == run_id)
+                )
+            )
+            or 0
+        )
+        completed = int(
+            (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(AgentModelBatchRecord)
+                    .where(
+                        AgentModelBatchRecord.run_id == run_id,
+                        AgentModelBatchRecord.status == "completed",
+                    )
+                )
+            )
+            or 0
+        )
+        return completed, total
+    if current_node in {
+        "execute_ready_operations",
+        "execute_remaining_independent",
+        "verify_operations",
+    }:
+        total = int(
+            (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(AgentGovernanceOperationRecord)
+                    .where(AgentGovernanceOperationRecord.run_id == run_id)
+                )
+            )
+            or 0
+        )
+        completed = int(
+            (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(AgentGovernanceOperationRecord)
+                    .where(
+                        AgentGovernanceOperationRecord.run_id == run_id,
+                        AgentGovernanceOperationRecord.status.in_(
+                            ("succeeded", "failed", "blocked", "skipped")
+                        ),
+                    )
+                )
+            )
+            or 0
+        )
+        return completed, total
+    return None, None
 
 
 @router.post(
@@ -518,7 +631,31 @@ async def decide_agent_graph_gate(
         raise HTTPException(
             409, detail=_error("graph_gate_already_decided", "Gate is already decided")
         )
-    if gate.cursor != graph.cursor:
+    if gate.gate_kind == "identity_conflict":
+        raise HTTPException(
+            409,
+            detail=_error(
+                "clarification_dialogue_required",
+                "Identity conflicts require operator dialogue and confirmation",
+            ),
+        )
+    expected_gate_node = {
+        "high_risk_approval": "wait_high_risk_approvals",
+        "identity_conflict": "resolve_identity_conflicts",
+        "rollback_conflict": "wait_restore_conflicts",
+        "rollback_approval": "wait_rollback_approval",
+        "cross_phase_replan": "wait_replan_confirmation",
+    }.get(gate.gate_kind)
+    gate_is_current = (
+        gate.cursor == graph.cursor
+        if gate.gate_kind == "termination_confirmation"
+        else (
+            expected_gate_node is not None
+            and gate.cursor + 1 == graph.cursor
+            and graph.current_node == expected_gate_node
+        )
+    )
+    if not gate_is_current:
         raise HTTPException(
             409, detail=_error("stale_graph_gate", "Gate cursor is stale")
         )
@@ -531,6 +668,57 @@ async def decide_agent_graph_gate(
     }
     gate.decided_by = operator.operator_id
     gate.decided_at = datetime.now(UTC)
+    if gate.gate_kind == "termination_confirmation" and status_value == "approved":
+        await AgentSupervisorService(session, operator=operator).terminate(
+            run_id=run.id,
+            reason="operator_confirmed",
+        )
+    if (
+        status_value == "rejected"
+        and gate.gate_kind
+        in {"rollback_conflict", "rollback_approval", "cross_phase_replan"}
+    ):
+        graph.termination_requested = True
+    if gate.gate_kind == "high_risk_approval":
+        legacy_groups = tuple(
+            await session.scalars(
+                select(AgentApprovalGroupRecord).where(
+                    AgentApprovalGroupRecord.run_id == run.id
+                )
+            )
+        )
+        matching_group = next(
+            (
+                group
+                for group in legacy_groups
+                if group.finding_ids == gate.member_ids
+            ),
+            None,
+        )
+        if matching_group is None:
+            raise HTTPException(
+                409,
+                detail=_error(
+                    "approval_fact_missing",
+                    "Frozen approval group fact is missing",
+                ),
+            )
+        matching_group.status = status_value
+        matching_group.decided_by = operator.operator_id
+        matching_group.decision_reason = (body.reason or "")[:1000]
+        matching_group.decided_at = gate.decided_at
+        matching_group.updated_at = gate.decided_at
+    remaining_gate = await session.scalar(
+        select(AgentHumanGateRecord.id).where(
+            AgentHumanGateRecord.graph_run_id == graph.id,
+            AgentHumanGateRecord.id != gate.id,
+            AgentHumanGateRecord.gate_kind == gate.gate_kind,
+            AgentHumanGateRecord.status == "pending",
+        )
+    )
+    if remaining_gate is None and run.status == AgentRunStatus.WAITING_HUMAN.value:
+        run.status = AgentRunStatus.RUNNING.value
+        task.status = "running"
     await AgentRuntimeRepository(session).append_event(
         run.id,
         "graph.gate_decided",
@@ -545,6 +733,74 @@ async def decide_agent_graph_gate(
         gate_id=gate.id,
         status=status_value,
         graph_cursor=graph.cursor,
+    )
+
+
+@router.post(
+    "/tasks/{task_id}/termination-preview",
+    response_model=AgentGraphHumanGateView,
+)
+async def preview_agent_graph_termination(
+    task_id: UUID,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    operator: Annotated[OperatorContext, Depends(get_operator_context)],
+) -> AgentGraphHumanGateView:
+    _require_enabled(request)
+    try:
+        task, run = await AgentTaskService(session, operator=operator).get(task_id)
+    except LookupError as error:
+        raise HTTPException(
+            404, detail=_error("agent_task_not_found", str(error))
+        ) from error
+    if task.workflow_version != "agent-graph-v1":
+        raise HTTPException(
+            409,
+            detail=_error(
+                "graph_not_available",
+                "Termination preview is available only for controlled Agent graph tasks",
+            ),
+        )
+    if run.status in {"completed", "terminated", "failed"}:
+        raise HTTPException(
+            409,
+            detail=_error("invalid_state", "Terminal Agent task cannot be terminated"),
+        )
+    graph = await AgentGraphRepository(session).get_run_state_for_agent_run(
+        run.id,
+        for_update=True,
+    )
+    if graph is None:
+        raise HTTPException(
+            409,
+            detail=_error("graph_state_missing", "Agent graph state is missing"),
+        )
+    existing = await session.scalar(
+        select(AgentHumanGateRecord).where(
+            AgentHumanGateRecord.graph_run_id == graph.id,
+            AgentHumanGateRecord.cursor == graph.cursor,
+            AgentHumanGateRecord.gate_kind == "termination_confirmation",
+            AgentHumanGateRecord.status == "pending",
+        )
+    )
+    gate = existing or await AgentGraphRepository(session).record_human_gate(
+        graph_run_id=graph.id,
+        cursor=graph.cursor,
+        gate_kind="termination_confirmation",
+        member_ids=(str(task.id),),
+        content_hash=(
+            "sha256:"
+            + sha256(
+                f"{graph.id}:{graph.cursor}:termination".encode()
+            ).hexdigest()
+        ),
+        status="pending",
+    )
+    return AgentGraphHumanGateView(
+        id=gate.id,
+        kind=gate.gate_kind,
+        status=gate.status,
+        item_count=len(gate.member_ids),
     )
 
 
@@ -673,7 +929,15 @@ async def terminate_agent_task(
     _require_enabled(request)
     service = AgentTaskService(session, operator=operator)
     try:
-        _task, run = await service.get(task_id)
+        task, run = await service.get(task_id)
+        if task.workflow_version == "agent-graph-v1":
+            raise HTTPException(
+                409,
+                detail=_error(
+                    "termination_confirmation_required",
+                    "Create and approve a termination confirmation gate first",
+                ),
+            )
         terminated = await AgentSupervisorService(session, operator=operator).terminate(
             run_id=run.id, reason="operator_requested"
         )
@@ -951,6 +1215,175 @@ async def clarify_agent_conflict(
     candidate_ids = tuple(
         UUID(str(item["id"])) for item in record.masked_candidates if "id" in item
     )
+    if task.workflow_version == "agent-graph-v1":
+        graph = await AgentGraphRepository(session).get_run_state_for_agent_run(
+            run.id,
+            for_update=True,
+        )
+        if graph is None or graph.current_node != "resolve_identity_conflicts":
+            raise HTTPException(
+                409,
+                detail=_error(
+                    "invalid_state",
+                    "Agent graph is not waiting for identity clarification",
+                ),
+            )
+        gate = await session.scalar(
+            select(AgentHumanGateRecord).where(
+                AgentHumanGateRecord.graph_run_id == graph.id,
+                AgentHumanGateRecord.gate_kind == "identity_conflict",
+                AgentHumanGateRecord.status == "pending",
+            )
+        )
+        if gate is None or str(record.id) not in gate.member_ids:
+            raise HTTPException(
+                409,
+                detail=_error(
+                    "stale_graph_gate",
+                    "Frozen identity conflict gate is missing or stale",
+                ),
+            )
+        resource_id = f"identity-conflict:{record.id}"
+        action_id = f"interpret_identity_conflict:{record.id}"
+        evidence_ref = f"{resource_id}:frozen"
+        manifest = build_evidence_manifest(
+            tenant_ref=f"tenant-ref:{operator.tenant_id}",
+            task_id=str(task.id),
+            run_id=str(run.id),
+            graph_node=graph.current_node,
+            action_id=action_id,
+            resource_ids=(resource_id,),
+            allowed_evidence_refs=(evidence_ref,),
+        )
+        await AgentGraphRepository(session).record_manifest(
+            graph_run_id=graph.id,
+            cursor=graph.cursor,
+            graph_node=graph.current_node,
+            action_id=action_id,
+            manifest=manifest.model_dump(mode="json"),
+            content_hash=manifest.content_hash,
+            record_id=manifest.manifest_id,
+        )
+        tools = GraphConflictTools(
+            task_id=task.id,
+            run_id=run.id,
+            tenant_id=operator.tenant_id,
+            conflict=FrozenConflictDraft(
+                conflict_id=record.id,
+                work_item_id=record.work_item_id,
+                masked_candidates=tuple(dict(item) for item in record.masked_candidates),
+                allowed_outcomes=tuple(record.allowed_outcomes),
+            ),
+        )
+        provider = getattr(
+            request.app.state,
+            "graph_skill_provider",
+            HttpLLMProvider(settings=request.app.state.settings),
+        )
+        runner = GraphSkillModelRunner(
+            session,
+            provider=provider,
+            tool_gateway=GraphPhaseToolGateway(
+                session,
+                operator=operator,
+                tools=tools.handlers(),
+            ),
+            operator=operator,
+            max_retries=request.app.state.settings.model_retry_attempts,
+        )
+        try:
+            draft = await GraphConflictInstructionExecutor(
+                runner=runner,
+                tools=tools,
+            ).run(
+                GraphSkillInvocation(
+                    task_id=task.id,
+                    run_id=run.id,
+                    graph_run_id=graph.id,
+                    graph_node=graph.current_node,
+                    graph_cursor=graph.cursor,
+                    action_id=action_id,
+                    evidence_manifest_id=manifest.manifest_id,
+                    skill_name="resolve-human-conflict-instruction",
+                    skill_version="1.0.0",
+                    input_payload=ConflictInstructionInput(
+                        task_id=task.id,
+                        run_id=run.id,
+                        phase=AgentPhase.CLARIFY_IDENTITY_CONFLICTS,
+                        evidence_refs=(evidence_ref,),
+                        conflict_id=record.id,
+                        candidate_ids=candidate_ids,
+                        operator_instruction=body.message,
+                    ).model_dump(mode="json"),
+                )
+            )
+        except GraphSubAgentFailure as error:
+            raise HTTPException(
+                503,
+                detail=_error(
+                    "agent_model_failure",
+                    "AI 无法解释当前说明，请重试或终止任务。",
+                ),
+            ) from error
+        if draft.decision == "leave_unresolved":
+            return {
+                "decision_id": str(record.id),
+                "status": "pending",
+                "task_id": str(task.id),
+                "decision": draft.decision,
+                "selected_candidate_id": None,
+                "interpretation_zh": draft.interpretation_zh,
+                "requires_second_confirmation": False,
+            }
+        outcome = (
+            "use_candidate"
+            if draft.decision == "select_candidate"
+            else "target_extra"
+        )
+        updated = await AgentGovernanceRepository(
+            session
+        ).record_clarification_interpretation(
+            record.id,
+            original_text=body.message,
+            interpretation={
+                "outcome": outcome,
+                "candidate_id": (
+                    str(draft.selected_candidate_id)
+                    if draft.selected_candidate_id
+                    else None
+                ),
+                "interpretation_zh": draft.interpretation_zh,
+                "model_decision": draft.decision,
+            },
+            actor_id=operator.operator_id,
+        )
+        await AgentRuntimeRepository(session).append_event(
+            run.id,
+            "clarification_decision_ready",
+            {
+                "decision_id": str(updated.id),
+                "outcome": outcome,
+                "candidate_id": (
+                    str(draft.selected_candidate_id)
+                    if draft.selected_candidate_id
+                    else None
+                ),
+                "interpretation_zh": draft.interpretation_zh,
+            },
+        )
+        return {
+            "decision_id": str(updated.id),
+            "status": updated.status,
+            "task_id": str(task.id),
+            "decision": draft.decision,
+            "selected_candidate_id": (
+                str(draft.selected_candidate_id)
+                if draft.selected_candidate_id
+                else None
+            ),
+            "interpretation_zh": draft.interpretation_zh,
+            "requires_second_confirmation": True,
+        }
     try:
         decision = interpret_clarification(
             body.message,
@@ -1036,6 +1469,29 @@ async def _resume_after_clarifications(session: AsyncSession, run_id: UUID) -> N
     )
     if unresolved is not None:
         return
+    graph = await AgentGraphRepository(session).get_run_state_for_agent_run(
+        run_id,
+        for_update=True,
+    )
+    if graph is not None and graph.current_node == "resolve_identity_conflicts":
+        gates = tuple(
+            await session.scalars(
+                select(AgentHumanGateRecord).where(
+                    AgentHumanGateRecord.graph_run_id == graph.id,
+                    AgentHumanGateRecord.gate_kind == "identity_conflict",
+                    AgentHumanGateRecord.status == "pending",
+                )
+            )
+        )
+        decided_at = datetime.now(UTC)
+        for gate in gates:
+            gate.status = "approved"
+            gate.decision = {
+                "decision": "dialogue_completed",
+                "graph_cursor": graph.cursor,
+            }
+            gate.decided_by = "operator_dialogue"
+            gate.decided_at = decided_at
     await _resume_waiting_run(
         session, run_id, expected_phase="clarify_identity_conflicts"
     )

@@ -145,6 +145,37 @@ class AgentGraphRepository:
         await self.session.flush()
         return record
 
+    async def get_candidate_set(
+        self,
+        *,
+        graph_run_id: UUID,
+        cursor: int,
+    ) -> AgentGraphCandidateSetRecord | None:
+        return cast(
+            AgentGraphCandidateSetRecord | None,
+            await self.session.scalar(
+                select(AgentGraphCandidateSetRecord).where(
+                    AgentGraphCandidateSetRecord.graph_run_id == graph_run_id,
+                    AgentGraphCandidateSetRecord.cursor == cursor,
+                )
+            ),
+        )
+
+    async def get_supervisor_decision(
+        self,
+        *,
+        candidate_set_id: UUID,
+    ) -> AgentSupervisorDecisionRecord | None:
+        return cast(
+            AgentSupervisorDecisionRecord | None,
+            await self.session.scalar(
+                select(AgentSupervisorDecisionRecord).where(
+                    AgentSupervisorDecisionRecord.candidate_set_id
+                    == candidate_set_id
+                )
+            ),
+        )
+
     async def record_decision(
         self,
         *,
@@ -285,6 +316,8 @@ class AgentGraphRepository:
         )
         if manifest is None or manifest.graph_run_id != state.id:
             raise GraphFactConflict("invocation manifest belongs to another graph run")
+        if attempt > 1:
+            state.retry_count += 1
         record = AgentSubAgentInvocationRecord(
             graph_run_id=state.id,
             tenant_id=state.tenant_id,
@@ -299,6 +332,7 @@ class AgentGraphRepository:
             status=status,
             input_hash=input_hash,
             output_hash=output_hash,
+            output_payload={},
             model_provenance=model_provenance,
         )
         self.session.add(record)
@@ -352,6 +386,7 @@ class AgentGraphRepository:
         status: str,
         output_hash: str,
         model_provenance: dict[str, Any],
+        output_payload: dict[str, Any] | None = None,
     ) -> AgentSubAgentInvocationRecord:
         if status not in {"completed", "failed"}:
             raise ValueError("sub-agent invocation status must be terminal")
@@ -365,9 +400,70 @@ class AgentGraphRepository:
             raise GraphFactConflict("sub-agent invocation is already terminal")
         record.status = status
         record.output_hash = output_hash
+        record.output_payload = output_payload or {}
         record.model_provenance = model_provenance
         await self.session.flush()
         return record
+
+    async def find_completed_invocation(
+        self,
+        *,
+        graph_run_id: UUID,
+        cursor: int,
+        action_id: str,
+        skill_name: str,
+        input_hash: str,
+    ) -> AgentSubAgentInvocationRecord | None:
+        return cast(
+            AgentSubAgentInvocationRecord | None,
+            await self.session.scalar(
+                select(AgentSubAgentInvocationRecord)
+                .where(
+                    AgentSubAgentInvocationRecord.graph_run_id == graph_run_id,
+                    AgentSubAgentInvocationRecord.cursor == cursor,
+                    AgentSubAgentInvocationRecord.action_id == action_id,
+                    AgentSubAgentInvocationRecord.skill_name == skill_name,
+                    AgentSubAgentInvocationRecord.input_hash == input_hash,
+                    AgentSubAgentInvocationRecord.status == "completed",
+                )
+                .order_by(AgentSubAgentInvocationRecord.attempt.desc())
+            )
+        )
+
+    async def prepare_invocation_resume(
+        self,
+        *,
+        graph_run_id: UUID,
+        cursor: int,
+        action_id: str,
+        skill_name: str,
+        input_hash: str,
+    ) -> int:
+        records = tuple(
+            await self.session.scalars(
+                select(AgentSubAgentInvocationRecord)
+                .where(
+                    AgentSubAgentInvocationRecord.graph_run_id == graph_run_id,
+                    AgentSubAgentInvocationRecord.cursor == cursor,
+                    AgentSubAgentInvocationRecord.action_id == action_id,
+                    AgentSubAgentInvocationRecord.skill_name == skill_name,
+                    AgentSubAgentInvocationRecord.input_hash == input_hash,
+                )
+                .order_by(AgentSubAgentInvocationRecord.attempt)
+            )
+        )
+        for record in records:
+            if record.status != "running":
+                continue
+            record.status = "failed"
+            record.model_provenance = {
+                "safe_error_code": "invocation_interrupted",
+                "attempt": record.attempt,
+                "request_ids": [],
+            }
+        if records:
+            await self.session.flush()
+        return max((record.attempt for record in records), default=0) + 1
 
     async def record_human_gate(
         self,

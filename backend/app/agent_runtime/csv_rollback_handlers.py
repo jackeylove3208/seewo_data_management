@@ -76,36 +76,29 @@ class CsvRollbackHandlers:
         )
         if not operations:
             raise ValueError("rollback has no verified operations")
-        versioner = CsvTargetVersioner(
-            repository=AgentTargetVersionRepository(ExecutionRepository(session)),
-            output_root=self._output_root,
-        )
-        result = await AgentExecutionService().execute(
-            plan_id=uuid5(NAMESPACE_URL, f"agent-rollback:{task.id}"),
-            target_version=f"sha256:{parent.file_sha256}",
-            operations=operations,
-            target=CsvAgentTargetAdapter(versioner=versioner, parent=parent),
-        )
-        output = result.output_target_version
+        mutations = [
+            await self.execute_operation(session, context, operation.id)
+            for operation in operations
+        ]
         facts: dict[str, Any] = {
             "source_task_id": str(task.parent_task_id),
-            "mutations": [
-                {
-                    "id": str(item.operation_id),
-                    "status": item.status,
-                    "verification": {"valid": item.status == "succeeded"},
-                    "compensation_for": str(operation.finding_id),
-                }
-                for operation, item in (
-                    (operation, result.by_operation[operation.id]) for operation in operations
-                )
-            ],
+            "mutations": mutations,
         }
-        if isinstance(output, TargetVersionRecord):
+        output_fact = next(
+            (
+                item
+                for item in reversed(mutations)
+                if item.get("output_target_version_id")
+            ),
+            None,
+        )
+        if output_fact is not None:
             facts.update(
                 {
-                    "output_target_version_id": str(output.id),
-                    "output_target_path": output.storage_path,
+                    "output_target_version_id": output_fact[
+                        "output_target_version_id"
+                    ],
+                    "output_target_path": output_fact["output_target_path"],
                 }
             )
         await AgentRuntimeRepository(session).save_checkpoint(
@@ -116,6 +109,128 @@ class CsvRollbackHandlers:
             payload=facts,
         )
         return AgentWorkResult(next_phase=AgentPhase.REPORT_RESTORE)
+
+    async def execute_operation(
+        self,
+        session: AsyncSession,
+        context: AgentWorkContext,
+        operation_id: UUID,
+    ) -> dict[str, Any]:
+        runtime = AgentRuntimeRepository(session)
+        checkpoint_key = f"agent-csv-rollback-operation:{operation_id}"
+        existing = await runtime.get_checkpoint(
+            context.run_id,
+            phase=AgentPhase.EXECUTE_RESTORE,
+            checkpoint_key=checkpoint_key,
+        )
+        if existing is not None:
+            return dict(existing.payload)
+
+        task = await session.get(ReconciliationTask, context.task_id)
+        if task is None or not task.agent_intent:
+            raise LookupError("rollback task facts are missing")
+        initial_parent = await session.get(
+            TargetVersionRecord,
+            UUID(str(task.agent_intent["target_version_id"])),
+        )
+        if initial_parent is None:
+            raise LookupError("rollback target version is missing")
+        mutation_facts = tuple(task.agent_intent.get("operations", []))
+        frozen_operations = tuple(
+            _rollback_operation(
+                item,
+                target_version=f"sha256:{initial_parent.file_sha256}",
+            )
+            for item in mutation_facts
+        )
+        index_by_id = {
+            operation.id: index for index, operation in enumerate(frozen_operations)
+        }
+        selected_index = index_by_id.get(operation_id)
+        if selected_index is None:
+            raise ValueError("rollback operation is outside the frozen plan")
+
+        parent = initial_parent
+        if selected_index:
+            previous_id = frozen_operations[selected_index - 1].id
+            previous = await runtime.get_checkpoint(
+                context.run_id,
+                phase=AgentPhase.EXECUTE_RESTORE,
+                checkpoint_key=f"agent-csv-rollback-operation:{previous_id}",
+            )
+            if previous is None:
+                raise ValueError("rollback operation dependency is not ready")
+            if previous.payload.get("status") != "succeeded":
+                dependency_fact = {
+                    "id": str(operation_id),
+                    "status": "blocked",
+                    "verification": {"valid": False},
+                    "compensation_for": str(
+                        frozen_operations[selected_index].finding_id
+                    ),
+                    "safe_error_code": "rollback_dependency_failed",
+                }
+                await runtime.save_checkpoint(
+                    context.run_id,
+                    phase=AgentPhase.EXECUTE_RESTORE,
+                    checkpoint_key=checkpoint_key,
+                    input_hash=str(task.request_hash),
+                    payload=dependency_fact,
+                )
+                return dependency_fact
+            output_version_id = previous.payload.get("output_target_version_id")
+            if output_version_id is None:
+                raise LookupError("rollback dependency target version is missing")
+            dependency_parent = await session.get(
+                TargetVersionRecord,
+                UUID(str(output_version_id)),
+            )
+            if dependency_parent is None:
+                raise LookupError("rollback dependency target version is missing")
+            parent = dependency_parent
+
+        selected = _rollback_operation(
+            mutation_facts[selected_index],
+            target_version=f"sha256:{parent.file_sha256}",
+        )
+        versioner = CsvTargetVersioner(
+            repository=AgentTargetVersionRepository(ExecutionRepository(session)),
+            output_root=self._output_root,
+        )
+        result = await AgentExecutionService().execute(
+            plan_id=uuid5(
+                NAMESPACE_URL,
+                f"agent-rollback:{task.id}:operation:{selected.id}",
+            ),
+            target_version=f"sha256:{parent.file_sha256}",
+            operations=(selected,),
+            target=CsvAgentTargetAdapter(versioner=versioner, parent=parent),
+        )
+        operation_result = result.by_operation[selected.id]
+        fact: dict[str, Any] = {
+            "id": str(operation_result.operation_id),
+            "status": operation_result.status,
+            "verification": {
+                "valid": operation_result.status == "succeeded"
+            },
+            "compensation_for": str(selected.finding_id),
+        }
+        output = result.output_target_version
+        if isinstance(output, TargetVersionRecord):
+            fact.update(
+                {
+                    "output_target_version_id": str(output.id),
+                    "output_target_path": output.storage_path,
+                }
+            )
+        await runtime.save_checkpoint(
+            context.run_id,
+            phase=AgentPhase.EXECUTE_RESTORE,
+            checkpoint_key=checkpoint_key,
+            input_hash=str(task.request_hash),
+            payload=fact,
+        )
+        return fact
 
     async def report(
         self, session: AsyncSession, context: AgentWorkContext

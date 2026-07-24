@@ -30,11 +30,11 @@
 - Consumes: accepted authority/target identity claims.
 - Produces: `ordinary_field_differences(authority, target) -> tuple[str, ...]` containing every applicable governed field that differs.
 
-- [ ] Add a failing unit test proving number, phone, and email remain governed differences after another identity key establishes correspondence.
-- [ ] Run the focused test and confirm it fails because those fields are absent.
-- [ ] Include `number`, `phone`, and `email` in deterministic comparison while retaining student-only `class_name`.
-- [ ] Add an end-to-end assertion that a wrong phone/email produces an actionable AI finding and solution.
-- [ ] Run focused identity and graph lifecycle tests.
+- [x] Add a failing unit test proving number, phone, and email remain governed differences after another identity key establishes correspondence.
+- [x] Run the focused test and confirm it fails because those fields are absent.
+- [x] Include `number`, `phone`, and `email` in deterministic comparison while retaining student-only `class_name`.
+- [x] Add an end-to-end assertion that a wrong phone/email produces an actionable AI finding and solution.
+- [x] Run focused identity and graph lifecycle tests.
 
 ### Task 2: Bind complete paired evidence manifests
 
@@ -50,12 +50,12 @@
 - Consumes: graph context, snapshots, current target version, identity work, claims, candidates, and issued phone tokens.
 - Produces: immutable `EvidenceManifestV1` and typed `PairedRecordEvidenceV1` whose members exactly bound every model-visible reference.
 
-- [ ] Add failing tests requiring opaque tenant references, snapshot pair, target version, and issued phone-token membership.
-- [ ] Add failing tests for complete paired evidence: key hits, conflicts, claims, stable order, field differences, candidates, and allowed operations.
-- [ ] Build manifest facts from durable snapshots/target versions rather than empty defaults.
-- [ ] Replace reversible tenant strings with an HMAC-derived opaque reference.
-- [ ] Return and validate complete paired evidence without exposing raw student phone values.
-- [ ] Run evidence, tool-security, and real-sub-agent tests.
+- [x] Add failing tests requiring opaque tenant references, snapshot pair, target version, and issued phone-token membership.
+- [x] Add failing tests for complete paired evidence: key hits, conflicts, claims, stable order, field differences, candidates, and allowed operations.
+- [x] Build manifest facts from durable snapshots/target versions rather than empty defaults.
+- [x] Replace reversible tenant strings with an HMAC-derived opaque reference.
+- [x] Return and validate complete paired evidence without exposing raw student phone values.
+- [x] Run evidence, tool-security, and real-sub-agent tests.
 
 ### Task 3: Make graph retry and invocation replay durable
 
@@ -72,14 +72,14 @@
 - Consumes: frozen candidate set, decision, manifest, invocation attempt, tool-call trace, and work-unit retry counter.
 - Produces: replay decisions that reuse completed outcomes, safely resume incomplete attempts, and expose real bounded repair actions.
 
-- [ ] Add a failing test for crash after a completed Skill invocation but before graph transition.
-- [ ] Add a failing test for crash after an authorized tool result.
+- [x] Add a failing test for crash after a completed Skill invocation but before graph transition.
+- [x] Add a failing test for crash after an authorized tool result.
 - [ ] Add failing tests for reread, renormalize, and repair-analysis actions with a three-entry budget and fourth-failure blocking.
-- [ ] Make manifest and invocation idempotency keys stable for one cursor/action/input hash.
-- [ ] Reuse completed invocation outputs and resume/replace only safely incomplete attempts.
-- [ ] Persist and increment node/work-unit retry and replan counters with safe failure codes.
-- [ ] Implement real `repair_analysis_batch` execution rather than guarded no-op.
-- [ ] Run worker, sub-agent, lease, and crash-recovery tests.
+- [x] Make manifest and invocation idempotency keys stable for one cursor/action/input hash.
+- [x] Reuse completed invocation outputs and resume/replace only safely incomplete attempts.
+- [x] Persist and increment node/work-unit retry and replan counters with safe failure codes.
+- [x] Implement real `repair_analysis_batch` execution rather than guarded no-op.
+- [x] Run worker, sub-agent, lease, and crash-recovery tests.
 
 ### Task 4: Complete rollback and human-gate semantics
 
@@ -97,12 +97,12 @@
 - Consumes: frozen rollback operation IDs, restore conflicts, operator text, and termination request.
 - Produces: one verified rollback operation per tool call, interpreted rollback-conflict decisions with second confirmation, and explicit termination confirmation.
 
-- [ ] Add a failing test proving requesting one rollback operation cannot execute another.
+- [x] Add a failing test proving requesting one rollback operation cannot execute another.
 - [ ] Add failing API/UI tests for rollback conflict text → model interpretation → second confirmation.
-- [ ] Add failing API/UI tests for termination preview/confirmation before `termination_requested` is persisted.
-- [ ] Implement per-operation rollback execution and dependency-safe continuation.
+- [x] Add failing API/UI tests for termination preview/confirmation before `termination_requested` is persisted.
+- [x] Implement per-operation rollback execution and dependency-safe continuation.
 - [ ] Reuse the bounded conflict Skill pattern for restore conflicts.
-- [ ] Add a typed termination-confirmation gate and modal without allowing the Supervisor to terminate directly.
+- [x] Add a typed termination-confirmation gate and modal without allowing the Supervisor to terminate directly.
 - [ ] Run rollback, human-gate, API, and task-detail tests.
 
 ### Task 5: Populate Supervisor context and strengthen guards
@@ -119,11 +119,11 @@
 - Consumes: durable blockers, completed/pending work, manifests, gates, connector capabilities, approvals, operation readiness, and target version.
 - Produces: complete `SupervisorContextV1`, semantically accurate singleton reasons, privacy-filtered audit narration, and fail-closed preflight results.
 
-- [ ] Add failing tests for non-empty production context summaries and correct singleton reason codes.
-- [ ] Add failing tests that raw phone/internal resource identifiers cannot survive in `operator_message_zh`.
+- [x] Add failing tests for non-empty production context summaries and correct singleton reason codes.
+- [x] Add failing tests that raw phone/internal resource identifiers cannot survive in `operator_message_zh`.
 - [ ] Add failing preflight tests for stale finding/solution, approval hash, expected-before, capability, dependency, and target version.
 - [ ] Populate the Supervisor context from server facts without exposing payload rows.
-- [ ] Sanitize non-executing Supervisor narration before persistence and display.
+- [x] Sanitize non-executing Supervisor narration before persistence and display.
 - [ ] Centralize preflight guard results and reject advancement on any failed fact.
 - [ ] Run contract, guard, production-runtime, and security tests.
 

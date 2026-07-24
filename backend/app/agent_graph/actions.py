@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 from collections.abc import Iterable
 
 from app.agent_graph.contracts import (
@@ -91,7 +92,27 @@ def validate_supervisor_decision(
     expected_reason_ids = set(actions).difference({decision.action_id})
     if set(reason_ids) != expected_reason_ids:
         raise InvalidSupervisorDecision("unselected action coverage is incomplete")
-    return decision
+    if decision.operator_message_zh is None:
+        return decision
+    return decision.model_copy(
+        update={
+            "operator_message_zh": _sanitize_operator_message(
+                decision.operator_message_zh
+            )
+        }
+    )
+
+
+_PHONE_PATTERN = re.compile(r"(?<!\d)(1\d{6})(\d{4})(?!\d)")
+_INTERNAL_RESOURCE_PATTERN = re.compile(
+    r"\b(?:operation|work-item|paired-record|execution-plan|manifest|snapshot)"
+    r":[0-9a-fA-F-]{16,}\b"
+)
+
+
+def _sanitize_operator_message(message: str) -> str:
+    masked = _PHONE_PATTERN.sub(lambda match: f"***{match.group(2)}", message)
+    return _INTERNAL_RESOURCE_PATTERN.sub("[内部引用]", masked)
 
 
 def _semantic_fingerprint(action: AllowedActionV1) -> tuple[object, ...]:

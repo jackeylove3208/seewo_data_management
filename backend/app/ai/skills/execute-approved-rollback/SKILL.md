@@ -2,7 +2,7 @@
 name: execute-approved-rollback
 version: 1.0.0
 phase: execute_restore
-allowed_tools: [execute_target_operation, verify_target_operation]
+allowed_tools: [read_execution_plan, read_ready_operations, request_operation_execution, read_operation_verification]
 input_schema: RollbackExecutionInput
 output_schema: AgentRollbackOutcome
 ---

@@ -160,6 +160,7 @@ class AgentSubAgentInvocationRecord(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(32), index=True)
     input_hash: Mapped[str] = mapped_column(String(71))
     output_hash: Mapped[str] = mapped_column(String(71))
+    output_payload: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
     model_provenance: Mapped[dict[str, Any]] = mapped_column(_json_type())
 
     __table_args__ = (

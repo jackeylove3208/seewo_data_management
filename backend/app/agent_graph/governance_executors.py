@@ -13,7 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agent_graph.repository import AgentGraphRepository
 from app.agent_graph.tools import GraphToolContext, GraphToolHandler
 from app.ai.graph_subagents import GraphSkillInvocation, GraphSkillModelRunner
-from app.ai.skills.contracts import GovernanceExecutionOutcome, OperationOutcome
+from app.ai.skills.contracts import (
+    ConflictDecisionDraft,
+    GovernanceExecutionOutcome,
+    OperationOutcome,
+)
 from app.models.agent_graph import AgentHumanGateRecord
 
 
@@ -26,6 +30,136 @@ class FrozenApprovalDraft:
     operation: str
     risk: str
     policy_version: str
+
+
+@dataclass(frozen=True)
+class FrozenConflictDraft:
+    conflict_id: UUID
+    work_item_id: UUID
+    masked_candidates: tuple[dict[str, Any], ...]
+    allowed_outcomes: tuple[str, ...]
+
+
+class GraphConflictTools:
+    """Expose exactly one frozen conflict and accept one bounded draft."""
+
+    def __init__(
+        self,
+        *,
+        task_id: UUID,
+        run_id: UUID,
+        tenant_id: str,
+        conflict: FrozenConflictDraft,
+    ) -> None:
+        self._task_id = task_id
+        self._run_id = run_id
+        self._tenant_id = tenant_id
+        self._conflict = conflict
+        self._submitted_draft: ConflictDecisionDraft | None = None
+
+    @property
+    def submitted_draft(self) -> ConflictDecisionDraft | None:
+        return self._submitted_draft
+
+    def handlers(self) -> dict[str, GraphToolHandler]:
+        return {
+            "read_frozen_conflict": self.read_frozen_conflict,
+            "submit_conflict_interpretation": self.submit_conflict_interpretation,
+        }
+
+    async def read_frozen_conflict(
+        self,
+        context: GraphToolContext,
+        arguments: Mapping[str, object],
+    ) -> dict[str, Any]:
+        self._require_context(context)
+        self._require_resource(arguments)
+        return {
+            "conflict_id": str(self._conflict.conflict_id),
+            "work_item_id": str(self._conflict.work_item_id),
+            "masked_candidates": list(self._conflict.masked_candidates),
+            "allowed_outcomes": list(self._conflict.allowed_outcomes),
+        }
+
+    async def submit_conflict_interpretation(
+        self,
+        context: GraphToolContext,
+        arguments: Mapping[str, object],
+    ) -> dict[str, Any]:
+        self._require_context(context)
+        self._require_resource(arguments)
+        draft = ConflictDecisionDraft.model_validate(
+            {key: value for key, value in arguments.items() if key != "resource_id"}
+        )
+        if draft.conflict_id != self._conflict.conflict_id:
+            raise ValueError("conflict draft references another frozen conflict")
+        candidate_ids = {
+            UUID(str(item["id"]))
+            for item in self._conflict.masked_candidates
+            if item.get("id")
+        }
+        if draft.decision == "select_candidate":
+            if (
+                "use_candidate" not in self._conflict.allowed_outcomes
+                or draft.selected_candidate_id not in candidate_ids
+            ):
+                raise ValueError("selected candidate is outside frozen conflict")
+        elif draft.selected_candidate_id is not None:
+            raise ValueError("only candidate selection may include a candidate ID")
+        if (
+            draft.decision == "treat_as_extra"
+            and "target_extra" not in self._conflict.allowed_outcomes
+        ):
+            raise ValueError("target-extra outcome is outside frozen conflict")
+        self._submitted_draft = draft
+        return draft.model_dump(mode="json")
+
+    def _require_context(self, context: GraphToolContext) -> None:
+        if (
+            context.task_id != self._task_id
+            or context.run_id != self._run_id
+            or context.tenant_id != self._tenant_id
+        ):
+            raise PermissionError("conflict tool context is outside graph task")
+
+    def _require_resource(self, arguments: Mapping[str, object]) -> None:
+        if (
+            arguments.get("resource_id")
+            != f"identity-conflict:{self._conflict.conflict_id}"
+        ):
+            raise ValueError("identity conflict resource is not authorized")
+
+
+class GraphConflictInstructionExecutor:
+    def __init__(
+        self,
+        *,
+        runner: GraphSkillModelRunner,
+        tools: GraphConflictTools,
+    ) -> None:
+        self._runner = runner
+        self._tools = tools
+
+    async def run(
+        self,
+        invocation: GraphSkillInvocation,
+    ) -> ConflictDecisionDraft:
+        def validate(output: BaseModel) -> BaseModel:
+            if not isinstance(output, ConflictDecisionDraft):
+                raise ValueError("conflict Skill returned another schema")
+            if self._tools.submitted_draft != output:
+                raise ValueError(
+                    "conflict Skill output was not submitted through the bounded tool"
+                )
+            return output
+
+        result = await self._runner.run(
+            invocation,
+            result_validator=validate,
+        )
+        if not isinstance(result.output, ConflictDecisionDraft):
+            raise RuntimeError("validated conflict output changed type")
+        return result.output
 
 
 class GraphHumanGateService:

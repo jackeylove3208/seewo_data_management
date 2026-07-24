@@ -52,6 +52,14 @@ class GraphGuardService:
         current_node: str,
         action: AllowedActionV1,
     ) -> None:
+        if (
+            action.kind == "terminate"
+            and (action.graph_action_kind or action.action_id)
+            == "terminate_requested"
+            and action.successor_node == "drain_current_atomic_unit"
+            and current_node != "terminal"
+        ):
+            return
         node = get_graph_definition(graph_version).node(current_node)
         action_kind = action.graph_action_kind or action.action_id
         legal = any(

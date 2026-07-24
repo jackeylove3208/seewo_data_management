@@ -25,6 +25,9 @@ class AgentGraphProgressResponse(BaseModel):
         "terminal",
     ]
     current_action_zh: str
+    sub_agent_zh: str | None = None
+    progress_completed: int | None = Field(default=None, ge=0)
+    progress_total: int | None = Field(default=None, ge=0)
     status: str
     can_terminate: bool
     human_gates: tuple[AgentGraphHumanGateView, ...] = ()

@@ -1,6 +1,8 @@
 import hashlib
+import hmac
 import json
 from datetime import UTC, datetime
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -8,6 +10,55 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 class EvidenceMembershipError(PermissionError):
     pass
+
+
+class IdentityKeyHitV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    key_kind: Literal["number", "phone", "email"]
+    authority_ref: str = Field(min_length=1, max_length=256)
+
+
+class PairedRecordEvidenceV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    evidence_ref: str = Field(min_length=1, max_length=256)
+    work_item_id: str = Field(min_length=1, max_length=128)
+    persisted_kind: str = Field(min_length=1, max_length=64)
+    entity_kind: Literal["department", "student", "teacher"]
+    target_record: dict[str, Any] | None
+    authority_record: dict[str, Any] | None
+    identity_key_hits: tuple[IdentityKeyHitV1, ...] = ()
+    candidate_conflicts: tuple[str, ...] = ()
+    authority_claim: str | None = Field(default=None, max_length=256)
+    target_stable_order: int | None = Field(default=None, ge=0)
+    field_differences: tuple[str, ...] = ()
+    allowed_candidates: tuple[str, ...] = ()
+    allowed_operations: tuple[
+        Literal["create", "update", "delete", "retain", "skip"], ...
+    ] = ()
+    evidence_refs: tuple[str, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_bounded_membership(self) -> "PairedRecordEvidenceV1":
+        for field_name in (
+            "candidate_conflicts",
+            "field_differences",
+            "allowed_candidates",
+            "allowed_operations",
+            "evidence_refs",
+        ):
+            values = getattr(self, field_name)
+            if len(set(values)) != len(values):
+                raise ValueError(f"{field_name} must contain unique members")
+        if self.evidence_ref not in self.evidence_refs:
+            raise ValueError("paired evidence must include its own evidence_ref")
+        candidate_refs = set(self.allowed_candidates)
+        if self.authority_claim is not None and self.authority_claim not in candidate_refs:
+            raise ValueError("authority claim must belong to allowed candidates")
+        if not set(self.candidate_conflicts).issubset(candidate_refs):
+            raise ValueError("candidate conflicts must belong to allowed candidates")
+        return self
 
 
 class EvidenceManifestV1(BaseModel):
@@ -92,6 +143,19 @@ def require_manifest_evidence(
 def require_manifest_token(manifest: EvidenceManifestV1, token: str) -> None:
     if token not in manifest.issued_sensitive_tokens:
         raise EvidenceMembershipError("token is outside evidence manifest")
+
+
+def opaque_tenant_ref(*, secret: str, tenant_id: str) -> str:
+    if len(secret) < 16:
+        raise ValueError("tenant reference secret must contain at least 16 characters")
+    if not tenant_id:
+        raise ValueError("tenant_id is required")
+    digest = hmac.new(
+        secret.encode("utf-8"),
+        tenant_id.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"tenant-ref:{digest[:24]}"
 
 
 def _manifest_content(

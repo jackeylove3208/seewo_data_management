@@ -2,7 +2,7 @@
 name: assess-agent-rollback-impact
 version: 1.0.0
 phase: plan_restore
-allowed_tools: [read_report_facts]
+allowed_tools: [read_verified_mutations, read_restore_conflicts, submit_restore_assessment]
 input_schema: RollbackAssessmentInput
 output_schema: AgentRollbackAssessment
 ---

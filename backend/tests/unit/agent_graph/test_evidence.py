@@ -2,7 +2,9 @@ import pytest
 
 from app.agent_graph.evidence import (
     EvidenceMembershipError,
+    PairedRecordEvidenceV1,
     build_evidence_manifest,
+    opaque_tenant_ref,
     require_manifest_evidence,
     require_manifest_resource,
     require_manifest_token,
@@ -71,3 +73,48 @@ def test_manifest_membership_checks_fail_closed() -> None:
     with pytest.raises(EvidenceMembershipError, match="token"):
         require_manifest_token(manifest, "phone-token:foreign")
 
+
+def test_tenant_reference_is_stable_and_not_reversible() -> None:
+    first = opaque_tenant_ref(
+        secret="opaque-tenant-reference-secret",
+        tenant_id="school-sensitive-name",
+    )
+    second = opaque_tenant_ref(
+        secret="opaque-tenant-reference-secret",
+        tenant_id="school-sensitive-name",
+    )
+
+    assert first == second
+    assert first.startswith("tenant-ref:")
+    assert "school-sensitive-name" not in first
+    assert first != opaque_tenant_ref(
+        secret="opaque-tenant-reference-secret",
+        tenant_id="another-school",
+    )
+
+
+def test_paired_record_evidence_requires_complete_bounded_facts() -> None:
+    evidence = PairedRecordEvidenceV1(
+        evidence_ref="paired-record:work-1",
+        work_item_id="work-1",
+        persisted_kind="field_difference",
+        entity_kind="student",
+        target_record={"input_ref": "input:target-1", "phone_token": "STUDENT_PHONE_A1B2C3D4E5F6"},
+        authority_record={
+            "input_ref": "input:authority-1",
+            "phone_token": "STUDENT_PHONE_010203040506",
+        },
+        identity_key_hits=(
+            {"key_kind": "number", "authority_ref": "input:authority-1"},
+        ),
+        candidate_conflicts=(),
+        authority_claim="input:authority-1",
+        target_stable_order=3,
+        field_differences=("phone", "email"),
+        allowed_candidates=("input:authority-1",),
+        allowed_operations=("retain", "update"),
+        evidence_refs=("paired-record:work-1",),
+    )
+
+    assert evidence.field_differences == ("phone", "email")
+    assert evidence.allowed_operations == ("retain", "update")

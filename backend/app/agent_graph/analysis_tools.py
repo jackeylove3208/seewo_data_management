@@ -6,9 +6,10 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent_graph.evidence import IdentityKeyHitV1, PairedRecordEvidenceV1
 from app.agent_graph.tools import GraphToolContext, GraphToolHandler
 from app.ai.agent_phone_privacy import StudentPhoneTokenizationContext
 from app.ai.skills.contracts import (
@@ -18,12 +19,23 @@ from app.ai.skills.contracts import (
 )
 from app.ingestion.csv_reader import inspect_csv, read_csv_frame
 from app.models.agent_analysis import (
+    AgentClarificationRecord,
     AgentIdentityClaimRecord,
     AgentIdentityPostingRecord,
     AgentInputRecord,
     AgentWorkItemRecord,
 )
 from app.models.snapshots import Snapshot, SourceFile
+from app.reconciliation.agent_identity import ordinary_field_differences
+
+_ALLOWED_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
+    "target_extra": ("delete", "retain"),
+    "target_duplicate": ("delete", "retain"),
+    "target_missing": ("create", "retain"),
+    "field_difference": ("retain", "update"),
+    "authority_invalid": ("skip",),
+    "identity_conflict": ("delete", "retain", "update"),
+}
 
 
 class _InputMarkSubmission(BaseModel):
@@ -85,6 +97,35 @@ class GraphAnalysisEvidenceTools:
 
     def resolve_phone_token(self, value: str | None) -> str | None:
         return self._tokenizer.detokenize(value)
+
+    async def prepare_manifest_tokens(
+        self,
+        resource_ids: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """Pre-issue every sensitive token a frozen action can reveal."""
+        for resource_id in resource_ids:
+            if resource_id.startswith("source:"):
+                role, page = _parse_source_resource(resource_id)
+                _snapshot, source = await self._source(role)
+                inspection = inspect_csv(source_path(source))
+                frame = read_csv_frame(source_path(source), inspection)
+                for raw in frame.slice((page - 1) * 50, 50).to_dicts():
+                    self._tokenize_student_phone(raw)
+                continue
+            if resource_id.startswith("work-item:"):
+                work = await self._work_item(resource_id)
+                self._safe_record(await self._require_input(work.subject_input_id))
+                claim = await self._session.scalar(
+                    select(AgentIdentityClaimRecord).where(
+                        AgentIdentityClaimRecord.work_item_id == work.id
+                    )
+                )
+                if claim is not None:
+                    self._safe_record(
+                        await self._require_input(claim.authority_input_id)
+                    )
+                    self._safe_record(await self._require_input(claim.target_input_id))
+        return self._tokenizer.issued_tokens
 
     async def inspect_configured_source(
         self,
@@ -219,6 +260,24 @@ class GraphAnalysisEvidenceTools:
             )
         )
         subject = await self._require_input(work.subject_input_id)
+        identity_hits = await self._identity_key_hits(subject)
+        candidate_ids = {
+            UUID(hit.authority_ref.removeprefix("input:"))
+            for hit in identity_hits
+        }
+        clarification = await self._session.scalar(
+            select(AgentClarificationRecord).where(
+                AgentClarificationRecord.work_item_id == work.id
+            )
+        )
+        if clarification is not None:
+            candidate_ids.update(
+                UUID(str(item["id"]))
+                for item in clarification.masked_candidates
+                if item.get("id") is not None
+            )
+        if claim is not None:
+            candidate_ids.add(claim.authority_input_id)
         authority: AgentInputRecord | None = None
         target: AgentInputRecord | None = None
         if claim is not None:
@@ -228,14 +287,39 @@ class GraphAnalysisEvidenceTools:
             authority = subject
         else:
             target = subject
-        return {
-            "evidence_ref": evidence_ref,
-            "work_item_id": str(work.id),
-            "kind": work.kind,
-            "entity_kind": work.entity_kind,
-            "authority": self._safe_record(authority),
-            "target": self._safe_record(target),
-        }
+        if authority is None and len(candidate_ids) == 1:
+            authority = await self._require_input(next(iter(candidate_ids)))
+        if target is None and subject.source_role == "target":
+            target = subject
+        candidate_refs = tuple(
+            f"input:{candidate_id}" for candidate_id in sorted(candidate_ids, key=str)
+        )
+        conflicts = candidate_refs if work.kind == "identity_conflict" else ()
+        differences = (
+            ordinary_field_differences(authority, target)
+            if authority is not None and target is not None
+            else ()
+        )
+        return PairedRecordEvidenceV1(
+            evidence_ref=evidence_ref,
+            work_item_id=str(work.id),
+            persisted_kind=work.kind,
+            entity_kind=work.entity_kind,
+            target_record=self._safe_record(target),
+            authority_record=self._safe_record(authority),
+            identity_key_hits=identity_hits,
+            candidate_conflicts=conflicts,
+            authority_claim=(
+                f"input:{claim.authority_input_id}" if claim is not None else None
+            ),
+            target_stable_order=(
+                target.stable_order if target is not None else None
+            ),
+            field_differences=differences,
+            allowed_candidates=candidate_refs,
+            allowed_operations=_ALLOWED_OPERATIONS_BY_KIND[work.kind],
+            evidence_refs=(evidence_ref,),
+        ).model_dump(mode="json")
 
     async def query_identity_postings(
         self,
@@ -328,6 +412,61 @@ class GraphAnalysisEvidenceTools:
 
     async def _work_item(self, resource_id: str) -> AgentWorkItemRecord:
         return await self._require_work(_parse_prefixed_uuid(resource_id, "work-item"))
+
+    async def _identity_key_hits(
+        self,
+        subject: AgentInputRecord,
+    ) -> tuple[IdentityKeyHitV1, ...]:
+        subject_postings = tuple(
+            await self._session.scalars(
+                select(AgentIdentityPostingRecord).where(
+                    AgentIdentityPostingRecord.run_id == self._run_id,
+                    AgentIdentityPostingRecord.input_record_id == subject.id,
+                )
+            )
+        )
+        if not subject_postings:
+            return ()
+        matching = tuple(
+            await self._session.execute(
+                select(
+                    AgentIdentityPostingRecord.input_record_id,
+                    AgentIdentityPostingRecord.key_kind,
+                )
+                .join(
+                    AgentInputRecord,
+                    AgentInputRecord.id
+                    == AgentIdentityPostingRecord.input_record_id,
+                )
+                .where(
+                    AgentIdentityPostingRecord.run_id == self._run_id,
+                    AgentIdentityPostingRecord.entity_kind == subject.entity_kind,
+                    AgentInputRecord.source_role == "authoritative",
+                    or_(
+                        *(
+                            and_(
+                                AgentIdentityPostingRecord.key_kind
+                                == posting.key_kind,
+                                AgentIdentityPostingRecord.normalized_value
+                                == posting.normalized_value,
+                            )
+                            for posting in subject_postings
+                        )
+                    ),
+                )
+                .order_by(
+                    AgentIdentityPostingRecord.key_kind,
+                    AgentIdentityPostingRecord.input_record_id,
+                )
+            )
+        )
+        return tuple(
+            IdentityKeyHitV1(
+                key_kind=key_kind,
+                authority_ref=f"input:{input_id}",
+            )
+            for input_id, key_kind in matching
+        )
 
     async def _require_work(self, work_id: UUID) -> AgentWorkItemRecord:
         work = await self._session.get(AgentWorkItemRecord, work_id)

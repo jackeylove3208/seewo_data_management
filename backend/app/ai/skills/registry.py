@@ -29,6 +29,12 @@ GRAPH_SKILL_TOOLS_BY_PHASE: dict[str, frozenset[str]] = {
             "submit_finding_batch",
         }
     ),
+    "clarify_identity_conflicts": frozenset(
+        {
+            "read_frozen_conflict",
+            "submit_conflict_interpretation",
+        }
+    ),
     "generate_report": frozenset(
         {
             "read_report_fact_manifest",
@@ -36,6 +42,21 @@ GRAPH_SKILL_TOOLS_BY_PHASE: dict[str, frozenset[str]] = {
         }
     ),
     "execute_and_verify": frozenset(
+        {
+            "read_execution_plan",
+            "read_ready_operations",
+            "request_operation_execution",
+            "read_operation_verification",
+        }
+    ),
+    "plan_restore": frozenset(
+        {
+            "read_verified_mutations",
+            "read_restore_conflicts",
+            "submit_restore_assessment",
+        }
+    ),
+    "execute_restore": frozenset(
         {
             "read_execution_plan",
             "read_ready_operations",

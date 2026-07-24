@@ -105,10 +105,33 @@ class GraphSkillModelRunner:
         self._validate_skill_tool_boundary(skill, invocation.graph_node)
         input_payload = validated_input.model_dump(mode="json")
         input_hash = _safe_hash(input_payload)
+        completed = await self._repository.find_completed_invocation(
+            graph_run_id=invocation.graph_run_id,
+            cursor=invocation.graph_cursor,
+            action_id=invocation.action_id,
+            skill_name=skill.name,
+            input_hash=input_hash,
+        )
+        if completed is not None:
+            output = self._skills.validate_output(skill, completed.output_payload)
+            if result_validator is not None:
+                output = result_validator(output)
+            return GraphSkillRunResult(
+                output=output,
+                invocation_id=completed.id,
+                attempt_count=completed.attempt,
+            )
         last_error: Exception | None = None
         total_attempts = self._max_retries + 1
+        start_attempt = await self._repository.prepare_invocation_resume(
+            graph_run_id=invocation.graph_run_id,
+            cursor=invocation.graph_cursor,
+            action_id=invocation.action_id,
+            skill_name=skill.name,
+            input_hash=input_hash,
+        )
 
-        for attempt in range(1, total_attempts + 1):
+        for attempt in range(start_attempt, total_attempts + 1):
             record = await self._repository.record_invocation(
                 graph_run_id=invocation.graph_run_id,
                 cursor=invocation.graph_cursor,
@@ -137,6 +160,7 @@ class GraphSkillModelRunner:
                     record.id,
                     status="completed",
                     output_hash=_safe_hash(output.model_dump(mode="json")),
+                    output_payload=output.model_dump(mode="json"),
                     model_provenance=provenance,
                 )
                 return GraphSkillRunResult(

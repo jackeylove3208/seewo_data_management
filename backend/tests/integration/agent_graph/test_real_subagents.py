@@ -50,6 +50,41 @@ class ScriptedProvider:
         )
 
 
+class SimulatedProcessCrash(BaseException):
+    pass
+
+
+class CrashBeforeResponseProvider:
+    async def complete_json_once(self, _request: LLMRequest) -> LLMResponse:
+        raise SimulatedProcessCrash()
+
+
+class CrashAfterToolResultProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete_json_once(self, _request: LLMRequest) -> LLMResponse:
+        self.calls += 1
+        if self.calls == 1:
+            return LLMResponse(
+                output={
+                    "result": {
+                        "tool_call": {
+                            "name": "inspect_configured_source",
+                            "arguments": {
+                                "resource_id": "source:authoritative:page:1",
+                            },
+                        }
+                    }
+                },
+                provider="scripted",
+                model="scripted-long-context",
+                request_id="request-before-tool-crash",
+                usage=ModelUsage(input_tokens=10, output_tokens=5),
+            )
+        raise SimulatedProcessCrash()
+
+
 async def _graph_invocation_fixture(session, *, node: str, action_id: str):
     task = ReconciliationTask(
         tenant_id="school-real-subagent",
@@ -159,29 +194,32 @@ async def test_real_skill_invocation_uses_tool_and_records_model_provenance(sess
             tenant_id=task.tenant_id,
         ),
     )
-    result = await runner.run(
-        GraphSkillInvocation(
-            task_id=task.id,
-            run_id=run.id,
-            graph_run_id=state.id,
-            graph_node=state.current_node,
-            graph_cursor=state.cursor,
-            action_id="inspect_authority:page-1",
-            evidence_manifest_id=manifest.id,
-            skill_name="inspect-external-data-source",
-            skill_version="1.0.0",
-            input_payload={
-                "task_id": str(task.id),
-                "run_id": str(run.id),
-                "phase": "ingest_and_normalize",
-                "evidence_refs": ["source:authoritative:inspection"],
-                "connector_kind": "csv",
-                "connector_ref": "source:authoritative:page:1",
-            },
-        )
+    invocation_request = GraphSkillInvocation(
+        task_id=task.id,
+        run_id=run.id,
+        graph_run_id=state.id,
+        graph_node=state.current_node,
+        graph_cursor=state.cursor,
+        action_id="inspect_authority:page-1",
+        evidence_manifest_id=manifest.id,
+        skill_name="inspect-external-data-source",
+        skill_version="1.0.0",
+        input_payload={
+            "task_id": str(task.id),
+            "run_id": str(run.id),
+            "phase": "ingest_and_normalize",
+            "evidence_refs": ["source:authoritative:inspection"],
+            "connector_kind": "csv",
+            "connector_ref": "source:authoritative:page:1",
+        },
     )
+    result = await runner.run(invocation_request)
+    replay = await runner.run(invocation_request)
 
     assert isinstance(result.output, BaseModel)
+    assert replay.output == result.output
+    assert replay.invocation_id == result.invocation_id
+    assert len(provider.requests) == 2
     invocation = await session.scalar(
         select(AgentSubAgentInvocationRecord).where(
             AgentSubAgentInvocationRecord.graph_run_id == state.id,
@@ -261,6 +299,187 @@ async def test_model_exhaustion_records_four_failures_without_legacy_delegate(se
     assert {record.execution_mode for record in invocations} == {"skill_model"}
     assert {record.status for record in invocations} == {"failed"}
     assert not any(record.execution_mode == "legacy_delegate" for record in invocations)
+    await session.refresh(state)
+    assert state.retry_count == 3
+
+
+@pytest.mark.asyncio
+async def test_interrupted_invocation_resumes_with_the_next_durable_attempt(
+    session,
+) -> None:
+    task, run, state, manifest = await _graph_invocation_fixture(
+        session,
+        node="inspect_sources",
+        action_id="inspect_authority:page-1",
+    )
+    operator = OperatorContext(
+        operator_id="demo-operator",
+        tenant_id=task.tenant_id,
+    )
+    request = GraphSkillInvocation(
+        task_id=task.id,
+        run_id=run.id,
+        graph_run_id=state.id,
+        graph_node=state.current_node,
+        graph_cursor=state.cursor,
+        action_id="inspect_authority:page-1",
+        evidence_manifest_id=manifest.id,
+        skill_name="inspect-external-data-source",
+        skill_version="1.0.0",
+        input_payload={
+            "task_id": str(task.id),
+            "run_id": str(run.id),
+            "phase": "ingest_and_normalize",
+            "evidence_refs": ["source:authoritative:inspection"],
+            "connector_kind": "csv",
+            "connector_ref": "source:authoritative:page:1",
+        },
+    )
+    crashed_runner = GraphSkillModelRunner(
+        session,
+        provider=CrashBeforeResponseProvider(),
+        tool_gateway=GraphPhaseToolGateway(session, operator=operator, tools={}),
+        operator=operator,
+    )
+
+    with pytest.raises(SimulatedProcessCrash):
+        await crashed_runner.run(request)
+
+    recovery_provider = ScriptedProvider(
+        [
+            {
+                "result": {
+                    "schema_version": "agent-contract-v1",
+                    "recognized": True,
+                    "detected_fields": ["category", "name", "number"],
+                    "entity_kinds": ["student"],
+                    "safe_problem_codes": [],
+                }
+            }
+        ]
+    )
+    recovered = await GraphSkillModelRunner(
+        session,
+        provider=recovery_provider,
+        tool_gateway=GraphPhaseToolGateway(session, operator=operator, tools={}),
+        operator=operator,
+    ).run(request)
+
+    attempts = tuple(
+        await session.scalars(
+            select(AgentSubAgentInvocationRecord)
+            .where(
+                AgentSubAgentInvocationRecord.graph_run_id == state.id,
+                AgentSubAgentInvocationRecord.action_id == request.action_id,
+            )
+            .order_by(AgentSubAgentInvocationRecord.attempt)
+        )
+    )
+    assert recovered.attempt_count == 2
+    assert [(item.attempt, item.status) for item in attempts] == [
+        (1, "failed"),
+        (2, "completed"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_interrupted_invocation_after_tool_result_preserves_audit_and_resumes(
+    session,
+) -> None:
+    task, run, state, manifest = await _graph_invocation_fixture(
+        session,
+        node="inspect_sources",
+        action_id="inspect_authority:page-1",
+    )
+    operator = OperatorContext(
+        operator_id="demo-operator",
+        tenant_id=task.tenant_id,
+    )
+    tool_executions = 0
+
+    async def inspect_source(_context, arguments):
+        nonlocal tool_executions
+        tool_executions += 1
+        return {
+            "resource_id": arguments["resource_id"],
+            "connector_kind": "csv",
+            "stable_order": True,
+        }
+
+    request = GraphSkillInvocation(
+        task_id=task.id,
+        run_id=run.id,
+        graph_run_id=state.id,
+        graph_node=state.current_node,
+        graph_cursor=state.cursor,
+        action_id="inspect_authority:page-1",
+        evidence_manifest_id=manifest.id,
+        skill_name="inspect-external-data-source",
+        skill_version="1.0.0",
+        input_payload={
+            "task_id": str(task.id),
+            "run_id": str(run.id),
+            "phase": "ingest_and_normalize",
+            "evidence_refs": ["source:authoritative:inspection"],
+            "connector_kind": "csv",
+            "connector_ref": "source:authoritative:page:1",
+        },
+    )
+    with pytest.raises(SimulatedProcessCrash):
+        await GraphSkillModelRunner(
+            session,
+            provider=CrashAfterToolResultProvider(),
+            tool_gateway=GraphPhaseToolGateway(
+                session,
+                operator=operator,
+                tools={"inspect_configured_source": inspect_source},
+            ),
+            operator=operator,
+        ).run(request)
+
+    recovery_provider = ScriptedProvider(
+        [
+            {
+                "result": {
+                    "tool_call": {
+                        "name": "inspect_configured_source",
+                        "arguments": {
+                            "resource_id": "source:authoritative:page:1",
+                        },
+                    }
+                }
+            },
+            {
+                "result": {
+                    "schema_version": "agent-contract-v1",
+                    "recognized": True,
+                    "detected_fields": ["category", "name", "number"],
+                    "entity_kinds": ["student"],
+                    "safe_problem_codes": [],
+                }
+            },
+        ]
+    )
+    recovered = await GraphSkillModelRunner(
+        session,
+        provider=recovery_provider,
+        tool_gateway=GraphPhaseToolGateway(
+            session,
+            operator=operator,
+            tools={"inspect_configured_source": inspect_source},
+        ),
+        operator=operator,
+    ).run(request)
+
+    tool_calls = tuple(
+        await session.scalars(
+            select(AgentToolCallRecord).order_by(AgentToolCallRecord.created_at)
+        )
+    )
+    assert recovered.attempt_count == 2
+    assert tool_executions == 2
+    assert len(tool_calls) == 2
+    assert all(item.authorized and item.status == "completed" for item in tool_calls)
 
 
 @pytest.mark.asyncio
@@ -472,6 +691,9 @@ async def test_connector_page_tokenizes_phone_before_model_boundary(
         allowed_tools=frozenset({"read_connector_page"}),
     )
 
+    manifest_tokens = await tools.prepare_manifest_tokens(
+        ("source:authoritative:page:1",)
+    )
     payload = await tools.read_connector_page(
         context,
         {"resource_id": "source:authoritative:page:1", "limit": 50},
@@ -480,3 +702,4 @@ async def test_connector_page_tokenizes_phone_before_model_boundary(
     assert "13800138000" not in str(payload)
     phone = payload["records"][0]["fields"]["电话"]
     assert str(phone).startswith("STUDENT_PHONE_")
+    assert manifest_tokens == (phone,)

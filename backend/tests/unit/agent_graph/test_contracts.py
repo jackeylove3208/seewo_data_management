@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 from pydantic import ValidationError
 
@@ -11,6 +13,7 @@ from app.agent_graph.contracts import (
     SupervisorDecisionV1,
     UnselectedActionReasonV1,
 )
+from app.agent_graph.supervisor import build_supervisor_context
 
 
 def _action(action_id: str, *, evidence: str, successor: str) -> AllowedActionV1:
@@ -95,6 +98,70 @@ def test_valid_decision_covers_every_unselected_action() -> None:
     assert validate_supervisor_decision(context, decision) == decision
 
 
+def test_operator_message_is_sanitized_before_audit_persistence() -> None:
+    context = _context()
+    decision = SupervisorDecisionV1(
+        action_id="analyze_students",
+        reason_zh="学生批次已经具备完整双边证据。",
+        expected_result="student-finding-batch-v1",
+        why_not_other_actions_zh=(
+            UnselectedActionReasonV1(
+                action_id="analyze_teachers",
+                reason_zh="教师批次稍后处理。",
+            ),
+        ),
+        operator_message_zh=(
+            "正在检查手机号 13800138000，"
+            "内部记录 operation:00000000-0000-0000-0000-000000000001。"
+        ),
+    )
+
+    validated = validate_supervisor_decision(context, decision)
+
+    assert validated.operator_message_zh is not None
+    assert "13800138000" not in validated.operator_message_zh
+    assert "00000000-0000-0000-0000-000000000001" not in validated.operator_message_zh
+    assert "***8000" in validated.operator_message_zh
+    assert "[内部引用]" in validated.operator_message_zh
+
+
+def test_production_supervisor_context_summarizes_server_facts() -> None:
+    base = _context()
+    state = SimpleNamespace(
+        id="graph-run-1",
+        graph_version=base.graph_version,
+        current_node=base.current_node,
+        cursor=4,
+        status="running",
+        retry_count=1,
+        replan_count=1,
+        termination_requested=False,
+    )
+    run = SimpleNamespace(
+        id="run-1",
+        task_id="task-1",
+        kind="sync",
+    )
+
+    context = build_supervisor_context(  # type: ignore[arg-type]
+        state,
+        run,
+        base.action_set,
+    )
+
+    assert context.active_blockers == ("guard:approval_missing",)
+    assert context.completed_action_summary == ("completed_action_count:4",)
+    assert set(context.pending_work_summary) == {
+        "reconciliation-analysis:analyze_students:1",
+        "reconciliation-analysis:analyze_teachers:1",
+    }
+    assert set(context.evidence_manifest_refs) == {
+        "student-finding-batch-v1",
+        "teacher-finding-batch-v1",
+    }
+    assert context.retry_and_replan_budget == 2
+
+
 def test_decision_rejects_missing_why_not_reason() -> None:
     context = _context()
     decision = SupervisorDecisionV1(
@@ -171,4 +238,3 @@ def test_single_action_decision_requires_no_why_not_entries() -> None:
     )
 
     assert validate_supervisor_decision(context, decision) == decision
-
