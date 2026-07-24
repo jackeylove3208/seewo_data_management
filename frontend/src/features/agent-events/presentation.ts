@@ -167,9 +167,10 @@ export function presentAgentEvent(event: AgentTaskEvent): PresentedAgentEvent {
 
   if (event.type === "model_retry_exhausted" || event.type === "run.blocked_model_error") {
     const attempts = payloadNumber(event, "attempt_count") ?? 4;
+    const categories = payloadStringArray(event, "failure_categories");
     return {
       title: "模型分析已暂停",
-      description: `连续 ${attempts} 次模型分析均未成功。任务数据和学校锁仍被安全保留，请终止任务后检查模型服务。`,
+      description: blockedModelDescription(attempts, categories),
       tone: "danger",
       time,
     };
@@ -195,6 +196,42 @@ function payloadString(event: AgentTaskEvent, key: string): string {
 function payloadNumber(event: AgentTaskEvent, key: string): number | undefined {
   const value = event.payload[key];
   return typeof value === "number" ? value : undefined;
+}
+
+function payloadStringArray(event: AgentTaskEvent, key: string): string[] {
+  const value = event.payload[key];
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function blockedModelDescription(attempts: number, categories: string[]): string {
+  const prefix = `本阶段共进行了 ${attempts} 次模型尝试。`;
+  if (categories.includes("tool_argument_rejected")) {
+    return `${prefix}模型生成的工具参数未通过本批证据清单校验；失败审计已保存，请终止任务后检查批次工具契约。`;
+  }
+  if (categories.includes("tool_authorization_failure")) {
+    return `${prefix}后端授权状态与冻结任务上下文不一致，系统已停止盲目重试；任务数据和学校锁仍被安全保留。`;
+  }
+  if (categories.includes("tool_execution_failure")) {
+    return `${prefix}受控数据工具执行失败；失败审计已保存，请终止任务后检查对应后端工具。`;
+  }
+  if (categories.some((category) => category.startsWith("evidence_manifest_"))) {
+    return `${prefix}服务端冻结证据清单未通过校验；任务数据和学校锁仍被安全保留，请终止任务后查看失败审计。`;
+  }
+  if (categories.includes("model_input_contract_failure")) {
+    return `${prefix}后端传给 Agent 的输入合同未通过校验；任务数据和学校锁仍被安全保留，请终止任务后查看失败审计。`;
+  }
+  if (
+    categories.includes("model_contract_failure")
+    || categories.includes("model_output_failure")
+  ) {
+    return `${prefix}模型输出未通过结构化结果校验；任务数据和学校锁仍被安全保留。`;
+  }
+  if (categories.length > 0 && !categories.includes("model_provider_failure")) {
+    return `${prefix}Agent 受控处理未能完成；任务数据和学校锁仍被安全保留，请终止任务后查看失败审计。`;
+  }
+  return `${prefix}模型服务未能完成处理。任务数据和学校锁仍被安全保留，请终止任务后检查模型服务。`;
 }
 
 function payloadPhase(event: AgentTaskEvent): AgentPhase | undefined {

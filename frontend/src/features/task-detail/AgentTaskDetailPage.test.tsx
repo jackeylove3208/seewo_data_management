@@ -135,6 +135,56 @@ describe("controlled Agent graph task detail", () => {
     client.clear();
   });
 
+  it("shows the persisted graph failure category in the blocked notice", async () => {
+    vi.mocked(agentApi.task).mockResolvedValue({
+      id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      task_kind: "sync",
+      phase: "analyze_batches",
+      status: "blocked_model_error",
+      title: "全校学生数据同步",
+    });
+    vi.mocked(agentApi.graph).mockResolvedValue({
+      task_id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      graph_version: "agent-sync-graph-v1",
+      graph_cursor: 12,
+      current_node: "blocked_model_error",
+      business_stage: "agent_analysis",
+      current_action_zh: "模型分析已暂停",
+      progress_completed: 0,
+      progress_total: 1,
+      status: "blocked_model_error",
+      can_terminate: true,
+      human_gates: [],
+    });
+    vi.mocked(agentApi.events).mockResolvedValue({
+      cursor: "13",
+      events: [
+        {
+          id: "event-blocked",
+          cursor: "13",
+          type: "run.blocked_model_error",
+          phase: "analyze_batches",
+          status: "blocked_model_error",
+          payload: {
+            attempt_count: 4,
+            failed_node: "analyze_actionable_batches",
+            failure_categories: ["tool_argument_rejected"],
+          },
+          created_at: "2026-07-24T03:10:01Z",
+        },
+      ],
+    });
+    const { client } = renderPage();
+
+    expect(
+      await screen.findAllByText(/工具参数未通过本批证据清单校验/),
+    ).toHaveLength(2);
+    expect(screen.queryByText(/达到四次尝试上限/)).not.toBeInTheDocument();
+    client.clear();
+  });
+
   it("submits one decision for the frozen homogeneous gate", async () => {
     const user = userEvent.setup();
     const { client } = renderPage();

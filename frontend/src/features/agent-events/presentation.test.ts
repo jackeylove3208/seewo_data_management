@@ -64,6 +64,41 @@ describe("Agent event presentation", () => {
     expect(exhausted.tone).toBe("danger");
   });
 
+  it("explains the actual failed contract instead of blaming the model service", () => {
+    const rejectedArgument = presentAgentEvent(event("run.blocked_model_error", {
+      attempt_count: 4,
+      failed_node: "analyze_actionable_batches",
+      failure_categories: ["tool_argument_rejected"],
+    }));
+    const authorizationFailure = presentAgentEvent(event("run.blocked_model_error", {
+      attempt_count: 1,
+      failed_node: "analyze_actionable_batches",
+      failure_categories: ["tool_authorization_failure"],
+    }));
+    const evidenceFailure = presentAgentEvent(event("run.blocked_model_error", {
+      attempt_count: 0,
+      failed_node: "analyze_actionable_batches",
+      failure_categories: ["evidence_manifest_missing"],
+    }));
+    const inputContractFailure = presentAgentEvent(event("run.blocked_model_error", {
+      attempt_count: 0,
+      failed_node: "analyze_actionable_batches",
+      failure_categories: ["model_input_contract_failure"],
+    }));
+
+    expect(rejectedArgument.description).toContain("工具参数");
+    expect(rejectedArgument.description).toContain("证据清单");
+    expect(rejectedArgument.description).not.toContain("检查模型服务");
+    expect(authorizationFailure.description).toContain("授权状态");
+    expect(authorizationFailure.description).toContain("1 次");
+    expect(authorizationFailure.description).not.toContain("检查模型服务");
+    expect(evidenceFailure.description).toContain("证据清单");
+    expect(evidenceFailure.description).toContain("0 次");
+    expect(evidenceFailure.description).not.toContain("检查模型服务");
+    expect(inputContractFailure.description).toContain("输入合同");
+    expect(inputContractFailure.description).not.toContain("检查模型服务");
+  });
+
   it("uses a safe Chinese fallback for unknown audit events", () => {
     const presented = presentAgentEvent(event("internal.future_event"));
 

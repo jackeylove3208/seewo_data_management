@@ -142,7 +142,7 @@ _GRAPH_ACTION_LABELS = {
     "wait_rollback_approval": "正在等待回滚确认",
     "execute_restore_operations": "正在执行并验证回滚",
     "generate_rollback_report": "正在生成回滚报告",
-    "blocked_model_error": "AI 模型连续失败，等待终止任务",
+    "blocked_model_error": "Agent 处理已安全暂停，等待终止任务",
     "terminal": "任务已结束",
 }
 

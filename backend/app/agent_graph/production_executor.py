@@ -327,30 +327,63 @@ class ProductionGraphActionExecutor:
         action: AllowedActionV1,
     ) -> GraphActionOutcome:
         work_ids = tuple(_resource_uuid(value, "work-item") for value in action.resource_ids)
-        async with self._session_factory() as session:
-            try:
-                async with session.begin():
-                    batch = await _find_exact_batch(
-                        session,
-                        run_id=context.run_id,
-                        work_ids=work_ids,
-                    )
-                    repository = AgentAnalysisRepository(session)
-                    claimed = await repository.claim_batch(
-                        batch.id,
-                        worker_id=context.worker_id,
-                        run_lease_token=context.lease_token,
-                        lease_seconds=60,
-                    )
-                    if claimed is None or claimed.lease_token is None:
-                        raise RuntimeError("analysis batch is not claimable")
-                    work_rows = await _work_rows(session, work_ids)
-                    expected_kinds = {work.id: work.kind for work, _record in work_rows}
-                    tools, runner, manifest_id = await self._analysis_runtime(
-                        session,
-                        context=context,
-                        action=action,
-                    )
+        async with self._session_factory() as preparation_session:
+            async with preparation_session.begin():
+                batch = await _find_exact_batch(
+                    preparation_session,
+                    run_id=context.run_id,
+                    work_ids=work_ids,
+                )
+                repository = AgentAnalysisRepository(preparation_session)
+                claimed = await repository.claim_batch(
+                    batch.id,
+                    worker_id=context.worker_id,
+                    run_lease_token=context.lease_token,
+                    lease_seconds=60,
+                )
+                if claimed is None or claimed.lease_token is None:
+                    raise RuntimeError("analysis batch is not claimable")
+                batch_id = claimed.id
+                batch_lease_token = claimed.lease_token
+                work_rows = await _work_rows(preparation_session, work_ids)
+                expected_kinds = {
+                    work.id: work.kind for work, _record in work_rows
+                }
+                input_payload = ReconcileEntityBatchInput(
+                    task_id=context.task_id,
+                    run_id=context.run_id,
+                    phase=AgentPhase.ANALYZE_BATCHES,
+                    evidence_refs=action.required_evidence,
+                    work_items=tuple(
+                        IdentityWorkItem(
+                            work_item_id=work.id,
+                            entity_kind=record.entity_kind,
+                            target_locator=record.stable_locator,
+                            candidate_evidence_refs=(
+                                f"paired-record:{work.id}",
+                            ),
+                        )
+                        for work, record in work_rows
+                    ),
+                ).model_dump(mode="json")
+                _tools, _runner, manifest_id = await self._analysis_runtime(
+                    preparation_session,
+                    context=context,
+                    action=action,
+                )
+
+        result = None
+        model_failure: GraphSubAgentFailure | None = None
+        async with self._session_factory() as model_session:
+            async with model_session.begin():
+                tools, runner, replay_manifest_id = await self._analysis_runtime(
+                    model_session,
+                    context=context,
+                    action=action,
+                )
+                if replay_manifest_id != manifest_id:
+                    raise RuntimeError("analysis evidence manifest replay changed identity")
+                try:
                     result = await GraphIngestionAnalysisExecutors(
                         runner
                     ).analyze_actionable_batch(
@@ -364,50 +397,39 @@ class ProductionGraphActionExecutor:
                             evidence_manifest_id=manifest_id,
                             skill_name="reconcile-entity-batch",
                             skill_version="1.0.0",
-                            input_payload=ReconcileEntityBatchInput(
-                                task_id=context.task_id,
-                                run_id=context.run_id,
-                                phase=AgentPhase.ANALYZE_BATCHES,
-                                evidence_refs=action.required_evidence,
-                                work_items=tuple(
-                                    IdentityWorkItem(
-                                        work_item_id=work.id,
-                                        entity_kind=record.entity_kind,
-                                        target_locator=record.stable_locator,
-                                        candidate_evidence_refs=(
-                                            f"paired-record:{work.id}",
-                                        ),
-                                    )
-                                    for work, record in work_rows
-                                ),
-                            ).model_dump(mode="json"),
+                            input_payload=input_payload,
                         ),
                         expected_work_item_kinds=expected_kinds,
                         allowed_evidence_refs=frozenset(action.required_evidence),
                     )
-                    del tools
-                    await repository.finalize_batch(
-                        batch_id=claimed.id,
+                except GraphSubAgentFailure as error:
+                    model_failure = error
+                del tools
+
+        if model_failure is not None:
+            async with self._session_factory() as release_session:
+                async with release_session.begin():
+                    await AgentAnalysisRepository(
+                        release_session
+                    ).release_batch_claim(
+                        batch_id=batch_id,
                         worker_id=context.worker_id,
-                        run_lease_token=context.lease_token,
-                        lease_token=claimed.lease_token,
-                        output_hash="validated-graph-output",
-                        findings=result.payloads,
+                        lease_token=batch_lease_token,
                     )
-            except GraphSubAgentFailure:
-                await session.rollback()
-                async with session.begin():
-                    batch = await _find_exact_batch(
-                        session,
-                        run_id=context.run_id,
-                        work_ids=work_ids,
-                    )
-                    if batch.status == "claimed":
-                        batch.status = "pending"
-                        batch.lease_owner = None
-                        batch.lease_token = None
-                        batch.lease_expires_at = None
-                raise
+            raise model_failure
+        if result is None:
+            raise RuntimeError("analysis model completed without a validated result")
+
+        async with self._session_factory() as result_session:
+            async with result_session.begin():
+                await AgentAnalysisRepository(result_session).finalize_batch(
+                    batch_id=batch_id,
+                    worker_id=context.worker_id,
+                    run_lease_token=context.lease_token,
+                    lease_token=batch_lease_token,
+                    output_hash="validated-graph-output",
+                    findings=result.payloads,
+                )
         return _outcome(action)
 
     async def _open_identity_conflict_gate(

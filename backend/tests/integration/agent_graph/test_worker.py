@@ -453,7 +453,19 @@ async def test_deterministic_graph_node_does_not_call_supervisor_and_releases_te
 
 
 @pytest.mark.asyncio
-async def test_model_exhaustion_blocks_graph_run_and_keeps_school_lock(database) -> None:
+@pytest.mark.parametrize(
+    ("failure_categories", "attempt_count", "expected_code"),
+    [
+        (("tool_authorization_failure",), 1, "agent_tool_authorization_failed"),
+        (("evidence_manifest_missing",), 0, "agent_evidence_contract_failed"),
+    ],
+)
+async def test_model_failure_blocks_graph_run_and_keeps_school_lock(
+    database,
+    failure_categories,
+    attempt_count,
+    expected_code,
+) -> None:
     _task_id, run_id = await _start_graph_run(database)
     candidate = _candidate(
         "inspect_authority:page-1",
@@ -474,11 +486,15 @@ async def test_model_exhaustion_blocks_graph_run_and_keeps_school_lock(database)
     async def execute(_context, _action):
         from app.ai.graph_subagents import GraphSubAgentFailure
 
-        raise GraphSubAgentFailure("provider detail must not escape")
+        raise GraphSubAgentFailure(
+            "provider detail must not escape",
+            failure_categories=failure_categories,
+            attempt_count=attempt_count,
+        )
 
     worker = AgentGraphWorker(
         database.session_factory,
-        worker_id="graph-worker-model-error",
+        worker_id=f"graph-worker-model-error-{expected_code}",
         lease_seconds=60,
         supervisor=Supervisor("inspect_authority:page-1"),
         candidate_provider=plan,
@@ -495,12 +511,29 @@ async def test_model_exhaustion_blocks_graph_run_and_keeps_school_lock(database)
                 SchoolTaskLockRecord.active.is_(True),
             )
         )
+        event = await session.scalar(
+            select(AgentTaskEventRecord).where(
+                AgentTaskEventRecord.run_id == run_id,
+                AgentTaskEventRecord.event_type == "run.blocked_model_error",
+            )
+        )
+        failure = await session.scalar(
+            select(AgentFailureRecord).where(AgentFailureRecord.run_id == run_id)
+        )
         assert run is not None
         assert state is not None
         assert run.status == "blocked_model_error"
         assert state.current_node == "blocked_model_error"
         assert state.status == "blocked_model_error"
         assert active_lock is not None
+        assert event is not None
+        assert event.payload["failed_node"] == "inspect_sources"
+        assert event.payload["attempt_count"] == attempt_count
+        assert event.payload["failure_categories"] == list(failure_categories)
+        assert event.payload["code"] == expected_code
+        assert failure is not None
+        assert failure.attempt_count == attempt_count
+        assert failure.code == expected_code
 
 
 @pytest.mark.asyncio

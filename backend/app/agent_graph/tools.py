@@ -30,6 +30,21 @@ class GraphToolAuthorizationError(PermissionError):
     pass
 
 
+class GraphToolArgumentRejected(GraphToolAuthorizationError):
+    """A model-supplied tool argument is outside the frozen evidence manifest."""
+
+    def __init__(self, argument_name: str) -> None:
+        super().__init__(
+            f"evidence membership rejected for tool argument: {argument_name}"
+        )
+        self.repair_feedback = (
+            {
+                "path": f"tool_call.arguments.{argument_name}",
+                "type": "value_not_in_evidence_manifest",
+            },
+        )
+
+
 class GraphToolExecutionError(RuntimeError):
     pass
 
@@ -199,7 +214,7 @@ class GraphPhaseToolGateway:
                 raise GraphToolAuthorizationError(
                     "phase tool has no registered server handler"
                 )
-        except (GraphToolAuthorizationError, EvidenceMembershipError) as error:
+        except GraphToolAuthorizationError as error:
             await self._repository.record_tool_call(
                 invocation_id=context.invocation_id,
                 tool_name=tool_name,
@@ -209,10 +224,6 @@ class GraphPhaseToolGateway:
                 status="denied",
                 trace_id=trace_id,
             )
-            if isinstance(error, EvidenceMembershipError):
-                raise GraphToolAuthorizationError(
-                    f"evidence membership rejected: {error}"
-                ) from error
             raise
         try:
             payload = await handler(context, arguments)
@@ -332,11 +343,20 @@ class GraphPhaseToolGateway:
                 "arbitrary connector/tool arguments are forbidden"
             )
         if resource_id is not None:
-            require_manifest_resource(manifest, resource_id)
+            try:
+                require_manifest_resource(manifest, resource_id)
+            except EvidenceMembershipError as error:
+                raise GraphToolArgumentRejected("resource_id") from error
         if evidence_ref is not None:
-            require_manifest_evidence(manifest, evidence_ref)
+            try:
+                require_manifest_evidence(manifest, evidence_ref)
+            except EvidenceMembershipError as error:
+                raise GraphToolArgumentRejected("evidence_ref") from error
         if sensitive_token is not None:
-            require_manifest_token(manifest, sensitive_token)
+            try:
+                require_manifest_token(manifest, sensitive_token)
+            except EvidenceMembershipError as error:
+                raise GraphToolArgumentRejected("sensitive_token") from error
 
 
 def _contains_forbidden_argument(value: object, *, field: str | None = None) -> bool:

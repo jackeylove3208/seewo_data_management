@@ -181,6 +181,9 @@ def test_blocked_graph_progress_preserves_the_original_business_stage(
 
     assert progress.status_code == 200, progress.text
     assert progress.json()["business_stage"] == "data_ingestion"
+    assert progress.json()["current_action_zh"] == (
+        "Agent 处理已安全暂停，等待终止任务"
+    )
 
 
 def test_rejected_rollback_gate_requests_safe_termination(

@@ -438,7 +438,11 @@ class AgentGraphRepository:
         action_id: str,
         skill_name: str,
         input_hash: str,
-    ) -> tuple[int, tuple[dict[str, str], ...]]:
+    ) -> tuple[
+        int,
+        tuple[dict[str, str], ...],
+        tuple[str, ...],
+    ]:
         records = tuple(
             await self.session.scalars(
                 select(AgentSubAgentInvocationRecord)
@@ -453,12 +457,20 @@ class AgentGraphRepository:
             )
         )
         repair_feedback: tuple[dict[str, str], ...] = ()
+        failure_categories: list[str] = []
         for record in records:
             candidate_feedback = _safe_repair_feedback(
                 record.model_provenance.get("repair_feedback")
             )
             if candidate_feedback:
                 repair_feedback = candidate_feedback
+            safe_error_code = record.model_provenance.get("safe_error_code")
+            if (
+                isinstance(safe_error_code, str)
+                and safe_error_code
+                and safe_error_code not in failure_categories
+            ):
+                failure_categories.append(safe_error_code)
             if record.status != "running":
                 continue
             record.status = "failed"
@@ -468,11 +480,14 @@ class AgentGraphRepository:
                 "attempt": record.attempt,
                 "request_ids": [],
             }
+            if "invocation_interrupted" not in failure_categories:
+                failure_categories.append("invocation_interrupted")
         if records:
             await self.session.flush()
         return (
             max((record.attempt for record in records), default=0) + 1,
             repair_feedback,
+            tuple(failure_categories),
         )
 
     async def record_human_gate(

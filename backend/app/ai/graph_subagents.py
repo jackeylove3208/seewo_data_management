@@ -10,12 +10,15 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent_graph.evidence import EvidenceManifestV1
 from app.agent_graph.repository import AgentGraphRepository
 from app.agent_graph.tools import (
     GRAPH_NODE_TOOL_NAMES,
     GraphPhaseToolGateway,
+    GraphToolArgumentRejected,
     GraphToolAuthorizationError,
     GraphToolContext,
+    GraphToolExecutionError,
 )
 from app.ai.agent_prompting import (
     build_json_repair_request,
@@ -32,10 +35,22 @@ from app.ai.providers.base import (
 )
 from app.ai.skills.registry import SkillDefinition, SkillRegistry, UnsafeSkillError
 from app.core.security import OperatorContext
+from app.models.agent_graph import AgentEvidenceManifestRecord
 
 
 class GraphSubAgentFailure(RuntimeError):
     """Raised after all bounded model attempts fail closed."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_categories: tuple[str, ...] = (),
+        attempt_count: int = 0,
+    ) -> None:
+        super().__init__(message)
+        self.failure_categories = failure_categories
+        self.attempt_count = attempt_count
 
 
 class _RepairableGraphModelOutput(RuntimeError):
@@ -46,7 +61,12 @@ class _RepairableGraphModelOutput(RuntimeError):
         model_provenance: dict[str, Any],
     ) -> None:
         super().__init__("graph sub-agent model output violated its contract")
-        self.repair_feedback = tuple(safe_validation_errors(error))
+        explicit_feedback = getattr(error, "repair_feedback", ())
+        self.repair_feedback = (
+            tuple(explicit_feedback)
+            if explicit_feedback
+            else tuple(safe_validation_errors(error))
+        )
         self.model_provenance = model_provenance
         self.__cause__ = error
 
@@ -120,8 +140,12 @@ class GraphSkillModelRunner:
                 invocation.input_payload,
             )
         except (ValidationError, UnsafeSkillError) as error:
-            raise GraphSubAgentFailure("graph sub-agent input contract is invalid") from error
+            raise GraphSubAgentFailure(
+                "graph sub-agent input contract is invalid",
+                failure_categories=("model_input_contract_failure",),
+            ) from error
         self._validate_skill_tool_boundary(skill, invocation.graph_node)
+        manifest = await self._load_evidence_manifest(invocation)
         input_payload = validated_input.model_dump(mode="json")
         input_hash = _safe_hash(input_payload)
         completed = await self._repository.find_completed_invocation(
@@ -143,7 +167,11 @@ class GraphSkillModelRunner:
         last_error: Exception | None = None
         repair_feedback: tuple[dict[str, str], ...] = ()
         total_attempts = self._max_retries + 1
-        start_attempt, persisted_repair_feedback = (
+        (
+            start_attempt,
+            persisted_repair_feedback,
+            persisted_failure_categories,
+        ) = (
             await self._repository.prepare_invocation_resume(
                 graph_run_id=invocation.graph_run_id,
                 cursor=invocation.graph_cursor,
@@ -152,10 +180,19 @@ class GraphSkillModelRunner:
                 input_hash=input_hash,
             )
         )
+        failure_categories = list(persisted_failure_categories)
+        attempted = min(total_attempts, max(0, start_attempt - 1))
+        if "tool_authorization_failure" in failure_categories:
+            raise GraphSubAgentFailure(
+                "graph sub-agent durable authorization previously failed",
+                failure_categories=tuple(failure_categories),
+                attempt_count=attempted,
+            )
         if persisted_repair_feedback:
             repair_feedback = persisted_repair_feedback
 
         for attempt in range(start_attempt, total_attempts + 1):
+            attempted = attempt
             record = await self._repository.record_invocation(
                 graph_run_id=invocation.graph_run_id,
                 cursor=invocation.graph_cursor,
@@ -181,6 +218,7 @@ class GraphSkillModelRunner:
                     record.id,
                     skill,
                     input_payload,
+                    manifest=manifest,
                     repair_feedback=repair_feedback,
                     result_validator=result_validator,
                 )
@@ -198,13 +236,16 @@ class GraphSkillModelRunner:
                 )
             except Exception as error:
                 last_error = error
+                safe_error_code = _safe_error_code(error)
+                if safe_error_code not in failure_categories:
+                    failure_categories.append(safe_error_code)
                 repair_feedback = (
                     error.repair_feedback
                     if isinstance(error, _RepairableGraphModelOutput)
                     else ()
                 )
                 failure_provenance = {
-                    "safe_error_code": _safe_error_code(error),
+                    "safe_error_code": safe_error_code,
                     "attempt": attempt,
                     "request_ids": [],
                 }
@@ -216,13 +257,61 @@ class GraphSkillModelRunner:
                 await self._repository.finalize_invocation(
                     record.id,
                     status="failed",
-                    output_hash=_safe_hash({"safe_error_code": _safe_error_code(error)}),
+                    output_hash=_safe_hash({"safe_error_code": safe_error_code}),
                     model_provenance=failure_provenance,
                 )
+                if isinstance(error, GraphToolAuthorizationError) and not isinstance(
+                    error,
+                    GraphToolArgumentRejected,
+                ):
+                    break
 
         raise GraphSubAgentFailure(
-            f"graph sub-agent failed after four attempts: {skill.name}"
+            (
+                f"graph sub-agent failed after four attempts: {skill.name}"
+                if attempted == 4
+                else f"graph sub-agent failed after {attempted} attempt(s): {skill.name}"
+            ),
+            failure_categories=tuple(failure_categories),
+            attempt_count=attempted,
         ) from last_error
+
+    async def _load_evidence_manifest(
+        self,
+        invocation: GraphSkillInvocation,
+    ) -> EvidenceManifestV1:
+        record = await self._session.get(
+            AgentEvidenceManifestRecord,
+            invocation.evidence_manifest_id,
+        )
+        if record is None:
+            raise GraphSubAgentFailure(
+                "graph sub-agent evidence manifest is missing",
+                failure_categories=("evidence_manifest_missing",),
+            )
+        try:
+            manifest = EvidenceManifestV1.model_validate(record.manifest)
+        except ValidationError as error:
+            raise GraphSubAgentFailure(
+                "graph sub-agent evidence manifest is invalid",
+                failure_categories=("evidence_manifest_invalid",),
+            ) from error
+        if (
+            manifest.manifest_id != invocation.evidence_manifest_id
+            or record.graph_run_id != invocation.graph_run_id
+            or record.cursor != invocation.graph_cursor
+            or record.graph_node != invocation.graph_node
+            or record.action_id != invocation.action_id
+            or manifest.task_id != str(invocation.task_id)
+            or manifest.run_id != str(invocation.run_id)
+            or manifest.graph_node != invocation.graph_node
+            or manifest.action_id != invocation.action_id
+        ):
+            raise GraphSubAgentFailure(
+                "graph sub-agent evidence manifest binding is invalid",
+                failure_categories=("evidence_manifest_binding_failure",),
+            )
+        return manifest
 
     async def _run_attempt(
         self,
@@ -231,13 +320,21 @@ class GraphSkillModelRunner:
         skill: SkillDefinition,
         input_payload: dict[str, Any],
         *,
+        manifest: EvidenceManifestV1,
         repair_feedback: tuple[dict[str, str], ...] = (),
         result_validator: ResultValidator | None = None,
     ) -> tuple[BaseModel, dict[str, Any]]:
-        response_schema = _response_schema(skill, self._skills)
+        response_schema = _response_schema(skill, self._skills, manifest=manifest)
         response_example = response_example_from_schema(response_schema)
         initial_request = LLMRequest(
-            messages=tuple(_initial_messages(skill, invocation, input_payload)),
+            messages=tuple(
+                _initial_messages(
+                    skill,
+                    invocation,
+                    input_payload,
+                    manifest=manifest,
+                )
+            ),
             response_schema=response_schema,
             response_example=response_example,
         )
@@ -304,9 +401,7 @@ class GraphSkillModelRunner:
                 if not isinstance(name, str) or not isinstance(arguments, dict):
                     raise ValueError("graph sub-agent tool call is invalid")
                 if name not in allowed_tools:
-                    raise GraphToolAuthorizationError(
-                        "Skill did not authorize phase tool"
-                    )
+                    raise ValueError("Skill did not authorize phase tool")
                 _validate_tool_arguments(name, arguments)
                 tool_calls += 1
                 if tool_calls > self._max_tool_calls:
@@ -315,7 +410,6 @@ class GraphSkillModelRunner:
                 ValidationError,
                 UnsafeSkillError,
                 ValueError,
-                GraphToolAuthorizationError,
             ) as error:
                 raise _RepairableGraphModelOutput(
                     error,
@@ -328,14 +422,27 @@ class GraphSkillModelRunner:
                         output_tokens=output_tokens,
                     ),
                 ) from error
-            tool_result = await self._tool_gateway.call(
-                name,
-                context=context,
-                arguments=arguments,
-                resource_id=_optional_argument(arguments, "resource_id"),
-                evidence_ref=_optional_argument(arguments, "evidence_ref"),
-                sensitive_token=_optional_argument(arguments, "sensitive_token"),
-            )
+            try:
+                tool_result = await self._tool_gateway.call(
+                    name,
+                    context=context,
+                    arguments=arguments,
+                    resource_id=_optional_argument(arguments, "resource_id"),
+                    evidence_ref=_optional_argument(arguments, "evidence_ref"),
+                    sensitive_token=_optional_argument(arguments, "sensitive_token"),
+                )
+            except GraphToolArgumentRejected as error:
+                raise _RepairableGraphModelOutput(
+                    error,
+                    model_provenance=_model_provenance(
+                        provider=provider,
+                        model=model,
+                        request_ids=request_ids,
+                        tool_calls=tool_calls,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                    ),
+                ) from error
             messages.extend(
                 (
                     Message(
@@ -400,6 +507,8 @@ def _initial_messages(
     skill: SkillDefinition,
     invocation: GraphSkillInvocation,
     input_payload: dict[str, Any],
+    *,
+    manifest: EvidenceManifestV1,
 ) -> list[Message]:
     return [
         Message(
@@ -417,6 +526,10 @@ def _initial_messages(
             content=json.dumps(
                 {
                     "evidence_manifest_id": str(invocation.evidence_manifest_id),
+                    "allowed_resource_ids": list(manifest.resource_ids),
+                    "allowed_evidence_refs": list(
+                        manifest.allowed_evidence_refs
+                    ),
                     "bounded_input_contract": input_payload,
                 },
                 ensure_ascii=False,
@@ -430,6 +543,8 @@ def _initial_messages(
 def _response_schema(
     skill: SkillDefinition,
     registry: SkillRegistry,
+    *,
+    manifest: EvidenceManifestV1,
 ) -> dict[str, Any]:
     from app.ai.skills.contracts import AGENT_SKILL_SCHEMAS
 
@@ -447,7 +562,10 @@ def _response_schema(
                     "additionalProperties": False,
                     "properties": {
                         "name": {"type": "string", "const": name},
-                        "arguments": _tool_arguments_schema(name),
+                        "arguments": _tool_arguments_schema(
+                            name,
+                            manifest=manifest,
+                        ),
                     },
                     "required": ["name", "arguments"],
                 }
@@ -469,7 +587,11 @@ def _response_schema(
     }
 
 
-def _tool_arguments_schema(name: str) -> dict[str, Any]:
+def _tool_arguments_schema(
+    name: str,
+    *,
+    manifest: EvidenceManifestV1 | None = None,
+) -> dict[str, Any]:
     if name == "submit_conflict_interpretation":
         from app.ai.skills.contracts import ConflictDecisionDraft
 
@@ -478,7 +600,9 @@ def _tool_arguments_schema(name: str) -> dict[str, Any]:
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "resource_id": {"type": "string", "minLength": 1},
+                "resource_id": _manifest_member_schema(
+                    manifest.resource_ids if manifest is not None else None
+                ),
                 **draft_schema["properties"],
             },
             "required": ["resource_id", *draft_schema["required"]],
@@ -491,7 +615,9 @@ def _tool_arguments_schema(name: str) -> dict[str, Any]:
         "read_claim_state",
     }:
         properties: dict[str, Any] = {
-            "resource_id": {"type": "string", "minLength": 1},
+            "resource_id": _manifest_member_schema(
+                manifest.resource_ids if manifest is not None else None
+            ),
         }
         if name == "read_connector_page":
             properties["page_locator"] = {"type": ["string", "null"]}
@@ -507,7 +633,11 @@ def _tool_arguments_schema(name: str) -> dict[str, Any]:
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "evidence_ref": {"type": "string", "minLength": 1},
+                "evidence_ref": _manifest_member_schema(
+                    manifest.allowed_evidence_refs
+                    if manifest is not None
+                    else None
+                ),
             },
             "required": ["evidence_ref"],
         }
@@ -521,7 +651,9 @@ def _tool_arguments_schema(name: str) -> dict[str, Any]:
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "resource_id": {"type": "string", "minLength": 1},
+                "resource_id": _manifest_member_schema(
+                    manifest.resource_ids if manifest is not None else None
+                ),
                 "submission": {"type": "object"},
             },
             "required": ["resource_id", "submission"],
@@ -530,11 +662,23 @@ def _tool_arguments_schema(name: str) -> dict[str, Any]:
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "resource_id": {"type": "string", "minLength": 1},
-            "evidence_ref": {"type": "string", "minLength": 1},
+            "resource_id": _manifest_member_schema(
+                manifest.resource_ids if manifest is not None else None
+            ),
+            "evidence_ref": _manifest_member_schema(
+                manifest.allowed_evidence_refs if manifest is not None else None
+            ),
         },
         "minProperties": 1,
     }
+
+
+def _manifest_member_schema(
+    values: tuple[str, ...] | None,
+) -> dict[str, Any]:
+    if values is not None:
+        return {"type": "string", "enum": list(values)}
+    return {"type": "string", "minLength": 1}
 
 
 def _validate_tool_arguments(name: str, arguments: dict[str, Any]) -> None:
@@ -638,10 +782,19 @@ def _safe_hash(value: object) -> str:
 
 
 def _safe_error_code(error: Exception) -> str:
+    if isinstance(error, _RepairableGraphModelOutput) and isinstance(
+        error.__cause__,
+        Exception,
+    ):
+        return _safe_error_code(error.__cause__)
     if isinstance(error, ModelProviderError):
         return "model_provider_failure"
+    if isinstance(error, GraphToolArgumentRejected):
+        return "tool_argument_rejected"
     if isinstance(error, GraphToolAuthorizationError):
         return "tool_authorization_failure"
+    if isinstance(error, GraphToolExecutionError):
+        return "tool_execution_failure"
     if isinstance(error, (ValidationError, UnsafeSkillError)):
         return "model_contract_failure"
     return "model_output_failure"

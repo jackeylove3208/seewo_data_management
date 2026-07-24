@@ -501,6 +501,12 @@ class AgentGraphWorker:
         error: GraphSubAgentFailure | GraphSupervisorFailure,
     ) -> None:
         failure_categories = _safe_model_failure_categories(error)
+        attempt_count = _safe_model_attempt_count(error)
+        failure_code = _safe_blocked_failure_code(
+            failure_categories,
+            attempt_count=attempt_count,
+        )
+        safe_message = _safe_blocked_failure_message(failure_categories)
         async with self._session_factory() as session:
             async with session.begin():
                 runtime = AgentRuntimeRepository(session)
@@ -529,8 +535,12 @@ class AgentGraphWorker:
                     to_node="blocked_model_error",
                     action_id="block_model_error",
                     guard_results={
-                        "model_attempts": "exhausted",
-                        "safe_error_code": "agent_model_retries_exhausted",
+                        "model_attempts": (
+                            "exhausted"
+                            if attempt_count >= 4
+                            else "stopped_non_retryable"
+                        ),
+                        "safe_error_code": failure_code,
                         "failed_node": context.current_node,
                         "failure_categories": failure_categories,
                     },
@@ -541,19 +551,17 @@ class AgentGraphWorker:
                 await runtime.record_failure(
                     run.id,
                     phase=AgentPhase(run.phase),
-                    code="agent_model_retries_exhausted",
-                    safe_message=(
-                        "AI 模型连续处理失败，任务已安全暂停；当前仅允许终止任务。"
-                    ),
-                    attempt_count=4,
+                    code=failure_code,
+                    safe_message=safe_message,
+                    attempt_count=attempt_count,
                 )
                 await runtime.append_event(
                     run.id,
                     "run.blocked_model_error",
                     {
-                        "code": "agent_model_retries_exhausted",
-                        "message": "AI 模型连续处理失败，任务已安全暂停。",
-                        "attempt_count": 4,
+                        "code": failure_code,
+                        "message": safe_message,
+                        "attempt_count": attempt_count,
                         "allowed_commands": ["terminate"],
                         "failed_node": context.current_node,
                         "failure_categories": failure_categories,
@@ -644,9 +652,64 @@ class AgentGraphWorker:
 def _safe_model_failure_categories(
     error: GraphSubAgentFailure | GraphSupervisorFailure,
 ) -> list[str]:
-    if isinstance(error, GraphSupervisorFailure) and error.failure_categories:
+    if error.failure_categories:
         return list(error.failure_categories)
     return ["subagent_model_failure"]
+
+
+def _safe_model_attempt_count(
+    error: GraphSubAgentFailure | GraphSupervisorFailure,
+) -> int:
+    if isinstance(error, GraphSubAgentFailure):
+        return max(0, error.attempt_count)
+    attempt_count = getattr(error, "attempt_count", 0)
+    if isinstance(attempt_count, int) and attempt_count > 0:
+        return attempt_count
+    return 4
+
+
+def _safe_blocked_failure_code(
+    failure_categories: list[str],
+    *,
+    attempt_count: int,
+) -> str:
+    if "tool_authorization_failure" in failure_categories:
+        return "agent_tool_authorization_failed"
+    if any(
+        category.startswith("evidence_manifest_")
+        for category in failure_categories
+    ):
+        return "agent_evidence_contract_failed"
+    if attempt_count >= 4:
+        return "agent_model_retries_exhausted"
+    return "agent_model_processing_failed"
+
+
+def _safe_blocked_failure_message(failure_categories: list[str]) -> str:
+    if "tool_authorization_failure" in failure_categories:
+        return (
+            "后端授权状态与冻结任务上下文不一致，任务已安全暂停；"
+            "当前仅允许终止任务。"
+        )
+    if "tool_argument_rejected" in failure_categories:
+        return (
+            "AI 工具参数连续未通过本批证据清单校验，任务已安全暂停；"
+            "当前仅允许终止任务。"
+        )
+    if any(
+        category.startswith("evidence_manifest_")
+        for category in failure_categories
+    ):
+        return (
+            "冻结证据清单未通过服务端校验，任务已安全暂停；"
+            "当前仅允许终止任务。"
+        )
+    if "tool_execution_failure" in failure_categories:
+        return (
+            "受控数据工具连续执行失败，任务已安全暂停；"
+            "当前仅允许终止任务。"
+        )
+    return "AI 模型连续处理失败，任务已安全暂停；当前仅允许终止任务。"
 
 
 def _is_non_retryable_database_error(error: DBAPIError) -> bool:
