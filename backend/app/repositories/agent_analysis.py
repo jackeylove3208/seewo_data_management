@@ -544,10 +544,9 @@ class AgentAnalysisRepository:
         ):
             raise ReplayConflict("Agent run claim is no longer active")
         if (
-            batch.lease_owner != worker_id
+            batch.status != "claimed"
+            or batch.lease_owner != worker_id
             or batch.lease_token != lease_token
-            or batch.lease_expires_at is None
-            or _as_utc(batch.lease_expires_at) < now
         ):
             raise ReplayConflict("model batch claim is no longer active")
         membership = tuple(
@@ -682,8 +681,6 @@ class AgentAnalysisRepository:
             batch.status != "claimed"
             or batch.lease_owner != worker_id
             or batch.lease_token != lease_token
-            or batch.lease_expires_at is None
-            or _as_utc(batch.lease_expires_at) < now
         ):
             raise ReplayConflict("model batch claim is no longer active")
         count = int(

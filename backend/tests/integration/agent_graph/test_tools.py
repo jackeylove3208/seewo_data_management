@@ -7,6 +7,7 @@ from app.agent_graph.evidence import build_evidence_manifest
 from app.agent_graph.repository import AgentGraphRepository
 from app.agent_graph.tools import (
     GraphPhaseToolGateway,
+    GraphToolArgumentRejected,
     GraphToolAuthorizationError,
     GraphToolContext,
     GraphToolExecutionError,
@@ -130,7 +131,7 @@ async def test_graph_tool_rejects_resource_outside_manifest_and_audits_denial(se
         tools={"read_work_item": lambda _context, _arguments: None},
     )
 
-    with pytest.raises(GraphToolAuthorizationError, match="evidence membership"):
+    with pytest.raises(GraphToolArgumentRejected, match="evidence membership"):
         await gateway.call(
             "read_work_item",
             context=context,

@@ -78,6 +78,19 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
   const pendingGates = graph.data?.human_gates.filter(
     (gate) => gate.status === "pending" && gate.kind !== "termination_confirmation",
   ) ?? [];
+  const blockedEvent = blocked
+    ? events.data?.events
+      .slice()
+      .reverse()
+      .find(
+        (event) =>
+          event.type === "run.blocked_model_error"
+          || event.type === "model_retry_exhausted",
+      )
+    : undefined;
+  const blockedDescription = blockedEvent
+    ? presentAgentEvent(blockedEvent).description
+    : "模型处理未能完成。任务数据仍被安全保留，请终止任务后查看失败审计。";
   async function requestTermination() {
     setTerminationLoading(true);
     setTerminateError(undefined);
@@ -227,7 +240,7 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
         <section className="agent-blocked-notice" aria-live="assertive">
           <div>
             <h2>模型分析已暂停</h2>
-            <p>模型调用已达到四次尝试上限。任务数据仍被安全保留，请终止任务后检查模型服务。</p>
+            <p>{blockedDescription}</p>
           </div>
         </section>
       )}

@@ -288,6 +288,8 @@ async def test_batch_claim_and_atomic_finalization_enforce_fencing_and_attempt_l
             output_hash="untrusted",
             findings=(finding, finding),
         )
+    claim.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    await session.flush()
     second_finding = finding.model_copy(update={"work_item_id": item_ids[1]})
     await repository.finalize_batch(
         batch_id=batch.id,

@@ -8,7 +8,11 @@ from app.agent_graph.analysis_executors import GraphIngestionAnalysisExecutors
 from app.agent_graph.analysis_tools import GraphAnalysisEvidenceTools
 from app.agent_graph.evidence import build_evidence_manifest
 from app.agent_graph.repository import AgentGraphRepository
-from app.agent_graph.tools import GraphPhaseToolGateway, GraphToolContext
+from app.agent_graph.tools import (
+    GraphPhaseToolGateway,
+    GraphToolAuthorizationError,
+    GraphToolContext,
+)
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentRunKind
 from app.ai.graph_subagents import (
@@ -261,6 +265,235 @@ async def test_real_skill_invocation_uses_tool_and_records_model_provenance(sess
     tool_call = await session.scalar(select(AgentToolCallRecord))
     assert tool_call is not None
     assert tool_call.authorized is True
+
+
+@pytest.mark.asyncio
+async def test_skill_prompt_and_tool_schema_bind_exact_manifest_members(session) -> None:
+    task, run, state, manifest = await _graph_invocation_fixture(
+        session,
+        node="inspect_sources",
+        action_id="inspect_authority:page-1",
+    )
+    provider = ScriptedProvider(
+        [
+            {
+                "result": {
+                    "schema_version": "agent-contract-v1",
+                    "recognized": True,
+                    "detected_fields": ["category"],
+                    "entity_kinds": ["student"],
+                    "safe_problem_codes": [],
+                }
+            }
+        ]
+    )
+    operator = OperatorContext(
+        operator_id="demo-operator",
+        tenant_id=task.tenant_id,
+    )
+
+    await GraphSkillModelRunner(
+        session,
+        provider=provider,
+        tool_gateway=GraphPhaseToolGateway(session, operator=operator, tools={}),
+        operator=operator,
+        max_retries=0,
+    ).run(
+        GraphSkillInvocation(
+            task_id=task.id,
+            run_id=run.id,
+            graph_run_id=state.id,
+            graph_node=state.current_node,
+            graph_cursor=state.cursor,
+            action_id="inspect_authority:page-1",
+            evidence_manifest_id=manifest.id,
+            skill_name="inspect-external-data-source",
+            skill_version="1.0.0",
+            input_payload={
+                "task_id": str(task.id),
+                "run_id": str(run.id),
+                "phase": "ingest_and_normalize",
+                "evidence_refs": ["source:authoritative:inspection"],
+                "connector_kind": "csv",
+                "connector_ref": "source:authoritative:page:1",
+            },
+        )
+    )
+
+    request = provider.requests[0]
+    user_payload = request.messages[1].content
+    assert '"allowed_resource_ids": ["source:authoritative:page:1"]' in user_payload
+    assert (
+        '"allowed_evidence_refs": ["source:authoritative:inspection"]'
+        in user_payload
+    )
+    tool_options = request.response_schema["properties"]["result"]["anyOf"][1:]
+    inspect_schema = next(
+        option["properties"]["tool_call"]
+        for option in tool_options
+        if option["properties"]["tool_call"]["properties"]["name"]["const"]
+        == "inspect_configured_source"
+    )
+    assert inspect_schema["properties"]["arguments"]["properties"]["resource_id"] == {
+        "type": "string",
+        "enum": ["source:authoritative:page:1"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_manifest_resource_miss_receives_repair_feedback(session) -> None:
+    task, run, state, manifest = await _graph_invocation_fixture(
+        session,
+        node="inspect_sources",
+        action_id="inspect_authority:page-1",
+    )
+    provider = ScriptedProvider(
+        [
+            {
+                "result": {
+                    "tool_call": {
+                        "name": "inspect_configured_source",
+                        "arguments": {"resource_id": "source:foreign:page:1"},
+                    }
+                }
+            },
+            {
+                "result": {
+                    "schema_version": "agent-contract-v1",
+                    "recognized": True,
+                    "detected_fields": ["category"],
+                    "entity_kinds": ["student"],
+                    "safe_problem_codes": [],
+                }
+            },
+        ]
+    )
+    operator = OperatorContext(
+        operator_id="demo-operator",
+        tenant_id=task.tenant_id,
+    )
+
+    result = await GraphSkillModelRunner(
+        session,
+        provider=provider,
+        tool_gateway=GraphPhaseToolGateway(
+            session,
+            operator=operator,
+            tools={"inspect_configured_source": lambda _context, _arguments: None},
+        ),
+        operator=operator,
+        max_retries=1,
+    ).run(
+        GraphSkillInvocation(
+            task_id=task.id,
+            run_id=run.id,
+            graph_run_id=state.id,
+            graph_node=state.current_node,
+            graph_cursor=state.cursor,
+            action_id="inspect_authority:page-1",
+            evidence_manifest_id=manifest.id,
+            skill_name="inspect-external-data-source",
+            skill_version="1.0.0",
+            input_payload={
+                "task_id": str(task.id),
+                "run_id": str(run.id),
+                "phase": "ingest_and_normalize",
+                "evidence_refs": ["source:authoritative:inspection"],
+                "connector_kind": "csv",
+                "connector_ref": "source:authoritative:page:1",
+            },
+        )
+    )
+
+    assert result.output.model_dump()["recognized"] is True
+    assert "validation_errors" in provider.requests[1].messages[-1].content
+    assert "tool_call.arguments.resource_id" in provider.requests[1].messages[-1].content
+    attempts = tuple(
+        await session.scalars(
+            select(AgentSubAgentInvocationRecord)
+            .where(AgentSubAgentInvocationRecord.graph_run_id == state.id)
+            .order_by(AgentSubAgentInvocationRecord.attempt)
+        )
+    )
+    assert attempts[0].model_provenance["safe_error_code"] == (
+        "tool_argument_rejected"
+    )
+    denied = await session.scalar(
+        select(AgentToolCallRecord).where(AgentToolCallRecord.authorized.is_(False))
+    )
+    assert denied is not None
+
+
+@pytest.mark.asyncio
+async def test_durable_authorization_failure_stops_without_blind_model_retries(
+    session,
+) -> None:
+    task, run, state, manifest = await _graph_invocation_fixture(
+        session,
+        node="inspect_sources",
+        action_id="inspect_authority:page-1",
+    )
+    tool_call = {
+        "result": {
+            "tool_call": {
+                "name": "inspect_configured_source",
+                "arguments": {"resource_id": "source:authoritative:page:1"},
+            }
+        }
+    }
+    provider = ScriptedProvider([tool_call, tool_call, tool_call, tool_call])
+    operator = OperatorContext(
+        operator_id="demo-operator",
+        tenant_id=task.tenant_id,
+    )
+
+    class RejectingGateway:
+        async def call(self, *_args, **_kwargs):
+            raise GraphToolAuthorizationError(
+                "durable graph context is not authorized"
+            )
+
+    request = GraphSkillInvocation(
+        task_id=task.id,
+        run_id=run.id,
+        graph_run_id=state.id,
+        graph_node=state.current_node,
+        graph_cursor=state.cursor,
+        action_id="inspect_authority:page-1",
+        evidence_manifest_id=manifest.id,
+        skill_name="inspect-external-data-source",
+        skill_version="1.0.0",
+        input_payload={
+            "task_id": str(task.id),
+            "run_id": str(run.id),
+            "phase": "ingest_and_normalize",
+            "evidence_refs": ["source:authoritative:inspection"],
+            "connector_kind": "csv",
+            "connector_ref": "source:authoritative:page:1",
+        },
+    )
+    with pytest.raises(GraphSubAgentFailure) as captured:
+        await GraphSkillModelRunner(
+            session,
+            provider=provider,
+            tool_gateway=RejectingGateway(),  # type: ignore[arg-type]
+            operator=operator,
+        ).run(request)
+
+    assert len(provider.requests) == 1
+    assert captured.value.failure_categories == ("tool_authorization_failure",)
+    assert captured.value.attempt_count == 1
+    replay_provider = ScriptedProvider([])
+    with pytest.raises(GraphSubAgentFailure) as replay:
+        await GraphSkillModelRunner(
+            session,
+            provider=replay_provider,
+            tool_gateway=RejectingGateway(),  # type: ignore[arg-type]
+            operator=operator,
+        ).run(request)
+    assert replay_provider.requests == []
+    assert replay.value.failure_categories == ("tool_authorization_failure",)
+    assert replay.value.attempt_count == 1
 
 
 @pytest.mark.asyncio
@@ -680,7 +913,7 @@ async def test_model_exhaustion_records_four_failures_without_legacy_delegate(se
         ),
     )
 
-    with pytest.raises(GraphSubAgentFailure, match="four attempts"):
+    with pytest.raises(GraphSubAgentFailure, match="four attempts") as captured:
         await runner.run(
             GraphSkillInvocation(
                 task_id=task.id,
@@ -701,6 +934,50 @@ async def test_model_exhaustion_records_four_failures_without_legacy_delegate(se
                 },
             )
         )
+
+    assert captured.value.failure_categories == ("model_provider_failure",)
+    assert captured.value.attempt_count == 4
+    replay_provider = ScriptedProvider([])
+    replay_runner = GraphSkillModelRunner(
+        session,
+        provider=replay_provider,
+        tool_gateway=GraphPhaseToolGateway(
+            session,
+            operator=OperatorContext(
+                operator_id="demo-operator",
+                tenant_id=task.tenant_id,
+            ),
+            tools={},
+        ),
+        operator=OperatorContext(
+            operator_id="demo-operator",
+            tenant_id=task.tenant_id,
+        ),
+    )
+    with pytest.raises(GraphSubAgentFailure) as replay_failure:
+        await replay_runner.run(
+            GraphSkillInvocation(
+                task_id=task.id,
+                run_id=run.id,
+                graph_run_id=state.id,
+                graph_node=state.current_node,
+                graph_cursor=state.cursor,
+                action_id="inspect_authority:page-1",
+                evidence_manifest_id=manifest.id,
+                skill_name="inspect-external-data-source",
+                skill_version="1.0.0",
+                input_payload={
+                    "task_id": str(task.id),
+                    "run_id": str(run.id),
+                    "phase": "ingest_and_normalize",
+                    "connector_kind": "csv",
+                    "connector_ref": "source:authoritative:page:1",
+                },
+            )
+        )
+    assert replay_provider.requests == []
+    assert replay_failure.value.failure_categories == ("model_provider_failure",)
+    assert replay_failure.value.attempt_count == 4
 
     invocations = tuple(
         await session.scalars(
