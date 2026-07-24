@@ -146,6 +146,25 @@ _GRAPH_ACTION_LABELS = {
     "terminal": "任务已结束",
 }
 
+_GRAPH_STAGE_BY_RUN_PHASE = {
+    "intent_confirmed": "data_ingestion",
+    "acquire_school_lock": "data_ingestion",
+    "ingest_and_normalize": "data_ingestion",
+    "build_identity_work": "agent_analysis",
+    "analyze_batches": "agent_analysis",
+    "clarify_identity_conflicts": "agent_analysis",
+    "aggregate_risk_and_approvals": "governance_execution",
+    "compile_execution_plan": "governance_execution",
+    "execute_and_verify": "governance_execution",
+    "generate_report": "report_and_rollback",
+    "plan_restore": "report_and_rollback",
+    "clarify_restore_conflicts": "report_and_rollback",
+    "approve_restore": "report_and_rollback",
+    "execute_restore": "report_and_rollback",
+    "report_restore": "report_and_rollback",
+    "terminal": "terminal",
+}
+
 _GRAPH_SUB_AGENT_LABELS = {
     "inspect_sources": "数据接入 Agent",
     "normalize_input_batches": "数据接入 Agent",
@@ -167,7 +186,9 @@ def _error(code: str, message: str, **details: object) -> dict[str, object]:
     return {"code": code, "message": message, **details}
 
 
-def _graph_business_stage(node: str) -> str:
+def _graph_business_stage(node: str, run_phase: str | None = None) -> str:
+    if node == "blocked_model_error" and run_phase is not None:
+        return _GRAPH_STAGE_BY_RUN_PHASE.get(run_phase, "agent_analysis")
     return _GRAPH_STAGE_BY_NODE.get(node, "agent_analysis")
 
 
@@ -615,7 +636,7 @@ async def get_agent_graph_progress(
         graph_version=graph.graph_version,
         graph_cursor=graph.cursor,
         current_node=graph.current_node,
-        business_stage=_graph_business_stage(graph.current_node),
+        business_stage=_graph_business_stage(graph.current_node, run.phase),
         current_action_zh=_graph_action_label(graph.current_node),
         sub_agent_zh=_GRAPH_SUB_AGENT_LABELS.get(graph.current_node),
         progress_completed=progress_completed,

@@ -136,6 +136,53 @@ def test_graph_progress_and_tenant_safe_gate_decision(
     assert progress_after_decision.json()["status"] == "running"
 
 
+def test_blocked_graph_progress_preserves_the_original_business_stage(
+    graph_agent_client: TestClient,
+) -> None:
+    agent_client = graph_agent_client
+
+    async def seed() -> str:
+        async with agent_client.app.state.database.session_factory() as session:
+            task = ReconciliationTask(
+                tenant_id="school-1",
+                scope_id="all",
+                snapshot_mode="full",
+                entity_types=["student"],
+                status="failed",
+                stage="ingestion",
+                workflow_version="agent-graph-v1",
+                idempotency_key=str(uuid4()),
+                request_hash=str(uuid4()),
+            )
+            session.add(task)
+            await session.flush()
+            run = await AgentRuntimeRepository(session).create_run(
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                conversation_id=None,
+                kind=AgentRunKind.SYNC,
+                workflow_version="agent-graph-v1",
+            )
+            run.phase = AgentPhase.INGEST_AND_NORMALIZE.value
+            run.status = "blocked_model_error"
+            graph = await AgentGraphRepository(session).create_run_state(
+                run_id=run.id,
+                graph_version="agent-sync-graph-v1",
+                initial_node="inspect_sources",
+            )
+            graph.current_node = "blocked_model_error"
+            graph.status = "blocked_model_error"
+            await session.commit()
+            return str(task.id)
+
+    task_id = agent_client.portal.call(seed)
+
+    progress = agent_client.get(f"/api/agent/tasks/{task_id}/graph")
+
+    assert progress.status_code == 200, progress.text
+    assert progress.json()["business_stage"] == "data_ingestion"
+
+
 def test_rejected_rollback_gate_requests_safe_termination(
     graph_agent_client: TestClient,
 ) -> None:
