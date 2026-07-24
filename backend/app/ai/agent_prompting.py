@@ -1,7 +1,7 @@
 """Common, safety-first prompt construction for durable Agent Skills."""
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -101,16 +101,25 @@ def extract_model_result(output: dict[str, Any]) -> dict[str, Any]:
 def build_json_repair_request(
     request: LLMRequest,
     output: dict[str, Any] | None,
-    error: Exception,
+    error: Exception | None = None,
+    *,
+    validation_errors: Sequence[Mapping[str, str]] | None = None,
 ) -> LLMRequest:
     """Ask the same provider to repair structure without persisting raw output."""
 
+    if (error is None) == (validation_errors is None):
+        raise ValueError("provide exactly one repair error source")
+    safe_errors = (
+        safe_validation_errors(error)
+        if error is not None
+        else [dict(item) for item in validation_errors or ()]
+    )
     feedback = {
         "instruction": (
             "上一份 JSON 未通过服务端合同。只修复字段名、类型、必填项或候选约束，"
             "不得改变证据事实，也不得增加 schema 外字段。"
         ),
-        "validation_errors": _safe_validation_errors(error),
+        "validation_errors": safe_errors,
     }
     messages = list(request.messages)
     if output is not None:
@@ -145,7 +154,7 @@ def response_example_from_schema(schema: dict[str, Any]) -> dict[str, Any]:
     return example if isinstance(example, dict) else {}
 
 
-def _safe_validation_errors(error: Exception) -> list[dict[str, str]]:
+def safe_validation_errors(error: Exception) -> list[dict[str, str]]:
     if isinstance(error, ValidationError):
         return [
             {

@@ -22,6 +22,7 @@ from app.ai.agent_prompting import (
     extract_model_result,
     render_agent_system_prompt,
     response_example_from_schema,
+    safe_validation_errors,
 )
 from app.ai.providers.base import (
     LLMRequest,
@@ -45,7 +46,7 @@ class _RepairableGraphModelOutput(RuntimeError):
         model_provenance: dict[str, Any],
     ) -> None:
         super().__init__("graph sub-agent model output violated its contract")
-        self.validation_error = error
+        self.repair_feedback = tuple(safe_validation_errors(error))
         self.model_provenance = model_provenance
         self.__cause__ = error
 
@@ -140,15 +141,19 @@ class GraphSkillModelRunner:
                 attempt_count=completed.attempt,
             )
         last_error: Exception | None = None
-        repair_error: Exception | None = None
+        repair_feedback: tuple[dict[str, str], ...] = ()
         total_attempts = self._max_retries + 1
-        start_attempt = await self._repository.prepare_invocation_resume(
-            graph_run_id=invocation.graph_run_id,
-            cursor=invocation.graph_cursor,
-            action_id=invocation.action_id,
-            skill_name=skill.name,
-            input_hash=input_hash,
+        start_attempt, persisted_repair_feedback = (
+            await self._repository.prepare_invocation_resume(
+                graph_run_id=invocation.graph_run_id,
+                cursor=invocation.graph_cursor,
+                action_id=invocation.action_id,
+                skill_name=skill.name,
+                input_hash=input_hash,
+            )
         )
+        if persisted_repair_feedback:
+            repair_feedback = persisted_repair_feedback
 
         for attempt in range(start_attempt, total_attempts + 1):
             record = await self._repository.record_invocation(
@@ -164,7 +169,11 @@ class GraphSkillModelRunner:
                 status="running",
                 input_hash=input_hash,
                 output_hash=_safe_hash({}),
-                model_provenance={},
+                model_provenance=(
+                    {"repair_feedback": list(repair_feedback)}
+                    if repair_feedback
+                    else {}
+                ),
             )
             try:
                 output, provenance = await self._run_attempt(
@@ -172,7 +181,7 @@ class GraphSkillModelRunner:
                     record.id,
                     skill,
                     input_payload,
-                    repair_error=repair_error,
+                    repair_feedback=repair_feedback,
                     result_validator=result_validator,
                 )
                 await self._repository.finalize_invocation(
@@ -189,10 +198,10 @@ class GraphSkillModelRunner:
                 )
             except Exception as error:
                 last_error = error
-                repair_error = (
-                    error.validation_error
+                repair_feedback = (
+                    error.repair_feedback
                     if isinstance(error, _RepairableGraphModelOutput)
-                    else None
+                    else ()
                 )
                 failure_provenance = {
                     "safe_error_code": _safe_error_code(error),
@@ -201,6 +210,9 @@ class GraphSkillModelRunner:
                 }
                 if isinstance(error, _RepairableGraphModelOutput):
                     failure_provenance.update(error.model_provenance)
+                    failure_provenance["repair_feedback"] = list(
+                        error.repair_feedback
+                    )
                 await self._repository.finalize_invocation(
                     record.id,
                     status="failed",
@@ -219,7 +231,7 @@ class GraphSkillModelRunner:
         skill: SkillDefinition,
         input_payload: dict[str, Any],
         *,
-        repair_error: Exception | None = None,
+        repair_feedback: tuple[dict[str, str], ...] = (),
         result_validator: ResultValidator | None = None,
     ) -> tuple[BaseModel, dict[str, Any]]:
         response_schema = _response_schema(skill, self._skills)
@@ -229,11 +241,11 @@ class GraphSkillModelRunner:
             response_schema=response_schema,
             response_example=response_example,
         )
-        if repair_error is not None:
+        if repair_feedback:
             initial_request = build_json_repair_request(
                 initial_request,
                 None,
-                repair_error,
+                validation_errors=repair_feedback,
             )
         messages = list(initial_request.messages)
         request_ids: list[str] = []
@@ -295,6 +307,7 @@ class GraphSkillModelRunner:
                     raise GraphToolAuthorizationError(
                         "Skill did not authorize phase tool"
                     )
+                _validate_tool_arguments(name, arguments)
                 tool_calls += 1
                 if tool_calls > self._max_tool_calls:
                     raise ValueError("graph sub-agent tool-call limit exceeded")
@@ -509,6 +522,74 @@ def _tool_arguments_schema(name: str) -> dict[str, Any]:
         },
         "minProperties": 1,
     }
+
+
+def _validate_tool_arguments(name: str, arguments: dict[str, Any]) -> None:
+    schema = _tool_arguments_schema(name)
+    properties = schema.get("properties", {})
+    required = schema.get("required", ())
+    missing = [key for key in required if key not in arguments]
+    if missing:
+        raise ValueError(
+            "graph sub-agent tool arguments are missing required fields: "
+            + ", ".join(sorted(missing))
+        )
+    if schema.get("additionalProperties") is False:
+        unknown = set(arguments).difference(properties)
+        if unknown:
+            raise ValueError(
+                "graph sub-agent tool arguments contain unknown fields: "
+                + ", ".join(sorted(unknown))
+            )
+    minimum_properties = schema.get("minProperties")
+    if isinstance(minimum_properties, int) and len(arguments) < minimum_properties:
+        raise ValueError("graph sub-agent tool arguments are incomplete")
+    for key, value in arguments.items():
+        field_schema = properties.get(key)
+        if not isinstance(field_schema, dict):
+            continue
+        expected_types = field_schema.get("type")
+        if isinstance(expected_types, str):
+            expected_types = [expected_types]
+        if not isinstance(expected_types, list) or not any(
+            _matches_json_type(value, expected_type)
+            for expected_type in expected_types
+            if isinstance(expected_type, str)
+        ):
+            raise ValueError(
+                f"graph sub-agent tool argument has invalid type: {key}"
+            )
+        if (
+            isinstance(value, str)
+            and isinstance(field_schema.get("minLength"), int)
+            and len(value) < field_schema["minLength"]
+        ):
+            raise ValueError(
+                f"graph sub-agent tool argument is shorter than allowed: {key}"
+            )
+        if isinstance(value, int) and not isinstance(value, bool):
+            minimum = field_schema.get("minimum")
+            maximum = field_schema.get("maximum")
+            if isinstance(minimum, int) and value < minimum:
+                raise ValueError(
+                    f"graph sub-agent tool argument is below minimum: {key}"
+                )
+            if isinstance(maximum, int) and value > maximum:
+                raise ValueError(
+                    f"graph sub-agent tool argument exceeds maximum: {key}"
+                )
+
+
+def _matches_json_type(value: object, expected_type: str) -> bool:
+    if expected_type == "null":
+        return value is None
+    if expected_type == "string":
+        return isinstance(value, str)
+    if expected_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected_type == "object":
+        return isinstance(value, dict)
+    return False
 
 
 def _optional_argument(arguments: Mapping[str, object], key: str) -> str | None:

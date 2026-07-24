@@ -85,6 +85,30 @@ class CrashAfterToolResultProvider:
         raise SimulatedProcessCrash()
 
 
+class InvalidThenCrashProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete_json_once(self, _request: LLMRequest) -> LLMResponse:
+        self.calls += 1
+        if self.calls == 1:
+            return LLMResponse(
+                output={
+                    "result": {
+                        "schema_version": "agent-contract-v1",
+                        "recognized": True,
+                        "detected_fields": "category",
+                        "entity_kinds": ["student"],
+                        "safe_problem_codes": [],
+                    }
+                },
+                provider="scripted",
+                model="scripted-long-context",
+                request_id="request-before-repair-crash",
+            )
+        raise SimulatedProcessCrash()
+
+
 async def _graph_invocation_fixture(session, *, node: str, action_id: str):
     task = ReconciliationTask(
         tenant_id="school-real-subagent",
@@ -483,6 +507,14 @@ async def test_repair_retry_replays_tools_under_the_new_invocation(session) -> N
     [
         {"result": "not-an-object"},
         {"result": {"tool_call": "not-an-object"}},
+        {
+            "result": {
+                "tool_call": {
+                    "name": "inspect_configured_source",
+                    "arguments": {},
+                }
+            }
+        },
     ],
 )
 async def test_all_model_shape_failures_receive_repair_feedback(
@@ -543,6 +575,82 @@ async def test_all_model_shape_failures_receive_repair_feedback(
 
     assert result.output.model_dump()["recognized"] is True
     assert "validation_errors" in provider.requests[1].messages[-1].content
+
+
+@pytest.mark.asyncio
+async def test_repair_feedback_survives_worker_interruption_between_attempts(
+    session,
+) -> None:
+    task, run, state, manifest = await _graph_invocation_fixture(
+        session,
+        node="inspect_sources",
+        action_id="inspect_authority:page-1",
+    )
+    operator = OperatorContext(
+        operator_id="demo-operator",
+        tenant_id=task.tenant_id,
+    )
+    request = GraphSkillInvocation(
+        task_id=task.id,
+        run_id=run.id,
+        graph_run_id=state.id,
+        graph_node=state.current_node,
+        graph_cursor=state.cursor,
+        action_id="inspect_authority:page-1",
+        evidence_manifest_id=manifest.id,
+        skill_name="inspect-external-data-source",
+        skill_version="1.0.0",
+        input_payload={
+            "task_id": str(task.id),
+            "run_id": str(run.id),
+            "phase": "ingest_and_normalize",
+            "evidence_refs": ["source:authoritative:inspection"],
+            "connector_kind": "csv",
+            "connector_ref": "source:authoritative:page:1",
+        },
+    )
+
+    with pytest.raises(SimulatedProcessCrash):
+        await GraphSkillModelRunner(
+            session,
+            provider=InvalidThenCrashProvider(),
+            tool_gateway=GraphPhaseToolGateway(session, operator=operator, tools={}),
+            operator=operator,
+        ).run(request)
+
+    recovery_provider = ScriptedProvider(
+        [
+            {
+                "result": {
+                    "schema_version": "agent-contract-v1",
+                    "recognized": True,
+                    "detected_fields": ["category"],
+                    "entity_kinds": ["student"],
+                    "safe_problem_codes": [],
+                }
+            }
+        ]
+    )
+    recovered = await GraphSkillModelRunner(
+        session,
+        provider=recovery_provider,
+        tool_gateway=GraphPhaseToolGateway(session, operator=operator, tools={}),
+        operator=operator,
+    ).run(request)
+
+    assert recovered.attempt_count == 3
+    assert "validation_errors" in recovery_provider.requests[0].messages[-1].content
+    attempts = tuple(
+        await session.scalars(
+            select(AgentSubAgentInvocationRecord)
+            .where(AgentSubAgentInvocationRecord.graph_run_id == state.id)
+            .order_by(AgentSubAgentInvocationRecord.attempt)
+        )
+    )
+    assert [item.status for item in attempts] == ["failed", "failed", "completed"]
+    assert attempts[1].model_provenance["repair_feedback"][0]["path"] == (
+        "detected_fields"
+    )
 
 
 @pytest.mark.asyncio

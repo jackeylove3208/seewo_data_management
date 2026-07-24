@@ -438,7 +438,7 @@ class AgentGraphRepository:
         action_id: str,
         skill_name: str,
         input_hash: str,
-    ) -> int:
+    ) -> tuple[int, tuple[dict[str, str], ...]]:
         records = tuple(
             await self.session.scalars(
                 select(AgentSubAgentInvocationRecord)
@@ -452,18 +452,28 @@ class AgentGraphRepository:
                 .order_by(AgentSubAgentInvocationRecord.attempt)
             )
         )
+        repair_feedback: tuple[dict[str, str], ...] = ()
         for record in records:
+            candidate_feedback = _safe_repair_feedback(
+                record.model_provenance.get("repair_feedback")
+            )
+            if candidate_feedback:
+                repair_feedback = candidate_feedback
             if record.status != "running":
                 continue
             record.status = "failed"
             record.model_provenance = {
+                **record.model_provenance,
                 "safe_error_code": "invocation_interrupted",
                 "attempt": record.attempt,
                 "request_ids": [],
             }
         if records:
             await self.session.flush()
-        return max((record.attempt for record in records), default=0) + 1
+        return (
+            max((record.attempt for record in records), default=0) + 1,
+            repair_feedback,
+        )
 
     async def record_human_gate(
         self,
@@ -524,3 +534,18 @@ class AgentGraphRepository:
         if state.cursor != cursor:
             raise GraphCursorConflict("graph fact cursor is stale")
         return state
+
+
+def _safe_repair_feedback(value: object) -> tuple[dict[str, str], ...]:
+    if not isinstance(value, list):
+        return ()
+    feedback: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            return ()
+        path = item.get("path")
+        error_type = item.get("type")
+        if not isinstance(path, str) or not isinstance(error_type, str):
+            return ()
+        feedback.append({"path": path, "type": error_type})
+    return tuple(feedback)
