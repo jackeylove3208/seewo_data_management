@@ -357,6 +357,195 @@ async def test_real_skill_invocation_repairs_invalid_output_shape(session) -> No
 
 
 @pytest.mark.asyncio
+async def test_repair_retry_replays_tools_under_the_new_invocation(session) -> None:
+    task, run, state, manifest = await _graph_invocation_fixture(
+        session,
+        node="inspect_sources",
+        action_id="inspect_authority:page-1",
+    )
+    tool_call = {
+        "result": {
+            "tool_call": {
+                "name": "inspect_configured_source",
+                "arguments": {
+                    "resource_id": "source:authoritative:page:1",
+                },
+            }
+        }
+    }
+    invalid_result = {
+        "result": {
+            "schema_version": "agent-contract-v1",
+            "recognized": True,
+            "detected_fields": "category",
+            "entity_kinds": ["student"],
+            "safe_problem_codes": [],
+        }
+    }
+    valid_result = {
+        "result": {
+            "schema_version": "agent-contract-v1",
+            "recognized": True,
+            "detected_fields": ["category"],
+            "entity_kinds": ["student"],
+            "safe_problem_codes": [],
+        }
+    }
+    provider = ScriptedProvider(
+        [tool_call, invalid_result, tool_call, valid_result]
+    )
+
+    async def inspect_source(_context, arguments):
+        return {
+            "resource_id": arguments["resource_id"],
+            "connector_kind": "csv",
+            "stable_order": True,
+        }
+
+    operator = OperatorContext(
+        operator_id="demo-operator",
+        tenant_id=task.tenant_id,
+    )
+    result = await GraphSkillModelRunner(
+        session,
+        provider=provider,
+        tool_gateway=GraphPhaseToolGateway(
+            session,
+            operator=operator,
+            tools={"inspect_configured_source": inspect_source},
+        ),
+        operator=operator,
+        max_retries=1,
+    ).run(
+        GraphSkillInvocation(
+            task_id=task.id,
+            run_id=run.id,
+            graph_run_id=state.id,
+            graph_node=state.current_node,
+            graph_cursor=state.cursor,
+            action_id="inspect_authority:page-1",
+            evidence_manifest_id=manifest.id,
+            skill_name="inspect-external-data-source",
+            skill_version="1.0.0",
+            input_payload={
+                "task_id": str(task.id),
+                "run_id": str(run.id),
+                "phase": "ingest_and_normalize",
+                "evidence_refs": ["source:authoritative:inspection"],
+                "connector_kind": "csv",
+                "connector_ref": "source:authoritative:page:1",
+            },
+        )
+    )
+
+    assert result.output.model_dump()["detected_fields"] == ("category",)
+    assert len(provider.requests) == 4
+    second_attempt_messages = provider.requests[2].messages
+    assert "validation_errors" in second_attempt_messages[-1].content
+    assert all(
+        "authorized_tool_result" not in message.content
+        for message in second_attempt_messages
+    )
+    invocations = tuple(
+        await session.scalars(
+            select(AgentSubAgentInvocationRecord)
+            .where(AgentSubAgentInvocationRecord.graph_run_id == state.id)
+            .order_by(AgentSubAgentInvocationRecord.attempt)
+        )
+    )
+    assert [item.status for item in invocations] == ["failed", "completed"]
+    tool_records = tuple(
+        await session.scalars(
+            select(AgentToolCallRecord).order_by(
+                AgentToolCallRecord.invocation_id,
+                AgentToolCallRecord.sequence,
+            )
+        )
+    )
+    assert {item.invocation_id for item in tool_records} == {
+        invocations[0].id,
+        invocations[1].id,
+    }
+    assert invocations[0].model_provenance["request_ids"] == [
+        "request-1",
+        "request-2",
+    ]
+    assert invocations[1].model_provenance["request_ids"] == [
+        "request-3",
+        "request-4",
+    ]
+    assert invocations[1].model_provenance["tool_call_count"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid_output",
+    [
+        {"result": "not-an-object"},
+        {"result": {"tool_call": "not-an-object"}},
+    ],
+)
+async def test_all_model_shape_failures_receive_repair_feedback(
+    session,
+    invalid_output,
+) -> None:
+    task, run, state, manifest = await _graph_invocation_fixture(
+        session,
+        node="inspect_sources",
+        action_id="inspect_authority:page-1",
+    )
+    provider = ScriptedProvider(
+        [
+            invalid_output,
+            {
+                "result": {
+                    "schema_version": "agent-contract-v1",
+                    "recognized": True,
+                    "detected_fields": ["category"],
+                    "entity_kinds": ["student"],
+                    "safe_problem_codes": [],
+                }
+            },
+        ]
+    )
+    operator = OperatorContext(
+        operator_id="demo-operator",
+        tenant_id=task.tenant_id,
+    )
+
+    result = await GraphSkillModelRunner(
+        session,
+        provider=provider,
+        tool_gateway=GraphPhaseToolGateway(session, operator=operator, tools={}),
+        operator=operator,
+        max_retries=1,
+    ).run(
+        GraphSkillInvocation(
+            task_id=task.id,
+            run_id=run.id,
+            graph_run_id=state.id,
+            graph_node=state.current_node,
+            graph_cursor=state.cursor,
+            action_id="inspect_authority:page-1",
+            evidence_manifest_id=manifest.id,
+            skill_name="inspect-external-data-source",
+            skill_version="1.0.0",
+            input_payload={
+                "task_id": str(task.id),
+                "run_id": str(run.id),
+                "phase": "ingest_and_normalize",
+                "evidence_refs": ["source:authoritative:inspection"],
+                "connector_kind": "csv",
+                "connector_ref": "source:authoritative:page:1",
+            },
+        )
+    )
+
+    assert result.output.model_dump()["recognized"] is True
+    assert "validation_errors" in provider.requests[1].messages[-1].content
+
+
+@pytest.mark.asyncio
 async def test_model_exhaustion_records_four_failures_without_legacy_delegate(session) -> None:
     task, run, state, manifest = await _graph_invocation_fixture(
         session,

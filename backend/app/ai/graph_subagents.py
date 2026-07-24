@@ -38,9 +38,15 @@ class GraphSubAgentFailure(RuntimeError):
 
 
 class _RepairableGraphModelOutput(RuntimeError):
-    def __init__(self, request: LLMRequest, error: Exception) -> None:
+    def __init__(
+        self,
+        error: Exception,
+        *,
+        model_provenance: dict[str, Any],
+    ) -> None:
         super().__init__("graph sub-agent model output violated its contract")
-        self.request = request
+        self.validation_error = error
+        self.model_provenance = model_provenance
         self.__cause__ = error
 
 
@@ -134,7 +140,7 @@ class GraphSkillModelRunner:
                 attempt_count=completed.attempt,
             )
         last_error: Exception | None = None
-        repair_request: LLMRequest | None = None
+        repair_error: Exception | None = None
         total_attempts = self._max_retries + 1
         start_attempt = await self._repository.prepare_invocation_resume(
             graph_run_id=invocation.graph_run_id,
@@ -166,7 +172,7 @@ class GraphSkillModelRunner:
                     record.id,
                     skill,
                     input_payload,
-                    initial_request=repair_request,
+                    repair_error=repair_error,
                     result_validator=result_validator,
                 )
                 await self._repository.finalize_invocation(
@@ -183,20 +189,23 @@ class GraphSkillModelRunner:
                 )
             except Exception as error:
                 last_error = error
-                repair_request = (
-                    error.request
+                repair_error = (
+                    error.validation_error
                     if isinstance(error, _RepairableGraphModelOutput)
                     else None
                 )
+                failure_provenance = {
+                    "safe_error_code": _safe_error_code(error),
+                    "attempt": attempt,
+                    "request_ids": [],
+                }
+                if isinstance(error, _RepairableGraphModelOutput):
+                    failure_provenance.update(error.model_provenance)
                 await self._repository.finalize_invocation(
                     record.id,
                     status="failed",
                     output_hash=_safe_hash({"safe_error_code": _safe_error_code(error)}),
-                    model_provenance={
-                        "safe_error_code": _safe_error_code(error),
-                        "attempt": attempt,
-                        "request_ids": [],
-                    },
+                    model_provenance=failure_provenance,
                 )
 
         raise GraphSubAgentFailure(
@@ -210,14 +219,23 @@ class GraphSkillModelRunner:
         skill: SkillDefinition,
         input_payload: dict[str, Any],
         *,
-        initial_request: LLMRequest | None = None,
+        repair_error: Exception | None = None,
         result_validator: ResultValidator | None = None,
     ) -> tuple[BaseModel, dict[str, Any]]:
-        messages = list(
-            initial_request.messages
-            if initial_request is not None
-            else _initial_messages(skill, invocation, input_payload)
+        response_schema = _response_schema(skill, self._skills)
+        response_example = response_example_from_schema(response_schema)
+        initial_request = LLMRequest(
+            messages=tuple(_initial_messages(skill, invocation, input_payload)),
+            response_schema=response_schema,
+            response_example=response_example,
         )
+        if repair_error is not None:
+            initial_request = build_json_repair_request(
+                initial_request,
+                None,
+                repair_error,
+            )
+        messages = list(initial_request.messages)
         request_ids: list[str] = []
         input_tokens = 0
         output_tokens = 0
@@ -238,8 +256,6 @@ class GraphSkillModelRunner:
             allowed_tools=allowed_tools,
         )
         tool_calls = 0
-        response_schema = _response_schema(skill, self._skills)
-        response_example = response_example_from_schema(response_schema)
 
         while True:
             request = LLMRequest(
@@ -254,39 +270,51 @@ class GraphSkillModelRunner:
             output_tokens += response.usage.output_tokens
             if response.request_id:
                 request_ids.append(response.request_id)
-            result = extract_model_result(response.output)
-            tool_call = result.get("tool_call")
-            if tool_call is None:
-                try:
+            try:
+                result = extract_model_result(response.output)
+                tool_call = result.get("tool_call")
+                if tool_call is None:
                     output = self._skills.validate_output(skill, result)
                     if result_validator is not None:
                         output = result_validator(output)
-                except (ValidationError, UnsafeSkillError, ValueError) as error:
-                    raise _RepairableGraphModelOutput(
-                        build_json_repair_request(request, response.output, error),
-                        error,
-                    ) from error
-                return output, {
-                    "provider": provider,
-                    "model": model,
-                    "request_ids": request_ids,
-                    "tool_call_count": tool_calls,
-                    "usage": {
-                        "input_tokens": input_tokens,
-                        "output_tokens": output_tokens,
-                    },
-                }
-            if not isinstance(tool_call, dict):
-                raise ValueError("graph sub-agent tool_call must be an object")
-            name = tool_call.get("name")
-            arguments = tool_call.get("arguments")
-            if not isinstance(name, str) or not isinstance(arguments, dict):
-                raise ValueError("graph sub-agent tool call is invalid")
-            if name not in allowed_tools:
-                raise GraphToolAuthorizationError("Skill did not authorize phase tool")
-            tool_calls += 1
-            if tool_calls > self._max_tool_calls:
-                raise ValueError("graph sub-agent tool-call limit exceeded")
+                    return output, _model_provenance(
+                        provider=provider,
+                        model=model,
+                        request_ids=request_ids,
+                        tool_calls=tool_calls,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                    )
+                if not isinstance(tool_call, dict):
+                    raise ValueError("graph sub-agent tool_call must be an object")
+                name = tool_call.get("name")
+                arguments = tool_call.get("arguments")
+                if not isinstance(name, str) or not isinstance(arguments, dict):
+                    raise ValueError("graph sub-agent tool call is invalid")
+                if name not in allowed_tools:
+                    raise GraphToolAuthorizationError(
+                        "Skill did not authorize phase tool"
+                    )
+                tool_calls += 1
+                if tool_calls > self._max_tool_calls:
+                    raise ValueError("graph sub-agent tool-call limit exceeded")
+            except (
+                ValidationError,
+                UnsafeSkillError,
+                ValueError,
+                GraphToolAuthorizationError,
+            ) as error:
+                raise _RepairableGraphModelOutput(
+                    error,
+                    model_provenance=_model_provenance(
+                        provider=provider,
+                        model=model,
+                        request_ids=request_ids,
+                        tool_calls=tool_calls,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                    ),
+                ) from error
             tool_result = await self._tool_gateway.call(
                 name,
                 context=context,
@@ -332,6 +360,27 @@ class GraphSkillModelRunner:
             raise GraphSubAgentFailure(
                 f"Skill tools are outside graph node boundary: {skill.name}"
             )
+
+
+def _model_provenance(
+    *,
+    provider: str,
+    model: str,
+    request_ids: list[str],
+    tool_calls: int,
+    input_tokens: int,
+    output_tokens: int,
+) -> dict[str, Any]:
+    return {
+        "provider": provider,
+        "model": model,
+        "request_ids": list(request_ids),
+        "tool_call_count": tool_calls,
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+        },
+    }
 
 
 def _initial_messages(

@@ -100,7 +100,7 @@ def extract_model_result(output: dict[str, Any]) -> dict[str, Any]:
 
 def build_json_repair_request(
     request: LLMRequest,
-    output: dict[str, Any],
+    output: dict[str, Any] | None,
     error: Exception,
 ) -> LLMRequest:
     """Ask the same provider to repair structure without persisting raw output."""
@@ -112,30 +112,30 @@ def build_json_repair_request(
         ),
         "validation_errors": _safe_validation_errors(error),
     }
-    return request.model_copy(
-        update={
-            "messages": (
-                *request.messages,
-                Message(
-                    role="assistant",
-                    content=json.dumps(
-                        output,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        default=str,
-                    ),
-                ),
-                Message(
-                    role="user",
-                    content=json.dumps(
-                        feedback,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                    ),
+    messages = list(request.messages)
+    if output is not None:
+        messages.append(
+            Message(
+                role="assistant",
+                content=json.dumps(
+                    output,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
                 ),
             )
-        }
+        )
+    messages.append(
+        Message(
+            role="user",
+            content=json.dumps(
+                feedback,
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        )
     )
+    return request.model_copy(update={"messages": tuple(messages)})
 
 
 def response_example_from_schema(schema: dict[str, Any]) -> dict[str, Any]:
