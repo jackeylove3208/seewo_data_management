@@ -137,10 +137,10 @@ class AgentGraphWorker:
             if not await heartbeat_task:
                 raise AgentGraphLeaseLost(f"Agent graph lease lost: {context.run_id}")
             return await processing_task
-        except (GraphSubAgentFailure, GraphSupervisorFailure):
+        except (GraphSubAgentFailure, GraphSupervisorFailure) as error:
             heartbeat_stopped.set()
             await asyncio.gather(heartbeat_task, return_exceptions=True)
-            await self._block_model_failure(context)
+            await self._block_model_failure(context, error)
             return True
         except BaseException:
             heartbeat_stopped.set()
@@ -482,7 +482,12 @@ class AgentGraphWorker:
                     lease_token=context.lease_token,
                 )
 
-    async def _block_model_failure(self, context: GraphWorkContext) -> None:
+    async def _block_model_failure(
+        self,
+        context: GraphWorkContext,
+        error: GraphSubAgentFailure | GraphSupervisorFailure,
+    ) -> None:
+        failure_categories = _safe_model_failure_categories(error)
         async with self._session_factory() as session:
             async with session.begin():
                 runtime = AgentRuntimeRepository(session)
@@ -513,6 +518,8 @@ class AgentGraphWorker:
                     guard_results={
                         "model_attempts": "exhausted",
                         "safe_error_code": "agent_model_retries_exhausted",
+                        "failed_node": context.current_node,
+                        "failure_categories": failure_categories,
                     },
                     fencing_token=context.attempt_count,
                 )
@@ -535,6 +542,8 @@ class AgentGraphWorker:
                         "message": "AI 模型连续处理失败，任务已安全暂停。",
                         "attempt_count": 4,
                         "allowed_commands": ["terminate"],
+                        "failed_node": context.current_node,
+                        "failure_categories": failure_categories,
                     },
                 )
                 await runtime.release_run_claim(
@@ -551,6 +560,14 @@ class AgentGraphWorker:
     ) -> None:
         if current_node != context.current_node or cursor != context.graph_cursor:
             raise GraphCursorConflict("claimed graph state is stale")
+
+
+def _safe_model_failure_categories(
+    error: GraphSubAgentFailure | GraphSupervisorFailure,
+) -> list[str]:
+    if isinstance(error, GraphSupervisorFailure) and error.failure_categories:
+        return list(error.failure_categories)
+    return ["subagent_model_failure"]
 
 
 def _coarse_phase(node: str) -> AgentPhase:

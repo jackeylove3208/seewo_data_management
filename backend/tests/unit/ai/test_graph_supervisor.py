@@ -182,5 +182,30 @@ async def test_graph_supervisor_uses_initial_attempt_plus_three_retries() -> Non
 async def test_graph_supervisor_fails_closed_after_retry_exhaustion() -> None:
     provider = ScriptedProvider(failures=4)
 
-    with pytest.raises(GraphSupervisorFailure, match="after 4 attempts"):
+    with pytest.raises(GraphSupervisorFailure, match="after 4 attempts") as captured:
         await GraphSupervisorAgent(provider, max_retries=3).decide(_context())
+
+    assert captured.value.failure_categories == (
+        "model_provider_failure",
+        "model_provider_failure",
+        "model_provider_failure",
+        "model_provider_failure",
+    )
+
+
+@pytest.mark.asyncio
+async def test_graph_supervisor_failure_records_safe_contract_categories_only() -> None:
+    invalid = _decision("inspect_authority")
+    invalid["risk_notes_zh"] = "13800000001"
+    provider = ScriptedProvider([invalid, invalid, invalid, invalid], flat=True)
+
+    with pytest.raises(GraphSupervisorFailure) as captured:
+        await GraphSupervisorAgent(provider, max_retries=3).decide(_context())
+
+    assert captured.value.failure_categories == (
+        "model_contract_failure",
+        "model_contract_failure",
+        "model_contract_failure",
+        "model_contract_failure",
+    )
+    assert "13800000001" not in str(captured.value)

@@ -20,7 +20,11 @@ from app.agent_graph.worker import (
 from app.agent_runtime.service import AgentSupervisorService
 from app.core.security import OperatorContext
 from app.models.agent_graph import AgentSupervisorDecisionRecord
-from app.models.agent_runtime import AgentRunRecord, SchoolTaskLockRecord
+from app.models.agent_runtime import (
+    AgentRunRecord,
+    AgentTaskEventRecord,
+    SchoolTaskLockRecord,
+)
 from app.models.reconciliation import ReconciliationTask
 
 
@@ -406,6 +410,78 @@ async def test_model_exhaustion_blocks_graph_run_and_keeps_school_lock(database)
         assert state.current_node == "blocked_model_error"
         assert state.status == "blocked_model_error"
         assert active_lock is not None
+
+
+@pytest.mark.asyncio
+async def test_supervisor_exhaustion_records_original_node_and_safe_categories(
+    database,
+) -> None:
+    from app.ai.graph_supervisor import GraphSupervisorFailure
+
+    class FailingSupervisor:
+        async def decide_with_provenance(self, _context):
+            raise GraphSupervisorFailure(
+                "invalid Supervisor decision after 4 attempts",
+                failure_categories=(
+                    "model_contract_failure",
+                    "model_contract_failure",
+                    "model_contract_failure",
+                    "model_contract_failure",
+                ),
+            )
+
+    _task_id, run_id = await _start_graph_run(database)
+    candidates = (
+        _candidate(
+            "inspect_authority:page-1",
+            graph_action_kind="inspect_authority",
+            resource_id="authority:page-1",
+            evidence="authority-inspection-v1",
+            successor="inspect_sources",
+        ),
+        _candidate(
+            "inspect_target:page-1",
+            graph_action_kind="inspect_target",
+            resource_id="target:page-1",
+            evidence="target-inspection-v1",
+            successor="inspect_sources",
+        ),
+    )
+
+    async def plan(_context: GraphWorkContext) -> GraphCandidatePlan:
+        return GraphCandidatePlan(candidate_evaluations=candidates)
+
+    async def execute(_context, _action):
+        raise AssertionError("executor must not run after Supervisor failure")
+
+    worker = AgentGraphWorker(
+        database.session_factory,
+        worker_id="graph-worker-supervisor-error",
+        lease_seconds=60,
+        supervisor=FailingSupervisor(),
+        candidate_provider=plan,
+        executor=execute,
+    )
+
+    assert await worker.run_once() is True
+    async with database.session_factory() as session:
+        event = await session.scalar(
+            select(AgentTaskEventRecord)
+            .where(
+                AgentTaskEventRecord.run_id == run_id,
+                AgentTaskEventRecord.event_type == "run.blocked_model_error",
+            )
+            .order_by(AgentTaskEventRecord.sequence.desc())
+        )
+        assert event is not None
+        assert event.payload["failed_node"] == "inspect_sources"
+        assert event.payload["failure_categories"] == [
+            "model_contract_failure",
+            "model_contract_failure",
+            "model_contract_failure",
+            "model_contract_failure",
+        ]
+        assert "invalid Supervisor decision" not in str(event.payload)
 
 
 @pytest.mark.asyncio

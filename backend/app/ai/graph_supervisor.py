@@ -18,7 +18,14 @@ from app.ai.skills.registry import SkillDefinition, SkillRegistry, UnsafeSkillEr
 
 
 class GraphSupervisorFailure(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_categories: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.failure_categories = failure_categories
 
 
 @dataclass(frozen=True)
@@ -64,6 +71,7 @@ class GraphSupervisorAgent:
         )
         last_error: Exception | None = None
         invalid_decision = False
+        failure_categories: list[str] = []
         total_attempts = self._max_retries + 1
         for attempt in range(1, total_attempts + 1):
             try:
@@ -79,13 +87,21 @@ class GraphSupervisorAgent:
                 )
             except ModelProviderError as error:
                 last_error = error
-            except (ValidationError, UnsafeSkillError, InvalidSupervisorDecision) as error:
+                failure_categories.append("model_provider_failure")
+            except (
+                ValidationError,
+                UnsafeSkillError,
+                InvalidSupervisorDecision,
+                ValueError,
+            ) as error:
                 invalid_decision = True
                 last_error = error
+                failure_categories.append(_safe_supervisor_failure_category(error))
                 request = build_json_repair_request(request, response.output, error)
         label = "invalid Supervisor decision" if invalid_decision else "Supervisor model failure"
         raise GraphSupervisorFailure(
-            f"{label} after {total_attempts} attempts"
+            f"{label} after {total_attempts} attempts",
+            failure_categories=tuple(failure_categories),
         ) from last_error
 
     def _decision_from_response(
@@ -122,3 +138,9 @@ def _supervisor_response_example(context: SupervisorContextV1) -> dict[str, obje
             "operator_message_zh": "正在执行当前安全步骤。",
         }
     }
+
+
+def _safe_supervisor_failure_category(error: Exception) -> str:
+    if isinstance(error, InvalidSupervisorDecision):
+        return "model_decision_failure"
+    return "model_contract_failure"
