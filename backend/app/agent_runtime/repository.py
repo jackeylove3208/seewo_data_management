@@ -14,6 +14,7 @@ from app.agent_runtime.state_machine import (
 )
 from app.models.agent_runtime import (
     AgentCheckpointRecord,
+    AgentConversationMessageRecord,
     AgentConversationRecord,
     AgentFailureRecord,
     AgentRunRecord,
@@ -89,6 +90,107 @@ class AgentRuntimeRepository:
                     AgentConversationRecord.status == "active",
                 )
             ),
+        )
+
+    async def get_current_conversation(
+        self,
+        *,
+        tenant_id: str,
+        created_by: str,
+    ) -> AgentConversationRecord | None:
+        lock_owner = await self.session.scalar(
+            select(AgentConversationRecord)
+            .join(
+                AgentRunRecord,
+                AgentRunRecord.conversation_id == AgentConversationRecord.id,
+            )
+            .where(
+                AgentConversationRecord.tenant_id == tenant_id,
+                AgentConversationRecord.created_by == created_by,
+                AgentConversationRecord.status == "active",
+                AgentRunRecord.tenant_id == tenant_id,
+                ~AgentRunRecord.status.in_(("completed", "terminated", "failed")),
+            )
+            .order_by(
+                AgentRunRecord.created_at.desc(),
+                AgentRunRecord.id.desc(),
+            )
+            .limit(1)
+        )
+        if lock_owner is not None:
+            return lock_owner
+        return cast(
+            AgentConversationRecord | None,
+            await self.session.scalar(
+                select(AgentConversationRecord)
+                .where(
+                    AgentConversationRecord.tenant_id == tenant_id,
+                    AgentConversationRecord.created_by == created_by,
+                    AgentConversationRecord.status == "active",
+                )
+                .order_by(
+                    AgentConversationRecord.created_at.desc(),
+                    AgentConversationRecord.id.desc(),
+                )
+                .limit(1)
+            ),
+        )
+
+    async def append_conversation_message(
+        self,
+        *,
+        conversation_id: UUID,
+        tenant_id: str,
+        role: str,
+        text: str,
+        kind: str = "normal",
+    ) -> AgentConversationMessageRecord:
+        conversation = await self.session.scalar(
+            select(AgentConversationRecord)
+            .where(
+                AgentConversationRecord.id == conversation_id,
+                AgentConversationRecord.tenant_id == tenant_id,
+            )
+            .with_for_update()
+        )
+        if conversation is None:
+            raise LookupError(f"conversation not found: {conversation_id}")
+        last_sequence = await self.session.scalar(
+            select(func.max(AgentConversationMessageRecord.sequence)).where(
+                AgentConversationMessageRecord.conversation_id == conversation_id
+            )
+        )
+        record = AgentConversationMessageRecord(
+            id=uuid4(),
+            conversation_id=conversation_id,
+            tenant_id=tenant_id,
+            sequence=int(last_sequence or 0) + 1,
+            role=role,
+            kind=kind,
+            text=text,
+        )
+        self.session.add(record)
+        await self.session.flush()
+        return record
+
+    async def list_conversation_messages(
+        self,
+        *,
+        conversation_id: UUID,
+        tenant_id: str,
+    ) -> tuple[AgentConversationMessageRecord, ...]:
+        return tuple(
+            await self.session.scalars(
+                select(AgentConversationMessageRecord)
+                .where(
+                    AgentConversationMessageRecord.conversation_id == conversation_id,
+                    AgentConversationMessageRecord.tenant_id == tenant_id,
+                )
+                .order_by(
+                    AgentConversationMessageRecord.sequence,
+                    AgentConversationMessageRecord.id,
+                )
+            )
         )
 
     async def create_run(

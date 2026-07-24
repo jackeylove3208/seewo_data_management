@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -7,6 +7,7 @@ import { ConversationCreatePage } from "./ConversationCreatePage";
 
 function api(overrides: Partial<AgentConversationApi> = {}): AgentConversationApi {
   return {
+    currentConversation: vi.fn().mockResolvedValue(null),
     createConversation: vi.fn().mockResolvedValue({ id: "conversation-1", status: "active" }),
     sendMessage: vi.fn().mockResolvedValue({
       message: "已整理好全校教师同步需求。",
@@ -29,6 +30,10 @@ function api(overrides: Partial<AgentConversationApi> = {}): AgentConversationAp
   };
 }
 
+async function waitForComposer() {
+  await waitFor(() => expect(screen.getByLabelText("对账目标")).toBeEnabled());
+}
+
 describe("backend Agent conversation", () => {
   beforeEach(() => {
     sessionStorage.clear();
@@ -47,11 +52,20 @@ describe("backend Agent conversation", () => {
     expect(screen.queryByLabelText("选择三方系统 CSV")).not.toBeInTheDocument();
   });
 
+  it("keeps the composer disabled until conversation recovery finishes", () => {
+    const currentConversation = vi.fn().mockReturnValue(new Promise(() => undefined));
+    render(<ConversationCreatePage agentApi={api({ currentConversation })} />);
+
+    expect(screen.getByLabelText("对账目标")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
+  });
+
   it("shows backend confirmation and locks ordinary input after task start", async () => {
     const backend = api();
     const user = userEvent.setup();
     render(<ConversationCreatePage agentApi={backend} />);
 
+    await waitForComposer();
     await user.type(screen.getByLabelText("对账目标"), "同步全校教师");
     await user.click(screen.getByRole("button", { name: "发送" }));
     await user.click(await screen.findByRole("button", { name: "确认开始同步" }));
@@ -86,6 +100,7 @@ describe("backend Agent conversation", () => {
     const user = userEvent.setup();
     render(<ConversationCreatePage agentApi={backend} />);
 
+    await waitForComposer();
     await user.type(screen.getByLabelText("对账目标"), "同步学生");
     await user.click(screen.getByRole("button", { name: "发送" }));
     await user.click(await screen.findByRole("button", { name: "确认开始同步" }));
@@ -100,11 +115,147 @@ describe("backend Agent conversation", () => {
     const user = userEvent.setup();
     render(<ConversationCreatePage agentApi={backend} />);
 
+    await waitForComposer();
     await user.type(screen.getByLabelText("对账目标"), "同步全校教师");
     await user.click(screen.getByRole("button", { name: "发送" }));
     await user.click(await screen.findByRole("button", { name: "确认开始同步" }));
 
     expect(await screen.findByText("任务启动失败，现有需求仍然保留，可以重试。")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "确认开始同步" })).toBeInTheDocument();
+  });
+
+  it("restores backend messages and active task after the page remounts", async () => {
+    const backend = api({
+      currentConversation: vi.fn().mockResolvedValue({
+        id: "conversation-restored",
+        status: "active",
+        messages: [
+          { id: "message-1", role: "user", kind: "normal", text: "同步全校学生", created_at: "" },
+          { id: "message-2", role: "assistant", kind: "normal", text: "任务已经开始。", created_at: "" },
+        ],
+        intent: { title: "全校学生同步", entity_types: ["student"] },
+        task: {
+          id: "task-restored",
+          workflow_version: "agent-graph-v1",
+          phase: "analyze_batches",
+          status: "running",
+        },
+      }),
+    } as Partial<AgentConversationApi>);
+
+    const first = render(<ConversationCreatePage agentApi={backend} />);
+    expect(await screen.findByText("同步全校学生")).toBeInTheDocument();
+    expect(screen.getByText("任务已经开始。")).toBeInTheDocument();
+    expect(screen.getByText(/Agent 分析/)).toBeInTheDocument();
+    first.unmount();
+
+    render(<ConversationCreatePage agentApi={backend} />);
+    expect(await screen.findByText("同步全校学生")).toBeInTheDocument();
+    expect(backend.createConversation).not.toHaveBeenCalled();
+  });
+
+  it("restores an unstarted backend confirmation after navigation", async () => {
+    const backend = api({
+      currentConversation: vi.fn().mockResolvedValue({
+        id: "conversation-confirmation",
+        status: "active",
+        messages: [
+          { id: "message-1", role: "user", kind: "normal", text: "同步全校学生", created_at: "" },
+          { id: "message-2", role: "assistant", kind: "normal", text: "已确认同步需求。", created_at: "" },
+        ],
+        intent: { title: "全校学生同步", entity_types: ["student"] },
+        start_confirmation: {
+          title: "全校学生同步",
+          summary: "已确认同步需求。",
+          entity_types: ["student"],
+        },
+        task: null,
+      }),
+    } as Partial<AgentConversationApi>);
+
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    expect(await screen.findByRole("button", { name: "确认开始同步" })).toBeInTheDocument();
+    expect(screen.getAllByText("已确认同步需求。")).toHaveLength(2);
+  });
+
+  it("confirms controlled graph termination through a persisted gate", async () => {
+    const previewTermination = vi.fn().mockResolvedValue({
+      id: "termination-gate-1",
+      kind: "termination_confirmation",
+      status: "pending",
+      item_count: 1,
+    });
+    const decideGraphGate = vi.fn().mockResolvedValue({
+      gate_id: "termination-gate-1",
+      status: "approved",
+      graph_cursor: 3,
+    });
+    const terminate = vi.fn();
+    const backend = api({
+      startTask: vi.fn().mockResolvedValue({
+        id: "task-graph",
+        workflow_version: "agent-graph-v1",
+        phase: "ingest_and_normalize",
+        status: "running",
+      }),
+      previewTermination,
+      decideGraphGate,
+      terminate,
+    } as Partial<AgentConversationApi>);
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    await waitForComposer();
+    await user.type(screen.getByLabelText("对账目标"), "同步全校教师");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await user.click(await screen.findByRole("button", { name: "确认开始同步" }));
+    await user.click(await screen.findByRole("button", { name: "终止任务" }));
+
+    expect(await screen.findByRole("dialog", { name: "确认终止当前任务？" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "确认终止" }));
+
+    expect(previewTermination).toHaveBeenCalledWith("task-graph");
+    expect(decideGraphGate).toHaveBeenCalledWith(
+      "task-graph",
+      "termination-gate-1",
+      "approve",
+      "操作人确认终止当前任务",
+    );
+    expect(terminate).not.toHaveBeenCalled();
+  });
+
+  it("keeps direct termination for legacy Agent tasks", async () => {
+    const terminate = vi.fn().mockResolvedValue({ status: "terminated" });
+    const backend = api({ terminate });
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    await waitForComposer();
+    await user.type(screen.getByLabelText("对账目标"), "同步全校教师");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await user.click(await screen.findByRole("button", { name: "确认开始同步" }));
+    await user.click(await screen.findByRole("button", { name: "终止任务" }));
+
+    expect(terminate).toHaveBeenCalledWith("task-1");
+  });
+
+  it("shows the backend conversation error and keeps input retryable", async () => {
+    const backend = api({
+      sendMessage: vi.fn().mockRejectedValue(
+        new Error("对话模型暂时无法生成有效回复，请稍后重试。"),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    await waitForComposer();
+    await user.type(screen.getByLabelText("对账目标"), "你是谁");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(
+      await screen.findByText("对话模型暂时无法生成有效回复，请稍后重试。"),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("对账目标")).toBeEnabled();
   });
 });

@@ -87,6 +87,25 @@ async def test_llm_single_attempt_mode_does_not_hide_outer_agent_retries() -> No
 
 
 @pytest.mark.asyncio
+async def test_llm_single_attempt_maps_transport_failure_to_transient_error() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection failed", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = HttpLLMProvider(
+            settings=Settings(
+                llm_url="https://model.example.test/v1/analyze",
+                llm_api_key="secret-token",
+            ),
+            client=client,
+        )
+        with pytest.raises(TransientModelError, match="transport failed"):
+            await provider.complete_json_once(
+                LLMRequest(messages=(Message(role="user", content="analyze"),))
+            )
+
+
+@pytest.mark.asyncio
 async def test_llm_does_not_retry_client_error_or_log_authorization(caplog) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, json={"error": "unauthorized"}, request=request)

@@ -10,6 +10,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     Uuid,
     text,
@@ -33,6 +34,28 @@ class AgentConversationRecord(Base, TimestampMixin):
     created_by: Mapped[str] = mapped_column(String(255), index=True)
     status: Mapped[str] = mapped_column(String(32), default="active", index=True)
     context: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
+
+
+class AgentConversationMessageRecord(Base, TimestampMixin):
+    __tablename__ = "agent_conversation_messages"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    conversation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agent_conversations.id", ondelete="CASCADE"), index=True
+    )
+    tenant_id: Mapped[str] = mapped_column(String(128), index=True)
+    sequence: Mapped[int] = mapped_column(Integer)
+    role: Mapped[str] = mapped_column(String(16))
+    kind: Mapped[str] = mapped_column(String(32), default="normal")
+    text: Mapped[str] = mapped_column(Text)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "conversation_id",
+            "sequence",
+            name="uq_agent_conversation_message_sequence",
+        ),
+    )
 
 
 class AgentRunRecord(Base, TimestampMixin):

@@ -61,6 +61,14 @@ class AgentConversationResponse(BaseModel):
     status: Literal["active", "closed"]
 
 
+class AgentConversationMessageView(BaseModel):
+    id: UUID
+    role: Literal["assistant", "user"]
+    kind: Literal["normal", "guardrail", "error"]
+    text: str
+    created_at: datetime
+
+
 class AgentMessageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -97,6 +105,13 @@ class AgentTaskResponse(BaseModel):
     report_id: UUID | None = None
     rollback_eligible: bool = False
     deletion_eligible: bool = True
+
+
+class AgentConversationCurrentResponse(AgentConversationResponse):
+    messages: tuple[AgentConversationMessageView, ...]
+    intent: AgentIntentView | None = None
+    start_confirmation: AgentStartConfirmation | None = None
+    task: AgentTaskResponse | None = None
 
 
 class AgentTaskEventResponse(BaseModel):

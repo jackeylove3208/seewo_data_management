@@ -54,12 +54,15 @@ class HttpLLMProvider(LLMProvider):
             raise ModelProviderError("LLM provider is not configured")
         client = self.client or httpx.AsyncClient()
         try:
-            response = await client.post(
-                url,
-                headers=_request_headers(self.settings, api_key),
-                json=_request_body(self.settings, request),
-                timeout=self.settings.llm_timeout_seconds,
-            )
+            try:
+                response = await client.post(
+                    url,
+                    headers=_request_headers(self.settings, api_key),
+                    json=_request_body(self.settings, request),
+                    timeout=self.settings.llm_timeout_seconds,
+                )
+            except (httpx.TimeoutException, httpx.TransportError) as error:
+                raise TransientModelError("model transport failed") from error
             if response.status_code in {429, 500, 502, 503, 504}:
                 raise TransientModelError(f"model request returned status {response.status_code}")
             if response.is_error:
