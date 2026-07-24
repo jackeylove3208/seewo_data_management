@@ -88,7 +88,7 @@ class AgentMessageResponse(BaseModel):
 
 class AgentTaskResponse(BaseModel):
     id: UUID
-    workflow_version: Literal["new-agent-v1"]
+    workflow_version: Literal["new-agent-v1", "agent-graph-v1"]
     task_kind: Literal["sync", "rollback"]
     parent_task_id: UUID | None = None
     phase: AgentPhase

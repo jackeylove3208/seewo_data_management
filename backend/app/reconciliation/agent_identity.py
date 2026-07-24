@@ -51,9 +51,10 @@ def ordinary_field_differences(
     authority: AgentIdentityRecord, target: AgentIdentityRecord
 ) -> tuple[str, ...]:
     """Compare governed ordinary fields after identity correspondence is accepted."""
-    fields = ["category", "name"]
+    fields = ["category", "name", "number"]
     if authority.entity_kind == AgentEntityKind.STUDENT:
         fields.append("class_name")
+    fields.extend(("phone", "email"))
     return tuple(field for field in fields if getattr(authority, field) != getattr(target, field))
 
 

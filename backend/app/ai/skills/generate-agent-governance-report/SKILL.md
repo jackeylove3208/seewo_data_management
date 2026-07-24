@@ -2,7 +2,7 @@
 name: generate-agent-governance-report
 version: 1.0.0
 phase: generate_report
-allowed_tools: [read_report_facts, persist_report]
+allowed_tools: [read_report_fact_manifest, submit_report_narrative]
 input_schema: GovernanceReportInput
 output_schema: AgentGovernanceReport
 ---
@@ -29,7 +29,8 @@ output_schema: AgentGovernanceReport
 
 ## 执行流程
 
-1. 核对任务、运行、租户、报告阶段和事实引用一致；不得把另一个任务或回滚链的事实合并。
+1. 先用 `read_report_fact_manifest` 读取 evidence manifest 绑定的事实摘要，核对任务、运行、
+   租户、报告阶段和事实引用一致；不得把另一个任务或回滚链的事实合并。
 2. 汇总接入结果：连接器种类/安全状态、可识别实体、第三方和希沃总量、被标记/排除数量、
    稳定原因码。第三方无效行说明缺失字段及其对匹配覆盖的影响。
 3. 汇总分析结果：target_extra、target_duplicate、target_missing、field_difference、
@@ -43,6 +44,7 @@ output_schema: AgentGovernanceReport
 7. 对回滚任务，独立描述原任务引用、可恢复事实、冲突/审批、补偿操作和验证结果。
 8. 根据服务端事实原样设置 rollback eligibility。只有验证成功的目标 mutation 可能成为
    回滚依据；异常输入、纯报告或模型叙述不能。
+9. 可用 `submit_report_narrative` 预校验叙述结构；真正事实和报告持久化仍由服务端完成。
 
 ## 决策规则
 

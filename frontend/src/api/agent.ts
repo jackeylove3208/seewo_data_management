@@ -77,6 +77,48 @@ export interface AgentEventPage {
   events: AgentTaskEvent[];
 }
 
+export interface AgentGraphHumanGate {
+  id: string;
+  kind: string;
+  status: string;
+  item_count: number;
+}
+
+export interface AgentGraphProgress {
+  task_id: string;
+  workflow_version: "agent-graph-v1";
+  graph_version: string;
+  graph_cursor: number;
+  current_node: string;
+  business_stage:
+    | "data_ingestion"
+    | "agent_analysis"
+    | "governance_execution"
+    | "report_and_rollback"
+    | "terminal";
+  current_action_zh: string;
+  sub_agent_zh?: string | null;
+  progress_completed?: number | null;
+  progress_total?: number | null;
+  status: string;
+  can_terminate: boolean;
+  human_gates: AgentGraphHumanGate[];
+}
+
+export interface AgentClarificationInterpretation {
+  decision_id: string;
+  status: string;
+  task_id: string;
+  decision: "select_candidate" | "treat_as_extra" | "leave_unresolved";
+  selected_candidate_id: string | null;
+  interpretation_zh: string;
+  requires_second_confirmation: boolean;
+}
+
+export interface AgentClarificationConfirmation {
+  status: string;
+}
+
 export interface AgentConversationApi {
   createConversation(): Promise<AgentConversation>;
   sendMessage(conversationId: string, message: string): Promise<AgentMessageResponse>;
@@ -85,8 +127,11 @@ export interface AgentConversationApi {
   terminate(taskId: string): Promise<{ status: string }>;
   approveGroup?(taskId: string, groupId: string): Promise<unknown>;
   rejectGroup?(taskId: string, groupId: string, reason?: string): Promise<unknown>;
-  clarify?(taskId: string, message: string): Promise<unknown>;
-  confirmClarification?(taskId: string, decisionId: string): Promise<unknown>;
+  clarify?(taskId: string, message: string): Promise<AgentClarificationInterpretation>;
+  confirmClarification?(
+    taskId: string,
+    decisionId: string,
+  ): Promise<AgentClarificationConfirmation>;
 }
 
 export interface AgentManualTaskApi {
@@ -159,12 +204,43 @@ async function events(taskId: string, cursor?: string, signal?: AbortSignal) {
   return requestJson<AgentEventPage>(`/api/agent/tasks/${taskId}/events${suffix}`, { signal });
 }
 
+async function graph(taskId: string, signal?: AbortSignal) {
+  return requestJson<AgentGraphProgress>(`/api/agent/tasks/${taskId}/graph`, { signal });
+}
+
+async function decideGraphGate(
+  taskId: string,
+  gateId: string,
+  decision: "approve" | "reject",
+  reason?: string,
+) {
+  return requestJson<{ gate_id: string; status: "approved" | "rejected"; graph_cursor: number }>(
+    `/api/agent/tasks/${taskId}/graph/gates/${gateId}/decision`,
+    {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ decision, reason }),
+    },
+  );
+}
+
 async function terminate(taskId: string) {
   return requestJson<{ status: string }>(`/api/agent/tasks/${taskId}/terminate`, {
     method: "POST",
     headers: jsonHeaders,
     body: JSON.stringify({}),
   });
+}
+
+async function previewTermination(taskId: string) {
+  return requestJson<AgentGraphHumanGate>(
+    `/api/agent/tasks/${taskId}/termination-preview`,
+    {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({}),
+    },
+  );
 }
 
 async function approveGroup(taskId: string, groupId: string) {
@@ -184,7 +260,7 @@ async function rejectGroup(taskId: string, groupId: string, reason?: string) {
 }
 
 async function clarify(taskId: string, message: string) {
-  return requestJson(`/api/agent/tasks/${taskId}/clarification`, {
+  return requestJson<AgentClarificationInterpretation>(`/api/agent/tasks/${taskId}/clarification`, {
     method: "POST",
     headers: jsonHeaders,
     body: JSON.stringify({ message }),
@@ -192,7 +268,7 @@ async function clarify(taskId: string, message: string) {
 }
 
 async function confirmClarification(taskId: string, decisionId: string) {
-  return requestJson(`/api/agent/tasks/${taskId}/clarification/${decisionId}/confirm`, {
+  return requestJson<AgentClarificationConfirmation>(`/api/agent/tasks/${taskId}/clarification/${decisionId}/confirm`, {
     method: "POST",
     headers: jsonHeaders,
     body: JSON.stringify({}),
@@ -256,6 +332,11 @@ export const agentApi: AgentConversationApi & AgentManualTaskApi & {
   previewRollback: typeof previewRollback;
   confirmRollback: typeof confirmRollback;
   rejectRollback: typeof rejectRollback;
+  graph: typeof graph;
+  decideGraphGate: typeof decideGraphGate;
+  previewTermination: typeof previewTermination;
+  clarify: typeof clarify;
+  confirmClarification: typeof confirmClarification;
 } = {
   createConversation,
   sendMessage,
@@ -274,4 +355,7 @@ export const agentApi: AgentConversationApi & AgentManualTaskApi & {
   previewRollback,
   confirmRollback,
   rejectRollback,
+  graph,
+  decideGraphGate,
+  previewTermination,
 };

@@ -2,7 +2,7 @@
 name: generate-governance-solutions
 version: 1.0.0
 phase: analyze_batches
-allowed_tools: [read_identity_evidence, persist_finding]
+allowed_tools: [read_work_item, read_paired_record_evidence, read_claim_state]
 input_schema: GovernanceSolutionBatchInput
 output_schema: GovernanceSolutionBatch
 ---

@@ -739,7 +739,7 @@ class AgentAnalysisRepository:
     ) -> bool:
         return bool(
             run is not None
-            and run.workflow_version == "new-agent-v1"
+            and run.workflow_version in {"new-agent-v1", "agent-graph-v1"}
             and run.phase == AgentPhase.ANALYZE_BATCHES.value
             and run.status == AgentRunStatus.RUNNING.value
             and run_claim_is_active(run, worker_id=worker_id, lease_token=lease_token, now=now)
@@ -769,7 +769,7 @@ class AgentAnalysisRepository:
             or run.task_id != task_id
             or run.tenant_id != tenant_id
             or task.tenant_id != tenant_id
-            or run.workflow_version != "new-agent-v1"
+            or run.workflow_version not in {"new-agent-v1", "agent-graph-v1"}
         ):
             raise ReplayConflict("Agent run context does not match task and tenant")
         return run

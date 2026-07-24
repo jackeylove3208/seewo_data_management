@@ -6,6 +6,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent_graph.repository import AgentGraphRepository
 from app.agent_runtime.repository import AgentRunNotFound, AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentPhase, AgentRunKind, AgentRunStatus
 from app.core.security import OperatorContext
@@ -51,7 +52,7 @@ class AgentSupervisorService:
         )
         if task is None:
             raise LookupError(f"reconciliation task not found: {task_id}")
-        if task.workflow_version != "new-agent-v1":
+        if task.workflow_version not in {"new-agent-v1", "agent-graph-v1"}:
             raise ValueError(
                 f"Agent supervisor cannot process task version {task.workflow_version}"
             )
@@ -70,15 +71,40 @@ class AgentSupervisorService:
             tenant_id=tenant_id,
             conversation_id=conversation_id,
             kind=AgentRunKind.SYNC,
+            workflow_version=task.workflow_version,
         )
         await self.repository.append_event(
             run.id,
             "run.created",
             {"phase": run.phase, "status": run.status, "workflow_version": run.workflow_version},
         )
+        graph_repository = (
+            AgentGraphRepository(self.session)
+            if task.workflow_version == "agent-graph-v1"
+            else None
+        )
+        graph_state = (
+            await graph_repository.create_run_state(
+                run_id=run.id,
+                graph_version="agent-sync-graph-v1",
+                initial_node="intent_confirmed",
+            )
+            if graph_repository is not None
+            else None
+        )
         run = await self.repository.transition_run(
             run.id, requested_phase=AgentPhase.ACQUIRE_SCHOOL_LOCK
         )
+        if graph_repository is not None and graph_state is not None:
+            await graph_repository.record_transition(
+                graph_state.id,
+                expected_cursor=0,
+                from_node="intent_confirmed",
+                to_node="acquire_school_lock",
+                action_id="acquire_school_lock",
+                guard_results={"workflow_version": "passed", "tenant": "passed"},
+                fencing_token=run.attempt_count,
+            )
         await self.repository.acquire_school_lock(
             tenant_id=tenant_id,
             task_id=task.id,
@@ -92,6 +118,16 @@ class AgentSupervisorService:
         run = await self.repository.transition_run(
             run.id, requested_phase=AgentPhase.INGEST_AND_NORMALIZE
         )
+        if graph_repository is not None and graph_state is not None:
+            await graph_repository.record_transition(
+                graph_state.id,
+                expected_cursor=1,
+                from_node="acquire_school_lock",
+                to_node="inspect_sources",
+                action_id="inspect_sources",
+                guard_results={"school_lock": "passed"},
+                fencing_token=run.attempt_count,
+            )
         await self.repository.append_event(
             run.id,
             "phase.started",
@@ -158,7 +194,9 @@ class AgentSupervisorService:
             .where(
                 ReconciliationTask.id == task_id,
                 ReconciliationTask.tenant_id == self.operator.tenant_id,
-                ReconciliationTask.workflow_version == "new-agent-v1",
+                ReconciliationTask.workflow_version.in_(
+                    ("new-agent-v1", "agent-graph-v1")
+                ),
                 ReconciliationTask.task_kind == AgentRunKind.ROLLBACK.value,
             )
             .with_for_update()
@@ -176,6 +214,26 @@ class AgentSupervisorService:
         run = await self.repository.transition_run(
             run.id, requested_phase=AgentPhase.ACQUIRE_SCHOOL_LOCK
         )
+        graph_repository = (
+            AgentGraphRepository(self.session)
+            if task.workflow_version == "agent-graph-v1"
+            else None
+        )
+        graph_state = (
+            await graph_repository.get_run_state_for_agent_run(run.id)
+            if graph_repository is not None
+            else None
+        )
+        if graph_repository is not None and graph_state is not None:
+            await graph_repository.record_transition(
+                graph_state.id,
+                expected_cursor=0,
+                from_node="rollback_intent_confirmed",
+                to_node="acquire_school_lock",
+                action_id="acquire_school_lock",
+                guard_results={"workflow_version": "passed", "tenant": "passed"},
+                fencing_token=run.attempt_count,
+            )
         await self.repository.acquire_school_lock(
             tenant_id=task.tenant_id,
             task_id=task.id,
@@ -189,6 +247,16 @@ class AgentSupervisorService:
         run = await self.repository.transition_run(
             run.id, requested_phase=AgentPhase.PLAN_RESTORE
         )
+        if graph_repository is not None and graph_state is not None:
+            await graph_repository.record_transition(
+                graph_state.id,
+                expected_cursor=1,
+                from_node="acquire_school_lock",
+                to_node="load_verified_mutations",
+                action_id="load_verified_mutations",
+                guard_results={"school_lock": "passed", "report_facts": "passed"},
+                fencing_token=run.attempt_count,
+            )
         await self.repository.append_event(
             run.id,
             "phase.started",
@@ -203,6 +271,28 @@ class AgentSupervisorService:
             raise LookupError("Agent run not found")
         current_status = AgentRunStatus(run.status)
         if current_status in {AgentRunStatus.COMPLETED, AgentRunStatus.TERMINATED}:
+            return run
+        if run.workflow_version == "agent-graph-v1":
+            graph = await AgentGraphRepository(
+                self.session
+            ).get_run_state_for_agent_run(run.id, for_update=True)
+            if graph is None:
+                raise LookupError("Agent graph state is missing")
+            graph.termination_requested = True
+            if current_status in {
+                AgentRunStatus.WAITING_HUMAN,
+                AgentRunStatus.BLOCKED_MODEL_ERROR,
+            }:
+                run.status = AgentRunStatus.RUNNING.value
+            await self.repository.append_event(
+                run.id,
+                "graph.termination_requested",
+                {
+                    "reason": reason[:128],
+                    "current_node": graph.current_node,
+                    "drain_current_atomic_unit": True,
+                },
+            )
             return run
         if current_status is not AgentRunStatus.TERMINATING:
             run = await self.repository.transition_run(

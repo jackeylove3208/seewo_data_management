@@ -74,6 +74,11 @@ class AgentTaskService:
         if active_lock is not None:
             raise SchoolLockConflict(active_lock.owner_task_id)
 
+        workflow_version = (
+            self.settings.new_task_workflow_version
+            if self.settings is not None
+            else "new-agent-v1"
+        )
         task = ReconciliationTask(
             id=uuid4(),
             tenant_id=self.operator.tenant_id,
@@ -82,7 +87,7 @@ class AgentTaskService:
             entity_types=sorted(item.value for item in intent.entity_types),
             status="created",
             stage="ingestion",
-            workflow_version="new-agent-v1",
+            workflow_version=workflow_version,
             task_kind="sync",
             title=intent.title.strip(),
             agent_intent=payload,
@@ -176,7 +181,7 @@ class AgentTaskService:
             select(ReconciliationTask).where(
                 ReconciliationTask.id == task_id,
                 ReconciliationTask.tenant_id == self.operator.tenant_id,
-                ReconciliationTask.workflow_version == "new-agent-v1",
+                ReconciliationTask.workflow_version.in_(("new-agent-v1", "agent-graph-v1")),
             )
         )
         if task is None:

@@ -2,7 +2,7 @@
 name: inspect-external-data-source
 version: 1.0.0
 phase: ingest_and_normalize
-allowed_tools: [read_connector_page]
+allowed_tools: [inspect_configured_source, read_connector_page, submit_input_contract_verdict]
 input_schema: SourceInspectionInput
 output_schema: SourceInspectionResult
 ---
@@ -27,15 +27,16 @@ output_schema: SourceInspectionResult
 ## 执行流程
 
 1. 验证 `connector_kind` 只能是 `csv`、`api`、`database`，并确认引用已被服务端授权。
-2. 读取一个有界页面及连接器能力摘要，检查可读性、版本标识、分页方式、来源角色、字段名称、
-   实体类别线索和稳定顺序信息。
+2. 先用 `inspect_configured_source` 读取服务端能力摘要，再按需用 `read_connector_page` 读取一个
+   有界页面，检查可读性、版本标识、分页方式、来源角色、字段名称、实体类别线索和稳定顺序信息。
 3. CSV 必须能以物理行号形成稳定顺序；API 必须有稳定游标和记录 ID；数据库必须有配置的
    稳定主键排序。缺少可重复顺序时，记录安全问题码，不得声称可继续。
 4. 判断字段是否可映射到 `category`、`name`、`number`、`class`、`phone`、`email`。
    此处只识别结构，不判断每一行是否完整，也不从自由文本补造字段。
 5. 判断可识别实体是否属于部门、学生、老师。班级只是学生字段，不得识别为第四种实体。
 6. 若页面不足以确认结构，可在授权范围内请求下一有界页；不得一次读取全库或绕过页限制。
-7. 输出识别结果和安全问题码，不直接创建快照或声称已完成全部接入。
+7. 输出识别结果和安全问题码；可用 `submit_input_contract_verdict` 预校验同一结构化结果，
+   但不得直接创建快照或声称已完成全部接入。
 
 ## 决策规则
 

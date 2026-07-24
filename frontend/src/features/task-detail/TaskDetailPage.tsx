@@ -50,14 +50,19 @@ export function TaskDetailPage() {
   const { taskId = "" } = useParams();
   const navigate = useNavigate();
   const historyTask = findTask(taskId);
+  const shouldQueryAgent = !historyTask
+    || ["new-agent-v1", "agent-graph-v1"].includes(historyTask.workflowVersion ?? "");
   const agentTask = useQuery({
     queryKey: ["agent-task", taskId],
     queryFn: ({ signal }) => agentApi.task(taskId, signal),
-    enabled: !historyTask || historyTask.workflowVersion === "new-agent-v1",
+    enabled: shouldQueryAgent,
   });
-  const isAgentTask = agentTask.data?.workflow_version === "new-agent-v1";
+  const isAgentTask = ["new-agent-v1", "agent-graph-v1"].includes(agentTask.data?.workflow_version ?? "");
   const demo = Boolean(historyTask?.isDemo);
-  const workflow = useReconciliationWorkflow(taskId, !demo);
+  const shouldLoadLegacy = !demo
+    && !isAgentTask
+    && (!shouldQueryAgent || agentTask.isError);
+  const workflow = useReconciliationWorkflow(taskId, shouldLoadLegacy);
   const [batchOpen, setBatchOpen] = useState(false);
   const { selection, setSelection } = useIssueSelection(taskId);
   const task = workflow.task.data;
@@ -79,7 +84,8 @@ export function TaskDetailPage() {
 
   if (isAgentTask) return <AgentTaskDetailPage taskId={taskId} initialTask={agentTask.data} />;
 
-  if (!demo && !task && workflow.task.isLoading) {
+  const agentLookupPending = shouldQueryAgent && !agentTask.data && !agentTask.isError;
+  if (!demo && !task && (agentLookupPending || workflow.task.isLoading)) {
     return <main className="page-shell task-detail-page"><BackButton fallback="/tasks" label="返回任务列表" /><Skeleton active paragraph={{ rows: 8 }} /></main>;
   }
   if ((!historyTask && workflow.task.isError) || (demo && !historyTask)) {

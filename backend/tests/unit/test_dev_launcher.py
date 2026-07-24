@@ -37,6 +37,8 @@ def test_launch_plan_starts_complete_csv_agent_stack(tmp_path: Path) -> None:
     assert plan.services[2].argv[:3] == ("npm", "run", "dev:web")
     assert plan.environment == {
         "RECONCILIATION_NEW_AGENT_ENABLED": "true",
+        "RECONCILIATION_AGENT_GRAPH_ENABLED": "true",
+        "RECONCILIATION_AGENT_GRAPH_CSV_EXECUTION_ENABLED": "true",
         "RECONCILIATION_NEW_AGENT_ANALYSIS_ONLY": "false",
         "RECONCILIATION_NEW_AGENT_CSV_EXECUTION_ENABLED": "true",
     }

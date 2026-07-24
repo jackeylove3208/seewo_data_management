@@ -165,10 +165,15 @@ class AgentReportingService:
         source = await self.session.get(ReconciliationTask, source_task_id)
         if source is None:
             raise LookupError("source Agent task not found")
+        workflow_version = (
+            "agent-graph-v1"
+            if source.workflow_version == "agent-graph-v1"
+            else "new-agent-v1"
+        )
         task = ReconciliationTask(
             id=uuid4(), tenant_id=tenant_id, scope_id=source.scope_id,
             snapshot_mode=source.snapshot_mode, entity_types=list(source.entity_types),
-            status="created", stage="rollback", workflow_version="new-agent-v1",
+            status="created", stage="rollback", workflow_version=workflow_version,
             task_kind="rollback", parent_task_id=source_task_id,
             title=f"回滚：{source.title or source_task_id}",
             agent_intent={
@@ -185,8 +190,20 @@ class AgentReportingService:
         await self.session.flush()
         runtime = AgentRuntimeRepository(self.session)
         run = await runtime.create_run(
-            task_id=task.id, tenant_id=tenant_id, conversation_id=None, kind=AgentRunKind.ROLLBACK
+            task_id=task.id,
+            tenant_id=tenant_id,
+            conversation_id=None,
+            kind=AgentRunKind.ROLLBACK,
+            workflow_version=workflow_version,
         )
+        if workflow_version == "agent-graph-v1":
+            from app.agent_graph.repository import AgentGraphRepository
+
+            await AgentGraphRepository(self.session).create_run_state(
+                run_id=run.id,
+                graph_version="agent-rollback-graph-v1",
+                initial_node="rollback_intent_confirmed",
+            )
         evidence = report.facts["rollback_evidence"]["successful_mutations"]
         await runtime.append_event(
             run.id,

@@ -48,7 +48,13 @@ def test_agent_skill_loads_a_pinned_phase_contract() -> None:
     skill = SkillRegistry().load("reconcile-entity-batch", "1.0.0")
 
     assert skill.phase == "analyze_batches"
-    assert set(skill.allowed_tools) == {"read_identity_evidence", "persist_finding"}
+    assert set(skill.allowed_tools) == {
+        "read_work_item",
+        "read_paired_record_evidence",
+        "query_identity_postings",
+        "read_claim_state",
+        "submit_finding_batch",
+    }
     assert skill.output_schema == "AgentFindingBatch"
     assert skill.input_schema == "ReconcileEntityBatchInput"
 
@@ -79,6 +85,18 @@ def test_agent_skill_loads_a_pinned_phase_contract() -> None:
                 "work_items": [],
             },
         )
+
+
+def test_conflict_skill_uses_only_controlled_graph_conflict_tools() -> None:
+    skill = SkillRegistry().load("resolve-human-conflict-instruction", "1.0.0")
+
+    assert skill.phase == "clarify_identity_conflicts"
+    assert set(skill.allowed_tools) == {
+        "read_frozen_conflict",
+        "submit_conflict_interpretation",
+    }
+    assert skill.input_schema == "ConflictInstructionInput"
+    assert skill.output_schema == "ConflictDecisionDraft"
 
 
 def test_agent_skill_contract_rejects_unknown_fields_and_schema_names(tmp_path: Path) -> None:

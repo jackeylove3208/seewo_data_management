@@ -98,6 +98,7 @@ class AgentRuntimeRepository:
         tenant_id: str,
         conversation_id: UUID | None,
         kind: AgentRunKind,
+        workflow_version: str = "new-agent-v1",
     ) -> AgentRunRecord:
         record = AgentRunRecord(
             id=uuid4(),
@@ -105,7 +106,7 @@ class AgentRuntimeRepository:
             tenant_id=tenant_id,
             conversation_id=conversation_id,
             kind=kind.value,
-            workflow_version="new-agent-v1",
+            workflow_version=workflow_version,
             phase=AgentPhase.INTENT_CONFIRMED.value,
             status=AgentRunStatus.PENDING.value,
             version=1,
@@ -127,8 +128,9 @@ class AgentRuntimeRepository:
         worker_id: str,
         lease_seconds: int,
         phases: frozenset[AgentPhase],
+        workflow_versions: frozenset[str] = frozenset({"new-agent-v1"}),
     ) -> AgentRunRecord | None:
-        if not phases:
+        if not phases or not workflow_versions:
             return None
         now = datetime.now(UTC)
         run = await self.session.scalar(
@@ -136,6 +138,7 @@ class AgentRuntimeRepository:
             .where(
                 AgentRunRecord.status == AgentRunStatus.RUNNING.value,
                 AgentRunRecord.phase.in_(phase.value for phase in phases),
+                AgentRunRecord.workflow_version.in_(workflow_versions),
                 or_(
                     AgentRunRecord.lease_expires_at.is_(None),
                     AgentRunRecord.lease_expires_at < now,
