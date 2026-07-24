@@ -117,7 +117,7 @@ class AgentCheckpointRecord(Base, TimestampMixin):
     tenant_id: Mapped[str] = mapped_column(String(128), index=True)
     phase: Mapped[str] = mapped_column(String(64), index=True)
     checkpoint_key: Mapped[str] = mapped_column(String(128))
-    input_hash: Mapped[str] = mapped_column(String(64))
+    input_hash: Mapped[str] = mapped_column(String(71))
     status: Mapped[str] = mapped_column(String(32), default="completed", index=True)
     payload: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
     updated_at: Mapped[datetime] = mapped_column(

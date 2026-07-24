@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent_graph.actions import (
@@ -82,6 +83,7 @@ _LOW_RISK_REPLAN_ACTIONS = frozenset(
         "regenerate_report_narrative",
     }
 )
+_NON_RETRYABLE_DATABASE_ERROR_CLASSES = frozenset({"0A", "22", "23", "42"})
 
 
 class AgentGraphWorker:
@@ -142,6 +144,17 @@ class AgentGraphWorker:
             await asyncio.gather(heartbeat_task, return_exceptions=True)
             await self._block_model_failure(context, error)
             return True
+        except DBAPIError as error:
+            heartbeat_stopped.set()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
+            if not processing_task.done():
+                processing_task.cancel()
+            await asyncio.gather(processing_task, return_exceptions=True)
+            if _is_non_retryable_database_error(error):
+                await self._fail_persistence_contract(context)
+                return True
+            await self._release_claim(context)
+            raise
         except BaseException:
             heartbeat_stopped.set()
             await asyncio.gather(heartbeat_task, return_exceptions=True)
@@ -552,6 +565,72 @@ class AgentGraphWorker:
                     lease_token=context.lease_token,
                 )
 
+    async def _fail_persistence_contract(
+        self,
+        context: GraphWorkContext,
+    ) -> None:
+        code = "agent_persistence_contract_error"
+        message = (
+            "任务状态保存失败，系统已停止自动重试，"
+            "请检查数据库结构或数据合同后重新发起任务。"
+        )
+        async with self._session_factory() as session:
+            async with session.begin():
+                runtime = AgentRuntimeRepository(session)
+                run = await runtime.get_run(context.run_id, for_update=True)
+                state = await AgentGraphRepository(session).get_run_state(
+                    context.graph_run_id,
+                    for_update=True,
+                )
+                task = await session.get(ReconciliationTask, context.task_id)
+                if run is None or state is None or task is None:
+                    raise AgentGraphNotFound(
+                        "Agent graph state disappeared during persistence failure"
+                    )
+                if task.tenant_id != context.tenant_id:
+                    raise AgentGraphNotFound(
+                        "Agent graph task tenant changed during persistence failure"
+                    )
+                self._guard.validate_fencing(
+                    expected_worker_id=context.worker_id,
+                    expected_lease_token=context.lease_token,
+                    expected_attempt_count=context.attempt_count,
+                    persisted_worker_id=run.lease_owner,
+                    persisted_lease_token=run.lease_token,
+                    persisted_attempt_count=run.attempt_count,
+                )
+                self._validate_snapshot(context, state.current_node, state.cursor)
+                run.status = "failed"
+                state.status = "failed"
+                task.status = "failed"
+                task.error = {"code": code, "message": message}
+                await runtime.record_failure(
+                    run.id,
+                    phase=AgentPhase(run.phase),
+                    code=code,
+                    safe_message=message,
+                    attempt_count=context.attempt_count,
+                )
+                await runtime.append_event(
+                    run.id,
+                    "run.failed",
+                    {
+                        "code": code,
+                        "message": message,
+                        "failed_node": context.current_node,
+                    },
+                )
+                await runtime.release_school_lock(
+                    tenant_id=context.tenant_id,
+                    run_id=context.run_id,
+                    reason="persistence_error",
+                )
+                await runtime.release_run_claim(
+                    run.id,
+                    worker_id=context.worker_id,
+                    lease_token=context.lease_token,
+                )
+
     @staticmethod
     def _validate_snapshot(
         context: GraphWorkContext,
@@ -568,6 +647,22 @@ def _safe_model_failure_categories(
     if isinstance(error, GraphSupervisorFailure) and error.failure_categories:
         return list(error.failure_categories)
     return ["subagent_model_failure"]
+
+
+def _is_non_retryable_database_error(error: DBAPIError) -> bool:
+    candidates = (
+        error.orig,
+        getattr(error.orig, "__cause__", None),
+        getattr(error.orig, "__context__", None),
+    )
+    for candidate in candidates:
+        sqlstate = getattr(candidate, "sqlstate", None)
+        if (
+            isinstance(sqlstate, str)
+            and sqlstate[:2] in _NON_RETRYABLE_DATABASE_ERROR_CLASSES
+        ):
+            return True
+    return False
 
 
 def _coarse_phase(node: str) -> AgentPhase:

@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 
 from app.agent_graph.contracts import (
     AllowedActionV1,
@@ -21,6 +22,7 @@ from app.agent_runtime.service import AgentSupervisorService
 from app.core.security import OperatorContext
 from app.models.agent_graph import AgentSupervisorDecisionRecord
 from app.models.agent_runtime import (
+    AgentFailureRecord,
     AgentRunRecord,
     AgentTaskEventRecord,
     SchoolTaskLockRecord,
@@ -271,6 +273,95 @@ async def test_crash_replays_the_frozen_decision_without_replanning(database) ->
     assert plan_calls == 1
     assert supervisor.calls == 1
     assert execution_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_non_retryable_database_error_fails_run_and_releases_lock(
+    database,
+) -> None:
+    task_id, run_id = await _start_graph_run(database)
+    candidate = _candidate(
+        "inspect_authority:page-1",
+        graph_action_kind="inspect_authority",
+        resource_id="authority:page-1",
+        evidence="authority-inspection-v1",
+        successor="inspect_sources",
+    )
+
+    async def plan(_context: GraphWorkContext) -> GraphCandidatePlan:
+        from app.agent_graph.contracts import SingleActionReasonCode
+
+        return GraphCandidatePlan(
+            candidate_evaluations=(candidate,),
+            single_action_reason_code=SingleActionReasonCode.ONLY_GUARD_SATISFIED,
+        )
+
+    class PostgreSQLDataError(Exception):
+        sqlstate = "22001"
+
+    execution_calls = 0
+
+    async def execute(
+        _context: GraphWorkContext,
+        _action: AllowedActionV1,
+    ) -> GraphActionOutcome:
+        nonlocal execution_calls
+        execution_calls += 1
+        raise DBAPIError(
+            "INSERT INTO agent_checkpoints (...) VALUES (...)",
+            {},
+            PostgreSQLDataError("value too long"),
+            connection_invalidated=False,
+        )
+
+    worker = AgentGraphWorker(
+        database.session_factory,
+        worker_id="graph-worker-database-contract-error",
+        lease_seconds=60,
+        supervisor=Supervisor("inspect_authority:page-1"),
+        candidate_provider=plan,
+        executor=execute,
+    )
+
+    assert await worker.run_once() is True
+    assert await worker.run_once() is False
+    assert execution_calls == 1
+    async with database.session_factory() as session:
+        run = await session.get(AgentRunRecord, run_id)
+        task = await session.get(ReconciliationTask, task_id)
+        state = await AgentGraphRepository(session).get_run_state_for_agent_run(
+            run_id
+        )
+        active_lock = await session.scalar(
+            select(SchoolTaskLockRecord.id).where(
+                SchoolTaskLockRecord.owner_run_id == run_id,
+                SchoolTaskLockRecord.active.is_(True),
+            )
+        )
+        failure = await session.scalar(
+            select(AgentFailureRecord).where(AgentFailureRecord.run_id == run_id)
+        )
+        event = await session.scalar(
+            select(AgentTaskEventRecord)
+            .where(
+                AgentTaskEventRecord.run_id == run_id,
+                AgentTaskEventRecord.event_type == "run.failed",
+            )
+            .order_by(AgentTaskEventRecord.sequence.desc())
+        )
+
+    assert run is not None
+    assert task is not None
+    assert state is not None
+    assert failure is not None
+    assert event is not None
+    assert run.status == "failed"
+    assert state.status == "failed"
+    assert task.status == "failed"
+    assert active_lock is None
+    assert failure.code == "agent_persistence_contract_error"
+    assert event.payload["failed_node"] == "inspect_sources"
+    assert "value too long" not in str(event.payload)
 
 
 @pytest.mark.asyncio
