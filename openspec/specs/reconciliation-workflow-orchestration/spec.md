@@ -2,64 +2,49 @@
 
 ## Purpose
 
-Define tenant-safe, bounded, persistent, idempotent workflow advancement and retry behavior for reconciliation tasks.
+Define durable, tenant-safe advancement for legacy and new Agent task workflows.
 
 ## Requirements
 
-### Requirement: Backend owns task tenant identity
-The system SHALL derive a reconciliation task's tenant from authenticated backend operator context and SHALL NOT trust a client-supplied tenant identifier.
-
-#### Scenario: Frontend creates a task
-- **WHEN** an authenticated operator submits paired uploads and task settings without a tenant identifier
-- **THEN** the backend creates the task and both snapshots in the operator's tenant
-
-#### Scenario: Operator accesses another tenant's task
-- **WHEN** an operator requests, advances, or retries a task outside the operator's tenant
-- **THEN** the backend returns not found without revealing whether that task exists
-
 ### Requirement: Automatically progress the reconciliation workflow
-The system SHALL advance a created task through snapshot readiness, entity resolution, difference detection, and mandatory analysis in that order without requiring the user to invoke each domain API manually.
+For `new-agent-v1` tasks, the system SHALL advance through school-lock acquisition, ingestion, identity work, bounded analysis, conflict decisions, grouped approvals, execution, verification, and reporting under the supervisor; historical tasks SHALL remain on their stored legacy workflow.
 
-#### Scenario: Ingestion completes successfully
-- **WHEN** the task detail client observes a task with published source and target snapshots
-- **THEN** it automatically requests workflow advancement until the task reaches analysis-ready or a terminal failure
+#### Scenario: New Agent task starts
+- **WHEN** a user confirms start and the school lock is available
+- **THEN** backend workers advance persisted phases without browser-owned matching/difference commands
 
-#### Scenario: Page is refreshed during matching
-- **WHEN** the user reloads or later reopens a task whose workflow is incomplete
-- **THEN** the client reads persisted backend state and resumes from the first incomplete stage
+#### Scenario: Historical task is reopened
+- **WHEN** its workflow version is legacy
+- **THEN** existing snapshots, mappings, differences, analyses, reports, and restore records remain readable without migration
 
 ### Requirement: Bound each workflow advancement
-The backend SHALL process at most one deterministic stage or one configured AI analysis batch in a single advancement request.
+One worker claim SHALL process at most one deterministic phase unit, one connector page/atomic mutation, or one model batch containing at most 50 work items.
 
-#### Scenario: A task has many differences
-- **WHEN** one advancement request reaches mandatory analysis with more items than the configured batch size
-- **THEN** the backend analyzes only the bounded batch, persists progress, and reports that additional advancement is required
+#### Scenario: Many analysis items exist
+- **WHEN** more than 50 work items require one Skill
+- **THEN** separate leased batches are persisted and completed independently
 
 ### Requirement: Persist observable workflow progress
-The system SHALL persist current stage, status, attempt count, completed work, total work, timestamps, and structured errors independently of browser state.
+The system SHALL persist supervisor phase, sub-agent/Skill version, status, attempts, completed/total counters, lock ownership, approval/conflict counts, mutation counts, timestamps, and structured errors independently of browser state.
 
-#### Scenario: AI batch completes
-- **WHEN** a bounded analysis batch finishes
-- **THEN** the task response reports total, completed, succeeded, manual-only, and failed analysis counts from persisted records
-
-#### Scenario: Backend process restarts
-- **WHEN** the API process restarts after a completed stage
-- **THEN** the next advancement reuses persisted outputs and does not regenerate completed snapshots, matches, or differences
+#### Scenario: Process restarts
+- **WHEN** snapshots, batches, decisions, or operations were committed before restart
+- **THEN** recovery reuses them and does not repeat completed model calls or target writes
 
 ### Requirement: Prevent concurrent duplicate advancement
-The workflow service SHALL serialize advancement for one task and SHALL make stage operations idempotent.
+The system SHALL serialize phase transitions for one run, enforce one active run per school, and make work, decision, plan, report, and execution commands idempotent.
 
-#### Scenario: Two clients advance the same task
-- **WHEN** two advancement requests arrive concurrently for the same task and stage
-- **THEN** at most one request creates new stage outputs and both clients subsequently observe the same persisted state
+#### Scenario: Two workers claim the same batch
+- **WHEN** concurrent claims occur
+- **THEN** only one valid lease commits the terminal outcome
 
 ### Requirement: Expose safe retry behavior
-The system SHALL classify workflow failures with a stable code and retryable flag and SHALL only offer retry for retryable failures.
+The system SHALL retry a model or retryable connector operation no more than three times after its initial attempt, SHALL preserve completed work, and SHALL not fabricate AI outcomes or automatically release the school lock after exhaustion.
 
-#### Scenario: Enterprise gateway times out
-- **WHEN** model retries are exhausted for a bounded batch
-- **THEN** affected differences receive a policy-compliant manual state or retryable failure, and completed differences remain complete
+#### Scenario: Model retries exhaust
+- **WHEN** all four total attempts fail
+- **THEN** the task becomes blocked, emits a sanitized conversation error, and waits for explicit termination
 
-#### Scenario: Snapshot contract is invalid
-- **WHEN** advancement fails because required immutable snapshots are absent or incompatible
-- **THEN** the task exposes a non-retryable error and the UI does not offer blind retry
+#### Scenario: Data contract cannot be inspected
+- **WHEN** ingestion cannot map the source contract
+- **THEN** the task records a data-error report and performs no governance operation

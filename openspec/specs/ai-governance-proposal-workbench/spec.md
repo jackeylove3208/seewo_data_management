@@ -2,96 +2,77 @@
 
 ## Purpose
 
-Define the real-data workbench for reviewing analysis results and persisting governed AI or operator proposals without mutating the target.
+Define the Agent workbench for viewing governed findings and issuing only typed backend commands.
 
 ## Requirements
 
 ### Requirement: Use real reconciliation data in the Web workbench
-The Web application SHALL retrieve task stages, difference pages, analysis results, and proposal state from typed backend APIs for non-demo tasks.
+The Web application SHALL retrieve Agent phases/events, actionable findings, analyses, clarification/approval state, execution progress, reports, and rollback state from typed backend APIs for non-demo tasks.
 
-#### Scenario: User opens a real task
-- **WHEN** the task was created from uploaded CSV files
-- **THEN** the task detail and difference views do not substitute local demo differences or browser-only stage state
+#### Scenario: User opens a real Agent task
+- **WHEN** the task came from conversation, CSV, API, or database sync
+- **THEN** no demo differences, local-only history, or browser-invented stage is substituted
 
 ### Requirement: Display the four-stage workflow
-The task detail view SHALL display data ingestion, entity resolution, difference detection, and mandatory AI analysis with current status, progress, errors, and permitted retry actions.
+The task detail SHALL present data access, Agent analysis/decision, governance execution, and reporting/rollback with persisted sub-progress, current controls, errors, and terminal report state.
 
-#### Scenario: AI analysis is active
-- **WHEN** the backend reports an incomplete analysis batch
-- **THEN** the AI stage displays a stable-size analysis animation and completed-versus-total progress without shifting surrounding layout
+#### Scenario: Agent analysis is active
+- **WHEN** ingestion, identity work, or bounded analysis is incomplete
+- **THEN** stable progress identifies current sub-agent and completed/total work without exposing internal prompts
 
 #### Scenario: Reduced motion is preferred
 - **WHEN** the operating system requests reduced motion
-- **THEN** the UI replaces continuous animation with a static active indicator while retaining textual progress
+- **THEN** active phases use static indicators while retaining textual status
 
 ### Requirement: Open one difference analysis modal on demand
-The workbench SHALL open an analysis modal only when the user selects one difference and SHALL NOT automatically open a sequence of modals after batch analysis.
+The workbench SHALL open detail for one actionable Agent finding on demand and SHALL show authoritative/Seewo values, category, evidence, risk, provenance, and every validated solution without opening correct silent records.
 
-#### Scenario: Selected difference is still analyzing
-- **WHEN** the user opens a difference whose analysis is pending
-- **THEN** the modal displays the analysis animation and refreshes in place until the result or failure is available
-
-#### Scenario: Selected difference is analyzed
-- **WHEN** analysis-v2 is available
-- **THEN** the modal displays source and Seewo values, cause, evidence, risk, confidence, provenance label, and every validated option
+#### Scenario: Finding analysis is available
+- **WHEN** a user selects one actionable finding
+- **THEN** its persisted current version and solution state are displayed without regenerating AI output
 
 ### Requirement: Present validated AI options
-The analysis modal SHALL present at most three validated options, identify the recommended option, explain rationale and preconditions, and provide an explicit adopt-and-preview command for each option.
+The workbench SHALL present at most three validated solutions, the recommendation, rationale, preconditions, executability, risk, and grouping/approval state and SHALL not accept client-authored operation payloads.
 
-#### Scenario: User adopts an AI option
-- **WHEN** the user chooses adopt-and-preview
-- **THEN** the UI shows exact before and after values and only then submits the analysis ID, option ID, and expected difference version to create a pending execution proposal
+#### Scenario: Low-risk solution is selected automatically
+- **WHEN** server policy classifies it low risk after all analysis completes
+- **THEN** the UI displays its planned status and exact preview while execution remains backend-controlled
+
+#### Scenario: High-risk group is waiting
+- **WHEN** compatible findings form one frozen approval group
+- **THEN** one card presents agree/reject and pageable membership rather than one modal per record
 
 ### Requirement: Support manual-only analysis
-The modal SHALL show only the manual path when analysis is manual-only and SHALL explain why AI did not produce an executable option.
+The workbench SHALL distinguish unresolved identity conflict from model-resolved high risk and SHALL temporarily enable scoped conflict conversation with interpretation confirmation rather than displaying absence of AI output.
 
-#### Scenario: Analysis has insufficient evidence
-- **WHEN** analysis-v2 reports manual-only because information is missing or risk is high
-- **THEN** no AI adoption button is rendered and the manual modification action remains available
-
-### Requirement: Allow whitelisted manual entity changes
-The workbench SHALL provide a manual editor generated from backend-owned entity field policy and SHALL keep identifiers, source provenance, snapshots, and audit fields read-only.
-
-#### Scenario: User edits a teacher
-- **WHEN** the user opens manual modification for a teacher difference
-- **THEN** only allowed canonical fields such as name, phone, email, status, or organization relation are editable
-
-#### Scenario: User edits an organization unit
-- **WHEN** the user opens manual modification for an organization difference
-- **THEN** only allowed canonical fields such as name, status, and parent relation are editable
-
-### Requirement: Require manual rationale and preview
-The system SHALL require a non-blank operator rationale and an explicit before-and-after preview before accepting a manual proposal.
-
-#### Scenario: Manual form contains no meaningful change
-- **WHEN** the user submits unchanged values, protected fields, or a blank rationale
-- **THEN** both frontend and backend reject the request with field-specific feedback
+#### Scenario: User provides conflict guidance
+- **WHEN** the Agent drafts a structured interpretation from allowed candidates
+- **THEN** the UI shows confirm or restate and no governance operation exists before confirmation
 
 ### Requirement: Persist both proposal sources through one contract
-The backend SHALL persist AI-selected and operator-authored proposals with the same pending-execution lifecycle, difference version binding, backend-owned operator identity, and supersession history.
+The backend SHALL adapt Agent-selected, server-policy-selected, and human-clarified solutions into immutable versioned governance proposals/plans with backend-owned identity, evidence, approvals, and supersession history.
 
-#### Scenario: AI option is persisted
-- **WHEN** a valid analysis option is confirmed
-- **THEN** the backend creates an immutable proposal with `proposal_source=ai` and copies content from the persisted analysis rather than trusting client-supplied changes
-
-#### Scenario: Manual change is persisted
-- **WHEN** an allowed manual preview is confirmed
-- **THEN** the backend creates an immutable proposal with `proposal_source=operator` and does not modify the current target snapshot or CSV
-
-#### Scenario: User replaces an existing proposal
-- **WHEN** the user chooses another AI option or submits a revised manual change for the same difference version
-- **THEN** the backend creates a new proposal version linked to the superseded proposal and retains the earlier audit record
+#### Scenario: Human clarification is confirmed
+- **WHEN** a conflict decision receives second confirmation
+- **THEN** a proposal references that decision version rather than trusting free-form client changes
 
 ### Requirement: Detect stale difference and target values
-The proposal APIs SHALL reject stale difference versions or before values and SHALL require the user to reload current evidence before creating a new proposal.
+The Agent approval, proposal, and execution APIs SHALL reject stale finding, group, plan, snapshot, connector version, or before-value evidence and SHALL require recomputation or restatement.
 
-#### Scenario: Target snapshot changed after modal opened
-- **WHEN** the user confirms a proposal whose expected difference version or before value no longer matches current data
-- **THEN** the backend returns a conflict and the UI closes confirmation, reloads evidence, and explains that the preview is stale
+#### Scenario: Target changes before execution
+- **WHEN** current value differs from the approved plan expectation
+- **THEN** the operation is blocked and reported rather than overwriting newer data
 
 ### Requirement: Stop before governance execution
-The workbench SHALL label a saved proposal as pending governance execution and SHALL NOT offer a control that directly mutates the Seewo CSV or target API in this change.
+The workbench SHALL never mutate a target directly; it SHALL submit only versioned start, decision, approval, termination, and rollback commands, while the governance sub-agent executes validated plans through backend connectors.
 
-#### Scenario: Proposal is saved successfully
-- **WHEN** either an AI or manual proposal is created
-- **THEN** the difference row shows pending governance execution and the target source remains unchanged
+#### Scenario: User agrees to high-risk group
+- **WHEN** the approval command succeeds
+- **THEN** the card records approval and backend execution may later proceed, but the browser does not send target field changes
+
+### Requirement: Consume typed backend contracts as the sole workflow truth
+The frontend milestone SHALL render only typed, versioned backend APIs and persisted event cursors for Agent state, findings, approvals, reports, history, and rollback. It SHALL NOT read Agent persistence directly, generate operations, use localStorage as task-history truth, or infer a lock/phase/mutation state from UI state.
+
+#### Scenario: A browser reconnects after another client advances work
+- **WHEN** the workbench resumes with an event cursor
+- **THEN** it refreshes from backend facts and renders the current server state without replaying or inventing a client-side transition
