@@ -21,8 +21,7 @@ from app.tasks.deletion_service import (
     TaskDeletionNotFound,
     TaskDeletionService,
 )
-
-ROOT = Path(__file__).parents[4]
+from tests.fixtures.legacy_csv import write_legacy_csv_pair
 
 
 @pytest.fixture
@@ -57,6 +56,11 @@ def legacy_client(tmp_path: Path):
         yield test_client, database_path
 
 
+@pytest.fixture
+def csv_pair(tmp_path: Path) -> tuple[Path, Path]:
+    return write_legacy_csv_pair(tmp_path)
+
+
 def upload(client: TestClient, path: Path, role: str) -> dict:
     with path.open("rb") as handle:
         response = client.post(
@@ -80,12 +84,16 @@ def valid_task_payload(source_id: str, target_id: str) -> dict:
     }
 
 
-def test_real_csv_upload_preview_and_snapshot_creation(client: TestClient) -> None:
-    source = upload(client, ROOT / "third_party_data.csv", "authoritative")
-    target = upload(client, ROOT / "mofa_data.csv", "target")
+def test_real_csv_upload_preview_and_snapshot_creation(
+    client: TestClient,
+    csv_pair: tuple[Path, Path],
+) -> None:
+    authoritative_path, target_path = csv_pair
+    source = upload(client, authoritative_path, "authoritative")
+    target = upload(client, target_path, "target")
 
     assert source["original_name"] == "third_party_data.csv"
-    assert source["size_bytes"] == (ROOT / "third_party_data.csv").stat().st_size
+    assert source["size_bytes"] == authoritative_path.stat().st_size
     assert len(source["sha256"]) == 64
     preview = client.post(
         f"/api/uploads/{source['id']}/mapping-preview",
@@ -125,8 +133,11 @@ def test_real_csv_upload_preview_and_snapshot_creation(client: TestClient) -> No
     assert replay.json()["id"] == body["id"]
 
 
-def test_task_creation_requires_both_uploads(client: TestClient) -> None:
-    source = upload(client, ROOT / "third_party_data.csv", "authoritative")
+def test_task_creation_requires_both_uploads(
+    client: TestClient,
+    csv_pair: tuple[Path, Path],
+) -> None:
+    source = upload(client, csv_pair[0], "authoritative")
 
     response = client.post(
         "/api/reconciliation-tasks",
@@ -144,9 +155,12 @@ def test_task_creation_requires_both_uploads(client: TestClient) -> None:
     assert response.json()["detail"][0]["loc"][-1] == "target_upload_id"
 
 
-def test_task_creation_rejects_client_supplied_tenant(client: TestClient) -> None:
-    source = upload(client, ROOT / "third_party_data.csv", "authoritative")
-    target = upload(client, ROOT / "mofa_data.csv", "target")
+def test_task_creation_rejects_client_supplied_tenant(
+    client: TestClient,
+    csv_pair: tuple[Path, Path],
+) -> None:
+    source = upload(client, csv_pair[0], "authoritative")
+    target = upload(client, csv_pair[1], "target")
     payload = {**valid_task_payload(source["id"], target["id"]), "tenant_id": "spoofed"}
 
     response = client.post(
@@ -158,9 +172,12 @@ def test_task_creation_rejects_client_supplied_tenant(client: TestClient) -> Non
     assert response.status_code == 422
 
 
-def test_cross_tenant_task_access_is_hidden(client: TestClient) -> None:
-    source = upload(client, ROOT / "third_party_data.csv", "authoritative")
-    target = upload(client, ROOT / "mofa_data.csv", "target")
+def test_cross_tenant_task_access_is_hidden(
+    client: TestClient,
+    csv_pair: tuple[Path, Path],
+) -> None:
+    source = upload(client, csv_pair[0], "authoritative")
+    target = upload(client, csv_pair[1], "target")
     created = client.post(
         "/api/reconciliation-tasks",
         json=valid_task_payload(source["id"], target["id"]),
@@ -282,9 +299,12 @@ def test_quarantined_rows_are_reported_and_downloadable(
     assert "unknown_entity_type" in download.content.decode("utf-8-sig")
 
 
-def test_idempotency_key_rejects_a_different_request(client: TestClient) -> None:
-    source = upload(client, ROOT / "third_party_data.csv", "authoritative")
-    target = upload(client, ROOT / "mofa_data.csv", "target")
+def test_idempotency_key_rejects_a_different_request(
+    client: TestClient,
+    csv_pair: tuple[Path, Path],
+) -> None:
+    source = upload(client, csv_pair[0], "authoritative")
+    target = upload(client, csv_pair[1], "target")
     first = valid_task_payload(source["id"], target["id"])
     response = client.post(
         "/api/reconciliation-tasks",

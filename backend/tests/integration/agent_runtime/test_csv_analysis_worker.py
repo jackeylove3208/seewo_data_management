@@ -1,8 +1,10 @@
 import asyncio
 import json
+from collections.abc import AsyncIterator
 from pathlib import Path
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 from sqlalchemy import select
 
@@ -12,17 +14,21 @@ from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.service import AgentSupervisorService
 from app.agent_runtime.state_machine import AgentPhase, AgentRunStatus
 from app.agent_runtime.worker import AgentWorker
-from app.ai.providers.base import LLMRequest, LLMResponse
+from app.ai.providers.base import LLMRequest, LLMResponse, TransientModelError
+from app.core.database import Database
 from app.core.security import OperatorContext
+from app.models import Base
 from app.models.agent_analysis import (
     AgentApprovalGroupRecord,
     AgentFindingRecord,
     AgentGovernanceOperationRecord,
+    AgentModelBatchRecord,
 )
-from app.models.agent_runtime import AgentRunRecord
+from app.models.agent_runtime import AgentRunRecord, AgentTaskEventRecord
 from app.models.reconciliation import ReconciliationTask
 from app.models.reporting import AgentReportRecord
 from app.models.snapshots import Snapshot, SourceFile
+from app.repositories.agent_analysis import AgentAnalysisRepository
 from app.repositories.agent_governance import AgentGovernanceRepository
 
 
@@ -49,7 +55,11 @@ def test_csv_agent_worker_exposes_the_complete_sync_pipeline(database) -> None:
 
 
 class _ExtraRowProvider:
+    def __init__(self) -> None:
+        self.attempts = 0
+
     async def complete_json_once(self, request: LLMRequest) -> LLMResponse:
+        self.attempts += 1
         evidence = json.loads(request.messages[-1].content)["untrusted_evidence"]
         return LLMResponse(
             provider="stub",
@@ -81,6 +91,308 @@ class _ExtraRowProvider:
                 ]
             },
         )
+
+
+class _TimeoutProvider:
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    async def complete_json_once(self, request: LLMRequest) -> LLMResponse:
+        del request
+        self.attempts += 1
+        try:
+            raise httpx.ReadTimeout("analysis request timed out")
+        except httpx.ReadTimeout as error:
+            raise TransientModelError("model transport failed") from error
+
+
+class _BlockingTimeoutProvider(_TimeoutProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def complete_json_once(self, request: LLMRequest) -> LLMResponse:
+        if self.attempts == 0:
+            self.started.set()
+            await self.release.wait()
+        return await super().complete_json_once(request)
+
+
+@pytest.fixture
+async def file_database(tmp_path: Path) -> AsyncIterator[Database]:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'agent-runtime.db'}")
+    async with database.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    try:
+        yield database
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_model_timeout_attempts_are_visible_before_task_is_blocked(
+    file_database: Database, tmp_path: Path
+) -> None:
+    authority = tmp_path / "timeout-authority.csv"
+    authority.write_text(
+        "类别,姓名,编号,班级,电话,邮箱\n学生,李四,S-1,一班,13800138000,s@example.test\n",
+        encoding="utf-8",
+    )
+    target = tmp_path / "timeout-target.csv"
+    target.write_text(
+        "类别,姓名,编号,班级,电话,邮箱\n学生,王五,S-9,一班,13800138009,x@example.test\n",
+        encoding="utf-8",
+    )
+    async with file_database.session_factory() as session:
+        task = ReconciliationTask(
+            tenant_id="school-1",
+            scope_id="all",
+            snapshot_mode="full",
+            entity_types=["student"],
+            workflow_version="new-agent-v1",
+            idempotency_key=f"csv-timeout-worker-{uuid4()}",
+            request_hash="f" * 64,
+        )
+        session.add(task)
+        await session.flush()
+        for role, path in (("authoritative", authority), ("target", target)):
+            source = SourceFile(
+                task_id=task.id,
+                source_role=role,
+                original_name=path.name,
+                storage_name=f"{uuid4()}.csv",
+                storage_path=str(path),
+                sha256=uuid4().hex * 2,
+                size_bytes=path.stat().st_size,
+            )
+            session.add(source)
+            await session.flush()
+            session.add(
+                Snapshot(
+                    id=uuid4(),
+                    task_id=task.id,
+                    source_file_id=source.id,
+                    source_role=role,
+                    schema_version="agent-contract-v1",
+                    mapping_version="agent-contract-v1",
+                    file_hash=source.sha256,
+                    content_hash=uuid4().hex * 2,
+                    summary={},
+                )
+            )
+        run = await AgentSupervisorService(
+            session,
+            operator=OperatorContext(operator_id="operator-1", tenant_id="school-1"),
+        ).start(task_id=task.id, conversation_id=None)
+        run_id = run.id
+        await session.commit()
+
+    provider = _BlockingTimeoutProvider()
+    worker = AgentWorker(
+        file_database.session_factory,
+        worker_id="csv-timeout-worker",
+        lease_seconds=60,
+        handlers=CsvAnalysisHandlerFactory(
+            file_database.session_factory,
+            tokenization_secret="s" * 16,
+            provider=provider,
+        ).handlers(),
+    )
+    assert await worker.run_once() is True
+    assert await worker.run_once() is True
+    async with file_database.session_factory() as session:
+        async with session.begin():
+            seeded_run = await AgentRuntimeRepository(session).claim_next_run(
+                worker_id="csv-timeout-seed-worker",
+                lease_seconds=60,
+                phases=frozenset({AgentPhase.ANALYZE_BATCHES}),
+            )
+            assert seeded_run is not None and seeded_run.lease_token is not None
+            batch = await session.scalar(
+                select(AgentModelBatchRecord).where(
+                    AgentModelBatchRecord.run_id == run_id
+                )
+            )
+            assert batch is not None
+            repository = AgentAnalysisRepository(session)
+            runtime = AgentRuntimeRepository(session)
+            for attempt_number in (1, 2):
+                claim = await repository.claim_batch(
+                    batch.id,
+                    worker_id="csv-timeout-seed-worker",
+                    run_lease_token=seeded_run.lease_token,
+                    lease_seconds=60,
+                )
+                assert claim is not None and claim.lease_token is not None
+                await runtime.append_event(
+                    run_id,
+                    "model_attempt_started",
+                    {"attempt": attempt_number, "attempt_count": 4},
+                )
+                failed = await repository.append_failed_attempt(
+                    batch_id=batch.id,
+                    worker_id="csv-timeout-seed-worker",
+                    run_lease_token=seeded_run.lease_token,
+                    lease_token=claim.lease_token,
+                    provider="configured",
+                    model="configured",
+                    skill_name="reconcile-entity-batch",
+                    skill_version="agent-contract-v1",
+                    prompt_version="agent-csv-analysis-v1",
+                    safe_error_code="model_timeout",
+                )
+                await runtime.append_event(
+                    run_id,
+                    "model_attempt_failed",
+                    {
+                        "attempt": failed.attempt_number,
+                        "attempt_count": 4,
+                        "failure_category": failed.safe_error_code,
+                    },
+                )
+            await runtime.release_run_claim(
+                run_id,
+                worker_id="csv-timeout-seed-worker",
+                lease_token=seeded_run.lease_token,
+            )
+    analysis_task = asyncio.create_task(worker.run_once())
+    await asyncio.wait_for(provider.started.wait(), timeout=2)
+
+    async with file_database.session_factory() as session:
+        visible_starts = tuple(
+            await session.scalars(
+                select(AgentTaskEventRecord).where(
+                    AgentTaskEventRecord.run_id == run_id,
+                    AgentTaskEventRecord.event_type == "model_attempt_started",
+                )
+            )
+        )
+    assert [event.payload["attempt"] for event in visible_starts] == [1, 2, 3]
+
+    provider.release.set()
+    assert await analysis_task is True
+
+    async with file_database.session_factory() as session:
+        run = await session.get(AgentRunRecord, run_id)
+        events = tuple(
+            await session.scalars(
+                select(AgentTaskEventRecord)
+                .where(AgentTaskEventRecord.run_id == run_id)
+                .order_by(AgentTaskEventRecord.sequence)
+            )
+        )
+
+    assert provider.attempts == 2
+    assert run is not None and run.status == AgentRunStatus.BLOCKED_MODEL_ERROR.value
+    starts = [event for event in events if event.event_type == "model_attempt_started"]
+    failures = [event for event in events if event.event_type == "model_attempt_failed"]
+    assert [event.payload["attempt"] for event in starts] == [1, 2, 3, 4]
+    assert [event.payload["attempt"] for event in failures] == [1, 2, 3, 4]
+    assert {event.payload["failure_category"] for event in failures} == {"model_timeout"}
+    exhausted = next(event for event in events if event.event_type == "model_retry_exhausted")
+    assert exhausted.payload["attempt_count"] == 4
+
+
+@pytest.mark.asyncio
+async def test_repository_failure_does_not_trigger_model_retries_or_block_run(
+    database,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority = tmp_path / "repository-error-authority.csv"
+    authority.write_text(
+        "类别,姓名,编号,班级,电话,邮箱\n学生,李四,S-1,一班,13800138000,s@example.test\n",
+        encoding="utf-8",
+    )
+    target = tmp_path / "repository-error-target.csv"
+    target.write_text(
+        "类别,姓名,编号,班级,电话,邮箱\n学生,王五,S-9,一班,13800138009,x@example.test\n",
+        encoding="utf-8",
+    )
+    async with database.session_factory() as session:
+        task = ReconciliationTask(
+            tenant_id="school-1",
+            scope_id="all",
+            snapshot_mode="full",
+            entity_types=["student"],
+            workflow_version="new-agent-v1",
+            idempotency_key=f"csv-repository-error-{uuid4()}",
+            request_hash="e" * 64,
+        )
+        session.add(task)
+        await session.flush()
+        for role, path in (("authoritative", authority), ("target", target)):
+            source = SourceFile(
+                task_id=task.id,
+                source_role=role,
+                original_name=path.name,
+                storage_name=f"{uuid4()}.csv",
+                storage_path=str(path),
+                sha256=uuid4().hex * 2,
+                size_bytes=path.stat().st_size,
+            )
+            session.add(source)
+            await session.flush()
+            session.add(
+                Snapshot(
+                    id=uuid4(),
+                    task_id=task.id,
+                    source_file_id=source.id,
+                    source_role=role,
+                    schema_version="agent-contract-v1",
+                    mapping_version="agent-contract-v1",
+                    file_hash=source.sha256,
+                    content_hash=uuid4().hex * 2,
+                    summary={},
+                )
+            )
+        run = await AgentSupervisorService(
+            session,
+            operator=OperatorContext(operator_id="operator-1", tenant_id="school-1"),
+        ).start(task_id=task.id, conversation_id=None)
+        run_id = run.id
+        await session.commit()
+
+    async def fail_finalize(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(AgentAnalysisRepository, "finalize_batch", fail_finalize)
+    provider = _ExtraRowProvider()
+    worker = AgentWorker(
+        database.session_factory,
+        worker_id="csv-repository-error-worker",
+        lease_seconds=60,
+        handlers=CsvAnalysisHandlerFactory(
+            database.session_factory,
+            tokenization_secret="s" * 16,
+            provider=provider,
+        ).handlers(),
+    )
+    assert await worker.run_once() is True
+    assert await worker.run_once() is True
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await worker.run_once()
+
+    async with database.session_factory() as session:
+        run = await session.get(AgentRunRecord, run_id)
+        batch = await session.scalar(
+            select(AgentModelBatchRecord).where(
+                AgentModelBatchRecord.run_id == run_id
+            )
+        )
+        exhausted = await session.scalar(
+            select(AgentTaskEventRecord).where(
+                AgentTaskEventRecord.run_id == run_id,
+                AgentTaskEventRecord.event_type == "model_retry_exhausted",
+            )
+        )
+
+    assert run is not None and run.status == AgentRunStatus.RUNNING.value
+    assert batch is not None and batch.status == "pending"
+    assert provider.attempts == 1
+    assert exhausted is None
 
 
 @pytest.mark.asyncio
@@ -162,6 +474,15 @@ async def test_worker_runs_csv_analysis_only_pipeline_without_target_mutation(
         assert run.phase == AgentPhase.ANALYZE_BATCHES.value
         assert run.status == AgentRunStatus.WAITING_HUMAN.value
         assert len(tuple(await session.scalars(select(AgentFindingRecord)))) == 2
+        succeeded_events = tuple(
+            await session.scalars(
+                select(AgentTaskEventRecord).where(
+                    AgentTaskEventRecord.run_id == run_id,
+                    AgentTaskEventRecord.event_type == "model_attempt_succeeded",
+                )
+            )
+        )
+        assert [event.payload["attempt"] for event in succeeded_events] == [1]
 
 
 class _FieldDifferenceProvider:

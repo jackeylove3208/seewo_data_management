@@ -3,6 +3,7 @@ import { ArrowUp, Bot, MessageSquareText, UserRound } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 
 import { agentApi as defaultAgentApi, type AgentConversationApi, type AgentGraphHumanGate, type AgentIntent, type AgentStartConfirmation, type AgentTask, type AgentTaskEvent } from "../../api/agent";
+import { presentAgentEvent, presentAgentPhase } from "../agent-events/presentation";
 
 type ConversationState = "idle" | "collecting" | "needs-input" | "draft-ready" | "submitting" | "failed" | "created";
 interface ConversationMessage {
@@ -247,20 +248,6 @@ export function ConversationCreatePage({
     }
   }
 
-  function eventText(event: AgentTaskEvent) {
-    const labels: Record<string, string> = {
-      ingest_and_normalize: "数据接入",
-      build_identity_work: "身份索引",
-      analyze_batches: "Agent 分析",
-      aggregate_risk_and_approvals: "风险审批",
-      execute_and_verify: "治理执行",
-      generate_report: "报告生成",
-      report_restore: "回滚报告",
-      terminal: "任务结束",
-    };
-    return labels[event.phase ?? ""] ?? event.type;
-  }
-
   function payloadText(event: AgentTaskEvent, key: string) {
     const value = event.payload[key];
     return typeof value === "string" || typeof value === "number" ? String(value) : "";
@@ -286,6 +273,7 @@ export function ConversationCreatePage({
 
   const isCollecting = state === "collecting";
   const taskActive = Boolean(task && !["completed", "terminated", "failed"].includes(task.status));
+  const taskBlocked = task?.status === "blocked_model_error";
 
   return (
     <main className="page-shell conversation-create-page apple-page">
@@ -317,18 +305,24 @@ export function ConversationCreatePage({
             </article>
           )}
           {task && (
-            <article className="conversation-card agent-progress" aria-label="Agent 任务进度">
-              <strong>任务进行中</strong>
-              <p>当前阶段：{eventText({ id: "phase", cursor: "", type: "phase", phase: task.phase, payload: {}, created_at: "" })}</p>
+            <article className={`conversation-card agent-progress${taskBlocked ? " blocked" : ""}`} aria-label="Agent 任务进度">
+              <strong>{taskBlocked ? "Agent 任务已暂停" : "任务进行中"}</strong>
+              <p>当前阶段：{presentAgentPhase(task.phase)}</p>
               <div className="agent-event-list">
                 {events.slice(-6).map((event) => {
                   const groupId = payloadText(event, "group_id");
                   const decisionId = payloadText(event, "decision_id");
                   const approvalEvent = event.type === "approval_required" && groupId;
                   const decisionEvent = event.type === "clarification_decision_ready" && decisionId;
+                  const presented = presentAgentEvent(event);
                   return (
-                    <div className="agent-event" key={event.id}>
-                      <span>{event.type === "clarification_required" ? "发现身份冲突，需要补充说明" : eventText(event)}</span>
+                    <div className={`agent-event ${presented.tone}`} key={event.id}>
+                      <span className="agent-event-dot" aria-hidden="true" />
+                      <div className="agent-event-copy">
+                        <strong>{presented.title}</strong>
+                        <small>{presented.description}</small>
+                        {presented.time && <time dateTime={event.created_at}>{presented.time}</time>}
+                      </div>
                       {event.type === "clarification_required" && payloadText(event, "masked_evidence") && (
                         <small>证据：{payloadText(event, "masked_evidence")}</small>
                       )}
@@ -344,10 +338,6 @@ export function ConversationCreatePage({
                           <button type="button" onClick={() => void confirmClarification(event)}>确认解释</button>
                           <button type="button" onClick={() => setClarificationOpen(true)}>重新说明</button>
                         </div>
-                      )}
-                      {event.type === "model_retry_exhausted" && <small className="agent-event-error">模型重试失败，请终止任务后检查报告。</small>}
-                      {(event.type === "report_ready" || event.type === "report.completed") && (
-                        <small>报告已生成：成功 {payloadText(event, "succeeded") || "0"}，失败 {payloadText(event, "failed") || "0"}</small>
                       )}
                     </div>
                   );

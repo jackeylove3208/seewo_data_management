@@ -6,6 +6,25 @@ from sqlalchemy import delete, exists, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent_reporting.service import AgentReportingService
+from app.models.agent_analysis import (
+    AgentApprovalGroupRecord,
+    AgentClarificationRecord,
+    AgentConnectorCapabilityRecord,
+    AgentFindingDependencyRecord,
+    AgentFindingRecord,
+    AgentFindingSolutionRecord,
+    AgentGovernanceOperationRecord,
+    AgentGovernancePlanRecord,
+    AgentIdentityClaimRecord,
+    AgentIdentityEvidenceRecord,
+    AgentIdentityPostingRecord,
+    AgentInputMarkRecord,
+    AgentInputRecord,
+    AgentModelAttemptRecord,
+    AgentModelBatchItemRecord,
+    AgentModelBatchRecord,
+    AgentWorkItemRecord,
+)
 from app.models.agent_runtime import (
     AgentCheckpointRecord,
     AgentFailureRecord,
@@ -68,19 +87,63 @@ class TaskDeletionService:
         )
         if task is None:
             raise TaskDeletionNotFound(f"reconciliation task not found: {task_id}")
+        run_ids: list[UUID] = []
         if task.workflow_version != "legacy-v1":
+            runs = list(
+                await self.session.scalars(
+                    select(AgentRunRecord)
+                    .where(AgentRunRecord.task_id == task_id)
+                    .with_for_update()
+                )
+            )
+            run_ids = [run.id for run in runs]
+            if any(
+                run.phase in {"execute_and_verify", "execute_restore"}
+                and run.status in {"pending", "running", "waiting_human", "terminating"}
+                for run in runs
+            ):
+                raise TaskDeletionBlocked("该 Agent 任务正在治理执行中，请先终止任务")
+            mutation_exists = await self.session.scalar(
+                select(
+                    exists().where(
+                        AgentGovernanceOperationRecord.task_id == task_id,
+                        or_(
+                            AgentGovernanceOperationRecord.status.in_(
+                                ("running", "succeeded", "verification_failed")
+                            ),
+                            AgentGovernanceOperationRecord.actual_after.is_not(None),
+                        ),
+                    )
+                )
+            )
+            if mutation_exists:
+                raise TaskDeletionBlocked("该 Agent 任务已有目标变更，不能删除")
             if not await AgentReportingService(self.session).deletion_eligible(
                 task_id=task_id, tenant_id=tenant_id
             ):
                 raise TaskDeletionBlocked("该 Agent 任务已有已验证的目标变更，不能删除")
+
+        execution_exists = await self.session.scalar(
+            select(
+                exists().where(
+                    ExecutionBatchRecord.plan_id == GovernancePlanRecord.id,
+                    GovernancePlanRecord.task_id == task_id,
+                )
+            )
+        )
+        if execution_exists:
+            raise TaskDeletionBlocked("该任务已有治理执行记录，不能删除")
+
+        if task.workflow_version != "legacy-v1":
             await self.session.execute(
                 delete(AgentReportRecord).where(AgentReportRecord.task_id == task_id)
             )
-            run_ids = list(
-                await self.session.scalars(
-                    select(AgentRunRecord.id).where(AgentRunRecord.task_id == task_id)
-                )
-            )
+            sqlite_guard_enabled = await self._enable_agent_analysis_deletion(task_id)
+            try:
+                await self._delete_agent_analysis_records(run_ids)
+            finally:
+                if sqlite_guard_enabled and self.session.is_active:
+                    await self._disable_agent_analysis_deletion()
             await self.session.execute(
                 delete(AgentTaskEventRecord).where(AgentTaskEventRecord.run_id.in_(run_ids))
             )
@@ -98,20 +161,6 @@ class TaskDeletionService:
             await self.session.execute(
                 delete(AgentRunRecord).where(AgentRunRecord.task_id == task_id)
             )
-
-        execution_exists = await self.session.scalar(
-            select(
-                exists().where(
-                    ExecutionBatchRecord.plan_id == GovernancePlanRecord.id,
-                    GovernancePlanRecord.task_id == task_id,
-                )
-            )
-        )
-        if execution_exists:
-            raise TaskDeletionBlocked("该任务已有治理执行记录，不能删除")
-
-        if self.session.bind is not None and self.session.bind.dialect.name == "postgresql":
-            await self.session.execute(text("SELECT set_config('app.task_deletion', 'on', true)"))
 
         snapshot_rows = (
             await self.session.execute(
@@ -271,3 +320,168 @@ class TaskDeletionService:
                 await Path(path).unlink(missing_ok=True)
             except OSError:
                 logger.exception("failed to remove stored task file", extra={"path": path})
+
+    async def _enable_agent_analysis_deletion(self, task_id: UUID) -> bool:
+        if self.session.bind is None:
+            return False
+        dialect = self.session.bind.dialect.name
+        if dialect == "postgresql":
+            await self.session.execute(text("SELECT set_config('app.task_deletion', 'on', true)"))
+            return False
+        if dialect != "sqlite":
+            return False
+        guard_exists = await self.session.scalar(
+            text(
+                "SELECT EXISTS("
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'agent_task_deletion_guard'"
+                ")"
+            )
+        )
+        if not guard_exists:
+            return False
+        await self.session.execute(
+            text(
+                "UPDATE agent_task_deletion_guard "
+                "SET task_id = :task_id WHERE id = 1"
+            ),
+            {"task_id": task_id.hex},
+        )
+        return True
+
+    async def _disable_agent_analysis_deletion(self) -> None:
+        if self.session.bind is None:
+            return
+        if self.session.bind.dialect.name == "postgresql":
+            await self.session.execute(
+                text("SELECT set_config('app.task_deletion', 'off', true)")
+            )
+        elif self.session.bind.dialect.name == "sqlite":
+            await self.session.execute(
+                text("UPDATE agent_task_deletion_guard SET task_id = NULL WHERE id = 1")
+            )
+
+    async def _delete_agent_analysis_records(self, run_ids: list[UUID]) -> None:
+        if not run_ids:
+            return
+        input_ids = list(
+            await self.session.scalars(
+                select(AgentInputRecord.id).where(AgentInputRecord.run_id.in_(run_ids))
+            )
+        )
+        posting_ids = list(
+            await self.session.scalars(
+                select(AgentIdentityPostingRecord.id).where(
+                    AgentIdentityPostingRecord.run_id.in_(run_ids)
+                )
+            )
+        )
+        work_item_ids = list(
+            await self.session.scalars(
+                select(AgentWorkItemRecord.id).where(AgentWorkItemRecord.run_id.in_(run_ids))
+            )
+        )
+        batch_ids = list(
+            await self.session.scalars(
+                select(AgentModelBatchRecord.id).where(AgentModelBatchRecord.run_id.in_(run_ids))
+            )
+        )
+        finding_ids = list(
+            await self.session.scalars(
+                select(AgentFindingRecord.id).where(AgentFindingRecord.run_id.in_(run_ids))
+            )
+        )
+        plan_ids = list(
+            await self.session.scalars(
+                select(AgentGovernancePlanRecord.id).where(
+                    AgentGovernancePlanRecord.run_id.in_(run_ids)
+                )
+            )
+        )
+
+        await self.session.execute(
+            delete(AgentGovernanceOperationRecord).where(
+                AgentGovernanceOperationRecord.run_id.in_(run_ids)
+            )
+        )
+        await self.session.execute(
+            delete(AgentApprovalGroupRecord).where(
+                AgentApprovalGroupRecord.run_id.in_(run_ids)
+            )
+        )
+        await self.session.execute(
+            delete(AgentClarificationRecord).where(
+                AgentClarificationRecord.run_id.in_(run_ids)
+            )
+        )
+        await self.session.execute(
+            delete(AgentFindingDependencyRecord).where(
+                or_(
+                    AgentFindingDependencyRecord.finding_id.in_(finding_ids),
+                    AgentFindingDependencyRecord.depends_on_finding_id.in_(finding_ids),
+                )
+            )
+        )
+        await self.session.execute(
+            delete(AgentFindingSolutionRecord).where(
+                AgentFindingSolutionRecord.finding_id.in_(finding_ids)
+            )
+        )
+        await self.session.execute(
+            delete(AgentFindingRecord).where(AgentFindingRecord.id.in_(finding_ids))
+        )
+        await self.session.execute(
+            delete(AgentModelAttemptRecord).where(
+                AgentModelAttemptRecord.batch_id.in_(batch_ids)
+            )
+        )
+        await self.session.execute(
+            delete(AgentModelBatchItemRecord).where(
+                or_(
+                    AgentModelBatchItemRecord.batch_id.in_(batch_ids),
+                    AgentModelBatchItemRecord.work_item_id.in_(work_item_ids),
+                )
+            )
+        )
+        await self.session.execute(
+            delete(AgentIdentityClaimRecord).where(
+                AgentIdentityClaimRecord.run_id.in_(run_ids)
+            )
+        )
+        await self.session.execute(
+            delete(AgentIdentityEvidenceRecord).where(
+                or_(
+                    AgentIdentityEvidenceRecord.work_item_id.in_(work_item_ids),
+                    AgentIdentityEvidenceRecord.posting_id.in_(posting_ids),
+                )
+            )
+        )
+        await self.session.execute(
+            delete(AgentInputMarkRecord).where(
+                AgentInputMarkRecord.input_record_id.in_(input_ids)
+            )
+        )
+        await self.session.execute(
+            delete(AgentGovernancePlanRecord).where(
+                AgentGovernancePlanRecord.id.in_(plan_ids)
+            )
+        )
+        await self.session.execute(
+            delete(AgentModelBatchRecord).where(AgentModelBatchRecord.id.in_(batch_ids))
+        )
+        await self.session.execute(
+            delete(AgentWorkItemRecord).where(AgentWorkItemRecord.id.in_(work_item_ids))
+        )
+        await self.session.execute(
+            delete(AgentIdentityPostingRecord).where(
+                AgentIdentityPostingRecord.id.in_(posting_ids)
+            )
+        )
+        await self.session.execute(
+            delete(AgentInputRecord).where(AgentInputRecord.id.in_(input_ids))
+        )
+        await self.session.execute(
+            delete(AgentConnectorCapabilityRecord).where(
+                AgentConnectorCapabilityRecord.run_id.in_(run_ids)
+            )
+        )

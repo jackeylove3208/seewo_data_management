@@ -503,6 +503,18 @@ class AgentAnalysisRepository:
         await self.session.flush()
         return batch
 
+    async def count_batch_attempts(self, batch_id: UUID) -> int:
+        return int(
+            (
+                await self.session.scalar(
+                    select(func.count())
+                    .select_from(AgentModelAttemptRecord)
+                    .where(AgentModelAttemptRecord.batch_id == batch_id)
+                )
+            )
+            or 0
+        )
+
     async def finalize_batch(
         self,
         *,
@@ -707,6 +719,34 @@ class AgentAnalysisRepository:
         batch.lease_expires_at = None
         await self.session.flush()
         return attempt
+
+    async def release_batch_claim(
+        self,
+        *,
+        batch_id: UUID,
+        worker_id: str,
+        lease_token: UUID,
+    ) -> None:
+        batch = await self.session.scalar(
+            select(AgentModelBatchRecord)
+            .where(AgentModelBatchRecord.id == batch_id)
+            .with_for_update()
+        )
+        if batch is None:
+            raise LookupError("model batch not found")
+        if batch.status == "completed":
+            return
+        if (
+            batch.status != "claimed"
+            or batch.lease_owner != worker_id
+            or batch.lease_token != lease_token
+        ):
+            raise ReplayConflict("model batch claim is no longer owned by worker")
+        batch.status = "pending"
+        batch.lease_owner = None
+        batch.lease_token = None
+        batch.lease_expires_at = None
+        await self.session.flush()
 
     async def persist_dependency(
         self, *, finding_id: UUID, depends_on_finding_id: UUID

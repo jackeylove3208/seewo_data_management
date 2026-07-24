@@ -11,6 +11,7 @@ from app.agent_runtime.csv_analysis_handlers import AgentIngestionPhaseHandler
 from app.agent_runtime.csv_governance_handlers import CsvGovernanceHandlers
 from app.agent_runtime.csv_rollback_handlers import CsvRollbackHandlers
 from app.agent_runtime.repository import AgentRuntimeRepository
+from app.agent_runtime.retry import AgentModelRetriesExhausted
 from app.agent_runtime.state_machine import AgentPhase, AgentRunStatus
 from app.agent_runtime.worker import AgentWorkContext, AgentWorkResult
 from app.ai.agent_analysis_service import AgentAnalysisService, SingleAttemptModelProvider
@@ -123,37 +124,38 @@ class CsvAnalysisHandlerFactory:
 
     async def analyze_batches(self, context: AgentWorkContext) -> AgentWorkResult:
         async with self._session_factory() as session:
-            async with session.begin():
-                service = AgentAnalysisService(
-                    self._provider, tokenization_secret=self._tokenization_secret
-                )
-                analyzer = DurableAgentBatchAnalyzer(session, service)
-                batches = tuple(
-                    await session.scalars(
-                        select(AgentModelBatchRecord)
-                        .where(
-                            AgentModelBatchRecord.run_id == context.run_id,
-                            AgentModelBatchRecord.status == "pending",
-                        )
-                        .order_by(AgentModelBatchRecord.created_at, AgentModelBatchRecord.id)
+            batches = tuple(
+                await session.scalars(
+                    select(AgentModelBatchRecord)
+                    .where(
+                        AgentModelBatchRecord.run_id == context.run_id,
+                        AgentModelBatchRecord.status != "completed",
                     )
+                    .order_by(AgentModelBatchRecord.created_at, AgentModelBatchRecord.id)
                 )
-                try:
-                    for batch in batches:
-                        await analyzer.analyze_batch(
-                            batch_id=batch.id,
-                            worker_id=context.worker_id,
-                            run_lease_token=context.lease_token,
-                            lease_seconds=self._lease_seconds,
-                        )
-                except Exception:
+            )
+        service = AgentAnalysisService(
+            self._provider, tokenization_secret=self._tokenization_secret
+        )
+        analyzer = DurableAgentBatchAnalyzer(self._session_factory, service)
+        try:
+            for batch in batches:
+                await analyzer.analyze_batch(
+                    batch_id=batch.id,
+                    worker_id=context.worker_id,
+                    run_lease_token=context.lease_token,
+                    lease_seconds=self._lease_seconds,
+                )
+        except AgentModelRetriesExhausted as error:
+            async with self._session_factory() as session:
+                async with session.begin():
                     runtime = AgentRuntimeRepository(session)
                     await runtime.record_failure(
                         context.run_id,
                         phase=AgentPhase.ANALYZE_BATCHES,
                         code="agent_model_retries_exhausted",
                         safe_message="AI 模型连续处理失败，任务已安全暂停；当前仅允许终止任务。",
-                        attempt_count=4,
+                        attempt_count=error.attempt_count,
                     )
                     await runtime.append_event(
                         context.run_id,
@@ -161,10 +163,13 @@ class CsvAnalysisHandlerFactory:
                         {
                             "code": "agent_model_retries_exhausted",
                             "message": "AI 模型连续处理失败，任务已安全暂停。",
+                            "attempt_count": error.attempt_count,
                             "allowed_commands": ["terminate"],
                         },
                     )
-                    return AgentWorkResult(next_status=AgentRunStatus.BLOCKED_MODEL_ERROR)
+            return AgentWorkResult(next_status=AgentRunStatus.BLOCKED_MODEL_ERROR)
+        async with self._session_factory() as session:
+            async with session.begin():
                 await AgentRuntimeRepository(session).append_event(
                     context.run_id, "agent_analysis_completed", {"batch_count": len(batches)}
                 )

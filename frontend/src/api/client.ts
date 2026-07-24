@@ -1,5 +1,6 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "";
 const BACKEND_UNAVAILABLE_MESSAGE = "后端服务不可用，请确认本地服务已经启动后重试";
+const BACKEND_INTERNAL_ERROR_MESSAGE = "后端处理请求失败，请查看后端终端日志后重试";
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number) {
@@ -37,7 +38,11 @@ export async function requestJson<T>(path: string, init?: RequestInit): Promise<
     } catch {
       // Keep the user-facing fallback when a proxy or server returns non-JSON.
     }
-    if (!hasServerMessage && response.status >= 500) message = BACKEND_UNAVAILABLE_MESSAGE;
+    if (!hasServerMessage && response.status >= 500) {
+      message = response.status >= 502
+        ? BACKEND_UNAVAILABLE_MESSAGE
+        : BACKEND_INTERNAL_ERROR_MESSAGE;
+    }
     throw new ApiError(message, response.status);
   }
   if (response.status === 204) return undefined as T;

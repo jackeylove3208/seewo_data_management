@@ -76,6 +76,65 @@ describe("controlled Agent graph task detail", () => {
     client.clear();
   });
 
+  it("renders legacy Agent events as a Chinese blocked-state timeline", async () => {
+    vi.mocked(agentApi.task).mockResolvedValue({
+      id: "task-graph-1",
+      workflow_version: "new-agent-v1",
+      task_kind: "sync",
+      phase: "analyze_batches",
+      status: "blocked_model_error",
+      title: "全校学生数据同步",
+    });
+    vi.mocked(agentApi.events).mockResolvedValue({
+      cursor: "2",
+      events: [
+        {
+          id: "event-1",
+          cursor: "1",
+          type: "model_attempt_failed",
+          phase: "analyze_batches",
+          payload: { attempt: 4, attempt_count: 4, failure_category: "model_timeout" },
+          created_at: "2026-07-24T03:10:00Z",
+        },
+        {
+          id: "event-2",
+          cursor: "2",
+          type: "model_retry_exhausted",
+          phase: "analyze_batches",
+          status: "blocked_model_error",
+          payload: { attempt_count: 4 },
+          created_at: "2026-07-24T03:10:01Z",
+        },
+      ],
+    });
+    const { client, container } = renderPage();
+
+    expect(await screen.findByRole("heading", { name: "模型分析已暂停" })).toBeInTheDocument();
+    expect(await screen.findByText("模型响应超时")).toBeInTheDocument();
+    expect(screen.queryByText("analyze_batches")).not.toBeInTheDocument();
+    expect(screen.queryByText("model_retry_exhausted")).not.toBeInTheDocument();
+    expect(container.querySelector(".ant-progress")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "终止任务" })).toBeInTheDocument();
+    client.clear();
+  });
+
+  it("never renders a running progress bar while a blocked event history is loading", async () => {
+    vi.mocked(agentApi.task).mockResolvedValue({
+      id: "task-graph-1",
+      workflow_version: "new-agent-v1",
+      task_kind: "sync",
+      phase: "analyze_batches",
+      status: "blocked_model_error",
+      title: "全校学生数据同步",
+    });
+    vi.mocked(agentApi.events).mockResolvedValue({ cursor: "0", events: [] });
+    const { client, container } = renderPage();
+
+    expect(await screen.findByRole("heading", { name: "模型分析已暂停" })).toBeInTheDocument();
+    expect(container.querySelector(".ant-progress")).not.toBeInTheDocument();
+    client.clear();
+  });
+
   it("submits one decision for the frozen homogeneous gate", async () => {
     const user = userEvent.setup();
     const { client } = renderPage();

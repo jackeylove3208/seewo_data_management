@@ -14,13 +14,13 @@ from app.schemas.canonical_entities import (
     Student,
     Teacher,
 )
+from tests.fixtures.legacy_csv import write_legacy_csv_pair
 
-ROOT = Path(__file__).parents[4]
 
-
-def test_real_mofa_csv_has_supported_schema_and_stable_rows() -> None:
-    inspection = inspect_csv(ROOT / "mofa_data.csv")
-    frame = read_csv_frame(ROOT / "mofa_data.csv", inspection)
+def test_real_mofa_csv_has_supported_schema_and_stable_rows(tmp_path: Path) -> None:
+    _, mofa_path = write_legacy_csv_pair(tmp_path)
+    inspection = inspect_csv(mofa_path)
+    frame = read_csv_frame(mofa_path, inspection)
 
     assert inspection.encoding == "utf-8"
     assert inspection.headers == (
@@ -56,8 +56,13 @@ def test_real_csv_maps_all_rows_to_canonical_entities(
     profile_version: str,
     role: SourceRole,
     expected_count: int,
+    tmp_path: Path,
 ) -> None:
-    path = ROOT / filename
+    authoritative, target = write_legacy_csv_pair(tmp_path)
+    path = {
+        "third_party_data.csv": authoritative,
+        "mofa_data.csv": target,
+    }[filename]
     inspection = inspect_csv(path)
     frame = read_csv_frame(path, inspection)
     profile = default_mapping_registry().get(profile_version)
