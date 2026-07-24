@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 
 import globalCss from "./global.css?inline";
+import appleCss from "./apple.css?inline";
 
 describe("responsive analysis styles", () => {
   it("defines the Apple workspace visual system", () => {
-    expect(globalCss).toMatch(/--apple-canvas:/);
-    expect(globalCss).toMatch(/\.apple-workspace::before/);
-    expect(globalCss).toMatch(/\.apple-sidebar/);
-    expect(globalCss).toMatch(/prefers-reduced-motion/);
+    expect(appleCss).toMatch(/--apple-canvas:/);
+    expect(appleCss).toMatch(/\.apple-workspace::before/);
+    expect(appleCss).toMatch(/\.apple-sidebar/);
+    expect(appleCss).toMatch(/prefers-reduced-motion/);
+    expect(appleCss).toMatch(/@supports not/);
+    expect(appleCss).not.toMatch(/:has\(/);
   });
   it("allows mobile progress details to wrap", () => {
     expect(globalCss).toMatch(/\.stage-analysis-progress\s*>\s*small\s*\{[^}]*white-space:\s*normal/s);
