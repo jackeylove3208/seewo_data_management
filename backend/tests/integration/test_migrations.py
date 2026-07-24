@@ -7,12 +7,20 @@ from uuid import uuid4
 import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, delete, inspect, text
 from sqlalchemy.engine import URL, make_url
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import command
+from app.core.database import Database
 from app.models import Base
+from app.models.agent_analysis import AgentConnectorCapabilityRecord
+from app.models.agent_runtime import AgentRunRecord
+from app.models.executions import TargetVersionRecord
+from app.models.reconciliation import ReconciliationTask
+from app.models.snapshots import Snapshot, SourceFile
+from app.tasks.deletion_service import TaskDeletionService
 
 MIGRATION_TEST_DATABASE_URL_ENV = "RECONCILIATION_MIGRATION_TEST_DATABASE_URL"
 MIGRATION_TEST_DATABASE_NAME = "reconcile_migration_test"
@@ -78,7 +86,9 @@ async def _drop_migration_test_database(url: URL) -> None:
         await engine.dispose()
 
 
-async def _migration_test_schema_state(url: URL) -> tuple[set[str], set[str], set[str]]:
+async def _migration_test_schema_state(
+    url: URL,
+) -> tuple[set[str], set[str], set[str], str]:
     engine = create_async_engine(url.set(drivername="postgresql+asyncpg"))
     try:
         async with engine.connect() as connection:
@@ -98,7 +108,14 @@ async def _migration_test_schema_state(url: URL) -> tuple[set[str], set[str], se
                     )
                 ).all()
             )
-            return versions, extensions, tables
+            agent_analysis_trigger_function = await connection.scalar(
+                text(
+                    "SELECT pg_get_functiondef("
+                    "'reject_agent_analysis_mutation()'::regprocedure)"
+                )
+            )
+            assert agent_analysis_trigger_function is not None
+            return versions, extensions, tables, agent_analysis_trigger_function
     finally:
         await engine.dispose()
 
@@ -135,9 +152,13 @@ def test_clean_postgresql_migration_reaches_head(monkeypatch: pytest.MonkeyPatch
     asyncio.run(_recreate_migration_test_database(url))
     try:
         command.upgrade(config, "head")
-        versions, extensions, tables = asyncio.run(_migration_test_schema_state(url))
+        versions, extensions, tables, trigger_function = asyncio.run(
+            _migration_test_schema_state(url)
+        )
         assert versions == expected_heads
         assert "vector" in extensions
+        assert "app.task_deletion" in trigger_function
+        assert "TG_OP = 'DELETE'" in trigger_function
         assert {
             "agent_graph_runs",
             "agent_graph_candidate_sets",
@@ -155,6 +176,100 @@ def test_clean_postgresql_migration_reaches_head(monkeypatch: pytest.MonkeyPatch
             "restore_execution_links",
             "restore_execution_results",
         } <= tables
+    finally:
+        asyncio.run(_drop_migration_test_database(url))
+
+
+def test_postgresql_agent_deletion_removes_pre_execution_target_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured_url = os.getenv(MIGRATION_TEST_DATABASE_URL_ENV)
+    if configured_url is None:
+        pytest.skip(
+            f"set {MIGRATION_TEST_DATABASE_URL_ENV} to run the PostgreSQL deletion test"
+        )
+
+    url = _migration_test_database_url(configured_url)
+    database_url = url.render_as_string(hide_password=False)
+    monkeypatch.setenv("RECONCILIATION_DATABASE_URL", database_url)
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", database_url)
+
+    async def exercise() -> None:
+        database = Database(database_url)
+        try:
+            async with database.session_factory() as session:
+                task = ReconciliationTask(
+                    tenant_id="school-1",
+                    scope_id="all",
+                    snapshot_mode="full",
+                    entity_types=["teacher"],
+                    workflow_version="new-agent-v1",
+                    status="ready",
+                    stage="analysis",
+                    idempotency_key=f"postgres-delete-{uuid4()}",
+                    request_hash="e" * 64,
+                )
+                session.add(task)
+                await session.flush()
+                source_file = SourceFile(
+                    task_id=task.id,
+                    source_role="target",
+                    original_name="target.csv",
+                    storage_name="target.csv",
+                    storage_path="/tmp/postgres-target.csv",
+                    sha256="f" * 64,
+                    size_bytes=1,
+                )
+                session.add(source_file)
+                await session.flush()
+                snapshot = Snapshot(
+                    id=uuid4(),
+                    task_id=task.id,
+                    source_file_id=source_file.id,
+                    source_role="target",
+                    schema_version="canonical-v1",
+                    mapping_version="target-v1",
+                    file_hash="1" * 64,
+                    content_hash="2" * 64,
+                    summary={},
+                )
+                run = AgentRunRecord(
+                    task_id=task.id,
+                    tenant_id=task.tenant_id,
+                    kind="sync",
+                    workflow_version=task.workflow_version,
+                    phase="analyze_batches",
+                    status="blocked_model_error",
+                )
+                session.add_all([snapshot, run])
+                await session.flush()
+                version = TargetVersionRecord(
+                    task_id=task.id,
+                    tenant_id=task.tenant_id,
+                    source_snapshot_id=snapshot.id,
+                    file_sha256="3" * 64,
+                    content_hash="4" * 64,
+                    storage_path="/tmp/postgres-target-version.csv",
+                )
+                session.add(version)
+                await session.commit()
+                task_id = task.id
+                version_id = version.id
+
+            async with database.session_factory() as session:
+                await TaskDeletionService(session).delete(task_id, "school-1")
+
+            async with database.session_factory() as session:
+                assert await session.get(ReconciliationTask, task_id) is None
+                assert await session.get(TargetVersionRecord, version_id) is None
+        finally:
+            await database.dispose()
+
+    asyncio.run(_recreate_migration_test_database(url))
+    try:
+        command.upgrade(config, "head")
+        asyncio.run(exercise())
     finally:
         asyncio.run(_drop_migration_test_database(url))
 
@@ -293,7 +408,204 @@ def test_agent_csv_migration_preserves_seeded_legacy_task_and_guards_new_rows(
             )
         }
         assert "reject_agent_input_records_update" in triggers
+        assert "reject_agent_model_attempts_update" in triggers
         assert "reject_agent_model_attempts_delete" in triggers
+        assert "agent_task_deletion_guard" in inspect(engine).get_table_names()
+        delete_trigger_sql = connection.scalar(
+            text(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'trigger' "
+                "AND name = 'reject_agent_model_attempts_delete'"
+            )
+        )
+        assert "agent_task_deletion_guard" in delete_trigger_sql
+        run_id = uuid4().hex
+        capability_id = uuid4().hex
+        connection.execute(
+            text(
+                """
+                INSERT INTO agent_runs (
+                    id, task_id, tenant_id, kind, workflow_version, phase, status,
+                    version, attempt_count, progress_completed, progress_total,
+                    created_at, updated_at
+                ) VALUES (
+                    :id, :task_id, 'school-1', 'sync', 'new-agent-v1',
+                    'analyze_batches', 'blocked_model_error', 1, 0, 0, 0,
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {"id": run_id, "task_id": task_id},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO agent_connector_capabilities (
+                    id, run_id, task_id, tenant_id, source_role, connector_kind,
+                    capability_hash, capabilities, created_at
+                ) VALUES (
+                    :id, :run_id, :task_id, 'school-1', 'authoritative', 'csv',
+                    :capability_hash, '{"read": true}', CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": capability_id,
+                "run_id": run_id,
+                "task_id": task_id,
+                "capability_hash": "a" * 64,
+            },
+        )
+        connection.commit()
+        with pytest.raises(IntegrityError, match="append-only"):
+            connection.execute(
+                text(
+                    "DELETE FROM agent_connector_capabilities "
+                    "WHERE id = :capability_id"
+                ),
+                {"capability_id": capability_id},
+            )
+        connection.rollback()
+        connection.execute(
+            text(
+                "UPDATE agent_task_deletion_guard "
+                "SET task_id = :task_id WHERE id = 1"
+            ),
+            {"task_id": uuid4().hex},
+        )
+        connection.commit()
+        with pytest.raises(IntegrityError, match="append-only"):
+            connection.execute(
+                text(
+                    "DELETE FROM agent_connector_capabilities "
+                    "WHERE id = :capability_id"
+                ),
+                {"capability_id": capability_id},
+            )
+        connection.rollback()
+        connection.execute(
+            text(
+                "UPDATE agent_task_deletion_guard "
+                "SET task_id = :task_id WHERE id = 1"
+            ),
+            {"task_id": task_id},
+        )
+        connection.execute(
+            text(
+                "DELETE FROM agent_connector_capabilities "
+                "WHERE id = :capability_id"
+            ),
+            {"capability_id": capability_id},
+        )
+        connection.execute(
+            text("UPDATE agent_task_deletion_guard SET task_id = NULL WHERE id = 1")
+        )
+        connection.commit()
+
+
+def test_task_deletion_service_uses_scoped_guard_on_migrated_sqlite(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "scoped-agent-deletion.db"
+    sync_url = f"sqlite:///{database_path}"
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", sync_url)
+    command.upgrade(config, "head")
+
+    async def exercise() -> None:
+        database = Database(f"sqlite+aiosqlite:///{database_path}")
+        try:
+            async with database.session_factory() as session:
+                removable = ReconciliationTask(
+                    tenant_id="school-1",
+                    scope_id="all",
+                    snapshot_mode="full",
+                    entity_types=["teacher"],
+                    workflow_version="new-agent-v1",
+                    status="ready",
+                    stage="analysis",
+                    idempotency_key=f"removable-{uuid4()}",
+                    request_hash="a" * 64,
+                )
+                survivor = ReconciliationTask(
+                    tenant_id="school-1",
+                    scope_id="all",
+                    snapshot_mode="full",
+                    entity_types=["teacher"],
+                    workflow_version="new-agent-v1",
+                    status="ready",
+                    stage="analysis",
+                    idempotency_key=f"survivor-{uuid4()}",
+                    request_hash="b" * 64,
+                )
+                session.add_all([removable, survivor])
+                await session.flush()
+                removable_run = AgentRunRecord(
+                    task_id=removable.id,
+                    tenant_id=removable.tenant_id,
+                    kind="sync",
+                    workflow_version=removable.workflow_version,
+                    phase="analyze_batches",
+                    status="blocked_model_error",
+                )
+                survivor_run = AgentRunRecord(
+                    task_id=survivor.id,
+                    tenant_id=survivor.tenant_id,
+                    kind="sync",
+                    workflow_version=survivor.workflow_version,
+                    phase="analyze_batches",
+                    status="blocked_model_error",
+                )
+                session.add_all([removable_run, survivor_run])
+                await session.flush()
+                removable_capability = AgentConnectorCapabilityRecord(
+                    run_id=removable_run.id,
+                    task_id=removable.id,
+                    tenant_id=removable.tenant_id,
+                    source_role="authoritative",
+                    connector_kind="csv",
+                    capability_hash="c" * 64,
+                    capabilities={"read": True},
+                )
+                survivor_capability = AgentConnectorCapabilityRecord(
+                    run_id=survivor_run.id,
+                    task_id=survivor.id,
+                    tenant_id=survivor.tenant_id,
+                    source_role="authoritative",
+                    connector_kind="csv",
+                    capability_hash="d" * 64,
+                    capabilities={"read": True},
+                )
+                session.add_all([removable_capability, survivor_capability])
+                await session.commit()
+                removable_id = removable.id
+                survivor_id = survivor.id
+                survivor_capability_id = survivor_capability.id
+
+            async with database.session_factory() as session:
+                await TaskDeletionService(session).delete(removable_id, "school-1")
+
+            async with database.session_factory() as session:
+                assert await session.get(ReconciliationTask, removable_id) is None
+                assert await session.get(ReconciliationTask, survivor_id) is not None
+                assert (
+                    await session.get(
+                        AgentConnectorCapabilityRecord,
+                        survivor_capability_id,
+                    )
+                    is not None
+                )
+                with pytest.raises(IntegrityError, match="append-only"):
+                    await session.execute(
+                        delete(AgentConnectorCapabilityRecord).where(
+                            AgentConnectorCapabilityRecord.id
+                            == survivor_capability_id
+                        )
+                    )
+        finally:
+            await database.dispose()
+
+    asyncio.run(exercise())
 
 
 def test_upgrade_reconciles_unversioned_create_all_database(

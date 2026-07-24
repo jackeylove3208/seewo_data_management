@@ -56,6 +56,7 @@ async def test_agent_report_persists_terminal_facts_and_keeps_narrative_out_of_r
     assert report.facts["rollback_evidence"]["successful_mutation_ids"] == ["op-1"]
     assert report.facts["rollback_evidence"]["eligible"] is True
     assert report.content["narrative"]["summary"] == "建议回滚 op-1"
+    assert report.updated_at is not None
 
 
 @pytest.mark.asyncio

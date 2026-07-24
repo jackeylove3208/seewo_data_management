@@ -5,6 +5,26 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 
+from app.models.agent_analysis import (
+    AgentApprovalGroupRecord,
+    AgentClarificationRecord,
+    AgentConnectorCapabilityRecord,
+    AgentFindingDependencyRecord,
+    AgentFindingRecord,
+    AgentFindingSolutionRecord,
+    AgentGovernanceOperationRecord,
+    AgentGovernancePlanRecord,
+    AgentIdentityClaimRecord,
+    AgentIdentityEvidenceRecord,
+    AgentIdentityPostingRecord,
+    AgentInputMarkRecord,
+    AgentInputRecord,
+    AgentModelAttemptRecord,
+    AgentModelBatchItemRecord,
+    AgentModelBatchRecord,
+    AgentWorkItemRecord,
+)
+from app.models.agent_runtime import AgentRunRecord
 from app.models.analyses import AnalysisRecord
 from app.models.differences import DifferenceRecord
 from app.models.executions import ExecutionBatchRecord, GovernancePlanRecord, TargetVersionRecord
@@ -219,6 +239,313 @@ async def test_agent_deletion_service_allows_report_without_verified_mutation(se
 
 
 @pytest.mark.asyncio
+async def test_agent_deletion_removes_persisted_analysis_records_before_run(session) -> None:
+    pending = task()
+    pending.workflow_version = "new-agent-v1"
+    session.add(pending)
+    await session.flush()
+    run = AgentRunRecord(
+        task_id=pending.id,
+        tenant_id=pending.tenant_id,
+        kind="sync",
+        workflow_version=pending.workflow_version,
+        phase="analyze_batches",
+        status="blocked_model_error",
+    )
+    session.add(run)
+    await session.flush()
+    authority_file = SourceFile(
+        task_id=pending.id,
+        source_role="authoritative",
+        original_name="authority.csv",
+        storage_name="authority.csv",
+        storage_path="/tmp/authority.csv",
+        sha256="1" * 64,
+        size_bytes=1,
+    )
+    target_file = SourceFile(
+        task_id=pending.id,
+        source_role="target",
+        original_name="target.csv",
+        storage_name="target.csv",
+        storage_path="/tmp/target.csv",
+        sha256="2" * 64,
+        size_bytes=1,
+    )
+    session.add_all([authority_file, target_file])
+    await session.flush()
+    authority_snapshot = Snapshot(
+        id=uuid4(),
+        task_id=pending.id,
+        source_file_id=authority_file.id,
+        source_role="authoritative",
+        schema_version="canonical-v1",
+        mapping_version="authority-v1",
+        file_hash="3" * 64,
+        content_hash="4" * 64,
+        summary={},
+    )
+    target_snapshot = Snapshot(
+        id=uuid4(),
+        task_id=pending.id,
+        source_file_id=target_file.id,
+        source_role="target",
+        schema_version="canonical-v1",
+        mapping_version="target-v1",
+        file_hash="5" * 64,
+        content_hash="6" * 64,
+        summary={},
+    )
+    session.add_all([authority_snapshot, target_snapshot])
+    await session.flush()
+    capability = AgentConnectorCapabilityRecord(
+        run_id=run.id,
+        task_id=pending.id,
+        tenant_id=pending.tenant_id,
+        source_role="authoritative",
+        connector_kind="csv",
+        capability_hash="c" * 64,
+        capabilities={"read": True},
+    )
+    authority_input = AgentInputRecord(
+        run_id=run.id,
+        task_id=pending.id,
+        snapshot_id=authority_snapshot.id,
+        tenant_id=pending.tenant_id,
+        source_role="authoritative",
+        stable_locator="authority:1",
+        stable_order=1,
+        entity_kind="teacher",
+        name="测试教师",
+        number="T-001",
+        input_hash="7" * 64,
+    )
+    target_input = AgentInputRecord(
+        run_id=run.id,
+        task_id=pending.id,
+        snapshot_id=target_snapshot.id,
+        tenant_id=pending.tenant_id,
+        source_role="target",
+        stable_locator="target:1",
+        stable_order=1,
+        entity_kind="teacher",
+        name="旧姓名",
+        number="T-001",
+        input_hash="8" * 64,
+    )
+    session.add_all([capability, authority_input, target_input])
+    await session.flush()
+    mark = AgentInputMarkRecord(
+        input_record_id=target_input.id,
+        reason_code="field_difference",
+        affected_fields=["name"],
+        inclusion_state="included",
+        report_disposition="actionable",
+        safe_evidence={},
+    )
+    posting = AgentIdentityPostingRecord(
+        run_id=run.id,
+        task_id=pending.id,
+        snapshot_id=target_snapshot.id,
+        tenant_id=pending.tenant_id,
+        input_record_id=target_input.id,
+        entity_kind="teacher",
+        key_kind="number",
+        normalized_value="T-001",
+    )
+    session.add_all([mark, posting])
+    await session.flush()
+    first_work_item = AgentWorkItemRecord(
+        run_id=run.id,
+        task_id=pending.id,
+        tenant_id=pending.tenant_id,
+        source_snapshot_id=authority_snapshot.id,
+        target_snapshot_id=target_snapshot.id,
+        subject_input_id=target_input.id,
+        entity_kind="teacher",
+        kind="field_difference",
+        state="analyzed",
+        idempotency_hash="9" * 64,
+        evidence_hash="a" * 64,
+    )
+    second_work_item = AgentWorkItemRecord(
+        run_id=run.id,
+        task_id=pending.id,
+        tenant_id=pending.tenant_id,
+        source_snapshot_id=authority_snapshot.id,
+        target_snapshot_id=target_snapshot.id,
+        subject_input_id=authority_input.id,
+        entity_kind="teacher",
+        kind="target_missing",
+        state="analyzed",
+        idempotency_hash="b" * 64,
+        evidence_hash="c" * 64,
+    )
+    batch = AgentModelBatchRecord(
+        run_id=run.id,
+        task_id=pending.id,
+        tenant_id=pending.tenant_id,
+        entity_kind="teacher",
+        input_hash="d" * 64,
+        item_count=2,
+        status="completed",
+    )
+    session.add_all([first_work_item, second_work_item, batch])
+    await session.flush()
+    evidence = AgentIdentityEvidenceRecord(
+        work_item_id=first_work_item.id,
+        posting_id=posting.id,
+        key_kind="number",
+        normalized_value="T-001",
+        evidence_hash="e" * 64,
+    )
+    claim = AgentIdentityClaimRecord(
+        run_id=run.id,
+        task_id=pending.id,
+        source_snapshot_id=authority_snapshot.id,
+        target_snapshot_id=target_snapshot.id,
+        authority_input_id=authority_input.id,
+        target_input_id=target_input.id,
+        work_item_id=first_work_item.id,
+    )
+    batch_items = [
+        AgentModelBatchItemRecord(
+            batch_id=batch.id,
+            work_item_id=first_work_item.id,
+            ordinal=1,
+        ),
+        AgentModelBatchItemRecord(
+            batch_id=batch.id,
+            work_item_id=second_work_item.id,
+            ordinal=2,
+        ),
+    ]
+    attempt = AgentModelAttemptRecord(
+        batch_id=batch.id,
+        attempt_number=1,
+        status="succeeded",
+        provider="test",
+        model="test-model",
+        usage={},
+    )
+    session.add_all([evidence, claim, *batch_items, attempt])
+    await session.flush()
+    first_finding = AgentFindingRecord(
+        run_id=run.id,
+        task_id=pending.id,
+        work_item_id=first_work_item.id,
+        batch_id=batch.id,
+        kind="field_difference",
+        category_zh="字段差异",
+        analysis_zh="姓名不一致。",
+        evidence_refs=[],
+        content_hash="f" * 64,
+    )
+    second_finding = AgentFindingRecord(
+        run_id=run.id,
+        task_id=pending.id,
+        work_item_id=second_work_item.id,
+        batch_id=batch.id,
+        kind="target_missing",
+        category_zh="目标缺失",
+        analysis_zh="目标中没有该教师。",
+        evidence_refs=[],
+        content_hash="0" * 64,
+    )
+    session.add_all([first_finding, second_finding])
+    await session.flush()
+    solution = AgentFindingSolutionRecord(
+        finding_id=first_finding.id,
+        ordinal=1,
+        operation="update",
+        risk="medium",
+        solution_zh="更新姓名。",
+        recommended=True,
+    )
+    dependency = AgentFindingDependencyRecord(
+        finding_id=second_finding.id,
+        depends_on_finding_id=first_finding.id,
+    )
+    approval = AgentApprovalGroupRecord(
+        run_id=run.id,
+        task_id=pending.id,
+        tenant_id=pending.tenant_id,
+        group_key="delete:teacher",
+        membership_hash="1" * 64,
+        finding_ids=[str(second_finding.id)],
+        issue_kind="target_missing",
+        entity_kind="teacher",
+        operation="delete",
+        policy_version="test-v1",
+        risk="high",
+        status="pending",
+    )
+    clarification = AgentClarificationRecord(
+        run_id=run.id,
+        task_id=pending.id,
+        tenant_id=pending.tenant_id,
+        work_item_id=second_work_item.id,
+        batch_id=batch.id,
+        masked_candidates=[],
+        allowed_outcomes=["create", "skip"],
+        status="pending",
+    )
+    session.add_all([solution, dependency, approval, clarification])
+    await session.flush()
+    plan = AgentGovernancePlanRecord(
+        run_id=run.id,
+        task_id=pending.id,
+        tenant_id=pending.tenant_id,
+        source_snapshot_id=authority_snapshot.id,
+        target_snapshot_id=target_snapshot.id,
+        target_version="target-v1",
+        finding_ids=[str(first_finding.id), str(second_finding.id)],
+        operations=[],
+        content_hash="2" * 64,
+        status="compiled",
+        compiled_by="test",
+    )
+    session.add(plan)
+    await session.flush()
+    operation = AgentGovernanceOperationRecord(
+        plan_id=plan.id,
+        run_id=run.id,
+        task_id=pending.id,
+        finding_id=first_finding.id,
+        operation_type="update",
+        entity_kind="teacher",
+        target_source_identifier="T-001",
+        before={"name": "旧姓名"},
+        after={"name": "测试教师"},
+        dependencies=[],
+        risk="medium",
+        status="pending",
+    )
+    session.add(operation)
+    await session.flush()
+
+    await TaskDeletionService(session).delete(pending.id, "school-1")
+
+    assert await session.get(ReconciliationTask, pending.id) is None
+    assert await session.get(AgentRunRecord, run.id) is None
+    assert await session.get(AgentConnectorCapabilityRecord, capability.id) is None
+    assert await session.get(AgentInputRecord, authority_input.id) is None
+    assert await session.get(AgentInputMarkRecord, mark.id) is None
+    assert await session.get(AgentIdentityPostingRecord, posting.id) is None
+    assert await session.get(AgentWorkItemRecord, first_work_item.id) is None
+    assert await session.get(AgentIdentityEvidenceRecord, evidence.id) is None
+    assert await session.get(AgentIdentityClaimRecord, claim.id) is None
+    assert await session.get(AgentModelBatchRecord, batch.id) is None
+    assert await session.get(AgentModelAttemptRecord, attempt.id) is None
+    assert await session.get(AgentFindingRecord, first_finding.id) is None
+    assert await session.get(AgentFindingSolutionRecord, solution.id) is None
+    assert await session.get(AgentApprovalGroupRecord, approval.id) is None
+    assert await session.get(AgentClarificationRecord, clarification.id) is None
+    assert await session.get(AgentGovernancePlanRecord, plan.id) is None
+    assert await session.get(AgentGovernanceOperationRecord, operation.id) is None
+
+
+@pytest.mark.asyncio
 async def test_agent_deletion_service_protects_verified_mutation(session) -> None:
     protected = task()
     protected.workflow_version = "new-agent-v1"
@@ -246,6 +573,184 @@ async def test_agent_deletion_service_protects_verified_mutation(session) -> Non
         await TaskDeletionService(session).delete(protected.id, "school-1")
 
     assert await session.get(ReconciliationTask, protected.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_agent_deletion_blocks_reportless_actual_target_mutation(session) -> None:
+    protected = task()
+    protected.workflow_version = "new-agent-v1"
+    session.add(protected)
+    await session.flush()
+    source_file = SourceFile(
+        task_id=protected.id,
+        source_role="authoritative",
+        original_name="authority.csv",
+        storage_name="authority.csv",
+        storage_path="/tmp/authority.csv",
+        sha256="1" * 64,
+        size_bytes=1,
+    )
+    target_file = SourceFile(
+        task_id=protected.id,
+        source_role="target",
+        original_name="target.csv",
+        storage_name="target.csv",
+        storage_path="/tmp/target.csv",
+        sha256="2" * 64,
+        size_bytes=1,
+    )
+    session.add_all([source_file, target_file])
+    await session.flush()
+    source_snapshot = Snapshot(
+        id=uuid4(),
+        task_id=protected.id,
+        source_file_id=source_file.id,
+        source_role="authoritative",
+        schema_version="canonical-v1",
+        mapping_version="authority-v1",
+        file_hash="3" * 64,
+        content_hash="4" * 64,
+        summary={},
+    )
+    target_snapshot = Snapshot(
+        id=uuid4(),
+        task_id=protected.id,
+        source_file_id=target_file.id,
+        source_role="target",
+        schema_version="canonical-v1",
+        mapping_version="target-v1",
+        file_hash="5" * 64,
+        content_hash="6" * 64,
+        summary={},
+    )
+    session.add_all([source_snapshot, target_snapshot])
+    await session.flush()
+    run = AgentRunRecord(
+        task_id=protected.id,
+        tenant_id=protected.tenant_id,
+        kind="sync",
+        workflow_version=protected.workflow_version,
+        phase="generate_report",
+        status="running",
+    )
+    session.add(run)
+    await session.flush()
+    target_input = AgentInputRecord(
+        run_id=run.id,
+        task_id=protected.id,
+        snapshot_id=target_snapshot.id,
+        tenant_id=protected.tenant_id,
+        source_role="target",
+        stable_locator="target:1",
+        stable_order=1,
+        entity_kind="teacher",
+        name="测试教师",
+        number="T-001",
+        input_hash="7" * 64,
+    )
+    session.add(target_input)
+    await session.flush()
+    work_item = AgentWorkItemRecord(
+        run_id=run.id,
+        task_id=protected.id,
+        tenant_id=protected.tenant_id,
+        source_snapshot_id=source_snapshot.id,
+        target_snapshot_id=target_snapshot.id,
+        subject_input_id=target_input.id,
+        entity_kind="teacher",
+        kind="field_difference",
+        state="analyzed",
+        idempotency_hash="8" * 64,
+        evidence_hash="9" * 64,
+    )
+    batch = AgentModelBatchRecord(
+        run_id=run.id,
+        task_id=protected.id,
+        tenant_id=protected.tenant_id,
+        entity_kind="teacher",
+        input_hash="a" * 64,
+        item_count=1,
+        status="completed",
+    )
+    session.add_all([work_item, batch])
+    await session.flush()
+    finding = AgentFindingRecord(
+        run_id=run.id,
+        task_id=protected.id,
+        work_item_id=work_item.id,
+        batch_id=batch.id,
+        kind="field_difference",
+        category_zh="字段差异",
+        analysis_zh="目标数据需要修改。",
+        evidence_refs=[],
+        content_hash="b" * 64,
+    )
+    session.add(finding)
+    await session.flush()
+    plan = AgentGovernancePlanRecord(
+        run_id=run.id,
+        task_id=protected.id,
+        tenant_id=protected.tenant_id,
+        source_snapshot_id=source_snapshot.id,
+        target_snapshot_id=target_snapshot.id,
+        target_version="target-v1",
+        finding_ids=[str(finding.id)],
+        operations=[],
+        content_hash="c" * 64,
+        status="succeeded",
+        compiled_by="test",
+    )
+    session.add(plan)
+    await session.flush()
+    operation = AgentGovernanceOperationRecord(
+        plan_id=plan.id,
+        run_id=run.id,
+        task_id=protected.id,
+        finding_id=finding.id,
+        operation_type="update",
+        entity_kind="teacher",
+        target_source_identifier="T-001",
+        before={"name": "旧姓名"},
+        after={"name": "新姓名"},
+        dependencies=[],
+        risk="medium",
+        status="succeeded",
+        attempt_count=1,
+        actual_after={"name": "新姓名"},
+        verification={"matched": True},
+    )
+    session.add(operation)
+    await session.flush()
+
+    with pytest.raises(TaskDeletionBlocked, match="目标变更"):
+        await TaskDeletionService(session).delete(protected.id, "school-1")
+
+    assert await session.get(ReconciliationTask, protected.id) is not None
+    assert await session.get(AgentGovernanceOperationRecord, operation.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_agent_deletion_blocks_active_execution_phase(session) -> None:
+    protected = task()
+    protected.workflow_version = "new-agent-v1"
+    session.add(protected)
+    await session.flush()
+    run = AgentRunRecord(
+        task_id=protected.id,
+        tenant_id=protected.tenant_id,
+        kind="sync",
+        workflow_version=protected.workflow_version,
+        phase="execute_and_verify",
+        status="running",
+    )
+    session.add(run)
+    await session.flush()
+
+    with pytest.raises(TaskDeletionBlocked, match="治理执行中"):
+        await TaskDeletionService(session).delete(protected.id, "school-1")
+
+    assert await session.get(ReconciliationTask, protected.id) is not None
+    assert await session.get(AgentRunRecord, run.id) is not None
 
 
 @pytest.mark.asyncio

@@ -102,6 +102,11 @@ def test_agent_batch_size_cannot_exceed_connector_contract_limit() -> None:
         Settings(analysis_batch_size=51, _env_file=None)
 
 
+def test_agent_model_timeout_allows_structured_analysis_to_finish() -> None:
+    assert Settings(_env_file=None).llm_timeout_seconds == 60
+    assert Settings(_env_file=None).analysis_worker_lease_seconds == 90
+
+
 def test_agent_worker_configuration_requires_gateway_retry_and_privacy_contract() -> None:
     settings = Settings(
         new_agent_enabled=True,
@@ -125,3 +130,10 @@ def test_agent_worker_configuration_requires_gateway_retry_and_privacy_contract(
         ).validate_agent_worker_configuration()
     with pytest.raises(ValueError, match="gateway"):
         settings.model_copy(update={"llm_api_key": None}).validate_agent_worker_configuration()
+    with pytest.raises(ValueError, match="lease"):
+        settings.model_copy(
+            update={
+                "analysis_worker_lease_seconds": 60,
+                "llm_timeout_seconds": 60,
+            }
+        ).validate_agent_worker_configuration()

@@ -179,6 +179,55 @@ describe("backend Agent conversation", () => {
     expect(screen.getAllByText("已确认同步需求。")).toHaveLength(2);
   });
 
+  it("renders exhausted model retries as a blocked Chinese timeline", async () => {
+    const backend = api({
+      currentConversation: vi.fn().mockResolvedValue({
+        id: "conversation-blocked",
+        status: "active",
+        messages: [
+          { id: "message-1", role: "user", kind: "normal", text: "同步学生数据", created_at: "" },
+        ],
+        task: {
+          id: "task-blocked",
+          workflow_version: "new-agent-v1",
+          phase: "analyze_batches",
+          status: "blocked_model_error",
+        },
+      }),
+      events: vi.fn().mockResolvedValue({
+        cursor: "2",
+        events: [
+          {
+            id: "event-1",
+            cursor: "1",
+            type: "model_attempt_failed",
+            phase: "analyze_batches",
+            payload: { attempt: 4, attempt_count: 4, failure_category: "model_timeout" },
+            created_at: "2026-07-24T03:10:00Z",
+          },
+          {
+            id: "event-2",
+            cursor: "2",
+            type: "model_retry_exhausted",
+            phase: "analyze_batches",
+            status: "blocked_model_error",
+            payload: { attempt_count: 4 },
+            created_at: "2026-07-24T03:10:01Z",
+          },
+        ],
+      }),
+    } as Partial<AgentConversationApi>);
+
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    expect(await screen.findByText("模型响应超时")).toBeInTheDocument();
+    expect(screen.getByText("模型分析已暂停")).toBeInTheDocument();
+    expect(screen.queryByText("model_retry_exhausted")).not.toBeInTheDocument();
+    expect(screen.getByRole("article", { name: "Agent 任务进度" })).toHaveClass("blocked");
+    expect(screen.getByRole("button", { name: "终止任务" })).toBeInTheDocument();
+    expect(screen.getByLabelText("对账目标")).toBeDisabled();
+  });
+
   it("confirms controlled graph termination through a persisted gate", async () => {
     const previewTermination = vi.fn().mockResolvedValue({
       id: "termination-gate-1",

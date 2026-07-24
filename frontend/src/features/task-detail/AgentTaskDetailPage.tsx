@@ -12,6 +12,7 @@ import {
   type AgentTask,
 } from "../../api/agent";
 import { BackButton } from "../../components/BackButton";
+import { presentAgentEvent, presentAgentPhase } from "../agent-events/presentation";
 
 const phases: Array<{ id: AgentPhase; label: string; icon: typeof FileInput }> = [
   { id: "ingest_and_normalize", label: "数据接入", icon: FileInput },
@@ -61,6 +62,7 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
 
   const current = task.data;
   const terminal = ["completed", "terminated", "failed"].includes(current.status);
+  const blocked = current.status === "blocked_model_error";
   const graphStageIndex = {
     data_ingestion: 0,
     agent_analysis: 1,
@@ -206,9 +208,9 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
   }
 
   return (
-    <main className="page-shell task-detail-page agent-task-detail-page">
+    <main className="page-shell task-detail-page agent-task-detail-page apple-page">
       <BackButton fallback="/tasks" label="返回任务列表" />
-      <section className="detail-heading"><div><span className="heading-tags"><Tag color={terminal ? "success" : "processing"}>{terminal ? "任务结束" : "处理中"}</Tag>{current.task_kind === "rollback" && <Tag color="warning">回滚任务</Tag>}</span><h1>{current.title ?? "Agent 数据同步任务"}</h1><p>后端持久化工作流 · {current.workflow_version}</p></div><div className="detail-total"><span>当前阶段</span><strong>{graph.data?.current_action_zh ?? current.phase}</strong></div></section>
+      <section className="detail-heading"><div><span className="heading-tags"><Tag color={terminal ? "success" : blocked ? "error" : "processing"}>{terminal ? "任务结束" : blocked ? "分析已暂停" : "处理中"}</Tag>{current.task_kind === "rollback" && <Tag color="warning">回滚任务</Tag>}</span><h1>{current.title ?? "Agent 数据同步任务"}</h1><p>后端持久化工作流 · {current.workflow_version}</p></div><div className="detail-total"><span>当前阶段</span><strong>{graph.data?.current_action_zh ?? presentAgentPhase(current.phase)}</strong></div></section>
       {terminateError && <Alert type="error" showIcon message={terminateError} />}
       {!terminal && <div className="agent-task-actions"><Button danger loading={terminationLoading} icon={<StopCircle size={15} />} onClick={() => void requestTermination()}>终止任务</Button></div>}
       {terminal && current.task_kind !== "rollback" && current.rollback_eligible && (
@@ -219,9 +221,17 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
         </div>
       )}
       <section className="stage-track agent-stage-track" aria-label="Agent 任务处理阶段">
-        {phases.map((phase, index) => { const Icon = phase.icon; const done = completed > index; const active = completed === index && !terminal; return <div className={`stage${done ? " completed" : ""}${active ? " active" : ""}`} key={phase.id}><span className="stage-icon"><Icon size={15} /></span><span className="stage-copy"><strong>{phase.label}</strong><small>{done ? "已完成" : active ? "正在处理" : "等待处理"}</small></span></div>; })}
+        {phases.map((phase, index) => { const Icon = phase.icon; const done = completed > index; const active = completed === index && !terminal && !blocked; const phaseBlocked = blocked && completed === index; return <div className={`stage${done ? " completed" : ""}${active ? " active" : ""}${phaseBlocked ? " blocked" : ""}`} key={phase.id}><span className="stage-icon"><Icon size={15} /></span><span className="stage-copy"><strong>{phase.label}</strong><small>{done ? "已完成" : phaseBlocked ? "分析已暂停" : active ? "正在处理" : "等待处理"}</small></span></div>; })}
       </section>
-      {graph.data && !terminal && (
+      {blocked && (
+        <section className="agent-blocked-notice" aria-live="assertive">
+          <div>
+            <h2>模型分析已暂停</h2>
+            <p>模型调用已达到四次尝试上限。任务数据仍被安全保留，请终止任务后检查模型服务。</p>
+          </div>
+        </section>
+      )}
+      {graph.data && !terminal && !blocked && (
         <section className="graph-live-progress" aria-live="polite">
           <span className="graph-orbit" aria-hidden="true"><i /><i /><i /></span>
           <div>
@@ -291,7 +301,29 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
           </div>
         </section>
       ))}
-      {!graph.data && events.data?.events.length ? <section className="agent-event-history" aria-label="Agent 事件"><h2>任务事件</h2><ul>{events.data.events.slice().reverse().map((event) => <li key={event.id}><strong>{event.type}</strong><span>{event.created_at}</span></li>)}</ul></section> : !graph.data && <Progress percent={terminal ? 100 : Math.round((completed / phases.length) * 100)} showInfo={false} />}
+      {events.data?.events.length ? (
+        <section className="agent-event-history" aria-label="Agent 事件">
+          <div className="agent-event-heading">
+            <div><span>PROCESS</span><h2>任务处理记录</h2></div>
+            <small>共 {events.data.events.length} 条</small>
+          </div>
+          <ol>
+            {events.data.events.slice().reverse().map((event) => {
+              const presented = presentAgentEvent(event);
+              return (
+                <li className={presented.tone} key={event.id}>
+                  <span className="agent-event-dot" aria-hidden="true" />
+                  <div>
+                    <strong>{presented.title}</strong>
+                    <p>{presented.description}</p>
+                  </div>
+                  {presented.time && <time dateTime={event.created_at}>{presented.time}</time>}
+                </li>
+              );
+            })}
+          </ol>
+        </section>
+      ) : !graph.data && !blocked && <Progress percent={terminal ? 100 : Math.round((completed / phases.length) * 100)} showInfo={false} />}
       {current.report_id && <Button onClick={() => navigate(`/tasks/${taskId}/report`)}>查看任务报告</Button>}
       <Modal
         title="确认创建独立回滚任务？"

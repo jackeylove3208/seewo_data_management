@@ -42,6 +42,12 @@ class AgentReportRecord(Base, TimestampMixin):
     rollback_eligible: Mapped[bool] = mapped_column(index=True)
     deletion_eligible: Mapped[bool] = mapped_column(index=True)
     generated_by: Mapped[str] = mapped_column(String(128), index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        nullable=False,
+    )
 
 
 def _reject_report_job_fact_mutation(_mapper: object, _connection: object, target: object) -> None:

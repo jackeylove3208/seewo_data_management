@@ -7,14 +7,14 @@ describe("requestJson", () => {
     vi.unstubAllGlobals();
   });
 
-  it("explains when the backend proxy is unavailable", async () => {
+  it("does not mislabel an internal backend error as service unavailable", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("proxy error", {
       status: 500,
       headers: { "Content-Type": "text/plain" },
     })));
 
     await expect(requestJson("/api/uploads")).rejects.toEqual(
-      new ApiError("后端服务不可用，请确认本地服务已经启动后重试", 500),
+      new ApiError("后端处理请求失败，请查看后端终端日志后重试", 500),
     );
   });
 

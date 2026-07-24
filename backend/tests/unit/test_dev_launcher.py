@@ -41,6 +41,7 @@ def test_launch_plan_starts_complete_csv_agent_stack(tmp_path: Path) -> None:
         "RECONCILIATION_AGENT_GRAPH_CSV_EXECUTION_ENABLED": "true",
         "RECONCILIATION_NEW_AGENT_ANALYSIS_ONLY": "false",
         "RECONCILIATION_NEW_AGENT_CSV_EXECUTION_ENABLED": "true",
+        "RECONCILIATION_LLM_TIMEOUT_SECONDS": "60",
     }
 
 

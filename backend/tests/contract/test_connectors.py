@@ -1,4 +1,3 @@
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -23,8 +22,7 @@ from app.connectors.seewo_api import SeewoApiConnector
 from app.connectors.third_party_api import ThirdPartyApiConnector
 from app.ingestion.field_mapping import default_mapping_registry
 from app.schemas.canonical_entities import SourceRole
-
-ROOT = Path(__file__).parents[3]
+from tests.fixtures.legacy_csv import write_legacy_csv_pair
 
 
 class FakeSourceConnector:
@@ -69,9 +67,15 @@ async def test_csv_connectors_emit_same_canonical_contract(
     profile_version: str,
     role: SourceRole,
     expected_count: int,
+    tmp_path,
 ) -> None:
+    authoritative, target = write_legacy_csv_pair(tmp_path)
+    paths = {
+        "third_party_data.csv": authoritative,
+        "mofa_data.csv": target,
+    }
     connector = connector_type(
-        path=ROOT / filename,
+        path=paths[filename],
         profile=default_mapping_registry().get(profile_version),
         tenant_id="school-1",
         snapshot_id=uuid4(),

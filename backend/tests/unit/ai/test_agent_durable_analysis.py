@@ -1,6 +1,10 @@
 import pytest
 
-from app.ai.agent_durable_analysis import analyze_with_four_total_attempts
+from app.ai.agent_analysis import AgentModelOutputError
+from app.ai.agent_durable_analysis import (
+    _is_retryable_model_failure,
+    analyze_with_four_total_attempts,
+)
 from app.ai.providers.base import TransientModelError
 
 
@@ -32,3 +36,10 @@ async def test_stops_after_exactly_four_attempts() -> None:
         await analyze_with_four_total_attempts(attempt)
 
     assert calls == 4
+
+
+def test_only_provider_and_validated_output_failures_are_retryable() -> None:
+    assert _is_retryable_model_failure(TransientModelError("temporary")) is True
+    assert _is_retryable_model_failure(AgentModelOutputError("invalid output")) is True
+    assert _is_retryable_model_failure(FileNotFoundError("skill missing")) is False
+    assert _is_retryable_model_failure(RuntimeError("database unavailable")) is False

@@ -280,6 +280,13 @@ select {
   background: rgba(42, 57, 111, 0.42);
 }
 
+.apple-page .conversation-message.user {
+  border-color: rgba(82, 157, 199, 0.34);
+  background:
+    linear-gradient(135deg, rgba(16, 43, 70, 0.96), rgba(17, 52, 78, 0.86));
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.035);
+}
+
 .apple-page .conversation-message strong,
 .apple-page .conversation-card strong {
   color: var(--apple-ink);
@@ -301,9 +308,145 @@ select {
   background: rgba(72, 185, 213, 0.22);
 }
 
+.apple-page .conversation-message.user strong {
+  color: #d8f2ff;
+}
+
+.apple-page .conversation-message.user p {
+  color: #b9d2e4;
+}
+
 .apple-page .conversation-card {
   border-radius: 18px;
   background: rgba(42, 53, 101, 0.84);
+}
+
+.apple-page .conversation-card.agent-progress {
+  border-color: rgba(79, 151, 194, 0.32);
+  background:
+    linear-gradient(145deg, rgba(13, 35, 59, 0.96), rgba(18, 47, 73, 0.9));
+}
+
+.apple-page .conversation-card.agent-progress.blocked {
+  border-color: rgba(220, 102, 125, 0.42);
+  background:
+    linear-gradient(145deg, rgba(52, 29, 51, 0.96), rgba(39, 33, 66, 0.94));
+}
+
+.apple-page .agent-event {
+  color: #aebed2;
+  border-color: rgba(113, 153, 186, 0.22);
+  background: rgba(8, 26, 48, 0.36);
+}
+
+.apple-page .agent-event-copy strong {
+  color: #e7f0fb;
+}
+
+.apple-page .agent-event-copy small,
+.apple-page .agent-event-copy time {
+  color: #93a9c1;
+}
+
+.apple-page .detail-heading h1,
+.apple-page .detail-total strong,
+.apple-page .agent-event-heading h2,
+.apple-page .agent-event-history li strong {
+  color: var(--apple-ink);
+}
+
+.apple-page .detail-heading p,
+.apple-page .detail-total span,
+.apple-page .agent-event-heading small,
+.apple-page .agent-event-history li p,
+.apple-page .agent-event-history li time {
+  color: var(--apple-ink-soft);
+}
+
+.apple-page .detail-total {
+  border-left-color: var(--apple-border);
+}
+
+.apple-page .agent-stage-track {
+  gap: 10px;
+  border: 0;
+  background: transparent;
+}
+
+.apple-page .agent-stage-track .stage {
+  color: #e7f0fb;
+  border: 1px solid rgba(89, 145, 184, 0.24);
+  border-radius: 18px;
+  background:
+    linear-gradient(145deg, rgba(12, 32, 55, 0.95), rgba(17, 45, 70, 0.88));
+  box-shadow: 0 14px 34px rgba(3, 13, 31, 0.18);
+}
+
+.apple-page .agent-stage-track .stage.active {
+  border-color: rgba(89, 184, 218, 0.5);
+  background:
+    linear-gradient(145deg, rgba(14, 42, 68, 0.98), rgba(22, 59, 84, 0.94));
+  box-shadow: inset 0 -3px #55bedc, 0 16px 38px rgba(3, 13, 31, 0.24);
+}
+
+.apple-page .agent-stage-track .stage.completed {
+  background:
+    linear-gradient(145deg, rgba(13, 39, 60, 0.96), rgba(16, 55, 72, 0.9));
+}
+
+.apple-page .agent-stage-track .stage.blocked {
+  border-color: rgba(220, 102, 125, 0.44);
+  background:
+    linear-gradient(145deg, rgba(49, 29, 49, 0.96), rgba(35, 35, 66, 0.94));
+}
+
+.apple-page .agent-stage-track .stage strong {
+  color: #edf5ff;
+}
+
+.apple-page .agent-stage-track .stage small {
+  color: #91abc1;
+}
+
+.apple-page .agent-stage-track .stage-icon {
+  color: #9dc6da;
+  background: rgba(77, 148, 184, 0.18);
+}
+
+.apple-page .agent-stage-track .stage.active .stage-icon {
+  color: #f7fdff;
+  background: #347fa3;
+}
+
+.apple-page .agent-stage-track .stage.completed .stage-icon {
+  color: #f2fffc;
+  background: #2d806f;
+}
+
+.apple-page .agent-blocked-notice,
+.apple-page .agent-event-history {
+  border-color: var(--apple-border);
+  background: rgba(18, 35, 68, 0.84);
+  box-shadow: var(--apple-shadow);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+}
+
+.apple-page .agent-blocked-notice {
+  border-color: rgba(220, 102, 125, 0.42);
+  background: rgba(50, 29, 52, 0.88);
+}
+
+.apple-page .agent-blocked-notice h2 {
+  color: #ffb7c4;
+}
+
+.apple-page .agent-blocked-notice p {
+  color: #c9a8b2;
+}
+
+.apple-page .agent-event-history li {
+  border-top-color: rgba(132, 153, 255, 0.16);
 }
 
 .apple-page .conversation-composer {
