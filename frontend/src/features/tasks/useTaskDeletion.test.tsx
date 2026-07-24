@@ -2,6 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { agentApi } from "../../api/agent";
 import { ingestionApi } from "../../api/ingestion";
 import { getStoredTasks, saveStoredTask } from "../../data/taskHistory";
 import type { TaskHistoryItem } from "../../types/domain";
@@ -20,11 +21,11 @@ const task: TaskHistoryItem = {
   selectedEntityTypes: ["teacher"],
 };
 
-function Harness() {
+function Harness({ selectedTask = task }: { selectedTask?: TaskHistoryItem }) {
   const deletion = useTaskDeletion();
   return (
     <>
-      <button type="button" onClick={() => deletion.requestDelete(task)}>删除真实任务</button>
+      <button type="button" onClick={() => deletion.requestDelete(selectedTask)}>删除真实任务</button>
       {deletion.confirmation}
     </>
   );
@@ -75,5 +76,24 @@ describe("task deletion confirmation", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("该任务已有治理执行记录，不能删除");
     expect(getStoredTasks()).toHaveLength(1);
+  });
+
+  it("deletes controlled graph tasks through the Agent API", async () => {
+    const user = userEvent.setup();
+    const graphTask = {
+      ...task,
+      id: "graph-task-1",
+      workflowVersion: "agent-graph-v1",
+    };
+    saveStoredTask(graphTask);
+    const deleteAgentTask = vi.spyOn(agentApi, "deleteTask").mockResolvedValue();
+    const deleteLegacyTask = vi.spyOn(ingestionApi, "deleteTask").mockResolvedValue();
+    render(<Harness selectedTask={graphTask} />);
+
+    await user.click(screen.getByRole("button", { name: "删除真实任务" }));
+    await user.click(screen.getByRole("button", { name: "确认删除" }));
+
+    await waitFor(() => expect(deleteAgentTask).toHaveBeenCalledWith("graph-task-1"));
+    expect(deleteLegacyTask).not.toHaveBeenCalled();
   });
 });

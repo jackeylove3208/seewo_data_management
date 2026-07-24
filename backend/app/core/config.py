@@ -94,6 +94,8 @@ class Settings(BaseSettings):
     model_retry_wait_seconds: NonNegativeFloat = 0.2
     agent_privacy_policy_version: str = "student-phone-v1"
     new_agent_enabled: bool = False
+    agent_graph_enabled: bool = False
+    agent_graph_csv_execution_enabled: bool = False
     new_agent_analysis_only: bool = True
     new_agent_csv_execution_enabled: bool = False
     new_agent_api_connector_enabled: bool = False
@@ -189,6 +191,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 "database connector configuration is required before enabling execution"
             )
+        if self.agent_graph_enabled and not self.new_agent_enabled:
+            raise ValueError("new_agent_enabled is required for agent_graph_enabled")
+        if self.agent_graph_csv_execution_enabled and not self.agent_graph_enabled:
+            raise ValueError(
+                "agent_graph_enabled is required for agent_graph_csv_execution_enabled"
+            )
+        if self.new_agent_analysis_only and self.agent_graph_csv_execution_enabled:
+            raise ValueError("new_agent_analysis_only cannot enable Agent graph target execution")
         return self
 
     @property
@@ -203,6 +213,8 @@ class Settings(BaseSettings):
 
     @property
     def new_task_workflow_version(self) -> str:
+        if self.new_agent_enabled and self.agent_graph_enabled:
+            return "agent-graph-v1"
         return "new-agent-v1" if self.new_agent_enabled else "legacy-v1"
 
     def validate_agent_worker_configuration(self) -> None:

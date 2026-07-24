@@ -23,8 +23,27 @@ def test_identity_postings_only_use_number_phone_and_email() -> None:
     )
 
 
-def test_ordinary_differences_exclude_identity_but_include_student_class() -> None:
-    authority = _record(source_role=AgentSourceRole.AUTHORITATIVE, name="李四", class_name="二班")
-    target = _record(name="李四同学", class_name="一班", phone="13800138001")
+def test_identity_fields_remain_governed_differences_after_correspondence() -> None:
+    authority = _record(
+        source_role=AgentSourceRole.AUTHORITATIVE,
+        name="李四",
+        number="S-001",
+        class_name="二班",
+        phone="13800138000",
+        email="authority@example.test",
+    )
+    target = _record(
+        name="李四同学",
+        number="S-OLD",
+        class_name="一班",
+        phone="13800138001",
+        email="target@example.test",
+    )
 
-    assert ordinary_field_differences(authority, target) == ("name", "class_name")
+    assert ordinary_field_differences(authority, target) == (
+        "name",
+        "number",
+        "class_name",
+        "phone",
+        "email",
+    )

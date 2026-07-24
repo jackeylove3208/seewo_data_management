@@ -16,8 +16,11 @@ export function useTaskDeletion(onDeleted?: (taskId: string) => void) {
     setPending(true);
     setError(undefined);
     try {
-      if (selectedTask.workflowVersion === "new-agent-v1") await agentApi.deleteTask(selectedTask.id);
-      else await ingestionApi.deleteTask(selectedTask.id);
+      if (["new-agent-v1", "agent-graph-v1"].includes(selectedTask.workflowVersion ?? "")) {
+        await agentApi.deleteTask(selectedTask.id);
+      } else {
+        await ingestionApi.deleteTask(selectedTask.id);
+      }
       removeStoredTask(selectedTask.id);
       onDeleted?.(selectedTask.id);
       setSelectedTask(undefined);

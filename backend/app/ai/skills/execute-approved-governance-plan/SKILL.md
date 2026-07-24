@@ -2,7 +2,7 @@
 name: execute-approved-governance-plan
 version: 1.0.0
 phase: execute_and_verify
-allowed_tools: [execute_target_operation, verify_target_operation]
+allowed_tools: [read_execution_plan, read_ready_operations, request_operation_execution, read_operation_verification]
 input_schema: GovernanceExecutionInput
 output_schema: GovernanceExecutionOutcome
 ---
@@ -31,9 +31,11 @@ output_schema: GovernanceExecutionOutcome
 2. 核对每个 operation ID 原样存在于计划、目标是希沃、operation 属于连接器能力白名单，
    高风险项具有精确冻结组的已同意审批，低风险项也必须等待全部分析/冲突结果终态。
 3. 按服务端依赖拓扑和确定性顺序处理。不得用模型自己的优先级重排。
-4. 对每个可执行操作调用 `execute_target_operation`，传入服务端已持久化参数、稳定幂等键和
-   expected version。不得拼接 SQL、任意 API 请求或文件命令。
-5. 连接器调用成功不等于治理成功；必须调用 `verify_target_operation` 做读后验证，确认实际
+4. 先用 `read_execution_plan` 与 `read_ready_operations` 读取服务端当前允许启动的操作，
+   再对每个可执行操作调用 `request_operation_execution`；工具只接受服务端资源 ID，并使用
+   已持久化参数、稳定幂等键和 expected version。不得拼接 SQL、任意 API 请求或文件命令。
+5. 连接器调用成功不等于治理成功；必须调用 `read_operation_verification` 读取服务端读后验证，
+   确认实际
    after-value/新版本与计划一致，才记录 `succeeded`。
 6. 可重试错误由服务端以同一幂等键执行初次尝试加最多三次重试。模型不得自行创建第五次尝试
    或改变参数规避冲突。

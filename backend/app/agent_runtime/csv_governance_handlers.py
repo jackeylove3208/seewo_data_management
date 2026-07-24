@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -228,6 +229,192 @@ class CsvGovernanceHandlers:
         )
         return AgentWorkResult(next_phase=AgentPhase.GENERATE_REPORT)
 
+    async def execute_operation(
+        self,
+        session: AsyncSession,
+        context: AgentWorkContext,
+        *,
+        operation_id: UUID,
+    ) -> AgentGovernanceOperationRecord:
+        plan = await session.scalar(
+            select(AgentGovernancePlanRecord)
+            .where(AgentGovernancePlanRecord.run_id == context.run_id)
+            .order_by(AgentGovernancePlanRecord.created_at.desc())
+        )
+        if plan is None:
+            raise LookupError("Agent governance plan is missing")
+        record = await session.scalar(
+            select(AgentGovernanceOperationRecord)
+            .where(
+                AgentGovernanceOperationRecord.id == operation_id,
+                AgentGovernanceOperationRecord.plan_id == plan.id,
+                AgentGovernanceOperationRecord.run_id == context.run_id,
+            )
+            .with_for_update()
+        )
+        if record is None:
+            raise LookupError("Agent governance operation is missing")
+        if record.status in {
+            "succeeded",
+            "failed",
+            "blocked",
+            "verification_failed",
+        }:
+            return record
+        dependency_ids = tuple(UUID(value) for value in record.dependencies)
+        if dependency_ids:
+            dependencies = tuple(
+                await session.scalars(
+                    select(AgentGovernanceOperationRecord).where(
+                        AgentGovernanceOperationRecord.id.in_(dependency_ids),
+                        AgentGovernanceOperationRecord.plan_id == plan.id,
+                    )
+                )
+            )
+            by_id = {item.id: item for item in dependencies}
+            if set(by_id) != set(dependency_ids):
+                raise ValueError("Agent operation dependency is missing")
+            incomplete = tuple(
+                item for item in dependencies if item.status != "succeeded"
+            )
+            if incomplete:
+                if any(item.status in {"pending", "running"} for item in incomplete):
+                    raise ValueError("Agent operation dependency is not ready")
+                return await AgentGovernanceRepository(
+                    session
+                ).record_operation_outcome(
+                    record.id,
+                    status="blocked",
+                    attempts=0,
+                    error_code="dependency_failed",
+                )
+        executions = ExecutionRepository(session)
+        parent = await executions.current_target_version(context.task_id)
+        if parent is None:
+            raise LookupError("Agent CSV target version is missing")
+        succeeded = tuple(
+            await session.scalars(
+                select(AgentGovernanceOperationRecord).where(
+                    AgentGovernanceOperationRecord.plan_id == plan.id,
+                    AgentGovernanceOperationRecord.status == "succeeded",
+                )
+            )
+        )
+        if not succeeded:
+            if f"sha256:{parent.file_sha256}" != plan.target_version:
+                raise ValueError("Agent CSV target version is stale")
+        else:
+            output_version_ids = {
+                UUID(str(item.verification["output_target_version_id"]))
+                for item in succeeded
+                if item.verification
+                and item.verification.get("output_target_version_id")
+            }
+            if parent.id not in output_version_ids:
+                raise ValueError("Agent CSV target version changed outside the plan")
+        payload = next(
+            (
+                item
+                for item in plan.operations
+                if UUID(str(item["id"])) == operation_id
+            ),
+            None,
+        )
+        if payload is None:
+            raise LookupError("Agent operation payload is missing")
+        target_version = f"sha256:{parent.file_sha256}"
+        operation = replace(
+            _operation_from_payload(payload, target_version),
+            dependencies=frozenset(),
+        )
+        result = await AgentExecutionService().execute(
+            plan_id=operation.id,
+            target_version=target_version,
+            operations=(operation,),
+            target=CsvAgentTargetAdapter(
+                versioner=CsvTargetVersioner(
+                    repository=AgentTargetVersionRepository(executions),
+                    output_root=self._output_root,
+                ),
+                parent=parent,
+            ),
+            outcome_sink=AgentGovernanceRepository(session),
+        )
+        stored = await session.get(AgentGovernanceOperationRecord, operation_id)
+        if stored is None:
+            raise LookupError("Agent operation outcome is missing")
+        output = result.output_target_version
+        verification = dict(stored.verification or {})
+        if isinstance(output, TargetVersionRecord):
+            verification.update(
+                {
+                    "output_target_version_id": str(output.id),
+                    "output_target_version": f"sha256:{output.file_sha256}",
+                }
+            )
+        stored.verification = verification
+        if stored.status != "succeeded":
+            blocked_dependency_ids = {stored.id}
+            pending = tuple(
+                await session.scalars(
+                    select(AgentGovernanceOperationRecord).where(
+                        AgentGovernanceOperationRecord.plan_id == plan.id,
+                        AgentGovernanceOperationRecord.status == "pending",
+                    )
+                )
+            )
+            changed = True
+            while changed:
+                changed = False
+                for dependent in pending:
+                    if dependent.id in blocked_dependency_ids:
+                        continue
+                    dependent_ids = {
+                        UUID(str(value)) for value in dependent.dependencies
+                    }
+                    if dependent_ids.intersection(blocked_dependency_ids):
+                        await AgentGovernanceRepository(
+                            session
+                        ).record_operation_outcome(
+                            dependent.id,
+                            status="blocked",
+                            attempts=0,
+                            error_code="dependency_failed",
+                        )
+                        blocked_dependency_ids.add(dependent.id)
+                        changed = True
+        statuses = tuple(
+            await session.scalars(
+                select(AgentGovernanceOperationRecord.status).where(
+                    AgentGovernanceOperationRecord.plan_id == plan.id
+                )
+            )
+        )
+        if any(status in {"pending", "running"} for status in statuses):
+            plan.status = "executing"
+        elif statuses and all(status == "succeeded" for status in statuses):
+            plan.status = "succeeded"
+        elif any(status == "succeeded" for status in statuses):
+            plan.status = "partial"
+        else:
+            plan.status = "failed"
+        await AgentRuntimeRepository(session).save_checkpoint(
+            context.run_id,
+            phase=AgentPhase.EXECUTE_AND_VERIFY,
+            checkpoint_key=f"agent-csv-operation-v1:{operation_id}",
+            input_hash=_hash(payload),
+            payload={
+                "operation_id": str(operation_id),
+                "status": stored.status,
+                "output_target_version_id": (
+                    str(output.id)
+                    if isinstance(output, TargetVersionRecord)
+                    else None
+                ),
+            },
+        )
+        return stored
+
     async def report(
         self, session: AsyncSession, context: AgentWorkContext
     ) -> AgentWorkResult:
@@ -235,18 +422,7 @@ class CsvGovernanceHandlers:
         task = await session.get(ReconciliationTask, context.task_id)
         if run is None or task is None:
             raise LookupError("Agent reporting context is missing")
-        findings = tuple(
-            await session.scalars(
-                select(AgentFindingRecord).where(AgentFindingRecord.run_id == run.id)
-            )
-        )
-        marks = tuple(
-            await session.scalars(
-                select(AgentInputMarkRecord)
-                .join(AgentInputRecord)
-                .where(AgentInputRecord.run_id == run.id)
-            )
-        )
+        facts = await build_agent_report_facts(session, run_id=run.id)
         operations = tuple(
             await session.scalars(
                 select(AgentGovernanceOperationRecord).where(
@@ -254,36 +430,6 @@ class CsvGovernanceHandlers:
                 )
             )
         )
-        checkpoint = await AgentRuntimeRepository(session).get_checkpoint(
-            run.id,
-            phase=AgentPhase.EXECUTE_AND_VERIFY,
-            checkpoint_key="agent-csv-execution-v1",
-        )
-        facts: dict[str, Any] = {
-            "findings": [
-                {"id": str(item.id), "kind": item.kind, "category_zh": item.category_zh}
-                for item in findings
-            ],
-            "excluded_findings": [
-                {"reason": item.reason_code, "disposition": item.report_disposition}
-                for item in marks
-            ],
-            "mutations": [
-                {
-                    "id": str(item.id),
-                    "status": item.status,
-                    "operation": item.operation_type,
-                    "entity_kind": item.entity_kind,
-                    "target_source_identifier": item.target_source_identifier,
-                    "before": item.before,
-                    "after": item.actual_after,
-                    "verification": item.verification or {"valid": item.status == "succeeded"},
-                }
-                for item in operations
-            ],
-        }
-        if checkpoint is not None:
-            facts.update(checkpoint.payload)
         report = await AgentReportingService(session).generate(
             task_id=task.id,
             tenant_id=task.tenant_id,
@@ -307,6 +453,76 @@ class CsvGovernanceHandlers:
             outcome=report.terminal_state,
         )
         return AgentWorkResult(next_phase=AgentPhase.TERMINAL)
+
+
+async def build_agent_report_facts(
+    session: AsyncSession,
+    *,
+    run_id: UUID,
+) -> dict[str, Any]:
+    """Build server-owned report facts without generating model narrative."""
+
+    findings = tuple(
+        await session.scalars(
+            select(AgentFindingRecord).where(AgentFindingRecord.run_id == run_id)
+        )
+    )
+    marks = tuple(
+        await session.scalars(
+            select(AgentInputMarkRecord)
+            .join(AgentInputRecord)
+            .where(AgentInputRecord.run_id == run_id)
+        )
+    )
+    operations = tuple(
+        await session.scalars(
+            select(AgentGovernanceOperationRecord).where(
+                AgentGovernanceOperationRecord.run_id == run_id
+            )
+        )
+    )
+    checkpoint = await AgentRuntimeRepository(session).get_checkpoint(
+        run_id,
+        phase=AgentPhase.EXECUTE_AND_VERIFY,
+        checkpoint_key="agent-csv-execution-v1",
+    )
+    facts: dict[str, Any] = {
+        "findings": [
+            {"id": str(item.id), "kind": item.kind, "category_zh": item.category_zh}
+            for item in findings
+        ],
+        "excluded_findings": [
+            {"reason": item.reason_code, "disposition": item.report_disposition}
+            for item in marks
+        ],
+        "mutations": [
+            {
+                "id": str(item.id),
+                "status": item.status,
+                "operation": item.operation_type,
+                "entity_kind": item.entity_kind,
+                "target_source_identifier": item.target_source_identifier,
+                "before": item.before,
+                "after": item.actual_after,
+                "verification": item.verification
+                or {"valid": item.status == "succeeded"},
+            }
+            for item in operations
+        ],
+    }
+    output_target_version_ids = tuple(
+        str(item.verification["output_target_version_id"])
+        for item in operations
+        if item.status == "succeeded"
+        and item.verification
+        and item.verification.get("output_target_version_id")
+    )
+    if output_target_version_ids:
+        facts["output_target_version_ids"] = list(output_target_version_ids)
+        facts["output_target_version_id"] = output_target_version_ids[-1]
+    if checkpoint is not None:
+        facts.update(checkpoint.payload)
+    return facts
 
 
 async def _finding_inputs(

@@ -2,7 +2,7 @@
 name: resolve-human-conflict-instruction
 version: 1.0.0
 phase: clarify_identity_conflicts
-allowed_tools: [read_conflict, persist_decision]
+allowed_tools: [read_frozen_conflict, submit_conflict_interpretation]
 input_schema: ConflictInstructionInput
 output_schema: ConflictDecisionDraft
 ---

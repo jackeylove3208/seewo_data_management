@@ -50,6 +50,24 @@ def agent_client(tmp_path: Path):
         yield client
 
 
+@pytest.fixture
+def graph_agent_client(tmp_path: Path):
+    settings = Settings(
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'agent-graph-api.db'}",
+        upload_root=tmp_path / "uploads",
+        snapshot_root=tmp_path / "snapshots",
+        quarantine_root=tmp_path / "quarantine",
+        export_root=tmp_path / "exports",
+        auto_create_schema=True,
+        new_agent_enabled=True,
+        agent_graph_enabled=True,
+        new_agent_analysis_only=True,
+        tokenization_secret="test-tokenization-secret",
+    )
+    with TestClient(create_app(settings)) as client:
+        yield client
+
+
 def _upload(client: TestClient, tmp_path: Path, role: str, name: str) -> str:
     path = tmp_path / name
     path.write_text(
@@ -110,6 +128,28 @@ def test_manual_csv_task_uses_agent_runtime_and_exposes_persisted_events(
         "school_lock.acquired",
         "phase.started",
     ]
+
+
+def test_graph_flag_routes_only_new_tasks_to_agent_graph_version(
+    graph_agent_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    source_id = _upload(graph_agent_client, tmp_path, "authoritative", "graph-authority.csv")
+    target_id = _upload(graph_agent_client, tmp_path, "target", "graph-target.csv")
+
+    created = graph_agent_client.post(
+        "/api/agent/tasks",
+        headers={"Idempotency-Key": "agent-graph-manual-1"},
+        json={
+            "title": "全校学生图同步",
+            "entity_types": ["student"],
+            "source": {"kind": "csv", "upload_id": source_id},
+            "target": {"kind": "csv", "upload_id": target_id},
+        },
+    )
+
+    assert created.status_code == 202, created.text
+    assert created.json()["workflow_version"] == "agent-graph-v1"
 
 
 def test_agent_task_start_returns_stable_school_lock_conflict(

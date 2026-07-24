@@ -10,6 +10,61 @@ from app.ai.skills.contracts import AGENT_SKILL_SCHEMAS
 READ_ONLY_TOOL_NAMES = frozenset(
     {"difference_context", "candidate_search", "mapping_rules", "execution_context"}
 )
+GRAPH_SKILL_TOOLS_BY_PHASE: dict[str, frozenset[str]] = {
+    "ingest_and_normalize": frozenset(
+        {
+            "inspect_configured_source",
+            "read_connector_page",
+            "submit_input_contract_verdict",
+            "submit_input_marks",
+            "submit_normalized_batch",
+        }
+    ),
+    "analyze_batches": frozenset(
+        {
+            "query_identity_postings",
+            "read_claim_state",
+            "read_paired_record_evidence",
+            "read_work_item",
+            "submit_finding_batch",
+        }
+    ),
+    "clarify_identity_conflicts": frozenset(
+        {
+            "read_frozen_conflict",
+            "submit_conflict_interpretation",
+        }
+    ),
+    "generate_report": frozenset(
+        {
+            "read_report_fact_manifest",
+            "submit_report_narrative",
+        }
+    ),
+    "execute_and_verify": frozenset(
+        {
+            "read_execution_plan",
+            "read_ready_operations",
+            "request_operation_execution",
+            "read_operation_verification",
+        }
+    ),
+    "plan_restore": frozenset(
+        {
+            "read_verified_mutations",
+            "read_restore_conflicts",
+            "submit_restore_assessment",
+        }
+    ),
+    "execute_restore": frozenset(
+        {
+            "read_execution_plan",
+            "read_ready_operations",
+            "request_operation_execution",
+            "read_operation_verification",
+        }
+    ),
+}
 
 
 class SkillNotFound(LookupError):
@@ -63,6 +118,7 @@ class SkillRegistry:
                 allowed_tools = {
                     capability.value for capability in PHASE_CAPABILITIES.get(phase, frozenset())
                 }
+                allowed_tools.update(GRAPH_SKILL_TOOLS_BY_PHASE.get(definition.phase, ()))
             if not set(definition.allowed_tools) <= allowed_tools:
                 raise UnsafeSkillError(name)
         return definition

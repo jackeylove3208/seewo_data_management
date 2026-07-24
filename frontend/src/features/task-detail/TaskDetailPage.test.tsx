@@ -5,6 +5,7 @@ import { type PropsWithChildren } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { agentApi } from "../../api/agent";
 import { ingestionApi } from "../../api/ingestion";
 import { reconciliationApi } from "../../api/reconciliation";
 import { saveStoredTask } from "../../data/taskHistory";
@@ -32,6 +33,37 @@ describe("real task detail", () => {
     });
   });
   afterEach(() => vi.restoreAllMocks());
+
+  it("identifies an unknown graph task before requesting the legacy workflow", async () => {
+    localStorage.clear();
+    const legacyTask = vi.spyOn(ingestionApi, "getTask");
+    vi.spyOn(agentApi, "task").mockResolvedValue({
+      id: "real-1",
+      workflow_version: "agent-graph-v1",
+      task_kind: "sync",
+      phase: "aggregate_risk_and_approvals",
+      status: "waiting_human",
+      title: "全校学生数据同步",
+    });
+    vi.spyOn(agentApi, "events").mockResolvedValue({ cursor: "0", events: [] });
+    vi.spyOn(agentApi, "graph").mockResolvedValue({
+      task_id: "real-1",
+      workflow_version: "agent-graph-v1",
+      graph_version: "agent-sync-graph-v1",
+      graph_cursor: 8,
+      current_node: "wait_high_risk_approvals",
+      business_stage: "governance_execution",
+      current_action_zh: "正在等待高风险操作审批",
+      status: "waiting_human",
+      can_terminate: true,
+      human_gates: [],
+    });
+
+    render(<Routes><Route path="/tasks/:taskId" element={<TaskDetailPage />} /></Routes>, { wrapper });
+
+    expect(await screen.findByText("全校学生数据同步")).toBeInTheDocument();
+    expect(legacyTask).not.toHaveBeenCalled();
+  });
 
   it("renders persisted AI progress and analysis activity", async () => {
     vi.spyOn(ingestionApi, "getTask").mockResolvedValue({

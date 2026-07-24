@@ -2037,6 +2037,112 @@ button.connection-state {
   line-height: 1;
 }
 
+.agent-task-detail-page .detail-total {
+  max-width: 280px;
+}
+
+.agent-task-detail-page .detail-total strong {
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.graph-live-progress,
+.graph-approval-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 22px;
+  margin: -16px 0 28px;
+  padding: 20px 22px;
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 18px 54px rgba(15, 23, 42, 0.07);
+  backdrop-filter: blur(22px);
+}
+
+.graph-live-progress {
+  justify-content: flex-start;
+}
+
+.graph-live-progress strong,
+.graph-live-progress small {
+  display: block;
+}
+
+.graph-live-progress strong {
+  color: #18212d;
+  font-size: 14px;
+}
+
+.graph-live-progress small {
+  margin-top: 5px;
+  color: #77808c;
+  font-size: 11px;
+}
+
+.graph-orbit {
+  position: relative;
+  display: block;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(0, 113, 227, 0.13), transparent 68%);
+}
+
+.graph-orbit i {
+  position: absolute;
+  top: 19px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #0071e3;
+  animation: graph-flow 1.25s ease-in-out infinite;
+}
+
+.graph-orbit i:nth-child(1) { left: 8px; }
+.graph-orbit i:nth-child(2) { left: 19px; animation-delay: 140ms; }
+.graph-orbit i:nth-child(3) { left: 30px; animation-delay: 280ms; }
+
+@keyframes graph-flow {
+  0%, 70%, 100% { opacity: 0.28; transform: translateY(0) scale(0.78); }
+  35% { opacity: 1; transform: translateY(-5px) scale(1); }
+}
+
+.graph-approval-card {
+  margin-top: 0;
+  border-color: rgba(255, 159, 10, 0.22);
+  background: linear-gradient(135deg, rgba(255, 251, 242, 0.94), rgba(255, 255, 255, 0.9));
+}
+
+.graph-approval-card h2,
+.graph-approval-card p {
+  margin: 0;
+}
+
+.graph-approval-card h2 {
+  margin-top: 8px;
+  font-size: 16px;
+}
+
+.graph-approval-card p {
+  margin-top: 7px;
+  color: #6d7480;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.graph-approval-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .graph-orbit i { animation: none; opacity: 0.65; }
+}
+
 .real-filter-bar {
   display: grid;
   grid-template-columns: repeat(3, minmax(150px, 1fr)) auto;

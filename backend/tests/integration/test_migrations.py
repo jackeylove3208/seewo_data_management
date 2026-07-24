@@ -139,6 +139,14 @@ def test_clean_postgresql_migration_reaches_head(monkeypatch: pytest.MonkeyPatch
         assert versions == expected_heads
         assert "vector" in extensions
         assert {
+            "agent_graph_runs",
+            "agent_graph_candidate_sets",
+            "agent_supervisor_decisions",
+            "agent_graph_transitions",
+            "agent_evidence_manifests",
+            "agent_subagent_invocations",
+            "agent_tool_calls",
+            "agent_human_gates",
             "execution_batches",
             "execution_operations",
             "report_jobs",

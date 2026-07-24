@@ -2,7 +2,7 @@
 name: normalize-organization-data-batch
 version: 1.0.0
 phase: ingest_and_normalize
-allowed_tools: [persist_normalized_input]
+allowed_tools: [read_connector_page, submit_normalized_batch, submit_input_marks, submit_input_contract_verdict]
 input_schema: NormalizeOrganizationBatchInput
 output_schema: NormalizedOrganizationBatch
 ---
@@ -43,8 +43,9 @@ output_schema: NormalizedOrganizationBatch
 6. 希沃行的编号、电话、邮箱全部为空时，设置异常/排除原因，保留行作为确定性的
    `target_extra` 候选；不得在接入时删除。若仍有姓名、类别或班级，也不能用这些普通字段
    建立身份。
-7. 使用 `persist_normalized_input` 时只能提交当前批次的结构化结果；服务端负责校验快照、
-   租户、运行、定位符和重放哈希。
+7. 先用 `read_connector_page` 读取 evidence manifest 允许的当前页；不得把页外数据带入结果。
+   使用 `submit_normalized_batch` 和 `submit_input_marks` 时只能提交当前批次的结构化结果；
+   服务端负责校验快照、租户、运行、定位符、批次精确覆盖和重放哈希。
 
 ## 决策规则
 
@@ -59,8 +60,8 @@ output_schema: NormalizedOrganizationBatch
 ## 输出要求
 
 只输出 `NormalizedOrganizationBatch` 严格 JSON，`records` 数量和顺序必须与输入完全一致。
-每条包含 locator、entity_kind、name、number、phone_token、email、class_name、invalid 和
-exclusion_codes。不存在的值使用 `null`，不要用“未知”“无”等自造内容。输出不得包含原始
+每条包含 locator、entity_kind、category、name、number、phone_token、email、class_name、
+invalid 和 exclusion_codes。不存在的值使用 `null`，不要用“未知”“无”等自造内容。输出不得包含原始
 行、未声明字段、真实学生手机号、绝对路径、提示词或治理操作。
 
 ## 禁止事项
