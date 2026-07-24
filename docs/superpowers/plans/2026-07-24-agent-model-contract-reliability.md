@@ -35,12 +35,12 @@
 - Produces: `build_json_repair_request(request, output, error) -> LLMRequest`
 - Consumes: existing Pydantic response schemas and bounded retry loops.
 
-- [ ] Add failing provider tests proving `json_object` requests contain the exact schema and supplied JSON example.
-- [ ] Add failing Supervisor and sub-agent tests proving a malformed first response receives validation feedback and a corrected second response succeeds.
-- [ ] Run the focused tests and confirm they fail for missing contract/repair behavior.
-- [ ] Add the optional response example, provider prompt injection, and shared corrective-request builder.
-- [ ] Update Supervisor and sub-agent retry loops to use corrective requests after validation failures.
-- [ ] Run the focused tests and confirm they pass.
+- [x] Add failing provider tests proving `json_object` requests contain the exact schema and supplied JSON example.
+- [x] Add failing Supervisor and sub-agent tests proving a malformed first response receives validation feedback and a corrected second response succeeds.
+- [x] Run the focused tests and confirm they fail for missing contract/repair behavior.
+- [x] Add the optional response example, provider prompt injection, and shared corrective-request builder.
+- [x] Update Supervisor and sub-agent retry loops to use corrective requests after validation failures.
+- [x] Run the focused tests and confirm they pass.
 
 ### Task 2: Preserve safe failure diagnostics
 
@@ -54,11 +54,11 @@
 - Produces: `GraphSupervisorFailure.failure_categories: tuple[str, ...]`
 - Consumes: existing `run.blocked_model_error` event and graph transition guard payload.
 
-- [ ] Add failing tests proving four invalid decisions retain four safe failure categories without raw output.
-- [ ] Add failing worker test proving the blocked event identifies the original node and safe attempt categories.
-- [ ] Run the focused tests and confirm the expected failures.
-- [ ] Carry safe categories on `GraphSupervisorFailure` and persist them when blocking the run.
-- [ ] Run the focused tests and confirm they pass.
+- [x] Add failing tests proving four invalid decisions retain four safe failure categories without raw output.
+- [x] Add failing worker test proving the blocked event identifies the original node and safe attempt categories.
+- [x] Run the focused tests and confirm the expected failures.
+- [x] Carry safe categories on `GraphSupervisorFailure` and persist them when blocking the run.
+- [x] Run the focused tests and confirm they pass.
 
 ### Task 3: Display the real failed business stage
 
@@ -70,19 +70,19 @@
 - Produces: `_graph_business_stage(node: str, run_phase: str | None) -> str`
 - Consumes: the persisted run phase when `current_node == "blocked_model_error"`.
 
-- [ ] Add a failing API test proving a blocked source-inspection run reports `data_ingestion`, not `agent_analysis`.
-- [ ] Run the focused test and confirm the current default mapping fails.
-- [ ] Map blocked runs from their persisted phase while leaving ordinary graph-node mappings unchanged.
-- [ ] Run the focused test and confirm it passes.
+- [x] Add a failing API test proving a blocked source-inspection run reports `data_ingestion`, not `agent_analysis`.
+- [x] Run the focused test and confirm the current default mapping fails.
+- [x] Map blocked runs from their persisted phase while leaving ordinary graph-node mappings unchanged.
+- [x] Run the focused test and confirm it passes.
 
 ### Task 4: Verify the complete fix
 
 **Files:**
 - No production files added.
 
-- [ ] Run all backend tests.
-- [ ] Run Ruff and mypy.
-- [ ] Run frontend tests, lint, typecheck, and build because the graph API contract drives the UI.
-- [ ] Run one configured DeepSeek diagnostic using the real Supervisor context and confirm the first response validates.
-- [ ] Review `git diff` for secrets, unrelated edits, and accidental raw model data.
-- [ ] Commit the verified implementation with a Conventional Commit message.
+- [x] Run all backend tests.
+- [x] Run Ruff and mypy.
+- [x] Run frontend tests, lint, typecheck, and build because the graph API contract drives the UI.
+- [x] Run one configured DeepSeek diagnostic using the real Supervisor context and confirm the first response validates.
+- [x] Review `git diff` for secrets, unrelated edits, and accidental raw model data.
+- [x] Commit the verified implementation with Conventional Commit messages.
