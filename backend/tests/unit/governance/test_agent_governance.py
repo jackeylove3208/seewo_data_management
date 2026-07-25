@@ -70,6 +70,21 @@ def test_grouping_freezes_compatible_membership() -> None:
     assert len(groups[0].finding_ids) == 2
 
 
+def test_grouping_splits_compatible_findings_into_bounded_approval_groups() -> None:
+    findings = tuple(finding(fields=("phone",)) for _index in range(101))
+
+    groups = group_high_risk_findings(findings)
+
+    assert [len(group.finding_ids) for group in groups] == [50, 50, 1]
+    assert [group.segment_index for group in groups] == [0, 1, 2]
+    assert len({group.id for group in groups}) == 3
+    assert {
+        finding_id
+        for group in groups
+        for finding_id in group.finding_ids
+    } == {item.finding_id for item in findings}
+
+
 def test_conflict_interpretation_is_bounded_and_requires_second_confirmation() -> None:
     candidate = uuid4()
     decision = interpret_clarification(

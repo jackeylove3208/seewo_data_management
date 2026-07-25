@@ -71,12 +71,35 @@ class CsvGovernanceHandlers:
         )
         repository = AgentGovernanceRepository(session)
         groups = group_high_risk_findings(findings)
+        runtime = AgentRuntimeRepository(session)
+        aggregation_hash = _hash(
+            [
+                {
+                    "group_id": str(group.id),
+                    "finding_ids": [str(item) for item in group.finding_ids],
+                    "membership_hash": group.membership_hash,
+                    "policy_version": group.policy_version,
+                }
+                for group in groups
+            ]
+        )
+        checkpoint = await runtime.get_checkpoint(
+            run.id,
+            phase=AgentPhase.AGGREGATE_RISK_AND_APPROVALS,
+            checkpoint_key="agent-risk-aggregation-v1",
+        )
+        if checkpoint is not None:
+            if checkpoint.input_hash != aggregation_hash:
+                raise ValueError("risk aggregation replay changed frozen findings")
+            if bool(checkpoint.payload.get("approval_required")):
+                return AgentWorkResult(next_status=AgentRunStatus.WAITING_HUMAN)
+            return AgentWorkResult(next_phase=AgentPhase.COMPILE_EXECUTION_PLAN)
         pending = False
         for group in groups:
             saved = await repository.save_approval_group(run=run, task=task, group=group)
             pending = pending or saved.status == "pending"
             if saved.status == "pending":
-                await AgentRuntimeRepository(session).append_event(
+                await runtime.append_event(
                     run.id,
                     "approval_required",
                     {
@@ -87,7 +110,7 @@ class CsvGovernanceHandlers:
                         "item_count": len(saved.finding_ids),
                     },
                 )
-        await AgentRuntimeRepository(session).append_event(
+        await runtime.append_event(
             run.id,
             "agent_approvals_aggregated",
             {"group_count": len(groups), "approval_required": pending},
@@ -99,6 +122,16 @@ class CsvGovernanceHandlers:
             phase=AgentPhase.AGGREGATE_RISK_AND_APPROVALS.value,
             approval_count=len(groups),
             outcome="waiting" if pending else "not_required",
+        )
+        await runtime.save_checkpoint(
+            run.id,
+            phase=AgentPhase.AGGREGATE_RISK_AND_APPROVALS,
+            checkpoint_key="agent-risk-aggregation-v1",
+            input_hash=aggregation_hash,
+            payload={
+                "group_count": len(groups),
+                "approval_required": pending,
+            },
         )
         if pending:
             return AgentWorkResult(next_status=AgentRunStatus.WAITING_HUMAN)
