@@ -59,7 +59,9 @@ class AgentRiskPolicy:
 
     def assess(self, finding: AgentFindingInput) -> AgentRiskDecision:
         high = finding.operation == AgentOperation.DELETE or (
-            finding.entity_kind == "student" and bool({"phone"} & finding.changed_fields)
+            finding.operation == AgentOperation.UPDATE
+            and finding.entity_kind == "student"
+            and "phone" in finding.changed_fields
         )
         if high:
             risk = "high"

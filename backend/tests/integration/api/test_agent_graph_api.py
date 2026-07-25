@@ -13,7 +13,10 @@ from app.core.config import Settings
 from app.main import create_app
 from app.models.agent_analysis import (
     AgentApprovalGroupRecord,
+    AgentFindingRecord,
+    AgentFindingSolutionRecord,
     AgentInputRecord,
+    AgentModelBatchRecord,
     AgentWorkItemRecord,
 )
 from app.models.agent_graph import AgentGraphRunRecord
@@ -51,7 +54,7 @@ def test_graph_progress_and_tenant_safe_gate_decision(
                 tenant_id="school-1",
                 scope_id="all",
                 snapshot_mode="full",
-                entity_types=["student"],
+                entity_types=["student", "teacher"],
                 status="running",
                 stage="analysis",
                 workflow_version="agent-graph-v1",
@@ -73,7 +76,118 @@ def test_graph_progress_and_tenant_safe_gate_decision(
                 initial_node="aggregate_risk",
             )
             finding_ids = tuple(str(uuid4()) for _index in range(50))
-            delete_finding_ids = tuple(str(uuid4()) for _index in range(3))
+            snapshots: dict[str, Snapshot] = {}
+            for role in ("authoritative", "target"):
+                source = SourceFile(
+                    task_id=task.id,
+                    source_role=role,
+                    original_name=f"{role}.csv",
+                    storage_name=f"{uuid4()}.csv",
+                    storage_path=f"/synthetic/{role}.csv",
+                    sha256=uuid4().hex * 2,
+                    size_bytes=10,
+                    detected_encoding="utf-8",
+                )
+                session.add(source)
+                await session.flush()
+                snapshot = Snapshot(
+                    id=uuid4(),
+                    task_id=task.id,
+                    source_file_id=source.id,
+                    source_role=role,
+                    schema_version="agent-contract-v1",
+                    mapping_version="agent-contract-v1",
+                    file_hash=source.sha256,
+                    content_hash=uuid4().hex * 2,
+                    state="published",
+                    summary={},
+                )
+                session.add(snapshot)
+                snapshots[role] = snapshot
+            await session.flush()
+            batch = AgentModelBatchRecord(
+                run_id=run.id,
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                entity_kind="teacher",
+                input_hash=uuid4().hex * 2,
+                item_count=3,
+                status="completed",
+                output_hash=uuid4().hex * 2,
+            )
+            session.add(batch)
+            await session.flush()
+            delete_finding_ids: list[str] = []
+            for row_number, name in enumerate(
+                ("王老师", "李老师", "陈老师"),
+                start=8,
+            ):
+                target_input = AgentInputRecord(
+                    run_id=run.id,
+                    task_id=task.id,
+                    snapshot_id=snapshots["target"].id,
+                    tenant_id=task.tenant_id,
+                    source_role="target",
+                    stable_locator=f"csv:{row_number}",
+                    stable_order=row_number,
+                    entity_kind="teacher",
+                    category="老师",
+                    name=name,
+                    number=f"T-{row_number:03d}",
+                    class_name=None,
+                    phone=f"1380000{row_number:04d}",
+                    email=f"teacher{row_number}@example.test",
+                    raw_row_number=row_number,
+                    input_hash=uuid4().hex * 2,
+                )
+                session.add(target_input)
+                await session.flush()
+                work_item = AgentWorkItemRecord(
+                    run_id=run.id,
+                    task_id=task.id,
+                    tenant_id=task.tenant_id,
+                    source_snapshot_id=snapshots["authoritative"].id,
+                    target_snapshot_id=snapshots["target"].id,
+                    subject_input_id=target_input.id,
+                    entity_kind="teacher",
+                    kind="target_extra",
+                    state="analyzed",
+                    idempotency_hash=uuid4().hex * 2,
+                    evidence_hash=uuid4().hex * 2,
+                )
+                session.add(work_item)
+                await session.flush()
+                finding = AgentFindingRecord(
+                    run_id=run.id,
+                    task_id=task.id,
+                    work_item_id=work_item.id,
+                    batch_id=batch.id,
+                    kind="target_extra",
+                    category_zh="希沃多余记录",
+                    analysis_zh=(
+                        f"{name}仅存在于希沃目标数据中。"
+                        + (
+                            "联系邮箱 teacher8@example.test。"
+                            if row_number == 8
+                            else ""
+                        )
+                    ),
+                    evidence_refs=[f"target-row:{row_number}"],
+                    content_hash=uuid4().hex * 2,
+                )
+                session.add(finding)
+                await session.flush()
+                session.add(
+                    AgentFindingSolutionRecord(
+                        finding_id=finding.id,
+                        ordinal=1,
+                        operation="delete",
+                        risk="high",
+                        solution_zh=f"删除希沃中的{name}记录。",
+                        recommended=True,
+                    )
+                )
+                delete_finding_ids.append(str(finding.id))
             session.add(
                 AgentApprovalGroupRecord(
                     run_id=run.id,
@@ -97,7 +211,7 @@ def test_graph_progress_and_tenant_safe_gate_decision(
                     tenant_id=task.tenant_id,
                     group_key="target_extra:teacher:delete:agent-risk-v1",
                     membership_hash="delete-membership-hash",
-                    finding_ids=list(delete_finding_ids),
+                    finding_ids=delete_finding_ids,
                     issue_kind="target_extra",
                     entity_kind="teacher",
                     operation="delete",
@@ -118,7 +232,7 @@ def test_graph_progress_and_tenant_safe_gate_decision(
                 graph_run_id=graph.id,
                 cursor=graph.cursor,
                 gate_kind="high_risk_approval",
-                member_ids=delete_finding_ids,
+                member_ids=tuple(delete_finding_ids),
                 content_hash="sha256:" + ("b" * 64),
                 status="pending",
             )
@@ -145,6 +259,9 @@ def test_graph_progress_and_tenant_safe_gate_decision(
     assert update_gate["risk_reason_zh"] == (
         "学生手机号属于高危隐私字段，本次操作会修改希沃目标中的手机号。"
     )
+    assert update_gate["actionable"] is True
+    assert update_gate["unavailable_reason_zh"] is None
+    assert update_gate["items"] == []
     delete_gate = gates[delete_gate_id]
     assert delete_gate["entity_kind"] == "teacher"
     assert delete_gate["operation"] == "delete"
@@ -152,6 +269,22 @@ def test_graph_progress_and_tenant_safe_gate_decision(
     assert delete_gate["risk_reason_zh"] == (
         "删除会永久移除希沃目标中的记录，治理后只能通过回滚任务恢复。"
     )
+    assert delete_gate["actionable"] is True
+    assert len(delete_gate["items"]) == 3
+    first_delete = delete_gate["items"][0]
+    assert first_delete["entity_name"] == "王老师"
+    assert first_delete["entity_number"] == "T-008"
+    assert first_delete["source_locator"] == "csv:8"
+    assert first_delete["source_row_number"] == 8
+    assert first_delete["operation_zh"] == "删除希沃中的教师记录"
+    assert first_delete["issue_zh"] == "希沃多余记录"
+    assert first_delete["analysis_zh"] == (
+        "王老师仅存在于希沃目标数据中。联系邮箱 t***@example.test。"
+    )
+    assert first_delete["solution_zh"] == "删除希沃中的王老师记录。"
+    assert first_delete["changes"] == []
+    assert "13800000008" not in progress.text
+    assert "teacher8@example.test" not in progress.text
     assert "prompt" not in progress.text.casefold()
     assert "content_hash" not in progress.text
 
@@ -178,6 +311,8 @@ def test_graph_progress_and_tenant_safe_gate_decision(
     assert decided_body["status"] == "waiting_human"
     decided_gates = {item["id"]: item for item in decided_body["human_gates"]}
     assert decided_gates[gate_id]["status"] == "approved"
+    assert decided_gates[gate_id]["actionable"] is False
+    assert decided_gates[gate_id]["unavailable_reason_zh"] == "该审批已经处理完成。"
     assert decided_gates[gate_id]["summary_zh"] == "修改 50 条学生手机号"
     assert decided_gates[delete_gate_id]["status"] == "pending"
 

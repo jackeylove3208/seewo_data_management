@@ -52,6 +52,15 @@ def test_student_phone_and_delete_are_server_owned_high_risk() -> None:
     assert policy.assess(finding(kind="target_extra", operation="delete", fields=())).risk == "high"
 
 
+def test_student_create_with_phone_is_not_high_risk() -> None:
+    decision = AgentRiskPolicy().assess(
+        finding(kind="target_missing", operation="create", fields=("phone",))
+    )
+
+    assert decision.risk == "medium"
+    assert decision.requires_approval is False
+
+
 def test_grouping_freezes_compatible_membership() -> None:
     groups = group_high_risk_findings((finding(fields=("phone",)), finding(fields=("phone",))))
 

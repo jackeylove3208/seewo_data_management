@@ -45,8 +45,13 @@ from app.local_sources.service import LocalSourceService
 from app.models.agent_analysis import (
     AgentApprovalGroupRecord,
     AgentClarificationRecord,
+    AgentFindingRecord,
+    AgentFindingSolutionRecord,
     AgentGovernanceOperationRecord,
+    AgentIdentityClaimRecord,
+    AgentInputRecord,
     AgentModelBatchRecord,
+    AgentWorkItemRecord,
 )
 from app.models.agent_graph import AgentGraphRunRecord, AgentHumanGateRecord
 from app.models.agent_runtime import AgentRunRecord, SchoolTaskLockRecord
@@ -83,6 +88,8 @@ from app.schemas.agent_api import (
 )
 from app.schemas.agent_conversation import ConversationAgentContext
 from app.schemas.agent_graph_api import (
+    AgentGraphApprovalChangeView,
+    AgentGraphApprovalItemView,
     AgentGraphGateDecisionRequest,
     AgentGraphGateDecisionResponse,
     AgentGraphHumanGateView,
@@ -633,6 +640,13 @@ async def get_agent_graph_progress(
     approval_groups_by_members = {
         frozenset(group.finding_ids): group for group in approval_groups
     }
+    approval_items_by_gate: dict[UUID, tuple[AgentGraphApprovalItemView, ...]] = {}
+    for gate in gates:
+        if gate.gate_kind == "high_risk_approval":
+            approval_items_by_gate[gate.id] = await _graph_approval_items(
+                session,
+                finding_ids=tuple(gate.member_ids),
+            )
     progress_completed, progress_total = await _graph_progress_counts(
         session,
         run_id=run.id,
@@ -656,9 +670,12 @@ async def get_agent_graph_progress(
         human_gates=tuple(
             _graph_human_gate_view(
                 gate,
+                graph=graph,
+                run=run,
                 approval_group=approval_groups_by_members.get(
                     frozenset(gate.member_ids)
                 ),
+                items=approval_items_by_gate.get(gate.id, ()),
             )
             for gate in gates
         ),
@@ -668,7 +685,10 @@ async def get_agent_graph_progress(
 def _graph_human_gate_view(
     gate: AgentHumanGateRecord,
     *,
+    graph: AgentGraphRunRecord,
+    run: AgentRunRecord,
     approval_group: AgentApprovalGroupRecord | None = None,
+    items: tuple[AgentGraphApprovalItemView, ...] = (),
 ) -> AgentGraphHumanGateView:
     summary_zh: str | None = None
     risk_reason_zh: str | None = None
@@ -702,6 +722,11 @@ def _graph_human_gate_view(
                 f"{operation_label} {len(gate.member_ids)} 条{entity_label}记录"
             )
             risk_reason_zh = "该操作已被服务端风险策略判定为高风险。"
+    actionable, unavailable_reason_zh = _graph_gate_actionability(
+        gate,
+        graph=graph,
+        run=run,
+    )
     return AgentGraphHumanGateView(
         id=gate.id,
         kind=gate.gate_kind,
@@ -712,7 +737,180 @@ def _graph_human_gate_view(
         issue_kind=approval_group.issue_kind if approval_group else None,
         summary_zh=summary_zh,
         risk_reason_zh=risk_reason_zh,
+        actionable=actionable,
+        unavailable_reason_zh=unavailable_reason_zh,
+        items=items,
     )
+
+
+def _graph_gate_actionability(
+    gate: AgentHumanGateRecord,
+    *,
+    graph: AgentGraphRunRecord,
+    run: AgentRunRecord,
+) -> tuple[bool, str | None]:
+    if gate.status != "pending":
+        return False, "该审批已经处理完成。"
+    if run.status in {"completed", "terminated", "failed", "blocked_model_error"}:
+        return False, "任务已经结束或暂停，不能继续审批。"
+    if gate.gate_kind == "termination_confirmation":
+        if gate.cursor == graph.cursor:
+            return True, None
+        return False, "该终止确认已经过期。"
+    expected_gate_node = {
+        "high_risk_approval": "wait_high_risk_approvals",
+        "identity_conflict": "resolve_identity_conflicts",
+        "rollback_conflict": "wait_restore_conflicts",
+        "rollback_approval": "wait_rollback_approval",
+        "cross_phase_replan": "wait_replan_confirmation",
+    }.get(gate.gate_kind)
+    if (
+        expected_gate_node is None
+        or gate.cursor + 1 != graph.cursor
+        or graph.current_node != expected_gate_node
+        or run.status != "waiting_human"
+    ):
+        return False, "该审批不属于任务当前执行节点，请刷新任务状态。"
+    return True, None
+
+
+async def _graph_approval_items(
+    session: AsyncSession,
+    *,
+    finding_ids: tuple[str, ...],
+) -> tuple[AgentGraphApprovalItemView, ...]:
+    parsed_ids = tuple(UUID(item) for item in finding_ids)
+    if not parsed_ids:
+        return ()
+    rows = tuple(
+        await session.execute(
+            select(
+                AgentFindingRecord,
+                AgentWorkItemRecord,
+                AgentInputRecord,
+                AgentFindingSolutionRecord,
+            )
+            .join(
+                AgentWorkItemRecord,
+                AgentWorkItemRecord.id == AgentFindingRecord.work_item_id,
+            )
+            .join(
+                AgentInputRecord,
+                AgentInputRecord.id == AgentWorkItemRecord.subject_input_id,
+            )
+            .join(
+                AgentFindingSolutionRecord,
+                (AgentFindingSolutionRecord.finding_id == AgentFindingRecord.id)
+                & AgentFindingSolutionRecord.recommended.is_(True),
+            )
+            .where(AgentFindingRecord.id.in_(parsed_ids))
+        )
+    )
+    by_finding: dict[UUID, AgentGraphApprovalItemView] = {}
+    for finding, work_item, subject, solution in rows:
+        display_record = subject
+        changes: tuple[AgentGraphApprovalChangeView, ...] = ()
+        if work_item.kind == "field_difference":
+            claim = await session.scalar(
+                select(AgentIdentityClaimRecord).where(
+                    AgentIdentityClaimRecord.work_item_id == work_item.id
+                )
+            )
+            if claim is not None:
+                authority = await session.get(
+                    AgentInputRecord,
+                    claim.authority_input_id,
+                )
+                target = await session.get(
+                    AgentInputRecord,
+                    claim.target_input_id,
+                )
+                if authority is not None and target is not None:
+                    display_record = target
+                    changes = _graph_approval_changes(target, authority)
+        by_finding[finding.id] = AgentGraphApprovalItemView(
+            finding_id=finding.id,
+            entity_kind=work_item.entity_kind,
+            entity_name=display_record.name,
+            entity_number=display_record.number,
+            class_name=display_record.class_name,
+            source_locator=display_record.stable_locator,
+            source_row_number=display_record.raw_row_number,
+            operation_zh=_graph_operation_label(
+                solution.operation,
+                work_item.entity_kind,
+            ),
+            issue_zh=finding.category_zh,
+            analysis_zh=str(_sanitize_public(finding.analysis_zh)),
+            solution_zh=str(_sanitize_public(solution.solution_zh)),
+            changes=changes,
+        )
+    return tuple(
+        by_finding[finding_id]
+        for finding_id in parsed_ids
+        if finding_id in by_finding
+    )
+
+
+def _graph_approval_changes(
+    target: AgentInputRecord,
+    authority: AgentInputRecord,
+) -> tuple[AgentGraphApprovalChangeView, ...]:
+    field_labels = {
+        "category": "类别",
+        "name": "姓名",
+        "number": "编号",
+        "class_name": "班级",
+        "phone": "手机号",
+        "email": "邮箱",
+    }
+    changes: list[AgentGraphApprovalChangeView] = []
+    for field, field_zh in field_labels.items():
+        before = getattr(target, field)
+        after = getattr(authority, field)
+        if before == after:
+            continue
+        changes.append(
+            AgentGraphApprovalChangeView(
+                field=field,
+                field_zh=field_zh,
+                before=_graph_public_value(before, field=field),
+                after=_graph_public_value(after, field=field),
+            )
+        )
+    return tuple(changes)
+
+
+def _graph_public_value(value: object, *, field: str) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    if field == "phone":
+        if len(text) >= 7:
+            return f"{text[:3]}****{text[-4:]}"
+        return "手机号（已脱敏）"
+    if field == "email":
+        local, separator, domain = text.partition("@")
+        if separator:
+            return f"{local[:1]}***@{domain}"
+        return "邮箱（已脱敏）"
+    return str(_sanitize_public(text, field=field))
+
+
+def _graph_operation_label(operation: str, entity_kind: str) -> str:
+    entity_label = {
+        "student": "学生",
+        "teacher": "教师",
+        "department": "部门",
+    }.get(entity_kind, "组织")
+    operation_label = {
+        "create": "新增",
+        "update": "修改",
+        "delete": "删除",
+        "retain": "保留",
+        "skip": "跳过",
+    }.get(operation, "处理")
+    return f"{operation_label}希沃中的{entity_label}记录"
 
 
 async def _graph_progress_counts(
@@ -1716,6 +1914,9 @@ async def _resume_waiting_run(
 
 
 _PHONE_PATTERN = re.compile(r"(?<!\d)1\d{10}(?!\d)")
+_EMAIL_PATTERN = re.compile(
+    r"\b([A-Za-z0-9._%+-])([A-Za-z0-9._%+-]*)@([A-Za-z0-9.-]+\.[A-Za-z]{2,})\b"
+)
 
 
 def _sanitize_public(value: Any, *, field: str | None = None) -> Any:
@@ -1729,5 +1930,12 @@ def _sanitize_public(value: Any, *, field: str | None = None) -> Any:
     if isinstance(value, str):
         if field in {"phone", "student_phone", "手机号", "电话"}:
             return f"***{value[-4:]}" if value else value
-        return _PHONE_PATTERN.sub(lambda match: f"***{match.group(0)[-4:]}", value)
+        sanitized = _PHONE_PATTERN.sub(
+            lambda match: f"***{match.group(0)[-4:]}",
+            value,
+        )
+        return _EMAIL_PATTERN.sub(
+            lambda match: f"{match.group(1)}***@{match.group(3)}",
+            sanitized,
+        )
     return value
