@@ -596,6 +596,184 @@ def test_incomplete_frozen_approval_details_are_not_actionable(
     assert decision.json()["detail"]["code"] == "approval_fact_missing"
 
 
+def test_student_phone_approval_without_paired_values_is_not_actionable(
+    graph_agent_client: TestClient,
+) -> None:
+    agent_client = graph_agent_client
+
+    async def seed() -> tuple[str, str]:
+        async with agent_client.app.state.database.session_factory() as session:
+            task = ReconciliationTask(
+                tenant_id="school-1",
+                scope_id="all",
+                snapshot_mode="full",
+                entity_types=["student"],
+                status="running",
+                stage="governance",
+                workflow_version="agent-graph-v1",
+                idempotency_key=str(uuid4()),
+                request_hash=str(uuid4()),
+            )
+            session.add(task)
+            await session.flush()
+            run = await AgentRuntimeRepository(session).create_run(
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                conversation_id=None,
+                kind=AgentRunKind.SYNC,
+                workflow_version="agent-graph-v1",
+            )
+            run.status = "waiting_human"
+            graph = await AgentGraphRepository(session).create_run_state(
+                run_id=run.id,
+                graph_version="agent-sync-graph-v1",
+                initial_node="aggregate_risk",
+            )
+            snapshots: dict[str, Snapshot] = {}
+            for role in ("authoritative", "target"):
+                source = SourceFile(
+                    task_id=task.id,
+                    source_role=role,
+                    original_name=f"{role}.csv",
+                    storage_name=f"{uuid4()}.csv",
+                    storage_path=f"/synthetic/{uuid4()}.csv",
+                    sha256=uuid4().hex * 2,
+                    size_bytes=1,
+                )
+                session.add(source)
+                await session.flush()
+                snapshot = Snapshot(
+                    id=uuid4(),
+                    task_id=task.id,
+                    source_file_id=source.id,
+                    source_role=role,
+                    schema_version="agent-contract-v1",
+                    mapping_version="agent-contract-v1",
+                    file_hash=source.sha256,
+                    content_hash=uuid4().hex * 2,
+                    state="published",
+                    summary={},
+                )
+                session.add(snapshot)
+                snapshots[role] = snapshot
+            await session.flush()
+            batch = AgentModelBatchRecord(
+                run_id=run.id,
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                entity_kind="student",
+                input_hash=uuid4().hex * 2,
+                item_count=1,
+                status="completed",
+                output_hash=uuid4().hex * 2,
+            )
+            target_student = AgentInputRecord(
+                run_id=run.id,
+                task_id=task.id,
+                snapshot_id=snapshots["target"].id,
+                tenant_id=task.tenant_id,
+                source_role="target",
+                stable_locator="csv:12",
+                stable_order=1,
+                entity_kind="student",
+                category="学生",
+                name="李明",
+                number="S-002",
+                class_name="三年级一班",
+                phone="13800001234",
+                email="student@example.test",
+                raw_row_number=12,
+                input_hash=uuid4().hex * 2,
+            )
+            session.add_all((batch, target_student))
+            await session.flush()
+            work_item = AgentWorkItemRecord(
+                run_id=run.id,
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                source_snapshot_id=snapshots["authoritative"].id,
+                target_snapshot_id=snapshots["target"].id,
+                subject_input_id=target_student.id,
+                entity_kind="student",
+                kind="field_difference",
+                state="analyzed",
+                idempotency_hash=uuid4().hex * 2,
+                evidence_hash=uuid4().hex * 2,
+            )
+            session.add(work_item)
+            await session.flush()
+            finding = AgentFindingRecord(
+                run_id=run.id,
+                task_id=task.id,
+                work_item_id=work_item.id,
+                batch_id=batch.id,
+                kind="field_difference",
+                category_zh="手机号不一致",
+                analysis_zh="手机号需要以第三方权威记录为准。",
+                evidence_refs=["paired-record:missing-claim"],
+                content_hash=uuid4().hex * 2,
+            )
+            session.add(finding)
+            await session.flush()
+            session.add(
+                AgentFindingSolutionRecord(
+                    finding_id=finding.id,
+                    ordinal=1,
+                    operation="update",
+                    risk="high",
+                    solution_zh="修改学生手机号。",
+                    recommended=True,
+                )
+            )
+            finding_ids = [str(finding.id)]
+            session.add(
+                AgentApprovalGroupRecord(
+                    run_id=run.id,
+                    task_id=task.id,
+                    tenant_id=task.tenant_id,
+                    group_key="field_difference:student:update:missing-pair",
+                    membership_hash="missing-paired-values",
+                    finding_ids=finding_ids,
+                    issue_kind="field_difference",
+                    entity_kind="student",
+                    operation="update",
+                    policy_version="agent-risk-v1",
+                    risk="high",
+                    status="pending",
+                )
+            )
+            gate = await AgentGraphRepository(session).record_human_gate(
+                graph_run_id=graph.id,
+                cursor=graph.cursor,
+                gate_kind="high_risk_approval",
+                member_ids=tuple(finding_ids),
+                content_hash="sha256:" + ("d" * 64),
+                status="pending",
+            )
+            graph.current_node = "wait_high_risk_approvals"
+            graph.cursor = 1
+            await session.commit()
+            return str(task.id), str(gate.id)
+
+    task_id, gate_id = agent_client.portal.call(seed)
+
+    progress = agent_client.get(f"/api/agent/tasks/{task_id}/graph")
+    gate = progress.json()["human_gates"][0]
+    assert len(gate["items"]) == 1
+    assert gate["items"][0]["changes"] == []
+    assert gate["actionable"] is False
+    assert gate["unavailable_reason_zh"] == (
+        "审批明细不完整，任务不能继续治理，请终止任务后重新发起。"
+    )
+
+    decision = agent_client.post(
+        f"/api/agent/tasks/{task_id}/graph/gates/{gate_id}/decision",
+        json={"decision": "approve"},
+    )
+    assert decision.status_code == 409
+    assert decision.json()["detail"]["code"] == "approval_fact_missing"
+
+
 def test_rejected_rollback_gate_requests_safe_termination(
     graph_agent_client: TestClient,
 ) -> None:

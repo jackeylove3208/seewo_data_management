@@ -87,6 +87,7 @@ class AgentApprovalGroup:
     operation: AgentOperation
     policy_version: str
     membership_hash: str
+    changed_fields: tuple[str, ...] = ()
     segment_index: int = 0
     risk: str = "high"
 
@@ -137,6 +138,7 @@ def group_high_risk_findings(
                     operation=key[2],
                     policy_version=key[3],
                     membership_hash=membership_hash,
+                    changed_fields=key[4],
                     segment_index=segment_index,
                 )
             )

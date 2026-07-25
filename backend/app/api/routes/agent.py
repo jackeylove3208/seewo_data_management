@@ -789,11 +789,31 @@ def _approval_fact_is_complete(
     approval_group: AgentApprovalGroupRecord | None,
     items: tuple[AgentGraphApprovalItemView, ...],
 ) -> bool:
+    if (
+        approval_group is None
+        or approval_group.finding_ids != gate.member_ids
+        or len(items) != len(gate.member_ids)
+        or {str(item.finding_id) for item in items} != set(gate.member_ids)
+    ):
+        return False
+    if approval_group.entity_kind == "student" and approval_group.operation == "update":
+        return all(_student_phone_change_is_complete(item) for item in items)
+    return True
+
+
+def _student_phone_change_is_complete(item: AgentGraphApprovalItemView) -> bool:
+    phone_changes = tuple(
+        change for change in item.changes if change.field == "phone"
+    )
+    if len(phone_changes) != 1:
+        return False
+    change = phone_changes[0]
     return (
-        approval_group is not None
-        and approval_group.finding_ids == gate.member_ids
-        and len(items) == len(gate.member_ids)
-        and {str(item.finding_id) for item in items} == set(gate.member_ids)
+        change.before is not None
+        and change.after is not None
+        and change.before != change.after
+        and "****" in change.before
+        and "****" in change.after
     )
 
 

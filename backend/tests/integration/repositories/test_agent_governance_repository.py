@@ -93,6 +93,48 @@ async def test_approval_membership_is_frozen_and_decision_is_audited(session) ->
 
 
 @pytest.mark.asyncio
+async def test_approval_groups_with_different_changed_fields_have_distinct_keys(
+    session,
+) -> None:
+    task, run, _snapshots = await _context(session)
+    repository = AgentGovernanceRepository(session)
+    phone_only = AgentApprovalGroup(
+        id=uuid4(),
+        finding_ids=(uuid4(),),
+        issue_kind="field_difference",
+        entity_kind="student",
+        operation="update",
+        policy_version="agent-risk-v1",
+        membership_hash="d" * 64,
+        changed_fields=("phone",),
+    )
+    phone_and_email = AgentApprovalGroup(
+        id=uuid4(),
+        finding_ids=(uuid4(),),
+        issue_kind="field_difference",
+        entity_kind="student",
+        operation="update",
+        policy_version="agent-risk-v1",
+        membership_hash="e" * 64,
+        changed_fields=("email", "phone"),
+    )
+
+    first = await repository.save_approval_group(
+        run=run,
+        task=task,
+        group=phone_only,
+    )
+    second = await repository.save_approval_group(
+        run=run,
+        task=task,
+        group=phone_and_email,
+    )
+
+    assert first.group_key != second.group_key
+    assert first.status == second.status == "pending"
+
+
+@pytest.mark.asyncio
 async def test_clarification_requires_interpretation_then_second_confirmation(session) -> None:
     task, run, snapshots = await _context(session)
     repository = AgentGovernanceRepository(session)
