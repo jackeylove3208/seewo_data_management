@@ -27,6 +27,67 @@ function phaseIndex(phase: AgentPhase) {
   return index < 0 ? 0 : index;
 }
 
+const approvalEntityLabels: Record<string, string> = {
+  student: "学生",
+  teacher: "教师",
+  department: "部门",
+};
+
+const approvalOperationLabels: Record<string, string> = {
+  create: "新增",
+  update: "修改",
+  delete: "删除",
+  retain: "保留",
+  skip: "跳过",
+};
+
+function ApprovalItemDetails({ gate }: { gate: AgentGraphHumanGate }) {
+  const items = gate.items ?? [];
+  if (!items.length) return null;
+  const operationLabel = approvalOperationLabels[gate.operation ?? ""] ?? "处理";
+
+  return (
+    <details className="graph-approval-details" open={items.length <= 3}>
+      <summary>查看具体操作（{items.length} 条）</summary>
+      <ol>
+        {items.map((item) => {
+          const entityLabel = approvalEntityLabels[item.entity_kind] ?? "记录";
+          const entityName = item.entity_name || "未填写姓名";
+          const number = item.entity_number ? `（编号 ${item.entity_number}）` : "";
+          const sourceContext = item.source_row_number
+            ? `希沃第 ${item.source_row_number} 行`
+            : item.source_locator;
+          return (
+            <li key={item.finding_id}>
+              <strong>{operationLabel}{entityLabel}：{entityName}{number}</strong>
+              <small>
+                {sourceContext}
+                {item.class_name ? ` · ${item.class_name}` : ""}
+              </small>
+              <p>{item.analysis_zh}</p>
+              <p className="graph-approval-solution">{item.solution_zh}</p>
+              {item.changes.length > 0 && (
+                <dl className="graph-approval-changes">
+                  {item.changes.map((change) => (
+                    <div key={change.field}>
+                      <dt>{change.field_zh}</dt>
+                      <dd>
+                        <span>{change.before ?? "空值"}</span>
+                        <b aria-hidden="true">→</b>
+                        <span>{change.after ?? "空值"}</span>
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </details>
+  );
+}
+
 export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; initialTask?: AgentTask }) {
   const navigate = useNavigate();
   const [terminateError, setTerminateError] = useState<string>();
@@ -330,7 +391,7 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
           className={`graph-approval-card graph-approval-${gateDecisions[gate.id] ?? gate.status}`}
           key={gate.id}
         >
-          <div>
+          <div className="graph-approval-main">
             {(gateDecisions[gate.id] ?? gate.status) === "approved" ? (
               <Tag color="success">已允许</Tag>
             ) : (gateDecisions[gate.id] ?? gate.status) === "rejected" ? (
@@ -341,11 +402,22 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
             <h2>{gate.summary_zh ?? "高风险操作审批"}</h2>
             {gate.risk_reason_zh && <p>{gate.risk_reason_zh}</p>}
             <p>同类问题已合并，共 {gate.item_count} 条记录。只有本组当前冻结内容会受到本次决定影响。</p>
+            <ApprovalItemDetails gate={gate} />
+            {(gateDecisions[gate.id] ?? gate.status) === "pending"
+              && gate.actionable === false && (
+              <Alert
+                type="warning"
+                showIcon
+                message="审批不可用"
+                description={gate.unavailable_reason_zh ?? "该审批不属于任务当前执行节点。"}
+              />
+            )}
           </div>
           {gateErrors[gate.id] && (
             <Alert type="error" showIcon message={gateErrors[gate.id]} />
           )}
-          {(gateDecisions[gate.id] ?? gate.status) === "pending" && (
+          {(gateDecisions[gate.id] ?? gate.status) === "pending"
+            && gate.actionable !== false && (
             <div className="graph-approval-actions">
               <Button icon={<X size={14} />} loading={gateLoading === gate.id} onClick={() => void decideGate(gate.id, "reject")}>拒绝</Button>
               <Button type="primary" icon={<Check size={14} />} loading={gateLoading === gate.id} onClick={() => void decideGate(gate.id, "approve")}>同意</Button>

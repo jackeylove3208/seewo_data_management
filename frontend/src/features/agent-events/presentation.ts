@@ -112,10 +112,84 @@ const staticEvents: Record<string, Omit<PresentedAgentEvent, "time">> = {
   },
 };
 
+const graphActionEvents: Record<string, Omit<PresentedAgentEvent, "time">> = {
+  inspect_authority: {
+    title: "第三方数据结构检查完成",
+    description: "Agent 已识别第三方权威数据的结构和字段。",
+    tone: "success",
+  },
+  inspect_target: {
+    title: "希沃数据结构检查完成",
+    description: "Agent 已识别希沃目标数据的结构和字段。",
+    tone: "success",
+  },
+  normalize_next_batch: {
+    title: "数据规范化批次已完成",
+    description: "当前批次已转换为统一的学生、教师或部门数据合同。",
+    tone: "success",
+  },
+  validate_normalized_input: {
+    title: "输入数据校验已完成",
+    description: "服务端已检查规范化结果和异常标记。",
+    tone: "success",
+  },
+  build_identity_index: {
+    title: "身份索引已建立",
+    description: "编号、手机号令牌和邮箱索引已经建立。",
+    tone: "success",
+  },
+  construct_identity_work: {
+    title: "对账工作项已构建",
+    description: "需要分析的缺失、重复、多余和字段差异已经整理完成。",
+    tone: "success",
+  },
+  analyze_next_batch: {
+    title: "AI 分析批次已完成",
+    description: "Agent 已为当前异常批次生成分析和治理方案。",
+    tone: "success",
+  },
+  enter_aggregate_risk: {
+    title: "异常分析已完成",
+    description: "所有可执行异常已完成分析，即将汇总风险。",
+    tone: "success",
+  },
+  aggregate_risk: {
+    title: "风险与审批已汇总",
+    description: "高风险操作已经按同类问题冻结为审批组。",
+    tone: "warning",
+  },
+  compile_execution_plan: {
+    title: "治理执行计划已生成",
+    description: "已批准的方案已经编译为受控治理操作。",
+    tone: "success",
+  },
+  execute_ready_operations: {
+    title: "治理操作已执行",
+    description: "当前可执行治理操作已完成，并进入结果验证。",
+    tone: "success",
+  },
+  generate_terminal_report: {
+    title: "正在生成任务报告",
+    description: "治理事实与验证结果正在汇总为最终报告。",
+    tone: "info",
+  },
+};
+
 export function presentAgentEvent(event: AgentTaskEvent): PresentedAgentEvent {
   const time = formatAgentEventTime(event.created_at);
   const staticEvent = staticEvents[event.type];
   if (staticEvent) return { ...staticEvent, time };
+
+  if (event.type === "graph.transitioned") {
+    const action = graphActionEvents[payloadString(event, "action_id")];
+    if (action) return { ...action, time };
+    return {
+      title: "任务步骤已完成",
+      description: "任务已安全进入下一处理节点。",
+      tone: "info",
+      time,
+    };
+  }
 
   if (event.type === "phase.started" || event.type === "phase.transitioned") {
     const phase = event.phase ?? payloadPhase(event);

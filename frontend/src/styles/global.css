@@ -2065,6 +2065,80 @@ button.connection-state {
   justify-content: flex-start;
 }
 
+.graph-approval-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.graph-approval-details {
+  margin-top: 14px;
+  border-top: 1px solid rgba(148, 163, 184, 0.22);
+  padding-top: 12px;
+}
+
+.graph-approval-details summary {
+  width: fit-content;
+  cursor: pointer;
+  color: #5b5bd6;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.graph-approval-details ol {
+  display: grid;
+  gap: 10px;
+  max-height: 420px;
+  margin: 12px 0 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.graph-approval-details li {
+  padding: 13px 14px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.04);
+}
+
+.graph-approval-details li strong,
+.graph-approval-details li small {
+  display: block;
+}
+
+.graph-approval-details li small {
+  margin-top: 4px;
+}
+
+.graph-approval-solution {
+  font-weight: 650;
+}
+
+.graph-approval-changes {
+  display: grid;
+  gap: 7px;
+  margin: 10px 0 0;
+}
+
+.graph-approval-changes > div {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.3fr) 1fr;
+  align-items: center;
+  gap: 10px;
+}
+
+.graph-approval-changes dt {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.graph-approval-changes dd {
+  display: flex;
+  gap: 8px;
+  margin: 0;
+  font-size: 12px;
+}
+
 .graph-live-progress strong,
 .graph-live-progress small {
   display: block;

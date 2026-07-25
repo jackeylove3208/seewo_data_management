@@ -105,4 +105,23 @@ describe("Agent event presentation", () => {
     expect(presented.title).toBe("任务状态已更新");
     expect(presented.description).not.toContain("internal.future_event");
   });
+
+  it("presents graph transitions as specific Chinese business progress", () => {
+    const normalized = presentAgentEvent(
+      event("graph.transitioned", {
+        action_id: "normalize_next_batch",
+        node: "normalize_input_batches",
+      }),
+    );
+    const approval = presentAgentEvent(
+      event("graph.transitioned", {
+        action_id: "aggregate_risk",
+        node: "wait_high_risk_approvals",
+      }),
+    );
+
+    expect(normalized.title).toBe("数据规范化批次已完成");
+    expect(approval.title).toBe("风险与审批已汇总");
+    expect(normalized.description).not.toContain("内部审计");
+  });
 });

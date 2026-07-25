@@ -443,6 +443,29 @@ select {
   -webkit-backdrop-filter: blur(22px);
 }
 
+.apple-page .graph-approval-details {
+  border-top-color: rgba(191, 219, 254, 0.16);
+}
+
+.apple-page .graph-approval-details summary {
+  color: #a9c7ff;
+}
+
+.apple-page .graph-approval-details li {
+  border-color: rgba(191, 219, 254, 0.14);
+  background: rgba(8, 21, 49, 0.44);
+}
+
+.apple-page .graph-approval-details li strong,
+.apple-page .graph-approval-changes dt {
+  color: var(--apple-ink);
+}
+
+.apple-page .graph-approval-details li small,
+.apple-page .graph-approval-changes dd {
+  color: var(--apple-ink-soft);
+}
+
 .apple-page .graph-live-progress strong,
 .apple-page .graph-approval-card h2,
 .apple-page .graph-approval-card label {
