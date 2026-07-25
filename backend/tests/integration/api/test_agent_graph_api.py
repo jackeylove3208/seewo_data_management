@@ -45,7 +45,7 @@ def test_graph_progress_and_tenant_safe_gate_decision(
     graph_agent_client: TestClient,
 ) -> None:
     agent_client = graph_agent_client
-    async def seed() -> tuple[str, str]:
+    async def seed() -> tuple[str, str, str]:
         async with agent_client.app.state.database.session_factory() as session:
             task = ReconciliationTask(
                 tenant_id="school-1",
@@ -73,6 +73,7 @@ def test_graph_progress_and_tenant_safe_gate_decision(
                 initial_node="aggregate_risk",
             )
             finding_ids = tuple(str(uuid4()) for _index in range(50))
+            delete_finding_ids = tuple(str(uuid4()) for _index in range(3))
             session.add(
                 AgentApprovalGroupRecord(
                     run_id=run.id,
@@ -89,6 +90,22 @@ def test_graph_progress_and_tenant_safe_gate_decision(
                     status="pending",
                 )
             )
+            session.add(
+                AgentApprovalGroupRecord(
+                    run_id=run.id,
+                    task_id=task.id,
+                    tenant_id=task.tenant_id,
+                    group_key="target_extra:teacher:delete:agent-risk-v1",
+                    membership_hash="delete-membership-hash",
+                    finding_ids=list(delete_finding_ids),
+                    issue_kind="target_extra",
+                    entity_kind="teacher",
+                    operation="delete",
+                    policy_version="agent-risk-v1",
+                    risk="high",
+                    status="pending",
+                )
+            )
             gate = await AgentGraphRepository(session).record_human_gate(
                 graph_run_id=graph.id,
                 cursor=graph.cursor,
@@ -97,20 +114,44 @@ def test_graph_progress_and_tenant_safe_gate_decision(
                 content_hash="sha256:" + ("a" * 64),
                 status="pending",
             )
+            delete_gate = await AgentGraphRepository(session).record_human_gate(
+                graph_run_id=graph.id,
+                cursor=graph.cursor,
+                gate_kind="high_risk_approval",
+                member_ids=delete_finding_ids,
+                content_hash="sha256:" + ("b" * 64),
+                status="pending",
+            )
             graph.current_node = "wait_high_risk_approvals"
             graph.cursor = 1
             run.status = "waiting_human"
             await session.commit()
-            return str(task.id), str(gate.id)
+            return str(task.id), str(gate.id), str(delete_gate.id)
 
-    task_id, gate_id = agent_client.portal.call(seed)
+    task_id, gate_id, delete_gate_id = agent_client.portal.call(seed)
     progress = agent_client.get(f"/api/agent/tasks/{task_id}/graph")
 
     assert progress.status_code == 200, progress.text
     body = progress.json()
     assert body["business_stage"] == "governance_execution"
     assert body["current_action_zh"] == "正在等待高风险操作审批"
-    assert body["human_gates"][0]["item_count"] == 50
+    gates = {item["id"]: item for item in body["human_gates"]}
+    update_gate = gates[gate_id]
+    assert update_gate["item_count"] == 50
+    assert update_gate["entity_kind"] == "student"
+    assert update_gate["operation"] == "update"
+    assert update_gate["issue_kind"] == "field_difference"
+    assert update_gate["summary_zh"] == "修改 50 条学生手机号"
+    assert update_gate["risk_reason_zh"] == (
+        "学生手机号属于高危隐私字段，本次操作会修改希沃目标中的手机号。"
+    )
+    delete_gate = gates[delete_gate_id]
+    assert delete_gate["entity_kind"] == "teacher"
+    assert delete_gate["operation"] == "delete"
+    assert delete_gate["summary_zh"] == "删除 3 条教师记录"
+    assert delete_gate["risk_reason_zh"] == (
+        "删除会永久移除希沃目标中的记录，治理后只能通过回滚任务恢复。"
+    )
     assert "prompt" not in progress.text.casefold()
     assert "content_hash" not in progress.text
 
@@ -133,7 +174,28 @@ def test_graph_progress_and_tenant_safe_gate_decision(
     progress_after_decision = agent_client.get(
         f"/api/agent/tasks/{task_id}/graph"
     )
-    assert progress_after_decision.json()["status"] == "running"
+    decided_body = progress_after_decision.json()
+    assert decided_body["status"] == "waiting_human"
+    decided_gates = {item["id"]: item for item in decided_body["human_gates"]}
+    assert decided_gates[gate_id]["status"] == "approved"
+    assert decided_gates[gate_id]["summary_zh"] == "修改 50 条学生手机号"
+    assert decided_gates[delete_gate_id]["status"] == "pending"
+
+    rejected = agent_client.post(
+        f"/api/agent/tasks/{task_id}/graph/gates/{delete_gate_id}/decision",
+        json={"decision": "reject"},
+    )
+    assert rejected.status_code == 200, rejected.text
+    assert rejected.json()["status"] == "rejected"
+
+    completed_decisions = agent_client.get(
+        f"/api/agent/tasks/{task_id}/graph"
+    ).json()
+    completed_gates = {
+        item["id"]: item for item in completed_decisions["human_gates"]
+    }
+    assert completed_decisions["status"] == "running"
+    assert completed_gates[delete_gate_id]["status"] == "rejected"
 
 
 def test_blocked_graph_progress_preserves_the_original_business_stage(

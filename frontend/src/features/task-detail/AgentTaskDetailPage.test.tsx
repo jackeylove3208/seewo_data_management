@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -51,6 +51,11 @@ describe("controlled Agent graph task detail", () => {
           kind: "high_risk_approval",
           status: "pending",
           item_count: 50,
+          entity_kind: "student",
+          operation: "update",
+          issue_kind: "field_difference",
+          summary_zh: "修改 50 条学生手机号",
+          risk_reason_zh: "学生手机号属于高危隐私字段，本次操作会修改希沃目标中的手机号。",
         },
       ],
     });
@@ -72,6 +77,10 @@ describe("controlled Agent graph task detail", () => {
     expect(screen.getByText(/离开页面不会中断任务/)).toBeInTheDocument();
     expect(screen.getByText("治理执行 Agent · 3 / 5")).toBeInTheDocument();
     expect(screen.getByText(/共 50 条记录/)).toBeInTheDocument();
+    expect(screen.getByText("修改 50 条学生手机号")).toBeInTheDocument();
+    expect(
+      screen.getByText("学生手机号属于高危隐私字段，本次操作会修改希沃目标中的手机号。"),
+    ).toBeInTheDocument();
     expect(screen.queryByText("wait_high_risk_approvals")).not.toBeInTheDocument();
     client.clear();
   });
@@ -196,6 +205,146 @@ describe("controlled Agent graph task detail", () => {
       "gate-1",
       "approve",
     );
+    expect(await screen.findByText("已允许")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "同意" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "拒绝" })).not.toBeInTheDocument();
+    client.clear();
+  });
+
+  it("shows a rejected high-risk group as decided", async () => {
+    const user = userEvent.setup();
+    vi.mocked(agentApi.decideGraphGate).mockResolvedValue({
+      gate_id: "gate-1",
+      status: "rejected",
+      graph_cursor: 8,
+    });
+    const { client } = renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "拒绝" }));
+
+    expect(agentApi.decideGraphGate).toHaveBeenCalledWith(
+      "task-graph-1",
+      "gate-1",
+      "reject",
+    );
+    expect(await screen.findByText("已拒绝")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "同意" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "拒绝" })).not.toBeInTheDocument();
+    client.clear();
+  });
+
+  it("keeps a persisted approval visible after the page is reopened", async () => {
+    vi.mocked(agentApi.graph).mockResolvedValue({
+      task_id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      graph_version: "agent-sync-graph-v1",
+      graph_cursor: 9,
+      current_node: "compile_execution_plan",
+      business_stage: "governance_execution",
+      current_action_zh: "正在编译治理执行计划",
+      sub_agent_zh: "治理执行 Agent",
+      status: "running",
+      can_terminate: true,
+      human_gates: [
+        {
+          id: "gate-1",
+          kind: "high_risk_approval",
+          status: "approved",
+          item_count: 50,
+          entity_kind: "student",
+          operation: "update",
+          issue_kind: "field_difference",
+          summary_zh: "修改 50 条学生手机号",
+          risk_reason_zh: "学生手机号属于高危隐私字段，本次操作会修改希沃目标中的手机号。",
+        },
+      ],
+    });
+    const { client } = renderPage();
+
+    expect(await screen.findByText("已允许")).toBeInTheDocument();
+    expect(screen.getByText("修改 50 条学生手机号")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "同意" })).not.toBeInTheDocument();
+    client.clear();
+  });
+
+  it("keeps independent decisions on visually distinct approval groups", async () => {
+    const user = userEvent.setup();
+    vi.mocked(agentApi.graph).mockResolvedValue({
+      task_id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      graph_version: "agent-sync-graph-v1",
+      graph_cursor: 8,
+      current_node: "wait_high_risk_approvals",
+      business_stage: "governance_execution",
+      current_action_zh: "正在等待高风险操作审批",
+      status: "waiting_human",
+      can_terminate: true,
+      human_gates: [
+        {
+          id: "gate-phone",
+          kind: "high_risk_approval",
+          status: "pending",
+          item_count: 50,
+          entity_kind: "student",
+          operation: "update",
+          issue_kind: "field_difference",
+          summary_zh: "修改 50 条学生手机号",
+          risk_reason_zh: "学生手机号属于高危隐私字段，本次操作会修改希沃目标中的手机号。",
+        },
+        {
+          id: "gate-delete",
+          kind: "high_risk_approval",
+          status: "pending",
+          item_count: 3,
+          entity_kind: "teacher",
+          operation: "delete",
+          issue_kind: "target_extra",
+          summary_zh: "删除 3 条教师记录",
+          risk_reason_zh: "删除会永久移除希沃目标中的记录，治理后只能通过回滚任务恢复。",
+        },
+      ],
+    });
+    vi.mocked(agentApi.decideGraphGate).mockResolvedValue({
+      gate_id: "gate-phone",
+      status: "approved",
+      graph_cursor: 8,
+    });
+    const { client } = renderPage();
+
+    const phoneCard = (await screen.findByRole(
+      "heading",
+      { name: "修改 50 条学生手机号" },
+    )).closest("section");
+    const deleteCard = screen.getByRole(
+      "heading",
+      { name: "删除 3 条教师记录" },
+    ).closest("section");
+    expect(phoneCard).not.toBeNull();
+    expect(deleteCard).not.toBeNull();
+    await user.click(within(phoneCard as HTMLElement).getByRole("button", { name: "同意" }));
+
+    expect(await within(phoneCard as HTMLElement).findByText("已允许")).toBeInTheDocument();
+    expect(
+      within(deleteCard as HTMLElement).getByRole("button", { name: "同意" }),
+    ).toBeInTheDocument();
+    client.clear();
+  });
+
+  it("shows an approval failure inside the affected high-risk card", async () => {
+    const user = userEvent.setup();
+    vi.mocked(agentApi.decideGraphGate).mockRejectedValue(
+      new Error("审批上下文已过期，请刷新后重试"),
+    );
+    const { client } = renderPage();
+
+    const heading = await screen.findByRole("heading", { name: "修改 50 条学生手机号" });
+    const card = heading.closest("section");
+    expect(card).not.toBeNull();
+    await user.click(screen.getByRole("button", { name: "同意" }));
+
+    expect(
+      await within(card as HTMLElement).findByText("审批上下文已过期，请刷新后重试"),
+    ).toBeInTheDocument();
     client.clear();
   });
 
