@@ -21,7 +21,7 @@ from app.ai.providers.base import (
     ModelUsage,
 )
 from app.core.security import OperatorContext
-from app.models.agent_analysis import AgentWorkItemRecord
+from app.models.agent_analysis import AgentApprovalGroupRecord, AgentWorkItemRecord
 from app.models.agent_graph import (
     AgentEvidenceManifestRecord,
     AgentGraphRunRecord,
@@ -344,7 +344,7 @@ async def test_graph_lifecycle_has_no_legacy_delegation(
     )
     authority.write_text(csv_content, encoding="utf-8")
     target.write_text(
-        csv_content.replace("一年级一班", "一年级二班"),
+        csv_content.replace("13800138000", "13900139000"),
         encoding="utf-8",
     )
     operator = OperatorContext(
@@ -430,10 +430,57 @@ async def test_graph_lifecycle_has_no_legacy_delegation(
     for _step in range(30):
         await worker.run_once()
         async with database.session_factory() as session:
-            current = await session.get(AgentRunRecord, run_id)
-            assert current is not None
-            if current.status == "completed":
-                break
+            async with session.begin():
+                current = await session.get(AgentRunRecord, run_id)
+                assert current is not None
+                if current.status == "waiting_human":
+                    graph = await session.scalar(
+                        select(AgentGraphRunRecord).where(
+                            AgentGraphRunRecord.run_id == current.id
+                        )
+                    )
+                    assert graph is not None
+                    assert graph.current_node == "wait_high_risk_approvals"
+                    gate = await session.scalar(
+                        select(AgentHumanGateRecord).where(
+                            AgentHumanGateRecord.graph_run_id == graph.id,
+                            AgentHumanGateRecord.gate_kind
+                            == "high_risk_approval",
+                            AgentHumanGateRecord.status == "pending",
+                        )
+                    )
+                    assert gate is not None
+                    approval_groups = tuple(
+                        await session.scalars(
+                            select(AgentApprovalGroupRecord).where(
+                                AgentApprovalGroupRecord.run_id == current.id,
+                            )
+                        )
+                    )
+                    approval_group = next(
+                        (
+                            group
+                            for group in approval_groups
+                            if group.finding_ids == gate.member_ids
+                        ),
+                        None,
+                    )
+                    assert approval_group is not None
+                    gate.status = "approved"
+                    gate.decision = {
+                        "decision": "approve",
+                        "reason": "端到端测试确认学生手机号修改",
+                    }
+                    gate.decided_by = operator.operator_id
+                    gate.decided_at = datetime.now(UTC)
+                    approval_group.status = "approved"
+                    approval_group.decided_by = operator.operator_id
+                    approval_group.decision_reason = "端到端测试确认学生手机号修改"
+                    approval_group.decided_at = gate.decided_at
+                    approval_group.updated_at = gate.decided_at
+                    current.status = "running"
+                if current.status == "completed":
+                    break
     else:
         pytest.fail("controlled Agent graph did not reach terminal state")
 
@@ -526,7 +573,7 @@ async def test_graph_lifecycle_has_no_legacy_delegation(
             {"evidence_ref": f"paired-record:{work_item.id}"},
         )
         assert evidence_payload["persisted_kind"] == "field_difference"
-        assert evidence_payload["field_differences"] == ["class_name"]
+        assert evidence_payload["field_differences"] == ["phone"]
         assert evidence_payload["allowed_operations"] == ["retain", "update"]
         assert evidence_payload["identity_key_hits"]
         assert evidence_payload["authority_claim"]
