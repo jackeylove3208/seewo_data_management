@@ -35,6 +35,10 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
   const [rollbackLoading, setRollbackLoading] = useState(false);
   const [rollbackPreview, setRollbackPreview] = useState<AgentRollbackPreview>();
   const [gateLoading, setGateLoading] = useState<string>();
+  const [gateDecisions, setGateDecisions] = useState<
+    Partial<Record<string, "approved" | "rejected">>
+  >({});
+  const [gateErrors, setGateErrors] = useState<Partial<Record<string, string>>>({});
   const [clarificationMessage, setClarificationMessage] = useState("");
   const [clarificationDecisionId, setClarificationDecisionId] = useState<string>();
   const [clarificationInterpretation, setClarificationInterpretation] = useState<string>();
@@ -75,8 +79,16 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
     (gate) => gate.status === "pending" && gate.kind === "termination_confirmation",
   );
   const activeTerminationGate = terminationGate ?? persistedTerminationGate;
-  const pendingGates = graph.data?.human_gates.filter(
-    (gate) => gate.status === "pending" && gate.kind !== "termination_confirmation",
+  const visibleGates = graph.data?.human_gates.filter(
+    (gate) =>
+      gate.kind !== "termination_confirmation"
+      && (
+        gate.status === "pending"
+        || (
+          gate.kind === "high_risk_approval"
+          && ["approved", "rejected"].includes(gate.status)
+        )
+      ),
   ) ?? [];
   const blockedEvent = blocked
     ? events.data?.events
@@ -173,11 +185,19 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
   async function decideGate(gateId: string, decision: "approve" | "reject") {
     setGateLoading(gateId);
     setTerminateError(undefined);
+    setGateErrors((currentErrors) => ({ ...currentErrors, [gateId]: "" }));
     try {
-      await agentApi.decideGraphGate(taskId, gateId, decision);
-      await graph.refetch();
+      const result = await agentApi.decideGraphGate(taskId, gateId, decision);
+      setGateDecisions((currentDecisions) => ({
+        ...currentDecisions,
+        [gateId]: result.status,
+      }));
+      await Promise.all([task.refetch(), graph.refetch(), events.refetch()]);
     } catch (error) {
-      setTerminateError(error instanceof Error ? error.message : "审批操作未完成");
+      setGateErrors((currentErrors) => ({
+        ...currentErrors,
+        [gateId]: error instanceof Error ? error.message : "审批操作未完成",
+      }));
     } finally {
       setGateLoading(undefined);
     }
@@ -258,7 +278,7 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
           </div>
         </section>
       )}
-      {pendingGates.map((gate) => gate.kind === "identity_conflict" ? (
+      {visibleGates.map((gate) => gate.kind === "identity_conflict" ? (
         <section className="graph-approval-card graph-clarification-card" key={gate.id}>
           <div>
             <Tag color="warning">需要说明</Tag>
@@ -306,12 +326,31 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
           </div>
         </section>
       ) : (
-        <section className="graph-approval-card" key={gate.id}>
-          <div><Tag color="warning">需要确认</Tag><h2>高风险操作审批</h2><p>同类问题已合并，共 {gate.item_count} 条记录。只有本组当前冻结内容会受到本次决定影响。</p></div>
-          <div className="graph-approval-actions">
-            <Button icon={<X size={14} />} loading={gateLoading === gate.id} onClick={() => void decideGate(gate.id, "reject")}>拒绝</Button>
-            <Button type="primary" icon={<Check size={14} />} loading={gateLoading === gate.id} onClick={() => void decideGate(gate.id, "approve")}>同意</Button>
+        <section
+          className={`graph-approval-card graph-approval-${gateDecisions[gate.id] ?? gate.status}`}
+          key={gate.id}
+        >
+          <div>
+            {(gateDecisions[gate.id] ?? gate.status) === "approved" ? (
+              <Tag color="success">已允许</Tag>
+            ) : (gateDecisions[gate.id] ?? gate.status) === "rejected" ? (
+              <Tag color="error">已拒绝</Tag>
+            ) : (
+              <Tag color="warning">需要确认</Tag>
+            )}
+            <h2>{gate.summary_zh ?? "高风险操作审批"}</h2>
+            {gate.risk_reason_zh && <p>{gate.risk_reason_zh}</p>}
+            <p>同类问题已合并，共 {gate.item_count} 条记录。只有本组当前冻结内容会受到本次决定影响。</p>
           </div>
+          {gateErrors[gate.id] && (
+            <Alert type="error" showIcon message={gateErrors[gate.id]} />
+          )}
+          {(gateDecisions[gate.id] ?? gate.status) === "pending" && (
+            <div className="graph-approval-actions">
+              <Button icon={<X size={14} />} loading={gateLoading === gate.id} onClick={() => void decideGate(gate.id, "reject")}>拒绝</Button>
+              <Button type="primary" icon={<Check size={14} />} loading={gateLoading === gate.id} onClick={() => void decideGate(gate.id, "approve")}>同意</Button>
+            </div>
+          )}
         </section>
       ))}
       {events.data?.events.length ? (

@@ -9,6 +9,11 @@ class AgentGraphHumanGateView(BaseModel):
     kind: str
     status: str
     item_count: int
+    entity_kind: str | None = None
+    operation: str | None = None
+    issue_kind: str | None = None
+    summary_zh: str | None = None
+    risk_reason_zh: str | None = None
 
 
 class AgentGraphProgressResponse(BaseModel):

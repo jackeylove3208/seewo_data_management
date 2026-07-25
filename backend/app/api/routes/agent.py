@@ -623,6 +623,16 @@ async def get_agent_graph_progress(
             )
         )
     )
+    approval_groups = tuple(
+        await session.scalars(
+            select(AgentApprovalGroupRecord).where(
+                AgentApprovalGroupRecord.run_id == run.id
+            )
+        )
+    )
+    approval_groups_by_members = {
+        frozenset(group.finding_ids): group for group in approval_groups
+    }
     progress_completed, progress_total = await _graph_progress_counts(
         session,
         run_id=run.id,
@@ -644,14 +654,64 @@ async def get_agent_graph_progress(
         status=run.status,
         can_terminate=not terminal,
         human_gates=tuple(
-            AgentGraphHumanGateView(
-                id=gate.id,
-                kind=gate.gate_kind,
-                status=gate.status,
-                item_count=len(gate.member_ids),
+            _graph_human_gate_view(
+                gate,
+                approval_group=approval_groups_by_members.get(
+                    frozenset(gate.member_ids)
+                ),
             )
             for gate in gates
         ),
+    )
+
+
+def _graph_human_gate_view(
+    gate: AgentHumanGateRecord,
+    *,
+    approval_group: AgentApprovalGroupRecord | None = None,
+) -> AgentGraphHumanGateView:
+    summary_zh: str | None = None
+    risk_reason_zh: str | None = None
+    if gate.gate_kind == "high_risk_approval" and approval_group is not None:
+        entity_label = {
+            "student": "学生",
+            "teacher": "教师",
+            "department": "部门",
+        }.get(approval_group.entity_kind, "组织")
+        if (
+            approval_group.operation == "update"
+            and approval_group.entity_kind == "student"
+        ):
+            summary_zh = f"修改 {len(gate.member_ids)} 条学生手机号"
+            risk_reason_zh = (
+                "学生手机号属于高危隐私字段，本次操作会修改希沃目标中的手机号。"
+            )
+        elif approval_group.operation == "delete":
+            summary_zh = f"删除 {len(gate.member_ids)} 条{entity_label}记录"
+            risk_reason_zh = (
+                "删除会永久移除希沃目标中的记录，治理后只能通过回滚任务恢复。"
+            )
+        else:
+            operation_label = {
+                "create": "新增",
+                "update": "修改",
+                "retain": "保留",
+                "skip": "跳过",
+            }.get(approval_group.operation, "处理")
+            summary_zh = (
+                f"{operation_label} {len(gate.member_ids)} 条{entity_label}记录"
+            )
+            risk_reason_zh = "该操作已被服务端风险策略判定为高风险。"
+    return AgentGraphHumanGateView(
+        id=gate.id,
+        kind=gate.gate_kind,
+        status=gate.status,
+        item_count=len(gate.member_ids),
+        entity_kind=approval_group.entity_kind if approval_group else None,
+        operation=approval_group.operation if approval_group else None,
+        issue_kind=approval_group.issue_kind if approval_group else None,
+        summary_zh=summary_zh,
+        risk_reason_zh=risk_reason_zh,
     )
 
 

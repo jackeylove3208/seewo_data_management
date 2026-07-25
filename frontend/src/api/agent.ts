@@ -98,6 +98,11 @@ export interface AgentGraphHumanGate {
   kind: string;
   status: string;
   item_count: number;
+  entity_kind?: AgentEntityType | null;
+  operation?: string | null;
+  issue_kind?: string | null;
+  summary_zh?: string | null;
+  risk_reason_zh?: string | null;
 }
 
 export interface AgentGraphProgress {
