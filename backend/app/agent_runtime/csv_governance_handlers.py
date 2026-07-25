@@ -91,7 +91,22 @@ class CsvGovernanceHandlers:
         if checkpoint is not None:
             if checkpoint.input_hash != aggregation_hash:
                 raise ValueError("risk aggregation replay changed frozen findings")
-            if bool(checkpoint.payload.get("approval_required")):
+            expected_groups = {group.id: group for group in groups}
+            saved_groups = tuple(
+                await session.scalars(
+                    select(AgentApprovalGroupRecord).where(
+                        AgentApprovalGroupRecord.run_id == run.id,
+                        AgentApprovalGroupRecord.id.in_(expected_groups),
+                    )
+                )
+            )
+            if len(saved_groups) != len(expected_groups) or any(
+                saved.membership_hash
+                != expected_groups[saved.id].membership_hash
+                for saved in saved_groups
+            ):
+                raise ValueError("risk aggregation checkpoint has incomplete approval facts")
+            if any(saved.status == "pending" for saved in saved_groups):
                 return AgentWorkResult(next_status=AgentRunStatus.WAITING_HUMAN)
             return AgentWorkResult(next_phase=AgentPhase.COMPILE_EXECUTION_PLAN)
         pending = False
