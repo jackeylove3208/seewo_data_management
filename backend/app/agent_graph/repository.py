@@ -316,6 +316,30 @@ class AgentGraphRepository:
         )
         if manifest is None or manifest.graph_run_id != state.id:
             raise GraphFactConflict("invocation manifest belongs to another graph run")
+        existing = await self.session.scalar(
+            select(AgentSubAgentInvocationRecord).where(
+                AgentSubAgentInvocationRecord.graph_run_id == state.id,
+                AgentSubAgentInvocationRecord.cursor == cursor,
+                AgentSubAgentInvocationRecord.action_id == action_id,
+                AgentSubAgentInvocationRecord.skill_name == skill_name,
+                AgentSubAgentInvocationRecord.attempt == attempt,
+            )
+        )
+        if existing is not None:
+            if (
+                existing.evidence_manifest_id != manifest.id
+                or existing.execution_mode != execution_mode
+                or existing.skill_version != skill_version
+                or existing.schema_version != schema_version
+                or existing.status != status
+                or existing.input_hash != input_hash
+                or existing.output_hash != output_hash
+                or existing.model_provenance != model_provenance
+            ):
+                raise GraphFactConflict(
+                    "sub-agent invocation replay changed frozen content"
+                )
+            return existing
         if attempt > 1:
             state.retry_count += 1
         record = AgentSubAgentInvocationRecord(

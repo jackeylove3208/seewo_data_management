@@ -36,7 +36,9 @@ class AgentGovernanceRepository:
         if run.task_id != task.id or run.tenant_id != task.tenant_id:
             raise GovernanceReplayConflict("approval context is cross-task or cross-tenant")
         group_key = (
-            f"{group.issue_kind}:{group.entity_kind}:{group.operation}:{group.policy_version}"
+            f"{group.issue_kind}:{group.entity_kind}:{group.operation}:"
+            f"{group.policy_version}:fields:"
+            f"{','.join(group.changed_fields) or 'none'}:segment:{group.segment_index}"
         )
         existing = await self.session.scalar(
             select(AgentApprovalGroupRecord).where(

@@ -52,6 +52,15 @@ def test_student_phone_and_delete_are_server_owned_high_risk() -> None:
     assert policy.assess(finding(kind="target_extra", operation="delete", fields=())).risk == "high"
 
 
+def test_student_create_with_phone_is_not_high_risk() -> None:
+    decision = AgentRiskPolicy().assess(
+        finding(kind="target_missing", operation="create", fields=("phone",))
+    )
+
+    assert decision.risk == "medium"
+    assert decision.requires_approval is False
+
+
 def test_grouping_freezes_compatible_membership() -> None:
     groups = group_high_risk_findings((finding(fields=("phone",)), finding(fields=("phone",))))
 
@@ -59,6 +68,21 @@ def test_grouping_freezes_compatible_membership() -> None:
     assert groups[0].membership_hash
     assert groups[0].risk == "high"
     assert len(groups[0].finding_ids) == 2
+
+
+def test_grouping_splits_compatible_findings_into_bounded_approval_groups() -> None:
+    findings = tuple(finding(fields=("phone",)) for _index in range(101))
+
+    groups = group_high_risk_findings(findings)
+
+    assert [len(group.finding_ids) for group in groups] == [50, 50, 1]
+    assert [group.segment_index for group in groups] == [0, 1, 2]
+    assert len({group.id for group in groups}) == 3
+    assert {
+        finding_id
+        for group in groups
+        for finding_id in group.finding_ids
+    } == {item.finding_id for item in findings}
 
 
 def test_conflict_interpretation_is_bounded_and_requires_second_confirmation() -> None:

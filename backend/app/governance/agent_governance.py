@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from hashlib import sha256
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+MAX_APPROVAL_GROUP_SIZE = 50
+
 
 class ClarificationError(ValueError):
     pass
@@ -59,7 +61,9 @@ class AgentRiskPolicy:
 
     def assess(self, finding: AgentFindingInput) -> AgentRiskDecision:
         high = finding.operation == AgentOperation.DELETE or (
-            finding.entity_kind == "student" and bool({"phone"} & finding.changed_fields)
+            finding.operation == AgentOperation.UPDATE
+            and finding.entity_kind == "student"
+            and "phone" in finding.changed_fields
         )
         if high:
             risk = "high"
@@ -83,6 +87,8 @@ class AgentApprovalGroup:
     operation: AgentOperation
     policy_version: str
     membership_hash: str
+    changed_fields: tuple[str, ...] = ()
+    segment_index: int = 0
     risk: str = "high"
 
 
@@ -110,24 +116,32 @@ def group_high_risk_findings(
 
     groups: list[AgentApprovalGroup] = []
     for key, members in sorted(grouped.items(), key=lambda item: str(item[0])):
-        finding_ids = tuple(sorted((item.finding_id for item in members), key=str))
-        membership_hash = sha256(
-            (
-                "|".join(str(item) for item in finding_ids) + ":" + ":".join((key[3], *key[4]))
-            ).encode()
-        ).hexdigest()
-        group_id = uuid5(NAMESPACE_URL, f"agent-approval:{membership_hash}")
-        groups.append(
-            AgentApprovalGroup(
-                id=group_id,
-                finding_ids=finding_ids,
-                issue_kind=key[0],
-                entity_kind=key[1],
-                operation=key[2],
-                policy_version=key[3],
-                membership_hash=membership_hash,
+        sorted_ids = tuple(sorted((item.finding_id for item in members), key=str))
+        for segment_index, offset in enumerate(
+            range(0, len(sorted_ids), MAX_APPROVAL_GROUP_SIZE)
+        ):
+            finding_ids = sorted_ids[offset : offset + MAX_APPROVAL_GROUP_SIZE]
+            membership_hash = sha256(
+                (
+                    "|".join(str(item) for item in finding_ids)
+                    + ":"
+                    + ":".join((key[3], *key[4]))
+                ).encode()
+            ).hexdigest()
+            group_id = uuid5(NAMESPACE_URL, f"agent-approval:{membership_hash}")
+            groups.append(
+                AgentApprovalGroup(
+                    id=group_id,
+                    finding_ids=finding_ids,
+                    issue_kind=key[0],
+                    entity_kind=key[1],
+                    operation=key[2],
+                    policy_version=key[3],
+                    membership_hash=membership_hash,
+                    changed_fields=key[4],
+                    segment_index=segment_index,
+                )
             )
-        )
     return tuple(groups)
 
 

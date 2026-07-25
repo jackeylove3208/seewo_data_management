@@ -103,6 +103,31 @@ export interface AgentGraphHumanGate {
   issue_kind?: string | null;
   summary_zh?: string | null;
   risk_reason_zh?: string | null;
+  actionable?: boolean;
+  unavailable_reason_zh?: string | null;
+  items?: AgentGraphApprovalItem[];
+}
+
+export interface AgentGraphApprovalChange {
+  field: string;
+  field_zh: string;
+  before?: string | null;
+  after?: string | null;
+}
+
+export interface AgentGraphApprovalItem {
+  finding_id: string;
+  entity_kind: AgentEntityType;
+  entity_name?: string | null;
+  entity_number?: string | null;
+  class_name?: string | null;
+  source_locator: string;
+  source_row_number?: number | null;
+  operation_zh: string;
+  issue_zh: string;
+  analysis_zh: string;
+  solution_zh: string;
+  changes: AgentGraphApprovalChange[];
 }
 
 export interface AgentGraphProgress {

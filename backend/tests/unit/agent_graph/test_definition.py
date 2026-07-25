@@ -29,6 +29,22 @@ def test_preflight_has_two_real_paths_instead_of_a_wrapped_next_phase() -> None:
     }
 
 
+def test_analysis_enters_risk_aggregation_without_reusing_side_effect_action() -> None:
+    graph = get_graph_definition("agent-sync-graph-v1")
+    analysis_actions = {
+        (template.action_kind, template.successor_node)
+        for template in graph.node("analyze_actionable_batches").action_templates
+    }
+    conflict_actions = {
+        (template.action_kind, template.successor_node)
+        for template in graph.node("resolve_identity_conflicts").action_templates
+    }
+
+    assert ("enter_aggregate_risk", "aggregate_risk") in analysis_actions
+    assert ("aggregate_risk", "aggregate_risk") not in analysis_actions
+    assert conflict_actions == {("enter_aggregate_risk", "aggregate_risk")}
+
+
 def test_rollback_graph_is_versioned_separately() -> None:
     graph = get_graph_definition("agent-rollback-graph-v1")
 

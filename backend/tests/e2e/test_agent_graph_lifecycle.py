@@ -1,16 +1,16 @@
 import json
-from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.agent_graph.analysis_tools import GraphAnalysisEvidenceTools
 from app.agent_graph.production_executor import ProductionGraphActionExecutor
 from app.agent_graph.runtime import ProductionGraphCandidateProvider
 from app.agent_graph.tools import GraphToolContext
-from app.agent_graph.worker import AgentGraphWorker
+from app.agent_graph.worker import AgentGraphWorker, GraphWorkContext
 from app.agent_reporting.service import AgentReportingService
 from app.agent_runtime.service import AgentSupervisorService
 from app.ai.graph_supervisor import GraphSupervisorAgent
@@ -20,6 +20,7 @@ from app.ai.providers.base import (
     ModelProviderError,
     ModelUsage,
 )
+from app.api.routes.agent import decide_agent_graph_gate
 from app.core.security import OperatorContext
 from app.models.agent_analysis import AgentWorkItemRecord
 from app.models.agent_graph import (
@@ -28,10 +29,15 @@ from app.models.agent_graph import (
     AgentHumanGateRecord,
     AgentSubAgentInvocationRecord,
 )
-from app.models.agent_runtime import AgentRunRecord, SchoolTaskLockRecord
+from app.models.agent_runtime import (
+    AgentRunRecord,
+    AgentTaskEventRecord,
+    SchoolTaskLockRecord,
+)
 from app.models.reconciliation import ReconciliationTask
 from app.models.reporting import AgentReportRecord
 from app.models.snapshots import Snapshot, SourceFile
+from app.schemas.agent_graph_api import AgentGraphGateDecisionRequest
 
 
 class ScriptedSupervisorProvider:
@@ -344,7 +350,7 @@ async def test_graph_lifecycle_has_no_legacy_delegation(
     )
     authority.write_text(csv_content, encoding="utf-8")
     target.write_text(
-        csv_content.replace("一年级一班", "一年级二班"),
+        csv_content.replace("13800138000", "13900139000"),
         encoding="utf-8",
     )
     operator = OperatorContext(
@@ -406,6 +412,17 @@ async def test_graph_lifecycle_has_no_legacy_delegation(
             task_id = task.id
             run_id = run.id
 
+    candidate_provider = ProductionGraphCandidateProvider(
+        database.session_factory
+    )
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=ScriptedSkillProvider(),
+        tokenization_secret="graph-e2e-tokenization-secret",
+        max_retries=0,
+        output_root=tmp_path / "outputs",
+        csv_execution_enabled=True,
+    )
     worker = AgentGraphWorker(
         database.session_factory,
         worker_id="agent-graph-e2e-worker",
@@ -414,28 +431,161 @@ async def test_graph_lifecycle_has_no_legacy_delegation(
             ScriptedSupervisorProvider(),
             max_retries=0,
         ),
-        candidate_provider=ProductionGraphCandidateProvider(
-            database.session_factory
-        ),
-        executor=ProductionGraphActionExecutor(
-            database.session_factory,
-            provider=ScriptedSkillProvider(),
-            tokenization_secret="graph-e2e-tokenization-secret",
-            max_retries=0,
-            output_root=tmp_path / "outputs",
-            csv_execution_enabled=True,
-        ),
+        candidate_provider=candidate_provider,
+        executor=executor,
     )
 
+    aggregation_replay_checked = False
     for _step in range(30):
         await worker.run_once()
+        aggregation_context: GraphWorkContext | None = None
+        pending_gate_id: UUID | None = None
         async with database.session_factory() as session:
-            current = await session.get(AgentRunRecord, run_id)
-            assert current is not None
-            if current.status == "completed":
-                break
+            async with session.begin():
+                current = await session.get(AgentRunRecord, run_id)
+                assert current is not None
+                graph = await session.scalar(
+                    select(AgentGraphRunRecord).where(
+                        AgentGraphRunRecord.run_id == current.id
+                    )
+                )
+                assert graph is not None
+                if (
+                    graph.current_node == "aggregate_risk"
+                    and not aggregation_replay_checked
+                ):
+                    aggregation_context = GraphWorkContext(
+                        worker_id="agent-graph-replay-test",
+                        run_id=current.id,
+                        task_id=task_id,
+                        tenant_id=operator.tenant_id,
+                        graph_run_id=graph.id,
+                        graph_version=graph.graph_version,
+                        current_node=graph.current_node,
+                        graph_cursor=graph.cursor,
+                        attempt_count=current.attempt_count,
+                        lease_token=uuid4(),
+                    )
+                if current.status == "waiting_human":
+                    assert graph.current_node == "wait_high_risk_approvals"
+                    gate = await session.scalar(
+                        select(AgentHumanGateRecord).where(
+                            AgentHumanGateRecord.graph_run_id == graph.id,
+                            AgentHumanGateRecord.gate_kind
+                            == "high_risk_approval",
+                            AgentHumanGateRecord.status == "pending",
+                        )
+                    )
+                    assert gate is not None
+                    pending_gate_id = gate.id
+                if current.status == "completed":
+                    break
+        if aggregation_context is not None:
+            action = next(
+                evaluation.action
+                for evaluation in (
+                    await candidate_provider(aggregation_context)
+                ).candidate_evaluations
+                if evaluation.passed
+            )
+            first = await executor(aggregation_context, action)
+            replay = await executor(aggregation_context, action)
+            assert first.pause_for_human is True
+            assert replay.pause_for_human is True
+            async with database.session_factory() as session:
+                approval_events = int(
+                    (
+                        await session.scalar(
+                            select(func.count())
+                            .select_from(AgentTaskEventRecord)
+                            .where(
+                                AgentTaskEventRecord.run_id == run_id,
+                                AgentTaskEventRecord.event_type
+                                == "approval_required",
+                            )
+                        )
+                    )
+                    or 0
+                )
+                aggregate_events = int(
+                    (
+                        await session.scalar(
+                            select(func.count())
+                            .select_from(AgentTaskEventRecord)
+                            .where(
+                                AgentTaskEventRecord.run_id == run_id,
+                                AgentTaskEventRecord.event_type
+                                == "agent_approvals_aggregated",
+                            )
+                        )
+                    )
+                    or 0
+                )
+                gate_count = int(
+                    (
+                        await session.scalar(
+                            select(func.count())
+                            .select_from(AgentHumanGateRecord)
+                            .where(
+                                AgentHumanGateRecord.graph_run_id
+                                == aggregation_context.graph_run_id,
+                                AgentHumanGateRecord.gate_kind
+                                == "high_risk_approval",
+                            )
+                        )
+                    )
+                    or 0
+                )
+                invocation_count = int(
+                    (
+                        await session.scalar(
+                            select(func.count())
+                            .select_from(AgentSubAgentInvocationRecord)
+                            .where(
+                                AgentSubAgentInvocationRecord.graph_run_id
+                                == aggregation_context.graph_run_id,
+                                AgentSubAgentInvocationRecord.cursor
+                                == aggregation_context.graph_cursor,
+                                AgentSubAgentInvocationRecord.action_id
+                                == action.action_id,
+                                AgentSubAgentInvocationRecord.skill_name
+                                == "server-guard",
+                            )
+                        )
+                    )
+                    or 0
+                )
+            assert approval_events == 1
+            assert aggregate_events == 1
+            assert gate_count == 1
+            assert invocation_count == 1
+            aggregation_replay_checked = True
+        if pending_gate_id is not None:
+            async with database.session_factory() as session:
+                async with session.begin():
+                    response = await decide_agent_graph_gate(
+                        task_id=task_id,
+                        gate_id=pending_gate_id,
+                        body=AgentGraphGateDecisionRequest(
+                            decision="approve",
+                            reason="端到端测试确认学生手机号修改",
+                        ),
+                        request=SimpleNamespace(
+                            app=SimpleNamespace(
+                                state=SimpleNamespace(
+                                    settings=SimpleNamespace(
+                                        new_agent_enabled=True,
+                                    )
+                                )
+                            )
+                        ),
+                        session=session,
+                        operator=operator,
+                    )
+                    assert response.status == "approved"
     else:
         pytest.fail("controlled Agent graph did not reach terminal state")
+    assert aggregation_replay_checked is True
 
     async with database.session_factory() as session:
         async with session.begin():
@@ -462,6 +612,7 @@ async def test_graph_lifecycle_has_no_legacy_delegation(
 
     for _step in range(20):
         await worker.run_once()
+        pending_rollback_gate_id: UUID | None = None
         async with database.session_factory() as session:
             async with session.begin():
                 current = await session.get(AgentRunRecord, rollback_run_id)
@@ -482,16 +633,32 @@ async def test_graph_lifecycle_has_no_legacy_delegation(
                         )
                     )
                     assert gate is not None
-                    gate.status = "approved"
-                    gate.decision = {
-                        "decision": "approve",
-                        "reason": "端到端测试确认回滚",
-                    }
-                    gate.decided_by = operator.operator_id
-                    gate.decided_at = datetime.now(UTC)
-                    current.status = "running"
+                    pending_rollback_gate_id = gate.id
                 if current.status == "completed":
                     break
+        if pending_rollback_gate_id is not None:
+            async with database.session_factory() as session:
+                async with session.begin():
+                    response = await decide_agent_graph_gate(
+                        task_id=rollback_task_id,
+                        gate_id=pending_rollback_gate_id,
+                        body=AgentGraphGateDecisionRequest(
+                            decision="approve",
+                            reason="端到端测试确认回滚",
+                        ),
+                        request=SimpleNamespace(
+                            app=SimpleNamespace(
+                                state=SimpleNamespace(
+                                    settings=SimpleNamespace(
+                                        new_agent_enabled=True,
+                                    )
+                                )
+                            )
+                        ),
+                        session=session,
+                        operator=operator,
+                    )
+                    assert response.status == "approved"
     else:
         pytest.fail("independent rollback graph did not reach terminal state")
 
@@ -526,7 +693,7 @@ async def test_graph_lifecycle_has_no_legacy_delegation(
             {"evidence_ref": f"paired-record:{work_item.id}"},
         )
         assert evidence_payload["persisted_kind"] == "field_difference"
-        assert evidence_payload["field_differences"] == ["class_name"]
+        assert evidence_payload["field_differences"] == ["phone"]
         assert evidence_payload["allowed_operations"] == ["retain", "update"]
         assert evidence_payload["identity_key_hits"]
         assert evidence_payload["authority_claim"]

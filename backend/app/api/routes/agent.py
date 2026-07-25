@@ -45,8 +45,13 @@ from app.local_sources.service import LocalSourceService
 from app.models.agent_analysis import (
     AgentApprovalGroupRecord,
     AgentClarificationRecord,
+    AgentFindingRecord,
+    AgentFindingSolutionRecord,
     AgentGovernanceOperationRecord,
+    AgentIdentityClaimRecord,
+    AgentInputRecord,
     AgentModelBatchRecord,
+    AgentWorkItemRecord,
 )
 from app.models.agent_graph import AgentGraphRunRecord, AgentHumanGateRecord
 from app.models.agent_runtime import AgentRunRecord, SchoolTaskLockRecord
@@ -83,6 +88,8 @@ from app.schemas.agent_api import (
 )
 from app.schemas.agent_conversation import ConversationAgentContext
 from app.schemas.agent_graph_api import (
+    AgentGraphApprovalChangeView,
+    AgentGraphApprovalItemView,
     AgentGraphGateDecisionRequest,
     AgentGraphGateDecisionResponse,
     AgentGraphHumanGateView,
@@ -633,6 +640,13 @@ async def get_agent_graph_progress(
     approval_groups_by_members = {
         frozenset(group.finding_ids): group for group in approval_groups
     }
+    approval_items_by_gate: dict[UUID, tuple[AgentGraphApprovalItemView, ...]] = {}
+    for gate in gates:
+        if gate.gate_kind == "high_risk_approval":
+            approval_items_by_gate[gate.id] = await _graph_approval_items(
+                session,
+                finding_ids=tuple(gate.member_ids),
+            )
     progress_completed, progress_total = await _graph_progress_counts(
         session,
         run_id=run.id,
@@ -656,9 +670,12 @@ async def get_agent_graph_progress(
         human_gates=tuple(
             _graph_human_gate_view(
                 gate,
+                graph=graph,
+                run=run,
                 approval_group=approval_groups_by_members.get(
                     frozenset(gate.member_ids)
                 ),
+                items=approval_items_by_gate.get(gate.id, ()),
             )
             for gate in gates
         ),
@@ -668,7 +685,10 @@ async def get_agent_graph_progress(
 def _graph_human_gate_view(
     gate: AgentHumanGateRecord,
     *,
+    graph: AgentGraphRunRecord,
+    run: AgentRunRecord,
     approval_group: AgentApprovalGroupRecord | None = None,
+    items: tuple[AgentGraphApprovalItemView, ...] = (),
 ) -> AgentGraphHumanGateView:
     summary_zh: str | None = None
     risk_reason_zh: str | None = None
@@ -702,6 +722,20 @@ def _graph_human_gate_view(
                 f"{operation_label} {len(gate.member_ids)} 条{entity_label}记录"
             )
             risk_reason_zh = "该操作已被服务端风险策略判定为高风险。"
+    actionable, unavailable_reason_zh = _graph_gate_actionability(
+        gate,
+        graph=graph,
+        run=run,
+    )
+    if gate.gate_kind == "high_risk_approval" and not _approval_fact_is_complete(
+        gate,
+        approval_group=approval_group,
+        items=items,
+    ):
+        actionable = False
+        unavailable_reason_zh = (
+            "审批明细不完整，任务不能继续治理，请终止任务后重新发起。"
+        )
     return AgentGraphHumanGateView(
         id=gate.id,
         kind=gate.gate_kind,
@@ -712,7 +746,240 @@ def _graph_human_gate_view(
         issue_kind=approval_group.issue_kind if approval_group else None,
         summary_zh=summary_zh,
         risk_reason_zh=risk_reason_zh,
+        actionable=actionable,
+        unavailable_reason_zh=unavailable_reason_zh,
+        items=items,
     )
+
+
+def _graph_gate_actionability(
+    gate: AgentHumanGateRecord,
+    *,
+    graph: AgentGraphRunRecord,
+    run: AgentRunRecord,
+) -> tuple[bool, str | None]:
+    if gate.status != "pending":
+        return False, "该审批已经处理完成。"
+    if run.status in {"completed", "terminated", "failed", "blocked_model_error"}:
+        return False, "任务已经结束或暂停，不能继续审批。"
+    if gate.gate_kind == "termination_confirmation":
+        if gate.cursor == graph.cursor:
+            return True, None
+        return False, "该终止确认已经过期。"
+    expected_gate_node = {
+        "high_risk_approval": "wait_high_risk_approvals",
+        "identity_conflict": "resolve_identity_conflicts",
+        "rollback_conflict": "wait_restore_conflicts",
+        "rollback_approval": "wait_rollback_approval",
+        "cross_phase_replan": "wait_replan_confirmation",
+    }.get(gate.gate_kind)
+    if (
+        expected_gate_node is None
+        or gate.cursor + 1 != graph.cursor
+        or graph.current_node != expected_gate_node
+        or run.status != "waiting_human"
+    ):
+        return False, "该审批不属于任务当前执行节点，请刷新任务状态。"
+    return True, None
+
+
+def _approval_fact_is_complete(
+    gate: AgentHumanGateRecord,
+    *,
+    approval_group: AgentApprovalGroupRecord | None,
+    items: tuple[AgentGraphApprovalItemView, ...],
+) -> bool:
+    if (
+        approval_group is None
+        or approval_group.finding_ids != gate.member_ids
+        or len(items) != len(gate.member_ids)
+        or {str(item.finding_id) for item in items} != set(gate.member_ids)
+    ):
+        return False
+    if approval_group.entity_kind == "student" and approval_group.operation == "update":
+        return all(_student_phone_change_is_complete(item) for item in items)
+    return True
+
+
+def _student_phone_change_is_complete(item: AgentGraphApprovalItemView) -> bool:
+    phone_changes = tuple(
+        change for change in item.changes if change.field == "phone"
+    )
+    if len(phone_changes) != 1:
+        return False
+    change = phone_changes[0]
+    return (
+        change.before is not None
+        and change.after is not None
+        and change.before != change.after
+        and "****" in change.before
+        and "****" in change.after
+    )
+
+
+async def _graph_approval_items(
+    session: AsyncSession,
+    *,
+    finding_ids: tuple[str, ...],
+) -> tuple[AgentGraphApprovalItemView, ...]:
+    parsed_ids = tuple(UUID(item) for item in finding_ids)
+    if not parsed_ids:
+        return ()
+    rows = tuple(
+        await session.execute(
+            select(
+                AgentFindingRecord,
+                AgentWorkItemRecord,
+                AgentInputRecord,
+                AgentFindingSolutionRecord,
+            )
+            .join(
+                AgentWorkItemRecord,
+                AgentWorkItemRecord.id == AgentFindingRecord.work_item_id,
+            )
+            .join(
+                AgentInputRecord,
+                AgentInputRecord.id == AgentWorkItemRecord.subject_input_id,
+            )
+            .join(
+                AgentFindingSolutionRecord,
+                (AgentFindingSolutionRecord.finding_id == AgentFindingRecord.id)
+                & AgentFindingSolutionRecord.recommended.is_(True),
+            )
+            .where(AgentFindingRecord.id.in_(parsed_ids))
+        )
+    )
+    field_difference_work_item_ids = tuple(
+        work_item.id
+        for _finding, work_item, _subject, _solution in rows
+        if work_item.kind == "field_difference"
+    )
+    claims = (
+        tuple(
+            await session.scalars(
+                select(AgentIdentityClaimRecord).where(
+                    AgentIdentityClaimRecord.work_item_id.in_(
+                        field_difference_work_item_ids
+                    )
+                )
+            )
+        )
+        if field_difference_work_item_ids
+        else ()
+    )
+    claims_by_work_item = {claim.work_item_id: claim for claim in claims}
+    claimed_input_ids = {
+        input_id
+        for claim in claims
+        for input_id in (claim.authority_input_id, claim.target_input_id)
+    }
+    claimed_inputs = (
+        tuple(
+            await session.scalars(
+                select(AgentInputRecord).where(
+                    AgentInputRecord.id.in_(claimed_input_ids)
+                )
+            )
+        )
+        if claimed_input_ids
+        else ()
+    )
+    claimed_inputs_by_id = {input_record.id: input_record for input_record in claimed_inputs}
+    by_finding: dict[UUID, AgentGraphApprovalItemView] = {}
+    for finding, work_item, subject, solution in rows:
+        display_record = subject
+        changes: tuple[AgentGraphApprovalChangeView, ...] = ()
+        if work_item.kind == "field_difference":
+            claim = claims_by_work_item.get(work_item.id)
+            if claim is not None:
+                authority = claimed_inputs_by_id.get(claim.authority_input_id)
+                target = claimed_inputs_by_id.get(claim.target_input_id)
+                if authority is not None and target is not None:
+                    display_record = target
+                    changes = _graph_approval_changes(target, authority)
+        by_finding[finding.id] = AgentGraphApprovalItemView(
+            finding_id=finding.id,
+            entity_kind=work_item.entity_kind,
+            entity_name=display_record.name,
+            entity_number=display_record.number,
+            class_name=display_record.class_name,
+            source_locator=display_record.stable_locator,
+            source_row_number=display_record.raw_row_number,
+            operation_zh=_graph_operation_label(
+                solution.operation,
+                work_item.entity_kind,
+            ),
+            issue_zh=finding.category_zh,
+            analysis_zh=str(_sanitize_public(finding.analysis_zh)),
+            solution_zh=str(_sanitize_public(solution.solution_zh)),
+            changes=changes,
+        )
+    return tuple(
+        by_finding[finding_id]
+        for finding_id in parsed_ids
+        if finding_id in by_finding
+    )
+
+
+def _graph_approval_changes(
+    target: AgentInputRecord,
+    authority: AgentInputRecord,
+) -> tuple[AgentGraphApprovalChangeView, ...]:
+    field_labels = {
+        "category": "类别",
+        "name": "姓名",
+        "number": "编号",
+        "class_name": "班级",
+        "phone": "手机号",
+        "email": "邮箱",
+    }
+    changes: list[AgentGraphApprovalChangeView] = []
+    for field, field_zh in field_labels.items():
+        before = getattr(target, field)
+        after = getattr(authority, field)
+        if before == after:
+            continue
+        changes.append(
+            AgentGraphApprovalChangeView(
+                field=field,
+                field_zh=field_zh,
+                before=_graph_public_value(before, field=field),
+                after=_graph_public_value(after, field=field),
+            )
+        )
+    return tuple(changes)
+
+
+def _graph_public_value(value: object, *, field: str) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    if field == "phone":
+        if len(text) >= 7:
+            return f"{text[:3]}****{text[-4:]}"
+        return "手机号（已脱敏）"
+    if field == "email":
+        local, separator, domain = text.partition("@")
+        if separator:
+            return f"{local[:1]}***@{domain}"
+        return "邮箱（已脱敏）"
+    return str(_sanitize_public(text, field=field))
+
+
+def _graph_operation_label(operation: str, entity_kind: str) -> str:
+    entity_label = {
+        "student": "学生",
+        "teacher": "教师",
+        "department": "部门",
+    }.get(entity_kind, "组织")
+    operation_label = {
+        "create": "新增",
+        "update": "修改",
+        "delete": "删除",
+        "retain": "保留",
+        "skip": "跳过",
+    }.get(operation, "处理")
+    return f"{operation_label}希沃中的{entity_label}记录"
 
 
 async def _graph_progress_counts(
@@ -828,6 +1095,17 @@ async def decide_agent_graph_gate(
             404, detail=_error("graph_gate_not_found", "Agent graph gate not found")
         )
     gate, graph = row
+    locked_run = await session.scalar(
+        select(AgentRunRecord)
+        .where(AgentRunRecord.id == run.id)
+        .with_for_update()
+    )
+    if locked_run is None:
+        raise HTTPException(
+            409,
+            detail=_error("graph_state_missing", "Agent run state is missing"),
+        )
+    run = locked_run
     if gate.status != "pending":
         raise HTTPException(
             409, detail=_error("graph_gate_already_decided", "Gate is already decided")
@@ -840,26 +1118,48 @@ async def decide_agent_graph_gate(
                 "Identity conflicts require operator dialogue and confirmation",
             ),
         )
-    expected_gate_node = {
-        "high_risk_approval": "wait_high_risk_approvals",
-        "identity_conflict": "resolve_identity_conflicts",
-        "rollback_conflict": "wait_restore_conflicts",
-        "rollback_approval": "wait_rollback_approval",
-        "cross_phase_replan": "wait_replan_confirmation",
-    }.get(gate.gate_kind)
-    gate_is_current = (
-        gate.cursor == graph.cursor
-        if gate.gate_kind == "termination_confirmation"
-        else (
-            expected_gate_node is not None
-            and gate.cursor + 1 == graph.cursor
-            and graph.current_node == expected_gate_node
-        )
+    actionable, _unavailable_reason = _graph_gate_actionability(
+        gate,
+        graph=graph,
+        run=run,
     )
-    if not gate_is_current:
+    if not actionable:
         raise HTTPException(
             409, detail=_error("stale_graph_gate", "Gate cursor is stale")
         )
+    matching_group: AgentApprovalGroupRecord | None = None
+    if gate.gate_kind == "high_risk_approval":
+        legacy_groups = tuple(
+            await session.scalars(
+                select(AgentApprovalGroupRecord).where(
+                    AgentApprovalGroupRecord.run_id == run.id
+                )
+            )
+        )
+        matching_group = next(
+            (
+                group
+                for group in legacy_groups
+                if group.finding_ids == gate.member_ids
+            ),
+            None,
+        )
+        approval_items = await _graph_approval_items(
+            session,
+            finding_ids=tuple(gate.member_ids),
+        )
+        if not _approval_fact_is_complete(
+            gate,
+            approval_group=matching_group,
+            items=approval_items,
+        ):
+            raise HTTPException(
+                409,
+                detail=_error(
+                    "approval_fact_missing",
+                    "Frozen approval group detail is incomplete",
+                ),
+            )
     status_value = "approved" if body.decision == "approve" else "rejected"
     gate.status = status_value
     gate.decision = {
@@ -881,29 +1181,7 @@ async def decide_agent_graph_gate(
     ):
         graph.termination_requested = True
     if gate.gate_kind == "high_risk_approval":
-        legacy_groups = tuple(
-            await session.scalars(
-                select(AgentApprovalGroupRecord).where(
-                    AgentApprovalGroupRecord.run_id == run.id
-                )
-            )
-        )
-        matching_group = next(
-            (
-                group
-                for group in legacy_groups
-                if group.finding_ids == gate.member_ids
-            ),
-            None,
-        )
-        if matching_group is None:
-            raise HTTPException(
-                409,
-                detail=_error(
-                    "approval_fact_missing",
-                    "Frozen approval group fact is missing",
-                ),
-            )
+        assert matching_group is not None
         matching_group.status = status_value
         matching_group.decided_by = operator.operator_id
         matching_group.decision_reason = (body.reason or "")[:1000]
@@ -1716,6 +1994,9 @@ async def _resume_waiting_run(
 
 
 _PHONE_PATTERN = re.compile(r"(?<!\d)1\d{10}(?!\d)")
+_EMAIL_PATTERN = re.compile(
+    r"\b([A-Za-z0-9._%+-])([A-Za-z0-9._%+-]*)@([A-Za-z0-9.-]+\.[A-Za-z]{2,})\b"
+)
 
 
 def _sanitize_public(value: Any, *, field: str | None = None) -> Any:
@@ -1729,5 +2010,12 @@ def _sanitize_public(value: Any, *, field: str | None = None) -> Any:
     if isinstance(value, str):
         if field in {"phone", "student_phone", "手机号", "电话"}:
             return f"***{value[-4:]}" if value else value
-        return _PHONE_PATTERN.sub(lambda match: f"***{match.group(0)[-4:]}", value)
+        sanitized = _PHONE_PATTERN.sub(
+            lambda match: f"***{match.group(0)[-4:]}",
+            value,
+        )
+        return _EMAIL_PATTERN.sub(
+            lambda match: f"{match.group(1)}***@{match.group(3)}",
+            sanitized,
+        )
     return value

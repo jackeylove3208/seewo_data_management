@@ -25,6 +25,7 @@ from app.agent_graph.governance_executors import (
     GraphGovernanceExecutionExecutor,
     GraphHumanGateService,
 )
+from app.agent_graph.guards import GraphGuardRejected
 from app.agent_graph.report_executors import GraphReportExecutor, GraphReportFactTools
 from app.agent_graph.repository import AgentGraphRepository, GraphFactConflict
 from app.agent_graph.rollback_executors import (
@@ -129,7 +130,13 @@ class ProductionGraphActionExecutor:
             return await self._analyze_batch(context, action)
         if action_kind == "resolve_identity_conflicts":
             return await self._open_identity_conflict_gate(context, action)
+        if action_kind == "enter_aggregate_risk":
+            return await self._record_guarded_noop(context, action)
         if action_kind == "aggregate_risk":
+            if context.current_node != "aggregate_risk":
+                raise GraphGuardRejected(
+                    "aggregate_risk_action_outside_aggregate_node"
+                )
             return await self._aggregate_risk(context, action)
         if action_kind == "compile_execution_plan":
             return await self._compile_execution_plan(context, action)

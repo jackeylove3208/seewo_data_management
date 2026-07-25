@@ -56,6 +56,31 @@ describe("controlled Agent graph task detail", () => {
           issue_kind: "field_difference",
           summary_zh: "修改 50 条学生手机号",
           risk_reason_zh: "学生手机号属于高危隐私字段，本次操作会修改希沃目标中的手机号。",
+          actionable: true,
+          unavailable_reason_zh: null,
+          items: [
+            {
+              finding_id: "finding-1",
+              entity_kind: "student",
+              entity_name: "李明",
+              entity_number: "S-002",
+              class_name: "三年级一班",
+              source_locator: "csv:12",
+              source_row_number: 12,
+              operation_zh: "修改希沃中的学生记录",
+              issue_zh: "手机号不一致",
+              analysis_zh: "第三方权威手机号与希沃手机号不一致。",
+              solution_zh: "将希沃手机号修改为第三方权威值。",
+              changes: [
+                {
+                  field: "phone",
+                  field_zh: "手机号",
+                  before: "138****1234",
+                  after: "139****5678",
+                },
+              ],
+            },
+          ],
         },
       ],
     });
@@ -81,6 +106,10 @@ describe("controlled Agent graph task detail", () => {
     expect(
       screen.getByText("学生手机号属于高危隐私字段，本次操作会修改希沃目标中的手机号。"),
     ).toBeInTheDocument();
+    expect(screen.getByText("修改学生：李明（编号 S-002）")).toBeInTheDocument();
+    expect(screen.getByText("希沃第 12 行 · 三年级一班")).toBeInTheDocument();
+    expect(screen.getByText("138****1234")).toBeInTheDocument();
+    expect(screen.getByText("139****5678")).toBeInTheDocument();
     expect(screen.queryByText("wait_high_risk_approvals")).not.toBeInTheDocument();
     client.clear();
   });
@@ -345,6 +374,45 @@ describe("controlled Agent graph task detail", () => {
     expect(
       await within(card as HTMLElement).findByText("审批上下文已过期，请刷新后重试"),
     ).toBeInTheDocument();
+    client.clear();
+  });
+
+  it("does not offer decisions for a stale approval gate", async () => {
+    vi.mocked(agentApi.graph).mockResolvedValue({
+      task_id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      graph_version: "agent-sync-graph-v1",
+      graph_cursor: 14,
+      current_node: "analyze_actionable_batches",
+      business_stage: "agent_analysis",
+      current_action_zh: "正在生成 AI 分析与治理方案",
+      status: "failed",
+      can_terminate: false,
+      human_gates: [
+        {
+          id: "gate-stale",
+          kind: "high_risk_approval",
+          status: "pending",
+          item_count: 1,
+          entity_kind: "teacher",
+          operation: "delete",
+          issue_kind: "target_extra",
+          summary_zh: "删除 1 条教师记录",
+          risk_reason_zh: "删除会永久移除希沃目标中的记录。",
+          actionable: false,
+          unavailable_reason_zh: "任务已经结束或暂停，不能继续审批。",
+          items: [],
+        },
+      ],
+    });
+    const { client } = renderPage();
+
+    expect(await screen.findByText("审批不可用")).toBeInTheDocument();
+    expect(
+      screen.getByText("任务已经结束或暂停，不能继续审批。"),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "同意" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "拒绝" })).not.toBeInTheDocument();
     client.clear();
   });
 

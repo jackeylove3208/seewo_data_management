@@ -4,6 +4,28 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class AgentGraphApprovalChangeView(BaseModel):
+    field: str
+    field_zh: str
+    before: str | None = None
+    after: str | None = None
+
+
+class AgentGraphApprovalItemView(BaseModel):
+    finding_id: UUID
+    entity_kind: str
+    entity_name: str | None = None
+    entity_number: str | None = None
+    class_name: str | None = None
+    source_locator: str
+    source_row_number: int | None = None
+    operation_zh: str
+    issue_zh: str
+    analysis_zh: str
+    solution_zh: str
+    changes: tuple[AgentGraphApprovalChangeView, ...] = ()
+
+
 class AgentGraphHumanGateView(BaseModel):
     id: UUID
     kind: str
@@ -14,6 +36,9 @@ class AgentGraphHumanGateView(BaseModel):
     issue_kind: str | None = None
     summary_zh: str | None = None
     risk_reason_zh: str | None = None
+    actionable: bool = False
+    unavailable_reason_zh: str | None = None
+    items: tuple[AgentGraphApprovalItemView, ...] = ()
 
 
 class AgentGraphProgressResponse(BaseModel):

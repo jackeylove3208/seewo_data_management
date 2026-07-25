@@ -129,7 +129,7 @@ _SYNC_TEMPLATES: dict[str, tuple[AllowedActionV1, ...]] = {
             risk="high",
             requires_human=True,
         ),
-        _action("aggregate_risk", successor="aggregate_risk"),
+        _action("enter_aggregate_risk", successor="aggregate_risk"),
     ),
     "repair_analysis_batch": (
         _action(
@@ -140,7 +140,7 @@ _SYNC_TEMPLATES: dict[str, tuple[AllowedActionV1, ...]] = {
         ),
     ),
     "resolve_identity_conflicts": (
-        _action("aggregate_risk", successor="aggregate_risk"),
+        _action("enter_aggregate_risk", successor="aggregate_risk"),
     ),
     "aggregate_risk": (
         _action("aggregate_risk", successor="wait_high_risk_approvals"),
@@ -702,7 +702,7 @@ class ProductionGraphCandidateProvider:
                 context,
                 "resolve_identity_conflicts"
                 if unresolved is not None
-                else "aggregate_risk",
+                else "enter_aggregate_risk",
             ),
         )
 
@@ -807,7 +807,7 @@ def _rejected_guard_code(
             "analyze_next_batch": "no_pending_analysis_batch",
             "repair_analysis_batch": "no_repairable_analysis_batch",
             "resolve_identity_conflicts": "no_unresolved_identity_conflict",
-            "aggregate_risk": "analysis_work_incomplete",
+            "enter_aggregate_risk": "analysis_work_incomplete",
         }.get(action_kind, "server_fact_not_satisfied")
     if node == "preflight_execution":
         return (
