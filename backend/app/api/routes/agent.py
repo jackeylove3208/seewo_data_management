@@ -760,12 +760,14 @@ def _graph_gate_actionability(
 ) -> tuple[bool, str | None]:
     if gate.status != "pending":
         return False, "该审批已经处理完成。"
-    if run.status in {"completed", "terminated", "failed", "blocked_model_error"}:
+    if run.status in {"completed", "terminated", "failed"}:
         return False, "任务已经结束或暂停，不能继续审批。"
     if gate.gate_kind == "termination_confirmation":
         if gate.cursor == graph.cursor:
             return True, None
         return False, "该终止确认已经过期。"
+    if run.status == "blocked_model_error":
+        return False, "任务已经结束或暂停，不能继续审批。"
     expected_gate_node = {
         "high_risk_approval": "wait_high_risk_approvals",
         "identity_conflict": "resolve_identity_conflicts",
