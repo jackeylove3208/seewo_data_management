@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.agent_graph.contracts import AllowedActionV1
 from app.agent_graph.evidence import EvidenceManifestV1
+from app.agent_graph.guards import GraphGuardRejected
 from app.agent_graph.production_executor import (
     ProductionGraphActionExecutor,
     _record_manifest,
@@ -211,6 +212,35 @@ async def test_stale_preflight_requires_frozen_cross_phase_replan(
         assert gate is not None
         assert gate.status == "pending"
         assert gate.member_ids
+
+
+@pytest.mark.asyncio
+async def test_aggregate_risk_side_effect_is_rejected_outside_aggregate_node(
+    database,
+    tmp_path: Path,
+) -> None:
+    context = replace(
+        await _preflight_context(database, tmp_path),
+        current_node="analyze_actionable_batches",
+    )
+    action = AllowedActionV1(
+        action_id="aggregate_risk",
+        graph_action_kind="aggregate_risk",
+        kind="run_deterministic",
+        risk="low",
+        requires_human=False,
+        successor_node="aggregate_risk",
+    )
+
+    with pytest.raises(
+        GraphGuardRejected,
+        match="aggregate_risk_action_outside_aggregate_node",
+    ):
+        await ProductionGraphActionExecutor(
+            database.session_factory,
+            provider=ModelMustNotRun(),
+            tokenization_secret="test-tokenization-secret",
+        )(context, action)
 
 
 @pytest.mark.asyncio
