@@ -94,7 +94,14 @@ class ExecutionProvider:
 
 
 @pytest.mark.asyncio
-async def test_execution_continues_independent_operation_after_failure(session) -> None:
+@pytest.mark.parametrize(
+    "graph_node",
+    ("execute_ready_operations", "execute_remaining_independent"),
+)
+async def test_execution_continues_independent_operation_after_failure(
+    session,
+    graph_node: str,
+) -> None:
     task = ReconciliationTask(
         tenant_id="school-graph-execution",
         scope_id="all",
@@ -118,12 +125,12 @@ async def test_execution_continues_independent_operation_after_failure(session) 
     graph = await AgentGraphRepository(session).create_run_state(
         run_id=run.id,
         graph_version="agent-sync-graph-v1",
-        initial_node="execute_ready_operations",
+        initial_node=graph_node,
     )
     plan_id = uuid4()
     failed_id = uuid4()
     independent_id = uuid4()
-    action_id = "execute_ready_operations"
+    action_id = graph_node
     resources = (
         f"execution-plan:{plan_id}",
         f"operation:{failed_id}",

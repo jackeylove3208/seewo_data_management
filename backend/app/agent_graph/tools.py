@@ -78,6 +78,16 @@ GraphToolHandler = Callable[
 ]
 
 
+_GOVERNANCE_EXECUTION_TOOL_NAMES = frozenset(
+    {
+        "read_execution_plan",
+        "read_ready_operations",
+        "request_operation_execution",
+        "read_operation_verification",
+    }
+)
+
+
 GRAPH_NODE_TOOL_NAMES: dict[str, frozenset[str]] = {
     "inspect_sources": frozenset(
         {
@@ -110,14 +120,8 @@ GRAPH_NODE_TOOL_NAMES: dict[str, frozenset[str]] = {
         }
     ),
     "wait_high_risk_approvals": frozenset({"read_frozen_approval_group"}),
-    "execute_ready_operations": frozenset(
-        {
-            "read_execution_plan",
-            "read_ready_operations",
-            "request_operation_execution",
-            "read_operation_verification",
-        }
-    ),
+    "execute_ready_operations": _GOVERNANCE_EXECUTION_TOOL_NAMES,
+    "execute_remaining_independent": _GOVERNANCE_EXECUTION_TOOL_NAMES,
     "generate_terminal_report": frozenset(
         {
             "read_report_fact_manifest",
