@@ -317,6 +317,52 @@ async def test_production_manifest_replay_reuses_frozen_manifest(
 
 
 @pytest.mark.asyncio
+async def test_deterministic_invocation_replay_reuses_completed_record(
+    database,
+    tmp_path: Path,
+) -> None:
+    context = await _preflight_context(database, tmp_path)
+    action = next(
+        item.action
+        for item in (
+            await ProductionGraphCandidateProvider(database.session_factory)(context)
+        ).candidate_evaluations
+        if item.passed
+    )
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=ModelMustNotRun(),
+        tokenization_secret="test-tokenization-secret",
+    )
+
+    async with database.session_factory() as session:
+        async with session.begin():
+            for _index in range(2):
+                await executor._record_deterministic_invocation(
+                    session,
+                    context=context,
+                    action=action,
+                    output={"target_version_stale": True},
+                )
+            records = tuple(
+                await session.scalars(
+                    select(AgentSubAgentInvocationRecord).where(
+                        AgentSubAgentInvocationRecord.graph_run_id
+                        == context.graph_run_id,
+                        AgentSubAgentInvocationRecord.cursor
+                        == context.graph_cursor,
+                        AgentSubAgentInvocationRecord.action_id
+                        == action.action_id,
+                        AgentSubAgentInvocationRecord.skill_name == "server-guard",
+                        AgentSubAgentInvocationRecord.attempt == 1,
+                    )
+                )
+            )
+
+    assert len(records) == 1
+
+
+@pytest.mark.asyncio
 async def test_repair_analysis_action_dispatches_the_real_analysis_executor(
     database,
     tmp_path: Path,
