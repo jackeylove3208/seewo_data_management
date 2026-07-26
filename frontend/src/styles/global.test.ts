@@ -4,14 +4,18 @@ import globalCss from "./global.css?inline";
 import appleCss from "./apple.css?inline";
 
 describe("responsive analysis styles", () => {
-  it("defines the Apple workspace visual system", () => {
-    expect(appleCss).toMatch(/--apple-canvas:/);
-    expect(appleCss).toMatch(/\.apple-workspace::before/);
+  it("defines the flat Codex light workspace visual system", () => {
+    expect(appleCss).toMatch(/--codex-canvas:\s*#ffffff/);
+    expect(appleCss).toMatch(/--codex-sidebar:\s*#f6f7f8/);
+    expect(appleCss).toMatch(/--codex-ink:\s*#202123/);
     expect(appleCss).toMatch(/\.apple-sidebar/);
-    expect(appleCss).toMatch(/prefers-reduced-motion/);
-    expect(appleCss).toMatch(/@supports not/);
+    expect(appleCss).toMatch(/\.conversation-reset-button/);
+    expect(appleCss).toMatch(/\.task-status-rail/);
+    expect(appleCss).toMatch(/\.agent-report-section/);
     expect(appleCss).toMatch(/\.apple-page\s+\.graph-live-progress\s*,\s*\.apple-page\s+\.graph-approval-card/);
     expect(appleCss).toMatch(/\.apple-agent-modal\s+\.ant-modal-content/);
+    expect(appleCss).not.toMatch(/radial-gradient/);
+    expect(appleCss).not.toMatch(/apple-drift/);
     expect(appleCss).not.toMatch(/:has\(/);
   });
   it("allows mobile progress details to wrap", () => {

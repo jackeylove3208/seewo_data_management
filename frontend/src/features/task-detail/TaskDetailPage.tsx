@@ -86,11 +86,11 @@ export function TaskDetailPage() {
 
   const agentLookupPending = shouldQueryAgent && !agentTask.data && !agentTask.isError;
   if (!demo && !task && (agentLookupPending || workflow.task.isLoading)) {
-    return <main className="page-shell task-detail-page"><BackButton fallback="/tasks" label="返回任务列表" /><Skeleton active paragraph={{ rows: 8 }} /></main>;
+    return <main className="page-shell task-detail-page apple-page"><BackButton fallback="/tasks" label="返回任务列表" /><Skeleton active paragraph={{ rows: 8 }} /></main>;
   }
   if ((!historyTask && workflow.task.isError) || (demo && !historyTask)) {
     return (
-      <main className="page-shell empty-page">
+      <main className="page-shell empty-page apple-page">
         <BackButton fallback="/tasks" label="返回任务列表" />
         <h1>没有找到这个任务</h1>
         <p>任务可能已被清理，或当前账号没有访问权限。</p>
@@ -118,7 +118,7 @@ export function TaskDetailPage() {
   const effectiveIndex = analysisTerminal ? stageIndex.complete : analysisJobId ? stageIndex.analysis : currentIndex;
 
   return (
-    <main className="page-shell task-detail-page">
+    <main className="page-shell task-detail-page apple-page">
       <BackButton fallback="/tasks" label="返回任务列表" />
       <section className="detail-heading">
         <div>

@@ -10,6 +10,7 @@ import { useEffect, useState, type FormEvent } from "react";
 
 import { agentApi as defaultAgentApi, type AgentConversationApi, type AgentGraphHumanGate, type AgentIntent, type AgentStartConfirmation, type AgentTask, type AgentTaskEvent } from "../../api/agent";
 import { ApiError } from "../../api/client";
+import { TaskStatusRail } from "../../components/TaskStatusRail";
 import { presentAgentEvent, presentAgentPhase } from "../agent-events/presentation";
 
 type ConversationState = "idle" | "collecting" | "needs-input" | "draft-ready" | "submitting" | "failed" | "created";
@@ -25,6 +26,31 @@ const initialMessages: ConversationMessage[] = [{
   role: "assistant",
   text: "你好，我是智能数据同步助手。告诉我希望同步的范围和对象。",
 }];
+
+const agentTaskStages = [
+  { id: "ingest_and_normalize", label: "数据接入" },
+  { id: "analyze_batches", label: "Agent 分析与决策" },
+  { id: "execute_and_verify", label: "治理执行" },
+  { id: "generate_report", label: "报告生成" },
+];
+
+function taskStageIndex(phase: AgentTask["phase"]) {
+  if (phase === "terminal" || phase === "report_restore") return agentTaskStages.length;
+  if (phase === "generate_report" || phase === "plan_restore") return 3;
+  if (
+    phase === "aggregate_risk_and_approvals"
+    || phase === "compile_execution_plan"
+    || phase === "execute_and_verify"
+    || phase === "clarify_restore_conflicts"
+    || phase === "approve_restore"
+    || phase === "execute_restore"
+  ) return 2;
+  if (
+    phase === "analyze_batches"
+    || phase === "clarify_identity_conflicts"
+  ) return 1;
+  return 0;
+}
 
 function messageId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -378,7 +404,8 @@ export function ConversationCreatePage({
           message={newConversationError}
         />
       )}
-      <section className="conversation-surface" aria-label="新建对话">
+      <div className={`conversation-workspace${task ? " has-task-status" : ""}`}>
+        <section className="conversation-surface" aria-label="新建对话">
         <div className="conversation-messages" aria-live="polite">
           {messages.map((message) => (
             <article className={`conversation-message ${message.role} ${message.kind ?? ""}`} key={message.id}>
@@ -456,7 +483,16 @@ export function ConversationCreatePage({
             <ArrowUp size={18} />
           </button>
         </form>
-      </section>
+        </section>
+        {task && (
+          <TaskStatusRail
+            stages={agentTaskStages}
+            currentIndex={taskStageIndex(task.phase)}
+            blocked={taskBlocked}
+            terminationRequested={task.status === "terminated"}
+          />
+        )}
+      </div>
       <Modal
         rootClassName="apple-agent-modal"
         title="开启新对话？"

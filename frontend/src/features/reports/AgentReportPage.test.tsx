@@ -25,7 +25,7 @@ function renderPage() {
 describe("Agent synchronization report", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("renders the model narrative and local writeback result in the dark workbench", async () => {
+  it("renders the model narrative and local writeback result in the light document workbench", async () => {
     vi.spyOn(agentApi, "report").mockResolvedValue({
       id: "report-1",
       task_id: "task-report-1",

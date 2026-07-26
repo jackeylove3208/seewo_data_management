@@ -103,6 +103,10 @@ describe("controlled Agent graph task detail", () => {
     const { client } = renderPage();
 
     expect(await screen.findAllByText("正在等待高风险操作审批")).toHaveLength(2);
+    expect(
+      screen.getByRole("complementary", { name: "任务处理状态" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("报告生成")).toBeInTheDocument();
     expect(screen.getByText(/离开页面不会中断任务/)).toBeInTheDocument();
     expect(screen.getByText("治理执行 Agent · 3 / 5")).toBeInTheDocument();
     expect(screen.getByText(/共 50 条记录/)).toBeInTheDocument();

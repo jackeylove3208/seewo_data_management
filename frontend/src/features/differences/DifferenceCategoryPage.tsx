@@ -81,7 +81,7 @@ function RealDifferencePage({ taskId, entityType }: { taskId: string; entityType
   const selected = items.find((item) => item.id === selectedId);
 
   return (
-    <main className="page-shell difference-page real-difference-page">
+    <main className="page-shell difference-page real-difference-page apple-page">
       <BackButton fallback={`/tasks/${taskId}`} label="返回任务详情" />
       <section className="detail-heading difference-heading">
         <div><span className="heading-tags"><Tag color="processing">真实任务</Tag><Tag>分析后生成待执行方案</Tag></span><h1>{entityLabels[entityType]}差异</h1><p>检查权威数据与希沃快照，并按条选择 AI 方案或人工修改。</p></div>
@@ -159,7 +159,7 @@ function DemoDifferencePage({ taskId, entityType }: { taskId: string; entityType
   }
 
   return (
-    <main className="page-shell difference-page">
+    <main className="page-shell difference-page apple-page">
       <BackButton fallback={`/tasks/${taskId}`} label="返回问题类型对照" />
       <section className="detail-heading difference-heading"><div><span className="heading-tags"><Tag>演示差异</Tag><Tag color="warning">待人工确认</Tag></span><h1>{entityLabels[entityType]}问题</h1><p>展开具体人员，并独立选择需要处理的每一项问题。</p></div><div className="detail-total"><span>相关问题</span><strong>{allIssueIds.length}</strong></div></section>
       <section className="difference-toolbar"><div className="filter-tabs" aria-label="问题筛选">{demoFilterOptions.map((option) => <button className={filter === option.value ? "active" : ""} type="button" key={option.value} onClick={() => setFilter(option.value)}>{option.label}</button>)}</div><Checkbox checked={categoryState.checked} indeterminate={categoryState.indeterminate} onChange={(event) => setSelection((current) => toggleCategory(current, allPeople, event.target.checked))}>选择全部问题</Checkbox></section>

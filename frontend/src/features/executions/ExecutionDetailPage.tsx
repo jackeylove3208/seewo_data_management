@@ -63,10 +63,10 @@ export function ExecutionDetailPage() {
   });
 
   if (execution.isLoading) {
-    return <main className="operations-page"><p>正在加载执行详情...</p></main>;
+    return <main className="operations-page apple-page"><p>正在加载执行详情...</p></main>;
   }
   if (!execution.data) {
-    return <main className="operations-page"><p role="alert">执行详情不可用</p></main>;
+    return <main className="operations-page apple-page"><p role="alert">执行详情不可用</p></main>;
   }
 
   const canReport = execution.data.permitted_actions.includes("report");
@@ -74,7 +74,7 @@ export function ExecutionDetailPage() {
   const currentVersionId = versions.data?.at(-1)?.id;
 
   return (
-    <main className="operations-page">
+    <main className="operations-page apple-page">
       <BackButton fallback="/executions" label="返回执行历史" />
       <header className="operations-header">
         <div><h1>执行与恢复</h1><p>{execution.data.id}</p></div>

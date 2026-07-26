@@ -146,7 +146,11 @@ describe("backend Agent conversation", () => {
     await user.click(screen.getByRole("button", { name: "发送" }));
     await user.click(await screen.findByRole("button", { name: "确认开始同步" }));
 
-    expect(await screen.findByText(/数据接入/)).toBeInTheDocument();
+    expect((await screen.findAllByText(/数据接入/)).length).toBeGreaterThan(0);
+    expect(
+      screen.getByRole("complementary", { name: "任务处理状态" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("报告生成")).toBeInTheDocument();
     expect(screen.getByLabelText("对账目标")).toBeDisabled();
     expect(screen.getByRole("button", { name: "终止任务" })).toBeInTheDocument();
     expect(backend.startTask).toHaveBeenCalledWith(
@@ -222,7 +226,7 @@ describe("backend Agent conversation", () => {
     const first = render(<ConversationCreatePage agentApi={backend} />);
     expect(await screen.findByText("同步全校学生")).toBeInTheDocument();
     expect(screen.getByText("任务已经开始。")).toBeInTheDocument();
-    expect(screen.getByText(/Agent 分析/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Agent 分析/).length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "开启新对话" })).toBeDisabled();
     first.unmount();
 

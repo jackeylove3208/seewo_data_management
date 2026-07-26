@@ -12,13 +12,14 @@ import {
   type AgentTask,
 } from "../../api/agent";
 import { BackButton } from "../../components/BackButton";
+import { TaskStatusRail } from "../../components/TaskStatusRail";
 import { presentAgentEvent, presentAgentPhase } from "../agent-events/presentation";
 
 const phases: Array<{ id: AgentPhase; label: string; icon: typeof FileInput }> = [
   { id: "ingest_and_normalize", label: "数据接入", icon: FileInput },
   { id: "analyze_batches", label: "Agent 分析与决策", icon: GitBranch },
   { id: "execute_and_verify", label: "治理执行", icon: ShieldCheck },
-  { id: "generate_report", label: "报告与回滚", icon: Flag },
+  { id: "generate_report", label: "报告生成", icon: Flag },
 ];
 
 function phaseIndex(phase: AgentPhase) {
@@ -171,8 +172,8 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
     refetchInterval: 3000,
   });
 
-  if (task.isLoading && !task.data) return <main className="page-shell task-detail-page"><BackButton fallback="/tasks" label="返回任务列表" /><Skeleton active paragraph={{ rows: 8 }} /></main>;
-  if (task.isError || !task.data) return <main className="page-shell empty-page"><BackButton fallback="/tasks" label="返回任务列表" /><h1>没有找到这个 Agent 任务</h1><p>任务可能已被清理，或当前账号没有访问权限。</p></main>;
+  if (task.isLoading && !task.data) return <main className="page-shell task-detail-page apple-page"><BackButton fallback="/tasks" label="返回任务列表" /><Skeleton active paragraph={{ rows: 8 }} /></main>;
+  if (task.isError || !task.data) return <main className="page-shell empty-page apple-page"><BackButton fallback="/tasks" label="返回任务列表" /><h1>没有找到这个 Agent 任务</h1><p>任务可能已被清理，或当前账号没有访问权限。</p></main>;
 
   const current = task.data;
   const terminal = ["completed", "terminated", "failed"].includes(current.status);
@@ -513,9 +514,19 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
           </Button>
         </div>
       )}
-      <section className="stage-track agent-stage-track" aria-label="Agent 任务处理阶段">
-        {phases.map((phase, index) => { const Icon = phase.icon; const done = completed > index; const active = completed === index && !terminal && !blocked; const phaseBlocked = blocked && completed === index; const phaseLabel = terminationRequested && phase.id === "generate_report" ? "生成终止报告" : phase.label; return <div className={`stage${done ? " completed" : ""}${active ? " active" : ""}${phaseBlocked ? " blocked" : ""}`} key={phase.id}><span className="stage-icon"><Icon size={15} /></span><span className="stage-copy"><strong>{phaseLabel}</strong><small>{done ? "已完成" : phaseBlocked ? "分析已暂停" : active ? "正在处理" : "等待处理"}</small></span></div>; })}
-      </section>
+      <TaskStatusRail
+        stages={phases.map((phase) => {
+          const Icon = phase.icon;
+          return {
+            id: phase.id,
+            label: phase.label,
+            icon: <Icon size={14} />,
+          };
+        })}
+        currentIndex={completed}
+        blocked={blocked}
+        terminationRequested={terminationRequested}
+      />
       {blocked && (
         <section className="agent-blocked-notice" aria-live="assertive">
           <div>
