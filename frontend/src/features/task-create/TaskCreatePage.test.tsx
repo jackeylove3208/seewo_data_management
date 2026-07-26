@@ -38,13 +38,32 @@ describe("manual Agent data sync", () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
-  it("reuses the existing CSV picker but removes legacy scope and processing controls", async () => {
+  it("keeps authority upload but requires a writable original CSV target", async () => {
     const user = userEvent.setup();
-    renderPage();
+    const localSources = vi.fn().mockResolvedValue([
+      {
+        source_ref: "third-party/authority.csv",
+        kind: "csv" as const,
+        writable_as_target: false,
+      },
+      {
+        source_ref: "seewo/current.csv",
+        kind: "csv" as const,
+        writable_as_target: true,
+      },
+    ]);
+    renderPage({ startManualTask: vi.fn(), localSources });
     await user.click(screen.getByRole("button", { name: "手动同步" }));
 
     expect(screen.getByLabelText("选择三方系统 CSV")).toBeInTheDocument();
-    expect(screen.getByLabelText("选择希沃魔方 CSV")).toBeInTheDocument();
+    const targetKind = screen.getByLabelText("希沃魔方连接方式");
+    expect(targetKind).toHaveValue("local");
+    expect(
+      within(targetKind).queryByRole("option", { name: "上传 CSV 副本" }),
+    ).not.toBeInTheDocument();
+    expect(within(targetKind).queryByRole("option", { name: "API 连接" })).not.toBeInTheDocument();
+    expect(within(targetKind).queryByRole("option", { name: "数据库连接" })).not.toBeInTheDocument();
+    expect(await screen.findByLabelText("希沃魔方本地 CSV")).toBeInTheDocument();
     expect(screen.queryByLabelText("核对范围")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "全量对账" })).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: "班级" })).not.toBeInTheDocument();
@@ -53,7 +72,7 @@ describe("manual Agent data sync", () => {
     expect(screen.getByRole("checkbox", { name: "教师" })).toBeChecked();
   });
 
-  it("submits CSV connectors through the Agent task API", async () => {
+  it("uploads authority evidence but sends the writable original target to the Agent task API", async () => {
     const user = userEvent.setup();
     const startManualTask = vi.fn().mockResolvedValue({
       id: "agent-task-1",
@@ -61,10 +80,20 @@ describe("manual Agent data sync", () => {
       phase: "ingest_and_normalize",
       status: "running",
     });
-    renderPage({ startManualTask });
+    const localSources = vi.fn().mockResolvedValue([
+      {
+        source_ref: "seewo/current.csv",
+        kind: "csv" as const,
+        writable_as_target: true,
+      },
+    ]);
+    renderPage({ startManualTask, localSources });
     await user.click(screen.getByRole("button", { name: "手动同步" }));
     await user.upload(screen.getByLabelText("选择三方系统 CSV"), new File([csv], "third-party.csv", { type: "text/csv" }));
-    await user.upload(screen.getByLabelText("选择希沃魔方 CSV"), new File([csv], "seewo.csv", { type: "text/csv" }));
+    await user.selectOptions(
+      await screen.findByLabelText("希沃魔方本地 CSV"),
+      "seewo/current.csv",
+    );
     const start = screen.getByRole("button", { name: "开始同步" });
     await waitFor(() => expect(start).toBeEnabled());
     await user.click(start);
@@ -73,11 +102,11 @@ describe("manual Agent data sync", () => {
     expect(startManualTask).toHaveBeenCalledWith(expect.objectContaining({
       entity_types: ["department", "student", "teacher"],
       source: { kind: "csv", upload_id: "upload-1" },
-      target: { kind: "csv", upload_id: "upload-1" },
+      target: { kind: "local", source_ref: "seewo/current.csv" },
     }), expect.any(String));
   });
 
-  it("supports configured API and database connectors without pretending to upload them", async () => {
+  it("keeps a configured authority connector while requiring a writable local target", async () => {
     const user = userEvent.setup();
     const startManualTask = vi.fn().mockResolvedValue({
       id: "agent-task-2",
@@ -85,19 +114,28 @@ describe("manual Agent data sync", () => {
       phase: "ingest_and_normalize",
       status: "running",
     });
-    renderPage({ startManualTask });
+    const localSources = vi.fn().mockResolvedValue([
+      {
+        source_ref: "seewo/current.csv",
+        kind: "csv" as const,
+        writable_as_target: true,
+      },
+    ]);
+    renderPage({ startManualTask, localSources });
     await user.click(screen.getByRole("button", { name: "手动同步" }));
     await user.selectOptions(screen.getByLabelText("三方系统连接方式"), "api");
     await user.type(screen.getByLabelText("三方系统配置 ID"), "third-party-api");
-    await user.selectOptions(screen.getByLabelText("希沃魔方连接方式"), "database");
-    await user.type(screen.getByLabelText("希沃魔方配置 ID"), "seewo-db");
+    await user.selectOptions(
+      await screen.findByLabelText("希沃魔方本地 CSV"),
+      "seewo/current.csv",
+    );
     await user.click(screen.getByRole("button", { name: "开始同步" }));
 
     expect(await screen.findByText("/tasks/agent-task-2")).toBeInTheDocument();
     expect(ingestionApi.upload).not.toHaveBeenCalled();
     expect(startManualTask).toHaveBeenCalledWith(expect.objectContaining({
       source: { kind: "api", configuration_id: "third-party-api" },
-      target: { kind: "database", configuration_id: "seewo-db" },
+      target: { kind: "local", source_ref: "seewo/current.csv" },
     }), expect.any(String));
   });
 
@@ -129,8 +167,6 @@ describe("manual Agent data sync", () => {
       await screen.findByLabelText("三方系统本地 CSV"),
       "third-party/authority.csv",
     );
-    await user.selectOptions(screen.getByLabelText("希沃魔方连接方式"), "local");
-
     const targetSelect = await screen.findByLabelText("希沃魔方本地 CSV");
     expect(
       within(targetSelect).queryByRole("option", {
@@ -160,17 +196,27 @@ describe("manual Agent data sync", () => {
   it("keeps completed connector selections after a backend rejection", async () => {
     const user = userEvent.setup();
     const startManualTask = vi.fn().mockRejectedValue(new Error("学校已有活动任务"));
-    renderPage({ startManualTask });
+    const localSources = vi.fn().mockResolvedValue([
+      {
+        source_ref: "seewo/current.csv",
+        kind: "csv" as const,
+        writable_as_target: true,
+      },
+    ]);
+    renderPage({ startManualTask, localSources });
     await user.click(screen.getByRole("button", { name: "手动同步" }));
     await user.upload(screen.getByLabelText("选择三方系统 CSV"), new File([csv], "third-party.csv", { type: "text/csv" }));
-    await user.upload(screen.getByLabelText("选择希沃魔方 CSV"), new File([csv], "seewo.csv", { type: "text/csv" }));
+    await user.selectOptions(
+      await screen.findByLabelText("希沃魔方本地 CSV"),
+      "seewo/current.csv",
+    );
     const start = screen.getByRole("button", { name: "开始同步" });
     await waitFor(() => expect(start).toBeEnabled());
     await user.click(start);
 
     expect(await screen.findByText("学校已有活动任务")).toBeInTheDocument();
     expect(screen.getByText("third-party.csv")).toBeInTheDocument();
-    expect(screen.getByText("seewo.csv")).toBeInTheDocument();
+    expect(screen.getByLabelText("希沃魔方本地 CSV")).toHaveValue("seewo/current.csv");
     expect(start).toBeEnabled();
   });
 });

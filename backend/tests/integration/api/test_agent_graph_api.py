@@ -428,40 +428,78 @@ def test_graph_progress_and_tenant_safe_gate_decision(
     assert non_actionable.json()["detail"]["code"] == "stale_graph_gate"
     agent_client.portal.call(set_run_status, "waiting_human")
 
+    delete_finding_ids = [
+        item["finding_id"] for item in delete_gate["items"]
+    ]
+    atomic_failure = agent_client.post(
+        f"/api/agent/tasks/{task_id}/graph/gates/decisions",
+        json={
+            "decisions": [
+                {
+                    "gate_id": gate_id,
+                    "decision": "approve",
+                    "reason": "批量审核",
+                },
+                {
+                    "gate_id": delete_gate_id,
+                    "decision": "approve",
+                    "approved_finding_ids": delete_finding_ids,
+                    "rejected_finding_ids": [],
+                    "graph_cursor": 1,
+                    "membership_hash": "f" * 64,
+                    "reason": "批量审核",
+                },
+            ]
+        },
+    )
+    assert atomic_failure.status_code == 409
+    after_failure = agent_client.get(
+        f"/api/agent/tasks/{task_id}/graph"
+    ).json()
+    assert {
+        item["id"]: item["status"] for item in after_failure["human_gates"]
+    } == {
+        gate_id: "pending",
+        delete_gate_id: "pending",
+    }
+
     approved = agent_client.post(
-        f"/api/agent/tasks/{task_id}/graph/gates/{gate_id}/decision",
-        json={"decision": "approve"},
+        f"/api/agent/tasks/{task_id}/graph/gates/decisions",
+        json={
+            "decisions": [
+                {
+                    "gate_id": gate_id,
+                    "decision": "approve",
+                    "reason": "批量审核",
+                },
+                {
+                    "gate_id": delete_gate_id,
+                    "decision": "approve",
+                    "approved_finding_ids": delete_finding_ids[:2],
+                    "rejected_finding_ids": delete_finding_ids[2:],
+                    "graph_cursor": 1,
+                    "membership_hash": "d" * 64,
+                    "reason": "批量审核",
+                },
+            ]
+        },
     )
     assert approved.status_code == 200, approved.text
-    assert approved.json()["status"] == "approved"
+    assert [item["status"] for item in approved.json()["decisions"]] == [
+        "approved",
+        "approved",
+    ]
 
-    progress_after_decision = agent_client.get(
+    decided_body = agent_client.get(
         f"/api/agent/tasks/{task_id}/graph"
-    )
-    decided_body = progress_after_decision.json()
-    assert decided_body["status"] == "waiting_human"
+    ).json()
+    assert decided_body["status"] == "running"
     decided_gates = {item["id"]: item for item in decided_body["human_gates"]}
     assert decided_gates[gate_id]["status"] == "approved"
     assert decided_gates[gate_id]["actionable"] is False
     assert decided_gates[gate_id]["unavailable_reason_zh"] == "该审批已经处理完成。"
     assert decided_gates[gate_id]["summary_zh"] == "修改 1 条学生手机号"
-    assert decided_gates[delete_gate_id]["status"] == "pending"
-
-    delete_finding_ids = [
-        item["finding_id"] for item in delete_gate["items"]
-    ]
-    mixed = agent_client.post(
-        f"/api/agent/tasks/{task_id}/graph/gates/{delete_gate_id}/decision",
-        json={
-            "decision": "approve",
-            "approved_finding_ids": delete_finding_ids[:2],
-            "rejected_finding_ids": delete_finding_ids[2:],
-            "graph_cursor": 1,
-            "membership_hash": "d" * 64,
-        },
-    )
-    assert mixed.status_code == 200, mixed.text
-    assert mixed.json()["status"] == "approved"
+    assert decided_gates[delete_gate_id]["status"] == "approved"
 
     completed_decisions = agent_client.get(
         f"/api/agent/tasks/{task_id}/graph"

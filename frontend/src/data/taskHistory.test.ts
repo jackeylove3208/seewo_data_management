@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getStoredTasks, removeStoredTask, saveStoredTask, TASK_HISTORY_UPDATED_EVENT } from "./taskHistory";
+import {
+  allTasks,
+  getStoredTasks,
+  removeStoredTask,
+  saveStoredTask,
+  TASK_HISTORY_UPDATED_EVENT,
+} from "./taskHistory";
 
 const baseTask = {
   title: "任务",
@@ -16,6 +22,10 @@ const baseTask = {
 
 describe("task history removal", () => {
   beforeEach(() => localStorage.clear());
+
+  it("does not inject obsolete demonstration tasks into real history", () => {
+    expect(allTasks()).toEqual([]);
+  });
 
   it("removes one stored task and publishes a history update", () => {
     saveStoredTask({ ...baseTask, id: "task-2", title: "保留任务" });

@@ -1,9 +1,10 @@
 import json
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.agent_reporting.service import AgentReportingService
 from app.ai.providers.base import LLMRequest, LLMResponse
@@ -12,6 +13,7 @@ from app.core.config import Settings
 from app.core.security import OperatorContext
 from app.main import create_app
 from app.models.reconciliation import ReconciliationTask
+from app.models.snapshots import Snapshot, SourceFile
 
 
 class ConversationProvider:
@@ -382,6 +384,90 @@ def test_local_task_rejects_target_outside_server_write_roots(
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "invalid_agent_intent"
     assert agent_client.get("/api/agent/active-lock").json()["active"] is False
+
+
+def test_uploaded_authority_can_bind_to_a_writable_local_target(
+    graph_agent_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    source_id = _upload(
+        graph_agent_client,
+        tmp_path,
+        "authoritative",
+        "uploaded-authority.csv",
+    )
+    root = tmp_path / "mixed-local-target"
+    target = root / "seewo/target.csv"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        "类别,姓名,编号,班级,电话,邮箱\n"
+        "学生,张三,S001,一班,13800000002,student@example.test\n",
+        encoding="utf-8",
+    )
+    graph_agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
+    graph_agent_client.app.state.settings.agent_local_write_roots = (
+        (root / "seewo").resolve(),
+    )
+
+    response = graph_agent_client.post(
+        "/api/agent/tasks",
+        headers={"Idempotency-Key": "uploaded-authority-local-target"},
+        json={
+            "title": "直接写回希沃原文件",
+            "entity_types": ["student"],
+            "source": {"kind": "csv", "upload_id": source_id},
+            "target": {"kind": "local", "source_ref": "seewo/target.csv"},
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    task_id = response.json()["id"]
+
+    async def bound_files() -> list[tuple[str, str, bool]]:
+        async with graph_agent_client.app.state.database.session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(
+                        Snapshot.source_role,
+                        SourceFile.storage_path,
+                        SourceFile.managed_storage,
+                    )
+                    .join(SourceFile, SourceFile.id == Snapshot.source_file_id)
+                    .where(Snapshot.task_id == UUID(task_id))
+                    .order_by(Snapshot.source_role)
+                )
+            ).all()
+            return [
+                (str(role), str(path), bool(managed_storage))
+                for role, path, managed_storage in rows
+            ]
+
+    files = graph_agent_client.portal.call(bound_files)
+    assert [role for role, _path, _managed in files] == ["authoritative", "target"]
+    assert files[1] == ("target", str(target), False)
+
+    second_source_id = _upload(
+        graph_agent_client,
+        tmp_path,
+        "authoritative",
+        "second-uploaded-authority.csv",
+    )
+    graph_agent_client.app.dependency_overrides[get_operator_context] = lambda: OperatorContext(
+        operator_id="second-demo-operator",
+        tenant_id="second-demo-school",
+    )
+    repeated = graph_agent_client.post(
+        "/api/agent/tasks",
+        headers={"Idempotency-Key": "repeat-same-local-target"},
+        json={
+            "title": "再次同步同一个希沃原文件",
+            "entity_types": ["student"],
+            "source": {"kind": "csv", "upload_id": second_source_id},
+            "target": {"kind": "local", "source_ref": "seewo/target.csv"},
+        },
+    )
+
+    assert repeated.status_code == 202, repeated.text
 
 
 def test_conversation_returns_sanitized_error_for_invalid_model_output(

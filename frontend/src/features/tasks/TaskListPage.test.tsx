@@ -27,23 +27,7 @@ describe("task history", () => {
     expect(screen.getByText("/tasks/new")).toBeInTheDocument();
   });
 
-  it("opens a historical task when its row body is clicked", async () => {
-    const user = userEvent.setup();
-    render(
-      <MemoryRouter initialEntries={["/tasks"]}>
-        <Routes>
-          <Route path="/tasks" element={<TaskListPage />} />
-          <Route path="/tasks/:taskId" element={<LocationProbe />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    await user.click(screen.getByText("三方全校数据核对"));
-
-    expect(screen.getByText("/tasks/demo-001")).toBeInTheDocument();
-  });
-
-  it("shows deletion only for real task rows", () => {
+  it("shows only real task rows and allows an eligible task to be deleted", () => {
     saveStoredTask({
       id: "real-task",
       title: "真实分析任务",
@@ -59,6 +43,7 @@ describe("task history", () => {
     render(<MemoryRouter><TaskListPage /></MemoryRouter>);
 
     expect(screen.getByRole("button", { name: "删除真实分析任务" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "删除三方全校数据核对" })).not.toBeInTheDocument();
+    expect(screen.queryByText("三方全校数据核对")).not.toBeInTheDocument();
+    expect(screen.queryByText("高中部教师数据核对")).not.toBeInTheDocument();
   });
 });

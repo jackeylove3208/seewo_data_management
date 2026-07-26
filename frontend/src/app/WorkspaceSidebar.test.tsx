@@ -57,15 +57,15 @@ describe("workspace sidebar", () => {
     expect(screen.queryByRole("link", { name: "外部数据同步" })).not.toBeInTheDocument();
   });
 
-  it("shows recent task summaries and highlights the current task", async () => {
+  it("does not show the two obsolete hard-coded demonstration tasks", async () => {
     render(
-      <MemoryRouter initialEntries={["/tasks/demo-001"]}>
+      <MemoryRouter initialEntries={["/tasks"]}>
         <WorkspaceSidebar mobileOpen={false} onMobileClose={() => undefined} />
       </MemoryRouter>,
     );
 
-    expect(screen.getByRole("link", { name: /三方全校数据核对/ })).toHaveAttribute("aria-current", "page");
-    expect(screen.getByText("9 个问题")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /三方全校数据核对/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /高中部教师数据核对/ })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "查看全部历史" })).toHaveAttribute("href", "/executions");
     expect(await screen.findByText("后端未连接")).toBeInTheDocument();
   });
@@ -123,7 +123,6 @@ describe("workspace sidebar", () => {
       expect(screen.getByRole("link", { name: /七年级教师核对/ })).toBeInTheDocument();
     });
     expect(screen.getByRole("button", { name: "删除七年级教师核对" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "删除三方全校数据核对" })).not.toBeInTheDocument();
   });
 
   it("does not restore stale local tasks after authoritative history refresh", async () => {

@@ -309,6 +309,127 @@ def test_migration_revision_identifiers_fit_alembic_default_version_column() -> 
     assert all(len(revision) <= 32 for revision in revision_identifiers)
 
 
+def test_source_storage_ownership_backfills_local_references_and_guards_downgrade(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    database_path = tmp_path / "source-storage-ownership.db"
+    sync_url = f"sqlite:///{database_path}"
+    migration_url = f"sqlite+aiosqlite:///{database_path}"
+    monkeypatch.setenv("RECONCILIATION_DATABASE_URL", migration_url)
+    config = Config("alembic.ini")
+    command.upgrade(config, "0031_agent_reviewable_risk")
+    engine = create_engine(sync_url)
+    first_task_id = uuid4().hex
+    external_path = str(tmp_path / "seewo-original.csv")
+    intent = (
+        '{"source":{"kind":"csv"},'
+        '"target":{"kind":"local","source_ref":"seewo/original.csv"}}'
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO reconciliation_tasks (
+                    id, tenant_id, scope_id, snapshot_mode, entity_types, status,
+                    stage, workflow_version, task_kind, title, agent_intent,
+                    idempotency_key, request_hash, created_at
+                ) VALUES (
+                    :id, 'school-1', 'all', 'full', '[\"student\"]', 'completed',
+                    'reporting', 'agent-graph-v1', 'sync', '旧本地任务', :intent,
+                    :key, :request_hash, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": first_task_id,
+                "intent": intent,
+                "key": f"local-task-{uuid4()}",
+                "request_hash": "a" * 64,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO source_files (
+                    id, task_id, source_role, original_name, storage_name,
+                    storage_path, sha256, size_bytes, detected_encoding, created_at
+                ) VALUES (
+                    :id, :task_id, 'target', 'original.csv', :storage_name,
+                    :storage_path, :sha256, 4, 'utf-8', CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": uuid4().hex,
+                "task_id": first_task_id,
+                "storage_name": f"local-{uuid4().hex}",
+                "storage_path": external_path,
+                "sha256": "b" * 64,
+            },
+        )
+
+    command.upgrade(config, "head")
+
+    with engine.begin() as connection:
+        assert connection.scalar(
+            text(
+                "SELECT managed_storage FROM source_files "
+                "WHERE task_id = :task_id"
+            ),
+            {"task_id": first_task_id},
+        ) == 0
+        second_task_id = uuid4().hex
+        connection.execute(
+            text(
+                """
+                INSERT INTO reconciliation_tasks (
+                    id, tenant_id, scope_id, snapshot_mode, entity_types, status,
+                    stage, workflow_version, task_kind, title, agent_intent,
+                    idempotency_key, request_hash, created_at
+                ) VALUES (
+                    :id, 'school-2', 'all', 'full', '[\"student\"]', 'completed',
+                    'reporting', 'agent-graph-v1', 'sync', '第二次本地任务', :intent,
+                    :key, :request_hash, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": second_task_id,
+                "intent": intent,
+                "key": f"local-task-{uuid4()}",
+                "request_hash": "c" * 64,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO source_files (
+                    id, task_id, source_role, original_name, storage_name,
+                    storage_path, managed_storage, sha256, size_bytes,
+                    detected_encoding, created_at
+                ) VALUES (
+                    :id, :task_id, 'target', 'original.csv', :storage_name,
+                    :storage_path, 0, :sha256, 4, 'utf-8', CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": uuid4().hex,
+                "task_id": second_task_id,
+                "storage_name": f"local-{uuid4().hex}",
+                "storage_path": external_path,
+                "sha256": "d" * 64,
+            },
+        )
+
+    with pytest.raises(
+        RuntimeError,
+        match="repeated external source references",
+    ):
+        command.downgrade(config, "0031_agent_reviewable_risk")
+
+
 def test_initial_migration_creates_ingestion_tables(tmp_path: Path) -> None:
     database_path = tmp_path / "migration.db"
     config = Config("alembic.ini")

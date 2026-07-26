@@ -54,10 +54,7 @@ export function WorkspaceSidebar({
     const refresh = () => {
       void agentApi.history(undefined, controller.signal)
         .then((page) => {
-          setTasks([
-            ...page.items.map(toTaskHistoryItem),
-            ...allTasks().filter((task) => task.isDemo),
-          ].slice(0, RECENT_TASK_LIMIT));
+          setTasks(page.items.map(toTaskHistoryItem).slice(0, RECENT_TASK_LIMIT));
         })
         .catch(() => {
           if (!controller.signal.aborted) {

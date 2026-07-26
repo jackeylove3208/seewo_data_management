@@ -127,6 +127,39 @@ async def test_deletes_analyzed_task_and_owned_records(session, tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_deleting_task_keeps_referenced_local_source_file(
+    session,
+    tmp_path: Path,
+) -> None:
+    removable = task()
+    external_path = tmp_path / "authorized-original.csv"
+    external_path.write_text("编号,姓名\n001,测试", encoding="utf-8")
+    session.add_all(
+        [
+            removable,
+            analysis_run(removable.id),
+            SourceFile(
+                id=uuid4(),
+                task_id=removable.id,
+                source_role="target",
+                original_name=external_path.name,
+                storage_name="external-target-reference",
+                storage_path=str(external_path),
+                sha256="b" * 64,
+                size_bytes=external_path.stat().st_size,
+                managed_storage=False,
+            ),
+        ]
+    )
+    await session.flush()
+
+    await TaskDeletionService(session).delete(removable.id, "school-1")
+
+    assert await session.get(ReconciliationTask, removable.id) is None
+    assert external_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_deletes_rematching_and_quality_records_with_task(session) -> None:
     removable = task()
     session.add(removable)

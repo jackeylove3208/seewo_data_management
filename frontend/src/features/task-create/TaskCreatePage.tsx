@@ -102,7 +102,7 @@ export function TaskCreatePage({
     title: "全校组织数据同步",
     entityTypes: [...entityTypes],
     source: { kind: "csv" },
-    target: { kind: "csv" },
+    target: { kind: "local" },
   });
   const [submissionState, setSubmissionState] = useState<SubmissionState>("idle");
   const [submitError, setSubmitError] = useState<string>();
@@ -239,8 +239,19 @@ export function TaskCreatePage({
               return (
                 <fieldset className="draft-fieldset" key={role}>
                   <legend>{label}连接方式</legend>
-                  <select aria-label={`${label}连接方式`} disabled={isSubmitting} value={connector?.kind ?? "csv"} onChange={(event) => setConnectorKind(role, event.target.value as ConnectorKind)}>
-                    <option value="csv">上传 CSV 副本</option><option value="local">本地授权 CSV（直接写回）</option><option value="api">API 连接</option><option value="database">数据库连接</option>
+                  <select aria-label={`${label}连接方式`} disabled={isSubmitting} value={connector?.kind ?? (role === "target" ? "local" : "csv")} onChange={(event) => setConnectorKind(role, event.target.value as ConnectorKind)}>
+                    {role === "source" && <option value="csv">上传 CSV 副本</option>}
+                    <option value="local">
+                      {role === "target"
+                        ? "本地授权 CSV（直接写回原文件）"
+                        : "本地授权 CSV（只读）"}
+                    </option>
+                    {role === "source" && (
+                      <>
+                        <option value="api">API 连接</option>
+                        <option value="database">数据库连接</option>
+                      </>
+                    )}
                   </select>
                   {connector?.kind === "csv" && <AttachmentPicker label={`${label} CSV`} inputLabel={`选择${label} CSV`} tone={role === "source" ? "source" : "target"} connector={connector} disabled={isSubmitting} onChange={(file) => void prepareFile(role, file)} />}
                   {connector?.kind === "local" && (
@@ -281,7 +292,7 @@ export function TaskCreatePage({
           </div>
           {submitError && <Alert className="draft-error" type="error" showIcon message={submitError} />}
           <Button className="sync-start-button" type="primary" size="large" loading={isSubmitting} disabled={!ready || isSubmitting} onClick={() => void createTask()}>开始同步</Button>
-          <p className="draft-footnote">提交后进入 Agent 持久化进度，不会由浏览器直接修改数据。</p>
+          <p className="draft-footnote">提交后由后端 Agent 执行；审批通过的治理结果会原子写回所选希沃原文件，不再生成需要下载的治理副本。</p>
         </section>
       )}
     </main>

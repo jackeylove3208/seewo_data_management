@@ -21,6 +21,7 @@ class FileRepository:
         sha256: str,
         size_bytes: int,
         detected_encoding: str | None = None,
+        managed_storage: bool = True,
     ) -> SourceFile:
         source_file = SourceFile(
             id=uuid4(),
@@ -31,6 +32,7 @@ class FileRepository:
             sha256=sha256,
             size_bytes=size_bytes,
             detected_encoding=detected_encoding,
+            managed_storage=managed_storage,
         )
         self.session.add(source_file)
         return source_file

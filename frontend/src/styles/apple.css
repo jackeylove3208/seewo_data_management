@@ -535,6 +535,68 @@ select {
   gap: 8px;
 }
 
+.apple-page .graph-medium-review-panel {
+  display: grid;
+  gap: 18px;
+  border-color: rgba(119, 157, 255, 0.26);
+  background:
+    linear-gradient(145deg, rgba(20, 42, 82, 0.98), rgba(24, 35, 72, 0.94));
+}
+
+.apple-page .graph-medium-review-heading h2,
+.apple-page .graph-medium-review-heading p,
+.apple-page .graph-medium-review-group h3,
+.apple-page .graph-medium-review-group p {
+  margin: 0;
+}
+
+.apple-page .graph-medium-review-heading h2 {
+  margin-top: 10px;
+  color: var(--apple-ink);
+}
+
+.apple-page .graph-medium-review-heading p {
+  margin-top: 8px;
+  color: var(--apple-ink-soft);
+  line-height: 1.7;
+}
+
+.apple-page .graph-medium-review-groups {
+  display: grid;
+  gap: 10px;
+}
+
+.apple-page .graph-medium-review-group {
+  padding: 16px 18px;
+  border: 1px solid rgba(167, 196, 255, 0.14);
+  border-radius: 18px;
+  background: rgba(8, 21, 49, 0.42);
+}
+
+.apple-page .graph-medium-review-group-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.apple-page .graph-medium-review-group-heading h3 {
+  color: var(--apple-ink);
+  font-size: 15px;
+}
+
+.apple-page .graph-medium-review-group-heading p {
+  margin-top: 5px;
+  color: var(--apple-ink-soft);
+  font-size: 12px;
+}
+
+.apple-page .graph-medium-review-panel > .graph-medium-review-actions {
+  justify-content: flex-end;
+  padding-top: 16px;
+  border-top: 1px solid rgba(191, 219, 254, 0.12);
+}
+
 .agent-report-page {
   color: var(--apple-ink);
 }

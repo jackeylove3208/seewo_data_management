@@ -170,7 +170,11 @@ class TaskDeletionService:
         snapshot_ids = [row.id for row in snapshot_rows]
         file_rows = (
             await self.session.execute(
-                select(SourceFile.id, SourceFile.storage_path).where(SourceFile.task_id == task_id)
+                select(
+                    SourceFile.id,
+                    SourceFile.storage_path,
+                    SourceFile.managed_storage,
+                ).where(SourceFile.task_id == task_id)
             )
         ).all()
         source_file_ids = [row.id for row in file_rows]
@@ -313,7 +317,9 @@ class TaskDeletionService:
         )
         await self.session.commit()
 
-        stored_paths = [row.storage_path for row in file_rows]
+        stored_paths = [
+            row.storage_path for row in file_rows if row.managed_storage
+        ]
         quarantine_paths = [row.quarantine_path for row in snapshot_rows if row.quarantine_path]
         for path in [*stored_paths, *quarantine_paths]:
             try:

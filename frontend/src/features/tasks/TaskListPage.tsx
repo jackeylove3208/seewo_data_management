@@ -32,7 +32,7 @@ export function TaskListPage() {
   useEffect(() => {
     const controller = new AbortController();
     void agentApi.history(undefined, controller.signal)
-      .then((page) => setBackendTasks([...page.items.map(toTaskHistoryItem), ...allTasks().filter((task) => task.isDemo)]))
+      .then((page) => setBackendTasks(page.items.map(toTaskHistoryItem)))
       .catch(() => undefined);
     return () => controller.abort();
   }, []);

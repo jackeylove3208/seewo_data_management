@@ -52,4 +52,34 @@ describe("Agent API", () => {
     expect(calls[1]?.[0]).toBe("/api/agent/rollback-tasks/rollback-task-1/confirm");
     expect(calls[2]?.[0]).toBe("/api/agent/rollback-tasks/rollback-task-2/reject");
   });
+
+  it("submits a frozen group of gate decisions in one request", async () => {
+    await agentApi.decideGraphGates("task-1", [
+      {
+        gate_id: "gate-1",
+        decision: "approve",
+        approved_finding_ids: ["finding-1"],
+        rejected_finding_ids: [],
+        graph_cursor: 8,
+        membership_hash: "a".repeat(64),
+      },
+      {
+        gate_id: "gate-2",
+        decision: "reject",
+        approved_finding_ids: [],
+        rejected_finding_ids: ["finding-2"],
+        graph_cursor: 8,
+        membership_hash: "b".repeat(64),
+      },
+    ]);
+
+    const [path, request] = vi.mocked(fetch).mock.calls[0]!;
+    expect(path).toBe("/api/agent/tasks/task-1/graph/gates/decisions");
+    expect(JSON.parse(String((request as RequestInit).body))).toEqual({
+      decisions: [
+        expect.objectContaining({ gate_id: "gate-1", decision: "approve" }),
+        expect.objectContaining({ gate_id: "gate-2", decision: "reject" }),
+      ],
+    });
+  });
 });

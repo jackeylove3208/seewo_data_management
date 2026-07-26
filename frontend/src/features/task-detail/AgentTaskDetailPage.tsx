@@ -92,7 +92,7 @@ function ApprovalItemDetails({
                   ))}
                 </dl>
               )}
-              {onReview && (
+              {reviewDecisions && (
                 <div className="graph-item-review">
                   <span
                     className={`graph-item-review-status ${reviewDecisions?.[item.finding_id] ?? "approved"}`}
@@ -103,7 +103,7 @@ function ApprovalItemDetails({
                         ? "已选择拒绝"
                         : "默认同意"}
                   </span>
-                  {!reviewCompleted && (
+                  {!reviewCompleted && onReview && (
                     <span className="graph-item-review-actions">
                       <Button
                         aria-label={`拒绝${entityName}`}
@@ -210,6 +210,12 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
         )
       ),
   ) ?? [];
+  const mediumGates = visibleGates.filter(
+    (gate) => gate.kind === "high_risk_approval" && gate.risk === "medium",
+  );
+  const otherGates = visibleGates.filter(
+    (gate) => !(gate.kind === "high_risk_approval" && gate.risk === "medium"),
+  );
   const blockedEvent = blocked
     ? events.data?.events
       .slice()
@@ -350,61 +356,87 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
     }));
   }
 
-  function setAllGateItemDecisions(
-    gate: AgentGraphHumanGate,
-    decision: ReviewDecision,
-  ) {
+  function setAllMediumRiskDecisions(decision: ReviewDecision) {
     setGateItemDecisions((current) => ({
       ...current,
-      [gate.id]: Object.fromEntries(
-        (gate.items ?? []).map((item) => [item.finding_id, decision]),
+      ...Object.fromEntries(
+        mediumGates
+          .filter(
+            (gate) =>
+              (gateDecisions[gate.id] ?? gate.status) === "pending"
+              && gate.actionable !== false,
+          )
+          .map((gate) => [
+            gate.id,
+            Object.fromEntries(
+              (gate.items ?? []).map((item) => [item.finding_id, decision]),
+            ),
+          ]),
       ),
     }));
   }
 
-  async function submitMediumRiskReview(gate: AgentGraphHumanGate) {
-    if (!gate.membership_hash || graph.data?.graph_cursor === undefined) {
+  async function submitMediumRiskReviews() {
+    const pendingGates = mediumGates.filter(
+      (gate) =>
+        (gateDecisions[gate.id] ?? gate.status) === "pending"
+        && gate.actionable !== false,
+    );
+    if (!pendingGates.length) return;
+    const graphCursor = graph.data?.graph_cursor;
+    const invalidGate = pendingGates.find((gate) => !gate.membership_hash);
+    if (graphCursor === undefined || invalidGate) {
+      const gateId = invalidGate?.id ?? pendingGates[0].id;
       setGateErrors((currentErrors) => ({
         ...currentErrors,
-        [gate.id]: "审核清单缺少版本信息，请刷新任务后重试",
+        [gateId]: "审核清单缺少版本信息，请刷新任务后重试",
       }));
       return;
     }
-    const approvedFindingIds: string[] = [];
-    const rejectedFindingIds: string[] = [];
-    for (const item of gate.items ?? []) {
-      if (reviewDecisionFor(gate, item.finding_id) === "rejected") {
-        rejectedFindingIds.push(item.finding_id);
-      } else {
-        approvedFindingIds.push(item.finding_id);
-      }
-    }
-    setGateLoading(gate.id);
-    setGateErrors((currentErrors) => ({ ...currentErrors, [gate.id]: "" }));
+    setGateLoading("medium-risk-bulk-review");
     try {
-      const result = await agentApi.decideGraphGate(
-        taskId,
-        gate.id,
-        approvedFindingIds.length ? "approve" : "reject",
-        "操作人完成中风险逐项复核",
-        {
+      const decisions = pendingGates.map((gate) => {
+        const approvedFindingIds: string[] = [];
+        const rejectedFindingIds: string[] = [];
+        for (const item of gate.items ?? []) {
+          if (reviewDecisionFor(gate, item.finding_id) === "rejected") {
+            rejectedFindingIds.push(item.finding_id);
+          } else {
+            approvedFindingIds.push(item.finding_id);
+          }
+        }
+        return {
+          gate_id: gate.id,
+          decision: approvedFindingIds.length ? "approve" as const : "reject" as const,
+          reason: "操作人完成中风险批量复核",
           approved_finding_ids: approvedFindingIds,
           rejected_finding_ids: rejectedFindingIds,
-          graph_cursor: graph.data.graph_cursor,
-          membership_hash: gate.membership_hash,
-        },
-      );
+          graph_cursor: graphCursor,
+          membership_hash: gate.membership_hash!,
+        };
+      });
+      setGateErrors((currentErrors) => ({
+        ...currentErrors,
+        ...Object.fromEntries(pendingGates.map((gate) => [gate.id, ""])),
+      }));
+      const result = await agentApi.decideGraphGates(taskId, decisions);
       setGateDecisions((currentDecisions) => ({
         ...currentDecisions,
-        [gate.id]: result.status,
+        ...Object.fromEntries(
+          result.decisions.map((decision) => [
+            decision.gate_id,
+            decision.status,
+          ]),
+        ),
       }));
-      await Promise.all([task.refetch(), graph.refetch(), events.refetch()]);
     } catch (error) {
       setGateErrors((currentErrors) => ({
         ...currentErrors,
-        [gate.id]: error instanceof Error ? error.message : "中风险复核未完成",
+        [pendingGates[0].id]:
+          error instanceof Error ? error.message : "中风险复核未完成",
       }));
     } finally {
+      await Promise.all([task.refetch(), graph.refetch(), events.refetch()]);
       setGateLoading(undefined);
     }
   }
@@ -506,7 +538,102 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
           </div>
         </section>
       )}
-      {visibleGates.map((gate) => gate.kind === "identity_conflict" ? (
+      {mediumGates.length > 0 && (
+        <section
+          className="graph-approval-card graph-medium-review-panel"
+          aria-label="中风险批量审核"
+        >
+          <header className="graph-medium-review-heading">
+            <div>
+              <Tag color="processing">中风险 · 默认全部同意</Tag>
+              <h2>中风险治理建议</h2>
+              <p>
+                共 {mediumGates.reduce((total, gate) => total + gate.item_count, 0)} 条记录，
+                已归入 {mediumGates.length} 类操作。可一次全部同意或拒绝，也可展开类别后单独调整。
+              </p>
+            </div>
+          </header>
+          <div className="graph-medium-review-groups">
+            {mediumGates.map((gate) => {
+              const status = gateDecisions[gate.id] ?? gate.status;
+              return (
+                <article className={`graph-medium-review-group graph-approval-${status}`} key={gate.id}>
+                  <div className="graph-medium-review-group-heading">
+                    <div>
+                      <h3>{gate.summary_zh ?? "中风险治理操作"}</h3>
+                      <p>{gate.item_count} 条 · {gate.risk_reason_zh ?? "默认建议同意"}</p>
+                    </div>
+                    {status === "approved" ? (
+                      <Tag color="success">已允许</Tag>
+                    ) : status === "rejected" ? (
+                      <Tag color="error">已拒绝</Tag>
+                    ) : (
+                      <Tag color="processing">默认同意</Tag>
+                    )}
+                  </div>
+                  <ApprovalItemDetails
+                    gate={gate}
+                    reviewCompleted={status !== "pending"}
+                    reviewDecisions={Object.fromEntries(
+                      (gate.items ?? []).map((item) => [
+                        item.finding_id,
+                        reviewDecisionFor(gate, item.finding_id),
+                      ]),
+                    )}
+                    onReview={
+                      status === "pending"
+                        && gate.actionable !== false
+                        && gateLoading !== "medium-risk-bulk-review"
+                        ? (findingId, decision) =>
+                          setGateItemDecision(gate, findingId, decision)
+                        : undefined
+                    }
+                  />
+                  {status === "pending" && gate.actionable === false && (
+                    <Alert
+                      type="warning"
+                      showIcon
+                      message="审批不可用"
+                      description={gate.unavailable_reason_zh ?? "该审批不属于任务当前执行节点。"}
+                    />
+                  )}
+                  {gateErrors[gate.id] && (
+                    <Alert type="error" showIcon message={gateErrors[gate.id]} />
+                  )}
+                </article>
+              );
+            })}
+          </div>
+          {mediumGates.some(
+            (gate) =>
+              (gateDecisions[gate.id] ?? gate.status) === "pending"
+              && gate.actionable !== false,
+          ) && (
+            <div className="graph-approval-actions graph-medium-review-actions">
+              <Button
+                disabled={gateLoading === "medium-risk-bulk-review"}
+                onClick={() => setAllMediumRiskDecisions("rejected")}
+              >
+                全部拒绝
+              </Button>
+              <Button
+                disabled={gateLoading === "medium-risk-bulk-review"}
+                onClick={() => setAllMediumRiskDecisions("approved")}
+              >
+                全部同意
+              </Button>
+              <Button
+                type="primary"
+                loading={gateLoading === "medium-risk-bulk-review"}
+                onClick={() => void submitMediumRiskReviews()}
+              >
+                按当前选择继续
+              </Button>
+            </div>
+          )}
+        </section>
+      )}
+      {otherGates.map((gate) => gate.kind === "identity_conflict" ? (
         <section className="graph-approval-card graph-clarification-card" key={gate.id}>
           <div>
             <Tag color="warning">需要说明</Tag>
@@ -559,9 +686,7 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
           key={gate.id}
         >
           <div className="graph-approval-main">
-            {gate.risk === "medium" && (gateDecisions[gate.id] ?? gate.status) === "pending" ? (
-              <Tag color="processing">中风险 · 默认同意</Tag>
-            ) : (gateDecisions[gate.id] ?? gate.status) === "approved" ? (
+            {(gateDecisions[gate.id] ?? gate.status) === "approved" ? (
               <Tag color="success">已允许</Tag>
             ) : (gateDecisions[gate.id] ?? gate.status) === "rejected" ? (
               <Tag color="error">已拒绝</Tag>
@@ -574,21 +699,6 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
             <ApprovalItemDetails
               gate={gate}
               reviewCompleted={(gateDecisions[gate.id] ?? gate.status) !== "pending"}
-              reviewDecisions={
-                gate.risk === "medium"
-                  ? Object.fromEntries(
-                    (gate.items ?? []).map((item) => [
-                      item.finding_id,
-                      reviewDecisionFor(gate, item.finding_id),
-                    ]),
-                  )
-                  : undefined
-              }
-              onReview={
-                gate.risk === "medium"
-                  ? (findingId, decision) => setGateItemDecision(gate, findingId, decision)
-                  : undefined
-              }
             />
             {(gateDecisions[gate.id] ?? gate.status) === "pending"
               && gate.actionable === false && (
@@ -605,24 +715,10 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
           )}
           {(gateDecisions[gate.id] ?? gate.status) === "pending"
             && gate.actionable !== false && (
-            gate.risk === "medium" ? (
-              <div className="graph-approval-actions graph-medium-review-actions">
-                <Button onClick={() => setAllGateItemDecisions(gate, "rejected")}>全部拒绝</Button>
-                <Button onClick={() => setAllGateItemDecisions(gate, "approved")}>全部同意</Button>
-                <Button
-                  type="primary"
-                  loading={gateLoading === gate.id}
-                  onClick={() => void submitMediumRiskReview(gate)}
-                >
-                  按当前选择继续
-                </Button>
-              </div>
-            ) : (
-              <div className="graph-approval-actions">
-                <Button icon={<X size={14} />} loading={gateLoading === gate.id} onClick={() => void decideGate(gate.id, "reject")}>拒绝</Button>
-                <Button type="primary" icon={<Check size={14} />} loading={gateLoading === gate.id} onClick={() => void decideGate(gate.id, "approve")}>同意</Button>
-              </div>
-            )
+            <div className="graph-approval-actions">
+              <Button icon={<X size={14} />} loading={gateLoading === gate.id} onClick={() => void decideGate(gate.id, "reject")}>拒绝</Button>
+              <Button type="primary" icon={<Check size={14} />} loading={gateLoading === gate.id} onClick={() => void decideGate(gate.id, "approve")}>同意</Button>
+            </div>
           )}
         </section>
       ))}

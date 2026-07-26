@@ -4,12 +4,14 @@ from uuid import UUID, uuid4
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     CheckConstraint,
     ForeignKey,
     String,
     UniqueConstraint,
     Uuid,
     event,
+    true,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -28,7 +30,12 @@ class SourceFile(Base, TimestampMixin):
     source_role: Mapped[str] = mapped_column(String(32))
     original_name: Mapped[str] = mapped_column(String(255))
     storage_name: Mapped[str] = mapped_column(String(80), unique=True)
-    storage_path: Mapped[str] = mapped_column(String(1024), unique=True)
+    storage_path: Mapped[str] = mapped_column(String(1024))
+    managed_storage: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        server_default=true(),
+    )
     sha256: Mapped[str] = mapped_column(String(64), index=True)
     size_bytes: Mapped[int] = mapped_column(BigInteger)
     detected_encoding: Mapped[str | None] = mapped_column(String(32), nullable=True)

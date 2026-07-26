@@ -83,3 +83,20 @@ class AgentGraphGateDecisionResponse(BaseModel):
     gate_id: UUID
     status: Literal["approved", "rejected"]
     graph_cursor: int
+
+
+class AgentGraphGateBatchDecisionItem(AgentGraphGateDecisionRequest):
+    gate_id: UUID
+
+
+class AgentGraphGateBatchDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decisions: tuple[AgentGraphGateBatchDecisionItem, ...] = Field(
+        min_length=1,
+        max_length=100,
+    )
+
+
+class AgentGraphGateBatchDecisionResponse(BaseModel):
+    decisions: tuple[AgentGraphGateDecisionResponse, ...]

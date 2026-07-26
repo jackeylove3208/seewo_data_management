@@ -104,10 +104,17 @@ class AgentTaskService:
                 source_id=intent.source.upload_id,
                 target_id=intent.target.upload_id,
             )
-        if intent.source.kind == "local" and intent.target.kind == "local":
+        elif intent.source.kind == "local" and intent.target.kind == "local":
             await self._bind_local_pair(
                 task,
                 source_ref=intent.source.source_ref,
+                target_ref=intent.target.source_ref,
+            )
+        elif intent.source.kind == "csv" and intent.target.kind == "local":
+            assert intent.source.upload_id is not None
+            await self._bind_uploaded_source_local_target(
+                task,
+                source_id=intent.source.upload_id,
                 target_ref=intent.target.source_ref,
             )
         run = await AgentSupervisorService(
@@ -160,6 +167,7 @@ class AgentTaskService:
             sha256=source_material.sha256,
             size_bytes=source_material.size_bytes,
             detected_encoding="utf-8",
+            managed_storage=False,
         )
         target = await files.create(
             source_role=SourceRole.TARGET,
@@ -169,11 +177,48 @@ class AgentTaskService:
             sha256=target_material.sha256,
             size_bytes=target_material.size_bytes,
             detected_encoding="utf-8",
+            managed_storage=False,
         )
         await self.session.flush()
         await files.bind_to_task(source.id, task.id)
         await files.bind_to_task(target.id, task.id)
         self.session.add_all((_agent_snapshot(task.id, source), _agent_snapshot(task.id, target)))
+        await self.session.flush()
+
+    async def _bind_uploaded_source_local_target(
+        self,
+        task: ReconciliationTask,
+        *,
+        source_id: UUID,
+        target_ref: str | None,
+    ) -> None:
+        if self.settings is None or target_ref is None:
+            raise ValueError("local Agent target requires a configured source reference")
+        files = FileRepository(self.session)
+        source = await files.get(source_id)
+        if source is None:
+            raise LookupError("Agent CSV upload not found")
+        if source.source_role != SourceRole.AUTHORITATIVE.value:
+            raise ValueError("Agent CSV upload role mismatch")
+        target_material = LocalSourceService(self.settings).describe_target_for_write(
+            target_ref
+        )
+        target = await files.create(
+            source_role=SourceRole.TARGET,
+            original_name=target_material.path.name,
+            storage_name=f"local-{uuid4().hex}",
+            storage_path=target_material.path,
+            sha256=target_material.sha256,
+            size_bytes=target_material.size_bytes,
+            detected_encoding="utf-8",
+            managed_storage=False,
+        )
+        await self.session.flush()
+        await files.bind_to_task(source.id, task.id)
+        await files.bind_to_task(target.id, task.id)
+        self.session.add_all(
+            (_agent_snapshot(task.id, source), _agent_snapshot(task.id, target))
+        )
         await self.session.flush()
 
     async def get(self, task_id: UUID) -> tuple[ReconciliationTask, AgentRunRecord]:

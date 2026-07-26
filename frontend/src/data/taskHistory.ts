@@ -80,7 +80,7 @@ export function findTask(taskId: string) {
 }
 
 export function allTasks() {
-  return [...getStoredTasks(), ...demoTasks].sort(
+  return getStoredTasks().sort(
     (left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt),
   );
 }

@@ -91,6 +91,8 @@ from app.schemas.agent_conversation import ConversationAgentContext
 from app.schemas.agent_graph_api import (
     AgentGraphApprovalChangeView,
     AgentGraphApprovalItemView,
+    AgentGraphGateBatchDecisionRequest,
+    AgentGraphGateBatchDecisionResponse,
     AgentGraphGateDecisionRequest,
     AgentGraphGateDecisionResponse,
     AgentGraphHumanGateView,
@@ -1080,6 +1082,43 @@ async def _graph_progress_counts(
         )
         return completed, total
     return None, None
+
+
+@router.post(
+    "/tasks/{task_id}/graph/gates/decisions",
+    response_model=AgentGraphGateBatchDecisionResponse,
+)
+async def decide_agent_graph_gates(
+    task_id: UUID,
+    body: AgentGraphGateBatchDecisionRequest,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    operator: Annotated[OperatorContext, Depends(get_operator_context)],
+) -> AgentGraphGateBatchDecisionResponse:
+    gate_ids = [decision.gate_id for decision in body.decisions]
+    if len(set(gate_ids)) != len(gate_ids):
+        raise HTTPException(
+            422,
+            detail=_error(
+                "duplicate_graph_gate",
+                "A gate can only be decided once per batch",
+            ),
+        )
+    decisions: list[AgentGraphGateDecisionResponse] = []
+    for decision in body.decisions:
+        decisions.append(
+            await decide_agent_graph_gate(
+                task_id=task_id,
+                gate_id=decision.gate_id,
+                body=AgentGraphGateDecisionRequest.model_validate(
+                    decision.model_dump(exclude={"gate_id"})
+                ),
+                request=request,
+                session=session,
+                operator=operator,
+            )
+        )
+    return AgentGraphGateBatchDecisionResponse(decisions=tuple(decisions))
 
 
 @router.post(

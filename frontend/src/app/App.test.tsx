@@ -11,7 +11,7 @@ describe("application shell", () => {
   it("shows the persistent workspace and opens a fresh reconciliation", async () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
-    window.history.pushState({}, "", "/tasks/demo-001");
+    window.history.pushState({}, "", "/tasks");
     render(<App />);
 
     expect(screen.getByRole("link", { name: "魔方 AI 数据治理" })).toBeInTheDocument();
@@ -21,7 +21,7 @@ describe("application shell", () => {
       expect.stringContaining("mofa-app-icon.png"),
     );
     expect(screen.getByRole("navigation", { name: "对账工作区" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /三方全校数据核对/ })).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByRole("link", { name: /三方全校数据核对/ })).not.toBeInTheDocument();
 
     expect(screen.queryByRole("link", { name: "外部数据同步" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("link", { name: "魔方 AI 数据治理" }));
@@ -45,7 +45,7 @@ describe("application shell", () => {
       selectedEntityTypes: ["teacher"],
     }]);
     localStorage.setItem("mofa-reconciliation-tasks", history);
-    window.history.pushState({}, "", "/tasks/demo-001");
+    window.history.pushState({}, "", "/tasks");
     render(<App />);
 
     await user.click(screen.getByRole("link", { name: "新建对话" }));

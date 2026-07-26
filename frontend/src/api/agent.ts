@@ -186,6 +186,10 @@ export interface AgentConversationApi {
     reason?: string,
     review?: AgentGraphGateReview,
   ): Promise<{ gate_id: string; status: "approved" | "rejected"; graph_cursor: number }>;
+  decideGraphGates?(
+    taskId: string,
+    decisions: AgentGraphGateBatchDecision[],
+  ): Promise<{ decisions: AgentGraphGateDecisionResult[] }>;
   approveGroup?(taskId: string, groupId: string): Promise<unknown>;
   rejectGroup?(taskId: string, groupId: string, reason?: string): Promise<unknown>;
   clarify?(taskId: string, message: string): Promise<AgentClarificationInterpretation>;
@@ -211,6 +215,22 @@ export interface AgentGraphGateReview {
   rejected_finding_ids: string[];
   graph_cursor: number;
   membership_hash: string;
+}
+
+export interface AgentGraphGateDecisionResult {
+  gate_id: string;
+  status: "approved" | "rejected";
+  graph_cursor: number;
+}
+
+export interface AgentGraphGateBatchDecision {
+  gate_id: string;
+  decision: "approve" | "reject";
+  reason?: string;
+  approved_finding_ids?: string[];
+  rejected_finding_ids?: string[];
+  graph_cursor?: number;
+  membership_hash?: string;
 }
 
 export interface AgentHistoryItem extends AgentTask {
@@ -300,6 +320,20 @@ async function decideGraphGate(
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify({ decision, reason, ...review }),
+    },
+  );
+}
+
+async function decideGraphGates(
+  taskId: string,
+  decisions: AgentGraphGateBatchDecision[],
+) {
+  return requestJson<{ decisions: AgentGraphGateDecisionResult[] }>(
+    `/api/agent/tasks/${taskId}/graph/gates/decisions`,
+    {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ decisions }),
     },
   );
 }
@@ -419,6 +453,7 @@ export const agentApi: AgentConversationApi & AgentManualTaskApi & {
   graph: typeof graph;
   localSources: typeof localSources;
   decideGraphGate: typeof decideGraphGate;
+  decideGraphGates: typeof decideGraphGates;
   previewTermination: typeof previewTermination;
   clarify: typeof clarify;
   confirmClarification: typeof confirmClarification;
@@ -444,5 +479,6 @@ export const agentApi: AgentConversationApi & AgentManualTaskApi & {
   graph,
   localSources,
   decideGraphGate,
+  decideGraphGates,
   previewTermination,
 };
