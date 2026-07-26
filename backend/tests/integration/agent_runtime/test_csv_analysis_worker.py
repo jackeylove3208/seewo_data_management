@@ -607,7 +607,35 @@ async def test_complete_csv_agent_pipeline_executes_verified_change_and_reports(
         lease_seconds=60,
         handlers=factory.handlers(),
     )
-    for _step in range(8):
+    for _step in range(5):
+        assert await worker.run_once() is True
+
+    async with database.session_factory() as session:
+        run = await session.get(AgentRunRecord, run_id)
+        groups = tuple(
+            await session.scalars(
+                select(AgentApprovalGroupRecord).where(
+                    AgentApprovalGroupRecord.run_id == run_id,
+                    AgentApprovalGroupRecord.status == "pending",
+                )
+            )
+        )
+        assert run is not None and run.status == AgentRunStatus.WAITING_HUMAN.value
+        assert groups
+        for group in groups:
+            await AgentGovernanceRepository(session).decide_approval(
+                group.id,
+                membership_hash=group.membership_hash,
+                approved=True,
+                actor_id="operator-1",
+                reason="approved in test",
+            )
+        await AgentRuntimeRepository(session).transition_run(
+            run.id, requested_status=AgentRunStatus.RUNNING
+        )
+        await session.commit()
+
+    for _step in range(4):
         assert await worker.run_once() is True
 
     async with database.session_factory() as session:
@@ -625,6 +653,24 @@ async def test_complete_csv_agent_pipeline_executes_verified_change_and_reports(
         assert run is not None and run.status == AgentRunStatus.COMPLETED.value
         assert run.phase == AgentPhase.TERMINAL.value
         assert report is not None and report.rollback_eligible is True
+        assert report.facts["findings"] == [
+            {
+                "id": report.facts["findings"][0]["id"],
+                "kind": "field_difference",
+                "category_zh": "姓名不一致",
+                "entity_kind": "student",
+                "entity_name": "李四",
+                "entity_number": "S-1",
+                "class_name": "一班",
+                "source_locator": "csv:2",
+                "analysis_zh": "身份键一致，但希沃姓名与权威数据不同。",
+                "solution_zh": "按第三方权威姓名更新希沃数据。",
+                "recommended_operation": "update",
+                "risk": "medium",
+                "operator_decision": "approved",
+                "execution_status": "succeeded",
+            }
+        ]
         assert len(operations) == 1
         assert operations[0].status == "succeeded"
         output_path = Path(report.facts["output_target_path"])

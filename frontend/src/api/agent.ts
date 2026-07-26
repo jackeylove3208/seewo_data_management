@@ -98,6 +98,10 @@ export interface AgentGraphHumanGate {
   kind: string;
   status: string;
   item_count: number;
+  risk?: "medium" | "high" | null;
+  cursor?: number;
+  membership_hash?: string | null;
+  member_decisions?: Record<string, "approved" | "rejected">;
   entity_kind?: AgentEntityType | null;
   operation?: string | null;
   issue_kind?: string | null;
@@ -180,6 +184,7 @@ export interface AgentConversationApi {
     gateId: string,
     decision: "approve" | "reject",
     reason?: string,
+    review?: AgentGraphGateReview,
   ): Promise<{ gate_id: string; status: "approved" | "rejected"; graph_cursor: number }>;
   approveGroup?(taskId: string, groupId: string): Promise<unknown>;
   rejectGroup?(taskId: string, groupId: string, reason?: string): Promise<unknown>;
@@ -192,6 +197,20 @@ export interface AgentConversationApi {
 
 export interface AgentManualTaskApi {
   startManualTask(intent: AgentIntent, idempotencyKey: string): Promise<AgentTask>;
+  localSources?(): Promise<AgentLocalSource[]>;
+}
+
+export interface AgentLocalSource {
+  source_ref: string;
+  kind: "csv";
+  writable_as_target: boolean;
+}
+
+export interface AgentGraphGateReview {
+  approved_finding_ids: string[];
+  rejected_finding_ids: string[];
+  graph_cursor: number;
+  membership_hash: string;
 }
 
 export interface AgentHistoryItem extends AgentTask {
@@ -273,15 +292,20 @@ async function decideGraphGate(
   gateId: string,
   decision: "approve" | "reject",
   reason?: string,
+  review?: AgentGraphGateReview,
 ) {
   return requestJson<{ gate_id: string; status: "approved" | "rejected"; graph_cursor: number }>(
     `/api/agent/tasks/${taskId}/graph/gates/${gateId}/decision`,
     {
       method: "POST",
       headers: jsonHeaders,
-      body: JSON.stringify({ decision, reason }),
+      body: JSON.stringify({ decision, reason, ...review }),
     },
   );
+}
+
+async function localSources() {
+  return requestJson<AgentLocalSource[]>("/api/agent/local-sources");
 }
 
 async function terminate(taskId: string) {
@@ -393,6 +417,7 @@ export const agentApi: AgentConversationApi & AgentManualTaskApi & {
   confirmRollback: typeof confirmRollback;
   rejectRollback: typeof rejectRollback;
   graph: typeof graph;
+  localSources: typeof localSources;
   decideGraphGate: typeof decideGraphGate;
   previewTermination: typeof previewTermination;
   clarify: typeof clarify;
@@ -417,6 +442,7 @@ export const agentApi: AgentConversationApi & AgentManualTaskApi & {
   confirmRollback,
   rejectRollback,
   graph,
+  localSources,
   decideGraphGate,
   previewTermination,
 };

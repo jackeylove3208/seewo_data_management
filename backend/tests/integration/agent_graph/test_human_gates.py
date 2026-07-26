@@ -80,6 +80,54 @@ async def test_phone_risk_group_waits_once_for_homogeneous_batch(session) -> Non
     assert len(gates) == 1
 
 
+@pytest.mark.asyncio
+async def test_medium_risk_group_also_waits_for_operator_review(session) -> None:
+    task = ReconciliationTask(
+        tenant_id="school-medium-gate",
+        scope_id="all",
+        snapshot_mode="full",
+        entity_types=["teacher"],
+        status="running",
+        stage="governance",
+        workflow_version="agent-graph-v1",
+        idempotency_key=str(uuid4()),
+        request_hash=str(uuid4()),
+    )
+    session.add(task)
+    await session.flush()
+    run = await AgentRuntimeRepository(session).create_run(
+        task_id=task.id,
+        tenant_id=task.tenant_id,
+        conversation_id=None,
+        kind=AgentRunKind.SYNC,
+        workflow_version="agent-graph-v1",
+    )
+    graph = await AgentGraphRepository(session).create_run_state(
+        run_id=run.id,
+        graph_version="agent-sync-graph-v1",
+        initial_node="wait_high_risk_approvals",
+    )
+    finding_id = uuid4()
+
+    records = await GraphHumanGateService(session).freeze_high_risk_approvals(
+        graph_run_id=graph.id,
+        cursor=graph.cursor,
+        groups=(
+            FrozenApprovalDraft(
+                group_key="field_difference:teacher:update:name",
+                finding_ids=(finding_id,),
+                issue_kind="field_difference",
+                entity_kind="teacher",
+                operation="update",
+                risk="medium",
+                policy_version="agent-risk-v1",
+            ),
+        ),
+    )
+
+    assert records[0].member_ids == [str(finding_id)]
+
+
 class ExecutionProvider:
     def __init__(self, outputs):
         self.outputs = list(outputs)

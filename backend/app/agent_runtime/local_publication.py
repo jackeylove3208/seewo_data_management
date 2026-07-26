@@ -39,9 +39,12 @@ async def publish_local_target(
     if task.task_kind == "rollback":
         if task.parent_task_id is None:
             raise LookupError("rollback local publication source task is missing")
-        source_task = await session.get(ReconciliationTask, task.parent_task_id)
-        if source_task is None:
+        rollback_source_task = await session.get(
+            ReconciliationTask, task.parent_task_id
+        )
+        if rollback_source_task is None:
             raise LookupError("rollback local publication source task is missing")
+        source_task = rollback_source_task
     target_intent = (source_task.agent_intent or {}).get("target", {})
     if not isinstance(target_intent, dict) or target_intent.get("kind") != "local":
         return {"status": "not_applicable"}

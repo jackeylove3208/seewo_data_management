@@ -74,7 +74,7 @@ class AgentRiskPolicy:
         return AgentRiskDecision(
             risk=risk,
             policy_version=self.version,
-            requires_approval=risk == "high",
+            requires_approval=risk in {"medium", "high"},
         )
 
 
@@ -99,7 +99,8 @@ def group_high_risk_findings(
 ) -> tuple[AgentApprovalGroup, ...]:
     policy = policy or AgentRiskPolicy()
     grouped: dict[
-        tuple[str, str, AgentOperation, str, tuple[str, ...]], list[AgentFindingInput]
+        tuple[str, str, AgentOperation, str, str, tuple[str, ...]],
+        list[AgentFindingInput],
     ] = {}
     for finding in findings:
         decision = policy.assess(finding)
@@ -110,6 +111,7 @@ def group_high_risk_findings(
             finding.entity_kind,
             finding.operation,
             decision.policy_version,
+            decision.risk,
             tuple(sorted(finding.changed_fields)),
         )
         grouped.setdefault(key, []).append(finding)
@@ -125,7 +127,7 @@ def group_high_risk_findings(
                 (
                     "|".join(str(item) for item in finding_ids)
                     + ":"
-                    + ":".join((key[3], *key[4]))
+                    + ":".join((key[3], key[4], *key[5]))
                 ).encode()
             ).hexdigest()
             group_id = uuid5(NAMESPACE_URL, f"agent-approval:{membership_hash}")
@@ -138,8 +140,9 @@ def group_high_risk_findings(
                     operation=key[2],
                     policy_version=key[3],
                     membership_hash=membership_hash,
-                    changed_fields=key[4],
+                    changed_fields=key[5],
                     segment_index=segment_index,
+                    risk=key[4],
                 )
             )
     return tuple(groups)
@@ -226,6 +229,8 @@ def compile_agent_plan(
     *,
     approved_group_ids: frozenset[UUID],
     confirmed_conflicts: frozenset[UUID],
+    approved_finding_ids: frozenset[UUID] = frozenset(),
+    rejected_finding_ids: frozenset[UUID] = frozenset(),
     policy: AgentRiskPolicy | None = None,
 ) -> AgentGovernancePlan:
     policy = policy or AgentRiskPolicy()
@@ -238,11 +243,17 @@ def compile_agent_plan(
         finding_id: group.id for group in groups for finding_id in group.finding_ids
     }
     for finding in findings:
+        if finding.finding_id in rejected_finding_ids:
+            continue
         if finding.kind == "identity_conflict" and finding.work_item_id not in confirmed_conflicts:
             continue
         group_id = approvals_by_finding.get(finding.finding_id)
-        if group_id is not None and group_id not in approved_group_ids:
-            raise ValueError("high-risk approval is required")
+        if (
+            group_id is not None
+            and group_id not in approved_group_ids
+            and finding.finding_id not in approved_finding_ids
+        ):
+            raise ValueError("risk review approval is required")
 
     target_versions = {finding.target_version for finding in findings}
     if len(target_versions) != 1:
@@ -253,6 +264,7 @@ def compile_agent_plan(
         if not (
             finding.kind == "identity_conflict" and finding.work_item_id not in confirmed_conflicts
         )
+        and finding.finding_id not in rejected_finding_ids
         and finding.operation not in {AgentOperation.RETAIN, AgentOperation.SKIP}
     ]
     operation_ids = {

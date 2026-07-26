@@ -34,6 +34,10 @@ class AgentGraphHumanGateView(BaseModel):
     entity_kind: str | None = None
     operation: str | None = None
     issue_kind: str | None = None
+    risk: str | None = None
+    cursor: int
+    membership_hash: str | None = None
+    member_decisions: dict[str, str] = Field(default_factory=dict)
     summary_zh: str | None = None
     risk_reason_zh: str | None = None
     actionable: bool = False
@@ -69,6 +73,10 @@ class AgentGraphGateDecisionRequest(BaseModel):
 
     decision: Literal["approve", "reject"]
     reason: str | None = Field(default=None, max_length=1000)
+    approved_finding_ids: tuple[UUID, ...] = ()
+    rejected_finding_ids: tuple[UUID, ...] = ()
+    graph_cursor: int | None = Field(default=None, ge=0)
+    membership_hash: str | None = Field(default=None, min_length=64, max_length=64)
 
 
 class AgentGraphGateDecisionResponse(BaseModel):
