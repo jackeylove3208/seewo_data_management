@@ -655,7 +655,7 @@ def test_failed_conversation_reply_is_persisted_as_recoverable_message(
     assert "稍后重试" in current.json()["messages"][-1]["text"]
 
 
-def test_conversation_model_receives_private_intent_from_previous_turn(
+def test_conversation_model_receives_complete_persisted_history(
     agent_client: TestClient,
 ) -> None:
     provider = IncrementalConversationProvider()
@@ -680,6 +680,50 @@ def test_conversation_model_receives_private_intent_from_previous_turn(
     evidence = json.loads(provider.requests[1].messages[1].content)["untrusted_evidence"]
     assert evidence["current_intent"]["entity_types"] == ["student"]
     assert evidence["current_intent"]["title"] == "学生同步"
+    assert evidence["history"] == [
+        {
+            "role": "user",
+            "kind": "normal",
+            "text": "我要同步学生",
+        },
+        {
+            "role": "assistant",
+            "kind": "normal",
+            "text": "已记住要同步学生，请继续选择数据来源。",
+        },
+        {
+            "role": "user",
+            "kind": "normal",
+            "text": "继续选择数据来源",
+        },
+    ]
+
+
+def test_conversation_context_limit_preserves_user_message_without_calling_model(
+    agent_client: TestClient,
+) -> None:
+    provider = ConversationProvider()
+    agent_client.app.state.conversation_provider = provider
+    agent_client.app.state.settings.conversation_context_max_tokens = 100
+    agent_client.app.state.settings.conversation_context_reserved_output_tokens = 20
+    conversation = agent_client.post("/api/agent/conversations").json()
+
+    response = agent_client.post(
+        f"/api/agent/conversations/{conversation['id']}/messages",
+        json={"message": "我要同步学生"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "conversation_context_limit"
+    assert response.json()["detail"]["message"] == (
+        "当前对话内容已达到模型处理上限，请开启新对话"
+    )
+    assert provider.requests == []
+    current = agent_client.get("/api/agent/conversations/current")
+    assert [
+        (item["role"], item["kind"], item["text"])
+        for item in current.json()["messages"]
+    ] == [("user", "normal", "我要同步学生")]
 
 
 def test_termination_persists_history_before_releasing_school_lock(

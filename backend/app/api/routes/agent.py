@@ -30,6 +30,7 @@ from app.ai.conversation_agent import (
     ConversationModelResponseError,
     ConversationSupervisorAgent,
 )
+from app.ai.conversation_context import ConversationContextLimitError
 from app.ai.graph_subagents import (
     GraphSkillInvocation,
     GraphSkillModelRunner,
@@ -87,7 +88,10 @@ from app.schemas.agent_api import (
     ClarificationConfirmationRequest,
     ClarificationRequest,
 )
-from app.schemas.agent_conversation import ConversationAgentContext
+from app.schemas.agent_conversation import (
+    ConversationAgentContext,
+    ConversationHistoryMessage,
+)
 from app.schemas.agent_graph_api import (
     AgentGraphApprovalChangeView,
     AgentGraphApprovalItemView,
@@ -384,6 +388,10 @@ async def send_agent_message(
         role="user",
         text=body.message,
     )
+    messages = await repository.list_conversation_messages(
+        conversation_id=conversation.id,
+        tenant_id=operator.tenant_id,
+    )
     sources = LocalSourceService(request.app.state.settings).list_sources()
     provider = getattr(
         request.app.state,
@@ -391,15 +399,42 @@ async def send_agent_message(
         HttpLLMProvider(settings=request.app.state.settings),
     )
     try:
-        decision = await ConversationSupervisorAgent(provider).reply(
+        decision = await ConversationSupervisorAgent(
+            provider,
+            max_context_tokens=(
+                request.app.state.settings.conversation_context_max_tokens
+            ),
+            reserved_output_tokens=(
+                request.app.state.settings.conversation_context_reserved_output_tokens
+            ),
+        ).reply(
             ConversationAgentContext(
                 conversation_id=conversation.id,
                 tenant_id=operator.tenant_id,
                 message=body.message,
+                history=tuple(
+                    ConversationHistoryMessage(
+                        role=message.role,
+                        kind=message.kind,
+                        text=message.text,
+                    )
+                    for message in messages
+                ),
                 available_source_refs=tuple(source.source_ref for source in sources),
                 current_intent=dict(conversation.context),
             )
         )
+    except ConversationContextLimitError as error:
+        await session.commit()
+        raise HTTPException(
+            409,
+            detail=_error(
+                "conversation_context_limit",
+                "当前对话内容已达到模型处理上限，请开启新对话",
+                estimated_tokens=error.estimated_tokens,
+                available_tokens=error.available_tokens,
+            ),
+        ) from error
     except (ConversationModelResponseError, ModelProviderError) as error:
         safe_message = "对话模型暂时无法生成有效回复，请稍后重试。"
         await repository.append_conversation_message(
