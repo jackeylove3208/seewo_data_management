@@ -489,6 +489,22 @@ def test_initial_migration_creates_ingestion_tables(tmp_path: Path) -> None:
     }
     assert "attempt_count" in run_columns
     assert "lease_token" in run_columns
+    conversation_inspector = inspect(create_engine(f"sqlite:///{database_path}"))
+    conversation_columns = {
+        column["name"]
+        for column in conversation_inspector.get_columns("agent_conversations")
+    }
+    conversation_schema_names = {
+        item["name"]
+        for item in [
+            *conversation_inspector.get_indexes("agent_conversations"),
+            *conversation_inspector.get_unique_constraints("agent_conversations"),
+        ]
+        if item.get("name")
+    }
+    assert "reset_idempotency_key" in conversation_columns
+    assert "uq_agent_conversation_reset_key" in conversation_schema_names
+    assert "uq_agent_conversations_active_operator" in conversation_schema_names
     checkpoint_columns = {
         column["name"]: column
         for column in inspect(create_engine(f"sqlite:///{database_path}")).get_columns(
