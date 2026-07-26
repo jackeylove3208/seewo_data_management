@@ -17,7 +17,9 @@ def test_read_page_rejects_parent_escape(tmp_path: Path) -> None:
     allowed = tmp_path / "allowed"
     allowed.mkdir()
     (tmp_path / "secret.csv").write_text("编号,姓名\n001,不应读取", encoding="utf-8")
-    service = LocalSourceService(Settings(agent_local_read_roots=(allowed,)))
+    service = LocalSourceService(
+        Settings(agent_local_read_roots=(allowed,), _env_file=None)
+    )
 
     with pytest.raises(LocalSourceAccessError, match="outside_allowed_roots"):
         service.read_page("../secret.csv", offset=0, limit=50)
@@ -26,7 +28,9 @@ def test_read_page_rejects_parent_escape(tmp_path: Path) -> None:
 def test_read_page_returns_at_most_fifty_records(tmp_path: Path) -> None:
     allowed = tmp_path / "allowed"
     _write_roster(allowed / "third-party" / "roster.csv", 51)
-    service = LocalSourceService(Settings(agent_local_read_roots=(allowed,)))
+    service = LocalSourceService(
+        Settings(agent_local_read_roots=(allowed,), _env_file=None)
+    )
 
     page = service.read_page("third-party/roster.csv", offset=0, limit=99)
 
@@ -39,7 +43,9 @@ def test_local_source_summary_never_exposes_absolute_path(tmp_path: Path) -> Non
     allowed = tmp_path / "allowed"
     _write_roster(allowed / "seewo" / "roster.csv", 1)
 
-    sources = LocalSourceService(Settings(agent_local_read_roots=(allowed,))).list_sources()
+    sources = LocalSourceService(
+        Settings(agent_local_read_roots=(allowed,), _env_file=None)
+    ).list_sources()
 
     assert [source.source_ref for source in sources] == ["seewo/roster.csv"]
     assert str(allowed) not in sources[0].model_dump_json()
