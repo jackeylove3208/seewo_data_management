@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from app.ai.agent_analysis_service import SingleAttemptModelProvider
 from app.ai.agent_prompting import build_agent_request
+from app.ai.conversation_context import ensure_conversation_request_fits
 from app.ai.skills.registry import SkillRegistry
 from app.schemas.agent_conversation import (
     ConversationAgentContext,
@@ -22,19 +23,28 @@ class ConversationSupervisorAgent:
         self,
         provider: SingleAttemptModelProvider,
         skills: SkillRegistry | None = None,
+        *,
+        max_context_tokens: int = 65_536,
+        reserved_output_tokens: int = 2_048,
     ) -> None:
         self._provider = provider
         self._skills = skills or SkillRegistry()
+        self._max_context_tokens = max_context_tokens
+        self._reserved_output_tokens = reserved_output_tokens
 
     async def reply(self, context: ConversationAgentContext) -> ConversationAgentDecision:
         skill = self._skills.load("converse-school-data-sync", "1.0.0")
-        response = await self._provider.complete_json_once(
-            build_agent_request(
-                skill,
-                context.model_dump(mode="json"),
-                ConversationAgentDecision,
-            )
+        request = build_agent_request(
+            skill,
+            context.model_dump(mode="json"),
+            ConversationAgentDecision,
         )
+        ensure_conversation_request_fits(
+            request,
+            max_context_tokens=self._max_context_tokens,
+            reserved_output_tokens=self._reserved_output_tokens,
+        )
+        response = await self._provider.complete_json_once(request)
         decision = _parse_decision(response.output)
         return _validate_source_references(decision, context)
 

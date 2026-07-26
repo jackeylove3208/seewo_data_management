@@ -14,9 +14,18 @@ class ConversationAgentContext(BaseModel):
     conversation_id: UUID
     tenant_id: str = Field(min_length=1)
     message: str = Field(min_length=1, max_length=2000)
+    history: tuple["ConversationHistoryMessage", ...] = ()
     available_source_refs: tuple[str, ...] = ()
     current_intent: dict[str, Any] = Field(default_factory=dict)
     active_task_id: UUID | None = None
+
+
+class ConversationHistoryMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    role: Literal["assistant", "user"]
+    kind: Literal["normal", "guardrail", "error"] = "normal"
+    text: str = Field(min_length=1)
 
 
 class ConversationAgentDecision(BaseModel):

@@ -107,6 +107,20 @@ def test_agent_model_timeout_allows_structured_analysis_to_finish() -> None:
     assert Settings(_env_file=None).analysis_worker_lease_seconds == 90
 
 
+def test_conversation_context_budget_reserves_model_output_capacity() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.conversation_context_max_tokens == 65_536
+    assert settings.conversation_context_reserved_output_tokens == 2_048
+
+    with pytest.raises(ValueError, match="reserved output"):
+        Settings(
+            conversation_context_max_tokens=2_048,
+            conversation_context_reserved_output_tokens=2_048,
+            _env_file=None,
+        )
+
+
 def test_agent_worker_configuration_requires_gateway_retry_and_privacy_contract() -> None:
     settings = Settings(
         new_agent_enabled=True,

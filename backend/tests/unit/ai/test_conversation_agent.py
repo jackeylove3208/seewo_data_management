@@ -1,3 +1,4 @@
+import json
 from uuid import uuid4
 
 import pytest
@@ -108,3 +109,86 @@ async def test_supervisor_ignores_known_non_executable_missing_info_hint() -> No
     )
 
     assert decision.kind == "clarification"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_sends_complete_ordered_history() -> None:
+    provider = CapturingProvider(
+        {
+            "result": {
+                "kind": "clarification",
+                "message_zh": "我会沿用前文继续确认同步范围。",
+            }
+        }
+    )
+    context = _context(
+        message="继续",
+        history=(
+            {
+                "role": "user",
+                "kind": "normal",
+                "text": "我要同步学生",
+            },
+            {
+                "role": "assistant",
+                "kind": "normal",
+                "text": "请选择第三方和希沃数据来源",
+            },
+            {
+                "role": "user",
+                "kind": "normal",
+                "text": "继续",
+            },
+        ),
+    )
+
+    await ConversationSupervisorAgent(provider).reply(context)
+
+    evidence = json.loads(provider.requests[0].messages[1].content)["untrusted_evidence"]
+    assert evidence["history"] == [
+        {
+            "role": "user",
+            "kind": "normal",
+            "text": "我要同步学生",
+        },
+        {
+            "role": "assistant",
+            "kind": "normal",
+            "text": "请选择第三方和希沃数据来源",
+        },
+        {
+            "role": "user",
+            "kind": "normal",
+            "text": "继续",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_supervisor_rejects_complete_history_over_budget() -> None:
+    provider = CapturingProvider(
+        {
+            "result": {
+                "kind": "clarification",
+                "message_zh": "不应调用模型。",
+            }
+        }
+    )
+    context = _context(
+        history=(
+            {
+                "role": "user",
+                "kind": "normal",
+                "text": "很长的历史消息" * 200,
+            },
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="conversation context exceeds configured budget"):
+        await ConversationSupervisorAgent(
+            provider,
+            max_context_tokens=100,
+            reserved_output_tokens=20,
+        ).reply(context)
+
+    assert provider.requests == []

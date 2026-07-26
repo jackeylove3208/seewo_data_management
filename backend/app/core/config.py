@@ -70,6 +70,8 @@ class Settings(BaseSettings):
     llm_extra_headers_json: dict[str, str] = {}
     llm_extra_body_json: dict[str, Any] = {}
     llm_timeout_seconds: PositiveFloat = 60
+    conversation_context_max_tokens: PositiveInt = 65_536
+    conversation_context_reserved_output_tokens: PositiveInt = 2_048
     tokenization_secret: SecretStr | None = None
     proposal_preview_secret: SecretStr | None = None
     analysis_batch_size: PositiveInt = Field(default=10, le=50)
@@ -143,6 +145,13 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_gateway_extensions(self) -> "Settings":
+        if (
+            self.conversation_context_reserved_output_tokens
+            >= self.conversation_context_max_tokens
+        ):
+            raise ValueError(
+                "conversation reserved output tokens must be smaller than context maximum"
+            )
         for write_root in self.agent_local_write_roots:
             if not any(
                 _path_is_within(write_root, read_root)

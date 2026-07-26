@@ -83,6 +83,8 @@ at least:
 RECONCILIATION_LLM_URL=https://gateway.example.com/v1/chat/completions
 RECONCILIATION_LLM_API_KEY=replace-with-real-secret
 RECONCILIATION_LLM_MODEL=enterprise-model-name
+RECONCILIATION_CONVERSATION_CONTEXT_MAX_TOKENS=65536
+RECONCILIATION_CONVERSATION_CONTEXT_RESERVED_OUTPUT_TOKENS=2048
 RECONCILIATION_TOKENIZATION_SECRET=replace-with-a-long-random-secret
 RECONCILIATION_PROPOSAL_PREVIEW_SECRET=replace-with-another-long-random-secret
 RECONCILIATION_EMBEDDING_URL=https://gateway.example.com/v1/embeddings
@@ -98,6 +100,13 @@ preview remains valid after a restart or load-balanced request.
 Keep `RECONCILIATION_LLM_RESPONSE_MODE=json_schema` when the gateway supports strict
 structured output; use `json_object` or `prompt_json` for compatible gateways that do
 not support JSON Schema.
+
+The conversation Agent sends the complete persisted chat history on every turn. It does
+not summarize or silently truncate older messages. Configure the model's total context
+window with `RECONCILIATION_CONVERSATION_CONTEXT_MAX_TOKENS` and reserve enough capacity
+for the structured reply with `RECONCILIATION_CONVERSATION_CONTEXT_RESERVED_OUTPUT_TOKENS`.
+When the complete request no longer fits, the API stops before calling the provider and
+asks the operator to open a new conversation.
 
 Provider-specific keyword arguments belong in validated JSON rather than Python code:
 
