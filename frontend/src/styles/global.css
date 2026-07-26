@@ -2046,13 +2046,21 @@ button.connection-state {
   line-height: 1.45;
 }
 
+.agent-task-actions {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 0 16px;
+}
+
 .graph-live-progress,
 .graph-approval-card {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 22px;
-  margin: -16px 0 28px;
+  margin: 0 0 28px;
   padding: 20px 22px;
   border: 1px solid rgba(17, 24, 39, 0.08);
   border-radius: 20px;
@@ -2359,9 +2367,17 @@ button.connection-state {
 }
 
 .graph-approval-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
   margin-top: 0;
   border-color: rgba(255, 159, 10, 0.22);
   background: linear-gradient(135deg, rgba(255, 251, 242, 0.94), rgba(255, 255, 255, 0.9));
+}
+
+.graph-approval-card > .graph-approval-actions {
+  padding-top: 14px;
+  border-top: 1px solid rgba(148, 163, 184, 0.22);
 }
 
 .graph-approval-card h2,
@@ -2384,7 +2400,83 @@ button.connection-state {
 .graph-approval-actions {
   display: flex;
   flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+}
+
+.graph-item-review {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(148, 163, 184, 0.22);
+}
+
+.graph-item-review-status {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.graph-medium-review-panel {
+  display: grid;
+  align-items: stretch;
+  width: 100%;
+  gap: 18px;
+}
+
+.graph-medium-review-heading,
+.graph-medium-review-group-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.graph-medium-review-heading h2,
+.graph-medium-review-group-heading h3 {
+  margin: 8px 0 0;
+}
+
+.graph-medium-review-groups {
+  display: grid;
+  gap: 12px;
+}
+
+.graph-medium-review-group {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.graph-medium-review-summaries {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.graph-medium-review-summaries span {
+  padding: 4px 8px;
+  color: #526480;
+  border: 1px solid rgba(100, 132, 223, 0.2);
+  border-radius: 999px;
+  background: rgba(100, 132, 223, 0.08);
+  font-size: 11px;
+}
+
+.graph-medium-review-actions {
+  justify-content: flex-end;
+  padding-top: 16px;
+  border-top: 1px solid rgba(148, 163, 184, 0.22);
+}
+
+.graph-medium-review-actions .ant-btn-primary {
+  min-width: 210px;
 }
 
 @media (prefers-reduced-motion: reduce) {

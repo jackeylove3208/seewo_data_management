@@ -51,6 +51,9 @@ describe("controlled Agent graph task detail", () => {
           id: "gate-1",
           kind: "high_risk_approval",
           status: "pending",
+          risk: "high",
+          cursor: 8,
+          membership_hash: "a".repeat(64),
           item_count: 50,
           entity_kind: "student",
           operation: "update",
@@ -242,6 +245,13 @@ describe("controlled Agent graph task detail", () => {
       "task-graph-1",
       "gate-1",
       "approve",
+      "操作人确认高风险治理操作",
+      {
+        approved_finding_ids: ["finding-1"],
+        rejected_finding_ids: [],
+        graph_cursor: 8,
+        membership_hash: "a".repeat(64),
+      },
     );
     expect(await screen.findByText("已允许")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "同意" })).not.toBeInTheDocument();
@@ -320,10 +330,15 @@ describe("controlled Agent graph task detail", () => {
     });
     const { client } = renderPage();
 
-    expect(await screen.findByText("中风险 · 默认全部同意")).toBeInTheDocument();
-    expect(screen.getAllByText("默认同意")).toHaveLength(3);
-    await user.click(screen.getByRole("button", { name: "拒绝李四" }));
-    await user.click(screen.getByRole("button", { name: "按当前选择继续" }));
+    const panel = await screen.findByRole("region", { name: "中风险批量审核" });
+    expect(within(panel).getByText("中风险 · 默认全部同意")).toBeInTheDocument();
+    expect(within(panel).getByRole("checkbox", { name: "拒绝李四" })).not.toBeChecked();
+    await user.click(within(panel).getByRole("checkbox", { name: "拒绝李四" }));
+    await user.click(
+      within(panel).getByRole("button", {
+        name: "按当前选择继续（同意 1，拒绝 1）",
+      }),
+    );
 
     expect(agentApi.decideGraphGates).toHaveBeenCalledWith(
       "task-graph-1",
@@ -355,19 +370,19 @@ describe("controlled Agent graph task detail", () => {
       can_terminate: true,
       termination_requested: false,
       human_gates: [
-        mediumGate("gate-student", "finding-student", "学生姓名修正", "张三"),
-        mediumGate("gate-teacher", "finding-teacher", "教师邮箱修正", "李老师"),
+        mediumGate("gate-teacher-name", "finding-teacher-name", "教师姓名修正", "张老师", "teacher"),
+        mediumGate("gate-teacher-email", "finding-teacher-email", "教师邮箱修正", "李老师", "teacher"),
       ],
     });
     vi.mocked(agentApi.decideGraphGates).mockResolvedValue({
       decisions: [
         {
-          gate_id: "gate-student",
+          gate_id: "gate-teacher-name",
           status: "approved",
           graph_cursor: 8,
         },
         {
-          gate_id: "gate-teacher",
+          gate_id: "gate-teacher-email",
           status: "approved",
           graph_cursor: 8,
         },
@@ -376,29 +391,27 @@ describe("controlled Agent graph task detail", () => {
     const { client } = renderPage();
 
     const panel = await screen.findByRole("region", { name: "中风险批量审核" });
-    expect(within(panel).getByText("学生姓名修正")).toBeInTheDocument();
+    expect(within(panel).getByRole("heading", { name: "修改 2 条教师记录" })).toBeInTheDocument();
+    expect(within(panel).getByText("教师姓名修正")).toBeInTheDocument();
     expect(within(panel).getByText("教师邮箱修正")).toBeInTheDocument();
-    expect(
-      within(panel).getAllByRole("button", { name: "全部同意" }),
-    ).toHaveLength(1);
-    await user.click(within(panel).getByRole("button", { name: "全部同意" }));
+    expect(within(panel).queryByRole("button", { name: "全部同意" })).not.toBeInTheDocument();
     await user.click(
-      within(panel).getByRole("button", { name: "按当前选择继续" }),
+      within(panel).getByRole("button", { name: "全部同意并继续" }),
     );
 
     expect(agentApi.decideGraphGates).toHaveBeenCalledWith(
       "task-graph-1",
       [
         expect.objectContaining({
-          gate_id: "gate-student",
+          gate_id: "gate-teacher-name",
           decision: "approve",
-          approved_finding_ids: ["finding-student"],
+          approved_finding_ids: ["finding-teacher-name"],
           rejected_finding_ids: [],
         }),
         expect.objectContaining({
-          gate_id: "gate-teacher",
+          gate_id: "gate-teacher-email",
           decision: "approve",
-          approved_finding_ids: ["finding-teacher"],
+          approved_finding_ids: ["finding-teacher-email"],
           rejected_finding_ids: [],
         }),
       ],
@@ -422,6 +435,13 @@ describe("controlled Agent graph task detail", () => {
       "task-graph-1",
       "gate-1",
       "reject",
+      "操作人拒绝高风险治理操作",
+      {
+        approved_finding_ids: [],
+        rejected_finding_ids: ["finding-1"],
+        graph_cursor: 8,
+        membership_hash: "a".repeat(64),
+      },
     );
     expect(await screen.findByText("已拒绝")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "同意" })).not.toBeInTheDocument();
@@ -482,12 +502,28 @@ describe("controlled Agent graph task detail", () => {
           id: "gate-phone",
           kind: "high_risk_approval",
           status: "pending",
+          risk: "high",
+          cursor: 8,
+          membership_hash: "b".repeat(64),
           item_count: 50,
           entity_kind: "student",
           operation: "update",
           issue_kind: "field_difference",
           summary_zh: "修改 50 条学生手机号",
           risk_reason_zh: "学生手机号属于高危隐私字段，本次操作会修改希沃目标中的手机号。",
+          items: [
+            {
+              finding_id: "finding-phone",
+              entity_kind: "student",
+              entity_name: "李明",
+              source_locator: "csv:12",
+              operation_zh: "修改希沃中的学生记录",
+              issue_zh: "手机号不一致",
+              analysis_zh: "第三方权威手机号与希沃手机号不一致。",
+              solution_zh: "将希沃手机号修改为第三方权威值。",
+              changes: [],
+            },
+          ],
         },
         {
           id: "gate-delete",
@@ -543,6 +579,27 @@ describe("controlled Agent graph task detail", () => {
     expect(
       await within(card as HTMLElement).findByText("审批上下文已过期，请刷新后重试"),
     ).toBeInTheDocument();
+    client.clear();
+  });
+
+  it("refreshes a stale high-risk list and explains that it must be reviewed again", async () => {
+    const user = userEvent.setup();
+    vi.mocked(agentApi.decideGraphGate).mockRejectedValue(
+      new Error("Gate cursor is stale"),
+    );
+    const { client } = renderPage();
+
+    const heading = await screen.findByRole("heading", { name: "修改 50 条学生手机号" });
+    const card = heading.closest("section");
+    expect(card).not.toBeNull();
+    await user.click(screen.getByRole("button", { name: "同意" }));
+
+    expect(
+      await within(card as HTMLElement).findByText(
+        "审批清单已更新，请查看刷新后的操作后重新确认",
+      ),
+    ).toBeInTheDocument();
+    expect(agentApi.graph).toHaveBeenCalledTimes(2);
     client.clear();
   });
 
@@ -785,6 +842,7 @@ function mediumGate(
   findingId: string,
   summary: string,
   entityName: string,
+  entityKind: "student" | "teacher" | "department" = "student",
 ): AgentGraphHumanGate {
   return {
     id,
@@ -795,7 +853,7 @@ function mediumGate(
     membership_hash: `${id}-membership-hash`,
     member_decisions: {},
     item_count: 1,
-    entity_kind: "student",
+    entity_kind: entityKind,
     operation: "update",
     issue_kind: "field_difference",
     summary_zh: summary,
@@ -804,7 +862,7 @@ function mediumGate(
     items: [
       {
         finding_id: findingId,
-        entity_kind: "student",
+        entity_kind: entityKind,
         entity_name: entityName,
         entity_number: "S-001",
         class_name: "一班",

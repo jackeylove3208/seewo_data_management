@@ -16,7 +16,27 @@ describe("responsive analysis styles", () => {
     expect(appleCss).toMatch(/\.apple-agent-modal\s+\.ant-modal-content/);
     expect(appleCss).not.toMatch(/radial-gradient/);
     expect(appleCss).not.toMatch(/apple-drift/);
-    expect(appleCss).not.toMatch(/:has\(/);
+  });
+
+  it("keeps task controls and approval workbench in a complete two-column layout", () => {
+    expect(globalCss).toMatch(
+      /\.graph-live-progress,\s*\.graph-approval-card\s*\{[^}]*margin:\s*0 0 28px/s,
+    );
+    expect(globalCss).toMatch(
+      /\.graph-approval-card\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s,
+    );
+    expect(appleCss).toMatch(
+      /\.agent-task-detail-page:has\(>\s*\.task-status-rail\.is-collapsed\)\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+50px/s,
+    );
+    expect(appleCss).toMatch(
+      /\.apple-page\s+\.graph-medium-review-panel\s*\{[^}]*display:\s*grid/s,
+    );
+    expect(appleCss).toMatch(
+      /\.apple-page\s+\.graph-medium-review-group\s*\{[^}]*border:\s*1px solid/s,
+    );
+    expect(appleCss).toMatch(
+      /\.apple-page\s+\.graph-medium-review-actions\s*\{[^}]*justify-content:\s*flex-end/s,
+    );
   });
   it("allows mobile progress details to wrap", () => {
     expect(globalCss).toMatch(/\.stage-analysis-progress\s*>\s*small\s*\{[^}]*white-space:\s*normal/s);
