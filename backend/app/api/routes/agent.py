@@ -18,7 +18,11 @@ from app.agent_graph.repository import AgentGraphRepository
 from app.agent_graph.tools import GraphPhaseToolGateway
 from app.agent_reporting.service import AgentReportingService
 from app.agent_runtime.observability import agent_observability
-from app.agent_runtime.repository import AgentRuntimeRepository, SchoolLockConflict
+from app.agent_runtime.repository import (
+    AgentRuntimeRepository,
+    ConversationResetConflict,
+    SchoolLockConflict,
+)
 from app.agent_runtime.service import AgentSupervisorService
 from app.agent_runtime.state_machine import AgentPhase, AgentRunStatus
 from app.agent_runtime.task_service import (
@@ -266,9 +270,42 @@ async def create_agent_conversation(
     operator: Annotated[OperatorContext, Depends(get_operator_context)],
 ) -> AgentConversationResponse:
     _require_enabled(request)
-    conversation = await AgentRuntimeRepository(session).create_conversation(
+    conversation = await AgentRuntimeRepository(session).get_or_create_conversation(
         tenant_id=operator.tenant_id, created_by=operator.operator_id
     )
+    return AgentConversationResponse(id=conversation.id, status="active")
+
+
+@router.post(
+    "/conversations/current/reset",
+    response_model=AgentConversationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def reset_current_agent_conversation(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    operator: Annotated[OperatorContext, Depends(get_operator_context)],
+    idempotency_key: Annotated[
+        str,
+        Header(alias="Idempotency-Key", min_length=1, max_length=128),
+    ],
+) -> AgentConversationResponse:
+    _require_enabled(request)
+    try:
+        conversation = await AgentRuntimeRepository(session).reset_conversation(
+            tenant_id=operator.tenant_id,
+            created_by=operator.operator_id,
+            idempotency_key=idempotency_key,
+        )
+    except ConversationResetConflict as error:
+        raise HTTPException(
+            409,
+            detail=_error(
+                "conversation_active_task",
+                "当前学校仍有任务正在处理，请先完成或终止任务",
+                owner_task_id=str(error.owner_task_id),
+            ),
+        ) from error
     return AgentConversationResponse(id=conversation.id, status="active")
 
 

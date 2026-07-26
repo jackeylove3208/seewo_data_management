@@ -12,6 +12,11 @@ from app.api.dependencies import get_operator_context
 from app.core.config import Settings
 from app.core.security import OperatorContext
 from app.main import create_app
+from app.models.agent_runtime import (
+    AgentConversationMessageRecord,
+    AgentConversationRecord,
+    AgentRunRecord,
+)
 from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import Snapshot, SourceFile
 
@@ -632,6 +637,140 @@ def test_current_conversation_prioritizes_the_school_lock_owner_over_a_new_empty
     assert current.status_code == 200
     assert current.json()["id"] == owner["id"]
     assert current.json()["task"]["id"] == started.json()["id"]
+
+
+def test_conversation_reset_deletes_chat_but_preserves_completed_task_facts(
+    agent_client: TestClient,
+) -> None:
+    agent_client.app.state.conversation_provider = IncrementalConversationProvider()
+    first = agent_client.post("/api/agent/conversations").json()
+    first_message = agent_client.post(
+        f"/api/agent/conversations/{first['id']}/messages",
+        json={"message": "第一段旧对话"},
+    )
+    assert first_message.status_code == 200, first_message.text
+    second = agent_client.post("/api/agent/conversations").json()
+    second_message = agent_client.post(
+        f"/api/agent/conversations/{second['id']}/messages",
+        json={"message": "第二段旧对话"},
+    )
+    assert second_message.status_code == 200, second_message.text
+
+    async def seed_completed_run() -> tuple[UUID, UUID]:
+        async with agent_client.app.state.database.session_factory() as session:
+            task = ReconciliationTask(
+                tenant_id="school-1",
+                scope_id="all",
+                snapshot_mode="full",
+                entity_types=["student"],
+                workflow_version="new-agent-v1",
+                status="completed",
+                stage="terminal",
+                idempotency_key=f"completed-conversation-{uuid4()}",
+                request_hash="c" * 64,
+            )
+            session.add(task)
+            await session.flush()
+            run = AgentRunRecord(
+                task_id=task.id,
+                conversation_id=UUID(first["id"]),
+                tenant_id="school-1",
+                kind="sync",
+                workflow_version="new-agent-v1",
+                phase="generate_report",
+                status="completed",
+                version=1,
+                attempt_count=0,
+            )
+            session.add(run)
+            await session.commit()
+            return task.id, run.id
+
+    task_id, run_id = agent_client.portal.call(seed_completed_run)
+
+    reset = agent_client.post(
+        "/api/agent/conversations/current/reset",
+        headers={"Idempotency-Key": "new-conversation-1"},
+        json={},
+    )
+
+    assert reset.status_code == 201, reset.text
+    new_conversation_id = UUID(reset.json()["id"])
+    assert new_conversation_id not in {UUID(first["id"]), UUID(second["id"])}
+
+    repeated = agent_client.post(
+        "/api/agent/conversations/current/reset",
+        headers={"Idempotency-Key": "new-conversation-1"},
+        json={},
+    )
+    assert repeated.status_code == 201, repeated.text
+    assert repeated.json()["id"] == str(new_conversation_id)
+
+    async def inspect_reset() -> tuple[list[UUID], int, UUID | None, bool]:
+        async with agent_client.app.state.database.session_factory() as session:
+            conversations = list(
+                await session.scalars(
+                    select(AgentConversationRecord).where(
+                        AgentConversationRecord.tenant_id == "school-1",
+                        AgentConversationRecord.created_by == "demo-operator",
+                    )
+                )
+            )
+            messages = list(
+                await session.scalars(select(AgentConversationMessageRecord))
+            )
+            run = await session.get(AgentRunRecord, run_id)
+            task = await session.get(ReconciliationTask, task_id)
+            return (
+                [conversation.id for conversation in conversations],
+                len(messages),
+                run.conversation_id if run is not None else None,
+                task is not None,
+            )
+
+    conversation_ids, message_count, run_conversation_id, task_exists = (
+        agent_client.portal.call(inspect_reset)
+    )
+    assert conversation_ids == [new_conversation_id]
+    assert message_count == 0
+    assert run_conversation_id is None
+    assert task_exists is True
+
+
+def test_conversation_reset_is_blocked_by_active_school_task(
+    agent_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    conversation = agent_client.post("/api/agent/conversations")
+    assert conversation.status_code == 201
+    source_id = _upload(agent_client, tmp_path, "authoritative", "reset-lock-source.csv")
+    target_id = _upload(agent_client, tmp_path, "target", "reset-lock-target.csv")
+    task = agent_client.post(
+        "/api/agent/tasks",
+        headers={"Idempotency-Key": "reset-lock-owner"},
+        json={
+            "title": "占用学校锁的任务",
+            "entity_types": ["student"],
+            "source": {"kind": "csv", "upload_id": source_id},
+            "target": {"kind": "csv", "upload_id": target_id},
+        },
+    )
+    assert task.status_code == 202, task.text
+
+    reset = agent_client.post(
+        "/api/agent/conversations/current/reset",
+        headers={"Idempotency-Key": "blocked-new-conversation"},
+        json={},
+    )
+
+    assert reset.status_code == 409
+    assert reset.json()["detail"] == {
+        "code": "conversation_active_task",
+        "message": "当前学校仍有任务正在处理，请先完成或终止任务",
+        "owner_task_id": task.json()["id"],
+    }
+    current = agent_client.get("/api/agent/conversations/current")
+    assert current.json()["id"] == conversation.json()["id"]
 
 
 def test_failed_conversation_reply_is_persisted_as_recoverable_message(

@@ -34,6 +34,26 @@ class AgentConversationRecord(Base, TimestampMixin):
     created_by: Mapped[str] = mapped_column(String(255), index=True)
     status: Mapped[str] = mapped_column(String(32), default="active", index=True)
     context: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
+    reset_idempotency_key: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "created_by",
+            "reset_idempotency_key",
+            name="uq_agent_conversation_reset_key",
+        ),
+        Index(
+            "uq_agent_conversations_active_operator",
+            "tenant_id",
+            "created_by",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+            sqlite_where=text("status = 'active'"),
+        ),
+    )
 
 
 class AgentConversationMessageRecord(Base, TimestampMixin):

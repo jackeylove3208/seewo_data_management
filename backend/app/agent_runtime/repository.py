@@ -1,8 +1,9 @@
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -58,6 +59,12 @@ class AgentRunNotFound(LookupError):
     pass
 
 
+class ConversationResetConflict(RuntimeError):
+    def __init__(self, owner_task_id: UUID) -> None:
+        self.owner_task_id = owner_task_id
+        super().__init__(f"active school task blocks conversation reset: {owner_task_id}")
+
+
 class AgentRuntimeRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -74,6 +81,94 @@ class AgentRuntimeRepository:
         self.session.add(record)
         await self.session.flush()
         return record
+
+    async def get_or_create_conversation(
+        self,
+        *,
+        tenant_id: str,
+        created_by: str,
+    ) -> AgentConversationRecord:
+        current = await self.get_current_conversation(
+            tenant_id=tenant_id,
+            created_by=created_by,
+        )
+        if current is not None:
+            return current
+        try:
+            async with self.session.begin_nested():
+                return await self.create_conversation(
+                    tenant_id=tenant_id,
+                    created_by=created_by,
+                )
+        except IntegrityError:
+            current = await self.get_current_conversation(
+                tenant_id=tenant_id,
+                created_by=created_by,
+            )
+            if current is None:
+                raise
+            return current
+
+    async def reset_conversation(
+        self,
+        *,
+        tenant_id: str,
+        created_by: str,
+        idempotency_key: str,
+    ) -> AgentConversationRecord:
+        await self._lock_conversation_scope(
+            tenant_id=tenant_id,
+            created_by=created_by,
+        )
+        repeated = await self.session.scalar(
+            select(AgentConversationRecord).where(
+                AgentConversationRecord.tenant_id == tenant_id,
+                AgentConversationRecord.created_by == created_by,
+                AgentConversationRecord.reset_idempotency_key == idempotency_key,
+            )
+        )
+        if repeated is not None:
+            return repeated
+        active_lock = await self.session.scalar(
+            select(SchoolTaskLockRecord)
+            .where(
+                SchoolTaskLockRecord.tenant_id == tenant_id,
+                SchoolTaskLockRecord.active.is_(True),
+            )
+            .with_for_update()
+        )
+        if active_lock is not None:
+            raise ConversationResetConflict(active_lock.owner_task_id)
+        await self.session.execute(
+            delete(AgentConversationRecord).where(
+                AgentConversationRecord.tenant_id == tenant_id,
+                AgentConversationRecord.created_by == created_by,
+            )
+        )
+        await self.session.flush()
+        record = AgentConversationRecord(
+            id=uuid4(),
+            tenant_id=tenant_id,
+            created_by=created_by,
+            context={},
+            reset_idempotency_key=idempotency_key,
+        )
+        self.session.add(record)
+        await self.session.flush()
+        return record
+
+    async def _lock_conversation_scope(
+        self,
+        *,
+        tenant_id: str,
+        created_by: str,
+    ) -> None:
+        bind = self.session.bind
+        if bind is None or bind.dialect.name != "postgresql":
+            return
+        digest = sha256(f"{tenant_id}\0{created_by}".encode()).digest()
+        lock_key = int.from_bytes(digest[:8], byteorder="big", signed=True)
+        await self.session.execute(select(func.pg_advisory_xact_lock(lock_key)))
 
     async def get_active_conversation(
         self,
