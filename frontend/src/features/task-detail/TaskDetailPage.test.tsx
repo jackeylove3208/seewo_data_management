@@ -56,6 +56,7 @@ describe("real task detail", () => {
       current_action_zh: "正在等待高风险操作审批",
       status: "waiting_human",
       can_terminate: true,
+      termination_requested: false,
       human_gates: [],
     });
 

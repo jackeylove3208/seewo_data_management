@@ -45,6 +45,7 @@ describe("controlled Agent graph task detail", () => {
       progress_total: 5,
       status: "waiting_human",
       can_terminate: true,
+      termination_requested: false,
       human_gates: [
         {
           id: "gate-1",
@@ -194,6 +195,7 @@ describe("controlled Agent graph task detail", () => {
       progress_total: 1,
       status: "blocked_model_error",
       can_terminate: true,
+      termination_requested: false,
       human_gates: [],
     });
     vi.mocked(agentApi.events).mockResolvedValue({
@@ -274,6 +276,7 @@ describe("controlled Agent graph task detail", () => {
       sub_agent_zh: "治理执行 Agent",
       status: "running",
       can_terminate: true,
+      termination_requested: false,
       human_gates: [
         {
           id: "gate-1",
@@ -308,6 +311,7 @@ describe("controlled Agent graph task detail", () => {
       current_action_zh: "正在等待高风险操作审批",
       status: "waiting_human",
       can_terminate: true,
+      termination_requested: false,
       human_gates: [
         {
           id: "gate-phone",
@@ -388,6 +392,7 @@ describe("controlled Agent graph task detail", () => {
       current_action_zh: "正在生成 AI 分析与治理方案",
       status: "failed",
       can_terminate: false,
+      termination_requested: false,
       human_gates: [
         {
           id: "gate-stale",
@@ -463,6 +468,7 @@ describe("controlled Agent graph task detail", () => {
       current_action_zh: "正在等待身份冲突说明",
       status: "waiting_human",
       can_terminate: true,
+      termination_requested: false,
       human_gates: [
         {
           id: "identity-gate-1",
