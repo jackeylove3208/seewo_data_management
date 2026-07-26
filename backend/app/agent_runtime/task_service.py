@@ -148,7 +148,7 @@ class AgentTaskService:
             raise ValueError("local Agent task requires configured source references")
         sources = LocalSourceService(self.settings)
         source_material = sources.describe(source_ref)
-        target_material = sources.describe(target_ref)
+        target_material = sources.describe_target_for_write(target_ref)
         if source_material.path == target_material.path:
             raise ValueError("Agent task requires two different local sources")
         files = FileRepository(self.session)

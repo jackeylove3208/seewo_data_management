@@ -133,6 +133,12 @@ class AgentCommandResponse(BaseModel):
     status: str
 
 
+class AgentLocalSourceView(BaseModel):
+    source_ref: str
+    kind: Literal["csv"] = "csv"
+    writable_as_target: bool
+
+
 class AgentActiveLockResponse(BaseModel):
     active: bool
     owner_task_id: UUID | None = None

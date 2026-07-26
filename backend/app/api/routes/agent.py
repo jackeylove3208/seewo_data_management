@@ -74,6 +74,7 @@ from app.schemas.agent_api import (
     AgentHistoryPage,
     AgentIntentView,
     AgentInteractionResponse,
+    AgentLocalSourceView,
     AgentMessageRequest,
     AgentMessageResponse,
     AgentReportResponse,
@@ -132,6 +133,19 @@ _GRAPH_STAGE_BY_NODE = {
     "generate_rollback_report": "report_and_rollback",
     "terminal": "terminal",
 }
+
+
+@router.get("/local-sources", response_model=tuple[AgentLocalSourceView, ...])
+async def list_agent_local_sources(request: Request) -> tuple[AgentLocalSourceView, ...]:
+    _require_enabled(request)
+    return tuple(
+        AgentLocalSourceView(
+            source_ref=source.source_ref,
+            kind="csv",
+            writable_as_target=source.writable_as_target,
+        )
+        for source in LocalSourceService(request.app.state.settings).list_sources()
+    )
 
 _GRAPH_ACTION_LABELS = {
     "inspect_sources": "正在检查第三方与希沃数据来源",
