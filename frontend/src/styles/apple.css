@@ -424,6 +424,8 @@ select {
 }
 
 .apple-page .agent-blocked-notice,
+.apple-page .agent-termination-notice,
+.apple-page .agent-report-summary-card,
 .apple-page .agent-event-history {
   border-color: var(--apple-border);
   background: rgba(18, 35, 68, 0.84);
@@ -531,6 +533,40 @@ select {
 
 .apple-page .agent-blocked-notice p {
   color: #c9a8b2;
+}
+
+.apple-page .agent-termination-notice {
+  border-color: rgba(95, 183, 226, 0.34);
+  background:
+    linear-gradient(145deg, rgba(16, 42, 73, 0.96), rgba(25, 44, 82, 0.9));
+}
+
+.apple-page .agent-report-summary-card {
+  border-color: rgba(88, 205, 171, 0.34);
+  background:
+    linear-gradient(145deg, rgba(15, 48, 63, 0.96), rgba(25, 52, 80, 0.9));
+}
+
+.apple-page .agent-summary-icon {
+  color: #a8e4ff;
+  background: rgba(75, 164, 207, 0.2);
+  box-shadow: inset 0 0 0 1px rgba(135, 211, 246, 0.12);
+}
+
+.apple-page .agent-report-summary-card .agent-summary-icon {
+  color: #9cf0d2;
+  background: rgba(64, 178, 143, 0.2);
+  box-shadow: inset 0 0 0 1px rgba(125, 231, 197, 0.12);
+}
+
+.apple-page .agent-termination-notice h2,
+.apple-page .agent-report-summary-card h2 {
+  color: var(--apple-ink);
+}
+
+.apple-page .agent-termination-notice p,
+.apple-page .agent-report-summary-card p {
+  color: var(--apple-ink-soft);
 }
 
 .apple-page .agent-event-history li {

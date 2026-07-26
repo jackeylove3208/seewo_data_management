@@ -148,6 +148,7 @@ export interface AgentGraphProgress {
   progress_total?: number | null;
   status: string;
   can_terminate: boolean;
+  termination_requested: boolean;
   human_gates: AgentGraphHumanGate[];
 }
 

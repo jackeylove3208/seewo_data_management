@@ -45,6 +45,7 @@ describe("controlled Agent graph task detail", () => {
       progress_total: 5,
       status: "waiting_human",
       can_terminate: true,
+      termination_requested: false,
       human_gates: [
         {
           id: "gate-1",
@@ -194,6 +195,7 @@ describe("controlled Agent graph task detail", () => {
       progress_total: 1,
       status: "blocked_model_error",
       can_terminate: true,
+      termination_requested: false,
       human_gates: [],
     });
     vi.mocked(agentApi.events).mockResolvedValue({
@@ -274,6 +276,7 @@ describe("controlled Agent graph task detail", () => {
       sub_agent_zh: "治理执行 Agent",
       status: "running",
       can_terminate: true,
+      termination_requested: false,
       human_gates: [
         {
           id: "gate-1",
@@ -308,6 +311,7 @@ describe("controlled Agent graph task detail", () => {
       current_action_zh: "正在等待高风险操作审批",
       status: "waiting_human",
       can_terminate: true,
+      termination_requested: false,
       human_gates: [
         {
           id: "gate-phone",
@@ -388,6 +392,7 @@ describe("controlled Agent graph task detail", () => {
       current_action_zh: "正在生成 AI 分析与治理方案",
       status: "failed",
       can_terminate: false,
+      termination_requested: false,
       human_gates: [
         {
           id: "gate-stale",
@@ -451,6 +456,108 @@ describe("controlled Agent graph task detail", () => {
     client.clear();
   });
 
+  it("explains that a terminated task is only generating its final report", async () => {
+    vi.mocked(agentApi.task).mockResolvedValue({
+      id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      task_kind: "sync",
+      phase: "generate_report",
+      status: "running",
+      title: "全校学生数据同步",
+      report_id: null,
+    });
+    vi.mocked(agentApi.graph).mockResolvedValue({
+      task_id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      graph_version: "agent-sync-graph-v1",
+      graph_cursor: 24,
+      current_node: "termination_report",
+      business_stage: "report_and_rollback",
+      current_action_zh: "正在生成终止报告",
+      status: "running",
+      can_terminate: true,
+      termination_requested: true,
+      human_gates: [],
+    });
+    const { client } = renderPage();
+
+    expect(
+      await screen.findByRole("heading", { name: "任务已终止" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/仍在为你生成终止报告/)).toBeInTheDocument();
+    expect(screen.getByText(/未开始的操作不会继续/)).toBeInTheDocument();
+    expect(screen.getByText("生成终止报告")).toBeInTheDocument();
+    client.clear();
+  });
+
+  it("shows a completed termination report above the event history", async () => {
+    vi.mocked(agentApi.task).mockResolvedValue({
+      id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      task_kind: "sync",
+      phase: "terminal",
+      status: "terminated",
+      title: "全校学生数据同步",
+      report_id: "report-1",
+      rollback_eligible: true,
+    });
+    vi.mocked(agentApi.graph).mockResolvedValue({
+      task_id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      graph_version: "agent-sync-graph-v1",
+      graph_cursor: 25,
+      current_node: "terminal",
+      business_stage: "terminal",
+      current_action_zh: "任务已结束",
+      status: "terminated",
+      can_terminate: false,
+      termination_requested: true,
+      human_gates: [],
+    });
+    vi.mocked(agentApi.events).mockResolvedValue({
+      cursor: "25",
+      events: [
+        {
+          id: "event-terminal",
+          cursor: "25",
+          type: "graph.transitioned",
+          phase: "terminal",
+          payload: { node: "terminal" },
+          created_at: "2026-07-26T02:56:19Z",
+        },
+      ],
+    });
+    const { client, container } = renderPage();
+
+    const reportHeading = await screen.findByRole(
+      "heading",
+      { name: "终止报告已生成" },
+    );
+    await screen.findByLabelText("Agent 事件");
+    const reportCard = reportHeading.closest(".agent-report-summary-card");
+    const eventHistory = container.querySelector(".agent-event-history");
+    expect(reportCard).not.toBeNull();
+    expect(eventHistory).not.toBeNull();
+    expect(
+      (reportCard as HTMLElement).compareDocumentPosition(
+        eventHistory as HTMLElement,
+      ) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      within(reportCard as HTMLElement).getByRole(
+        "button",
+        { name: "查看任务报告" },
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(eventHistory as HTMLElement).queryByRole(
+        "button",
+        { name: "查看任务报告" },
+      ),
+    ).not.toBeInTheDocument();
+    client.clear();
+  });
+
   it("uses temporary dialogue and second confirmation for identity conflicts", async () => {
     const user = userEvent.setup();
     vi.mocked(agentApi.graph).mockResolvedValue({
@@ -463,6 +570,7 @@ describe("controlled Agent graph task detail", () => {
       current_action_zh: "正在等待身份冲突说明",
       status: "waiting_human",
       can_terminate: true,
+      termination_requested: false,
       human_gates: [
         {
           id: "identity-gate-1",

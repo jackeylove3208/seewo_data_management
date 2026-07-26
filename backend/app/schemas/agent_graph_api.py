@@ -60,6 +60,7 @@ class AgentGraphProgressResponse(BaseModel):
     progress_total: int | None = Field(default=None, ge=0)
     status: str
     can_terminate: bool
+    termination_requested: bool
     human_gates: tuple[AgentGraphHumanGateView, ...] = ()
 
 

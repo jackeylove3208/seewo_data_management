@@ -667,6 +667,7 @@ async def get_agent_graph_progress(
         progress_total=progress_total,
         status=run.status,
         can_terminate=not terminal,
+        termination_requested=graph.termination_requested,
         human_gates=tuple(
             _graph_human_gate_view(
                 gate,

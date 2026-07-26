@@ -2181,6 +2181,74 @@ button.connection-state {
   font-size: 12px;
 }
 
+.agent-termination-notice,
+.agent-report-summary-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: -16px 0 28px;
+  padding: 20px 22px;
+  border: 1px solid rgba(28, 105, 147, 0.2);
+  border-radius: 20px;
+  background: rgba(239, 248, 252, 0.92);
+}
+
+.agent-report-summary-card {
+  border-color: rgba(31, 122, 93, 0.22);
+  background: rgba(240, 250, 246, 0.94);
+}
+
+.agent-summary-icon {
+  display: grid;
+  flex: 0 0 42px;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  color: #256f91;
+  border-radius: 14px;
+  background: rgba(49, 137, 177, 0.12);
+}
+
+.agent-report-summary-card .agent-summary-icon {
+  color: #26745e;
+  background: rgba(38, 132, 102, 0.13);
+}
+
+.agent-termination-notice h2,
+.agent-termination-notice p,
+.agent-report-summary-card h2,
+.agent-report-summary-card p {
+  margin: 0;
+}
+
+.agent-termination-notice h2,
+.agent-report-summary-card h2 {
+  color: #183047;
+  font-size: 16px;
+}
+
+.agent-termination-notice p,
+.agent-report-summary-card p {
+  margin-top: 6px;
+  color: #597080;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.agent-report-summary-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-report-summary-copy h2 {
+  margin-top: 8px;
+}
+
+.agent-report-summary-card > .ant-btn {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
 .agent-event-history {
   margin: 8px 0 28px;
   padding: 22px;
@@ -3602,6 +3670,19 @@ body {
 }
 
 @media (max-width: 720px) {
+  .agent-termination-notice,
+  .agent-report-summary-card {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    margin-top: -10px;
+    padding: 18px;
+  }
+
+  .agent-report-summary-card > .ant-btn {
+    width: 100%;
+    margin-left: 0;
+  }
+
   .selection-bar {
     right: 10px;
     left: 10px;

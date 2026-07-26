@@ -1005,6 +1005,12 @@ def test_blocked_model_error_allows_termination_confirmation_decision(
         expected_run_status,
         expected_termination_requested,
     )
+    progress = agent_client.get(f"/api/agent/tasks/{task_id}/graph")
+    assert progress.status_code == 200, progress.text
+    assert (
+        progress.json()["termination_requested"]
+        is expected_termination_requested
+    )
 
 
 def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
