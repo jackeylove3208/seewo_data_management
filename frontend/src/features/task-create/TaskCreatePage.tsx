@@ -110,17 +110,15 @@ export function TaskCreatePage({
   const [localSourcesError, setLocalSourcesError] = useState<string>();
   const [localSourcesLoading, setLocalSourcesLoading] = useState(false);
   const fileRequestTokens = useRef({ source: 0, target: 0 });
-  const localSourcesRequested = useRef(false);
   const needsLocalSources = draft.source?.kind === "local" || draft.target?.kind === "local";
 
   useEffect(() => {
-    if (!needsLocalSources || localSourcesRequested.current) return;
+    if (!needsLocalSources) return;
     if (!api.localSources) {
       setLocalSourcesError("当前后端未启用本地 CSV 授权目录");
       return;
     }
     let cancelled = false;
-    localSourcesRequested.current = true;
     setLocalSourcesLoading(true);
     setLocalSourcesError(undefined);
     void api.localSources()
@@ -129,7 +127,6 @@ export function TaskCreatePage({
       })
       .catch((error: unknown) => {
         if (!cancelled) {
-          localSourcesRequested.current = false;
           setLocalSourcesError(
             error instanceof Error ? error.message : "本地 CSV 列表读取失败",
           );

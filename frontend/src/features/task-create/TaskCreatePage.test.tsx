@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
@@ -24,6 +25,19 @@ function renderPage(api?: AgentManualTaskApi) {
   );
 }
 
+function renderStrictPage(api?: AgentManualTaskApi) {
+  return render(
+    <StrictMode>
+      <MemoryRouter initialEntries={["/tasks/new"]}>
+        <Routes>
+          <Route path="/tasks/new" element={<TaskCreatePage api={api} />} />
+          <Route path="/tasks/:taskId" element={<LocationProbe />} />
+        </Routes>
+      </MemoryRouter>
+    </StrictMode>,
+  );
+}
+
 describe("manual Agent data sync", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -37,6 +51,27 @@ describe("manual Agent data sync", () => {
     });
   });
   afterEach(() => vi.restoreAllMocks());
+
+  it("finishes loading authorized CSV targets under React StrictMode", async () => {
+    const user = userEvent.setup();
+    const localSources = vi.fn().mockResolvedValue([
+      {
+        source_ref: "seewo/current.csv",
+        kind: "csv" as const,
+        writable_as_target: true,
+      },
+    ]);
+    renderStrictPage({ startManualTask: vi.fn(), localSources });
+
+    await user.click(screen.getByRole("button", { name: "手动同步" }));
+
+    const target = await screen.findByLabelText("希沃魔方本地 CSV");
+    await waitFor(() => expect(target).toBeEnabled());
+    expect(
+      within(target).getByRole("option", { name: "seewo/current.csv" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("正在读取授权目录…")).not.toBeInTheDocument();
+  });
 
   it("keeps authority upload but requires a writable original CSV target", async () => {
     const user = userEvent.setup();
