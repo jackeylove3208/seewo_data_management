@@ -787,10 +787,7 @@ def _graph_human_gate_view(
             "teacher": "教师",
             "department": "部门",
         }.get(approval_group.entity_kind, "组织")
-        if (
-            approval_group.operation == "update"
-            and approval_group.entity_kind == "student"
-        ):
+        if _is_student_phone_approval_group(approval_group):
             summary_zh = f"修改 {len(gate.member_ids)} 条学生手机号"
             risk_reason_zh = (
                 "学生手机号属于高危隐私字段，本次操作会修改希沃目标中的手机号。"
@@ -901,9 +898,19 @@ def _approval_fact_is_complete(
         or {str(item.finding_id) for item in items} != set(gate.member_ids)
     ):
         return False
-    if approval_group.entity_kind == "student" and approval_group.operation == "update":
+    if _is_student_phone_approval_group(approval_group):
         return all(_student_phone_change_is_complete(item) for item in items)
     return True
+
+
+def _is_student_phone_approval_group(
+    approval_group: AgentApprovalGroupRecord,
+) -> bool:
+    return (
+        approval_group.entity_kind == "student"
+        and approval_group.operation == "update"
+        and approval_group.risk == "high"
+    )
 
 
 def _student_phone_change_is_complete(item: AgentGraphApprovalItemView) -> bool:
