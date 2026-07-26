@@ -43,6 +43,7 @@ from app.agent_runtime.csv_rollback_handlers import (
     CsvRollbackHandlers,
     _rollback_operation,
 )
+from app.agent_runtime.local_publication import publish_local_target
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentPhase
 from app.agent_runtime.worker import AgentWorkContext
@@ -66,6 +67,7 @@ from app.ai.skills.contracts import (
     SourceInspectionInput,
     SourceInspectionResult,
 )
+from app.core.config import Settings
 from app.core.security import OperatorContext
 from app.ingestion.csv_reader import inspect_csv, read_csv_frame
 from app.models.agent_analysis import (
@@ -99,18 +101,22 @@ class ProductionGraphActionExecutor:
         max_retries: int = 3,
         output_root: Path | None = None,
         csv_execution_enabled: bool = False,
+        settings: Settings | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._provider = provider
         self._tokenization_secret = tokenization_secret
         self._max_retries = max_retries
         self._governance = CsvGovernanceHandlers(
-            output_root=output_root or Path("storage/exports/agent-targets")
+            output_root=output_root or Path("storage/exports/agent-targets"),
+            settings=settings,
         )
         self._rollback = CsvRollbackHandlers(
-            output_root=output_root or Path("storage/exports/agent-targets")
+            output_root=output_root or Path("storage/exports/agent-targets"),
+            settings=settings,
         )
         self._csv_execution_enabled = csv_execution_enabled
+        self._settings = settings
 
     async def __call__(
         self,
@@ -805,6 +811,20 @@ class ProductionGraphActionExecutor:
                     session,
                     run_id=context.run_id,
                 )
+                if self._settings is not None:
+                    output_version_id = facts.get("output_target_version_id")
+                    facts["publication"] = await publish_local_target(
+                        session,
+                        settings=self._settings,
+                        task_id=context.task_id,
+                        run_id=context.run_id,
+                        phase=AgentPhase.GENERATE_REPORT,
+                        target_version_id=(
+                            UUID(str(output_version_id))
+                            if output_version_id is not None
+                            else None
+                        ),
+                    )
                 terminal_state = (
                     "abnormal_input"
                     if context.current_node == "abnormal_input_report"
@@ -1262,6 +1282,20 @@ class ProductionGraphActionExecutor:
                     if checkpoint is not None
                     else {"mutations": []}
                 )
+                if self._settings is not None:
+                    output_version_id = facts.get("output_target_version_id")
+                    facts["publication"] = await publish_local_target(
+                        session,
+                        settings=self._settings,
+                        task_id=context.task_id,
+                        run_id=context.run_id,
+                        phase=AgentPhase.REPORT_RESTORE,
+                        target_version_id=(
+                            UUID(str(output_version_id))
+                            if output_version_id is not None
+                            else None
+                        ),
+                    )
                 fact_ref = f"report-facts:{context.run_id}:{context.graph_cursor}"
                 bound_action = action.model_copy(
                     update={

@@ -11,10 +11,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent_reporting.service import AgentReportingService
+from app.agent_runtime.local_publication import publish_local_target
 from app.agent_runtime.observability import agent_observability
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentPhase, AgentRunStatus
 from app.agent_runtime.worker import AgentWorkContext, AgentWorkResult
+from app.core.config import Settings
 from app.executions.agent_service import (
     AgentExecutionService,
     CsvAgentTargetAdapter,
@@ -27,6 +29,7 @@ from app.governance.agent_governance import (
     compile_agent_plan,
     group_high_risk_findings,
 )
+from app.local_sources.publisher import copy_managed_initial_version
 from app.models.agent_analysis import (
     AgentApprovalGroupRecord,
     AgentClarificationRecord,
@@ -60,14 +63,15 @@ class AgentTargetVersionRepository:
 
 
 class CsvGovernanceHandlers:
-    def __init__(self, *, output_root: Path) -> None:
+    def __init__(self, *, output_root: Path, settings: Settings | None = None) -> None:
         self._output_root = output_root
+        self._settings = settings
 
     async def aggregate(
         self, session: AsyncSession, context: AgentWorkContext
     ) -> AgentWorkResult:
         run, task, _source, _target, _version, findings = await _finding_inputs(
-            session, context.run_id
+            session, context.run_id, output_root=self._output_root
         )
         repository = AgentGovernanceRepository(session)
         groups = group_high_risk_findings(findings)
@@ -156,7 +160,7 @@ class CsvGovernanceHandlers:
         self, session: AsyncSession, context: AgentWorkContext
     ) -> AgentWorkResult:
         run, task, source, target, _version, findings = await _finding_inputs(
-            session, context.run_id
+            session, context.run_id, output_root=self._output_root
         )
         approvals = tuple(
             await session.scalars(
@@ -471,6 +475,20 @@ class CsvGovernanceHandlers:
         if run is None or task is None:
             raise LookupError("Agent reporting context is missing")
         facts = await build_agent_report_facts(session, run_id=run.id)
+        if self._settings is not None:
+            output_version_id = facts.get("output_target_version_id")
+            facts["publication"] = await publish_local_target(
+                session,
+                settings=self._settings,
+                task_id=task.id,
+                run_id=run.id,
+                phase=AgentPhase.GENERATE_REPORT,
+                target_version_id=(
+                    UUID(str(output_version_id))
+                    if output_version_id is not None
+                    else None
+                ),
+            )
         operations = tuple(
             await session.scalars(
                 select(AgentGovernanceOperationRecord).where(
@@ -574,7 +592,10 @@ async def build_agent_report_facts(
 
 
 async def _finding_inputs(
-    session: AsyncSession, run_id: UUID
+    session: AsyncSession,
+    run_id: UUID,
+    *,
+    output_root: Path,
 ) -> tuple[
     AgentRunRecord,
     ReconciliationTask,
@@ -598,6 +619,16 @@ async def _finding_inputs(
         target_file = await session.get(SourceFile, target.source_file_id)
         if target_file is None:
             raise LookupError("Agent target CSV is missing")
+        storage_path = Path(target_file.storage_path)
+        target_intent = (task.agent_intent or {}).get("target", {})
+        if isinstance(target_intent, dict) and target_intent.get("kind") == "local":
+            managed = copy_managed_initial_version(
+                storage_path,
+                output_root=output_root / "initial",
+                task_id=task.id,
+                expected_sha256=target.file_hash,
+            )
+            storage_path = managed.path
         version = await executions.create_target_version(
             task_id=task.id,
             tenant_id=task.tenant_id,
@@ -606,7 +637,7 @@ async def _finding_inputs(
             batch_id=None,
             file_sha256=target.file_hash,
             content_hash=target.content_hash,
-            storage_path=target_file.storage_path,
+            storage_path=storage_path,
         )
     rows = tuple(
         await session.execute(
