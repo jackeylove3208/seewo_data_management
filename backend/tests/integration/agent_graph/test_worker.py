@@ -7,6 +7,7 @@ from sqlalchemy.exc import DBAPIError
 from app.agent_graph.contracts import (
     AllowedActionV1,
     CandidateActionEvaluationV1,
+    SingleActionReasonCode,
     SupervisorDecisionV1,
     UnselectedActionReasonV1,
 )
@@ -779,11 +780,15 @@ async def test_production_candidates_audit_rejected_graph_templates(database) ->
         for item in plan.candidate_evaluations
         if not item.passed
     }
-    assert passed == {"inspect_authority", "inspect_target"}
+    assert passed == {"inspect_authority"}
     assert rejected == {
+        "inspect_target": ("server_order_deferred",),
         "normalize_ready_sources": ("source_inspection_incomplete",),
     }
-    assert plan.single_action_reason_code is None
+    assert (
+        plan.single_action_reason_code
+        is SingleActionReasonCode.ONLY_GUARD_SATISFIED
+    )
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,6 @@
 from uuid import uuid4
 
+import app.agent_graph.runtime as graph_runtime
 from app.agent_graph.contracts import SingleActionReasonCode
 from app.agent_graph.runtime import (
     _action,
@@ -76,3 +77,36 @@ def test_single_action_reason_uses_semantic_server_fact() -> None:
         context,
         (_action("finish", successor="terminal"),),
     ) is SingleActionReasonCode.TERMINALIZATION_REQUIRED
+
+
+def test_ready_governance_operations_are_dispatched_as_one_bounded_batch() -> None:
+    context = GraphWorkContext(
+        worker_id="worker",
+        run_id=uuid4(),
+        task_id=uuid4(),
+        tenant_id="school-1",
+        graph_run_id=uuid4(),
+        graph_version="agent-sync-graph-v1",
+        current_node="execute_ready_operations",
+        graph_cursor=20,
+        attempt_count=1,
+        lease_token=uuid4(),
+    )
+    plan_id = uuid4()
+    operation_ids = tuple(uuid4() for _index in range(51))
+
+    action = graph_runtime._execution_batch_action(
+        context,
+        plan_id=plan_id,
+        operation_ids=operation_ids,
+    )
+
+    assert action.action_id == "execute_operations_batch"
+    assert action.graph_action_kind == "verify_operations"
+    assert action.resource_ids == (
+        f"execution-plan:{plan_id}",
+        *(f"operation:{item}" for item in operation_ids[:50]),
+    )
+    assert action.required_evidence == tuple(
+        f"execution-outcome:{item}" for item in operation_ids[:50]
+    )

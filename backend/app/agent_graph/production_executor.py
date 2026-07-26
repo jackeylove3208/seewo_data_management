@@ -356,6 +356,17 @@ class ProductionGraphActionExecutor:
                 expected_kinds = {
                     work.id: work.kind for work, _record in work_rows
                 }
+                tools, _runner, manifest_id = await self._analysis_runtime(
+                    preparation_session,
+                    context=context,
+                    action=action,
+                )
+                paired_evidence = {
+                    work.id: await tools.paired_record_evidence(
+                        f"paired-record:{work.id}"
+                    )
+                    for work, _record in work_rows
+                }
                 input_payload = ReconcileEntityBatchInput(
                     task_id=context.task_id,
                     run_id=context.run_id,
@@ -369,15 +380,11 @@ class ProductionGraphActionExecutor:
                             candidate_evidence_refs=(
                                 f"paired-record:{work.id}",
                             ),
+                            paired_evidence=paired_evidence[work.id],
                         )
                         for work, record in work_rows
                     ),
                 ).model_dump(mode="json")
-                _tools, _runner, manifest_id = await self._analysis_runtime(
-                    preparation_session,
-                    context=context,
-                    action=action,
-                )
 
         result = None
         model_failure: GraphSubAgentFailure | None = None

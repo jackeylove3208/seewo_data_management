@@ -165,6 +165,9 @@ class ScriptedSkillProvider:
                             "analysis_zh": "权威数据与希沃数据的班级字段不一致。",
                             "proposed_operation": "update",
                             "evidence_refs": [evidence_ref],
+                            "solution_zh": "以第三方权威班级字段更新希沃数据。",
+                            "risk": "medium",
+                            "dependency_finding_ids": [],
                         }
                     ],
                 }
@@ -753,13 +756,12 @@ async def test_graph_lifecycle_has_no_legacy_delegation(
             for item in invocations
             if item.execution_mode == "skill_model"
         } >= {
-            "inspect-external-data-source",
-            "normalize-organization-data-batch",
-            "reconcile-entity-batch",
-            "generate-governance-solutions",
-            "execute-approved-governance-plan",
-            "generate-agent-governance-report",
-        }
+                "inspect-external-data-source",
+                "normalize-organization-data-batch",
+                "reconcile-entity-batch",
+                "execute-approved-governance-plan",
+                "generate-agent-governance-report",
+            }
         assert report is not None
         assert report.rollback_eligible is True
         assert rollback_report is not None

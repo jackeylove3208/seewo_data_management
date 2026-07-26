@@ -82,6 +82,7 @@ _GOVERNANCE_EXECUTION_TOOL_NAMES = frozenset(
     {
         "read_execution_plan",
         "read_ready_operations",
+        "request_execution_batch",
         "request_operation_execution",
         "read_operation_verification",
     }

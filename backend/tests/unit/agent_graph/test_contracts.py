@@ -13,8 +13,8 @@ from app.agent_graph.contracts import (
     SupervisorDecisionV1,
     UnselectedActionReasonV1,
 )
-from app.agent_graph.tools import GRAPH_NODE_TOOL_NAMES
 from app.agent_graph.supervisor import build_supervisor_context
+from app.agent_graph.tools import GRAPH_NODE_TOOL_NAMES
 
 
 def _action(action_id: str, *, evidence: str, successor: str) -> AllowedActionV1:
@@ -83,6 +83,7 @@ def test_all_governance_execution_nodes_authorize_the_same_phase_tools() -> None
     expected = GRAPH_NODE_TOOL_NAMES["execute_ready_operations"]
 
     assert GRAPH_NODE_TOOL_NAMES["execute_remaining_independent"] == expected
+    assert "request_execution_batch" in expected
 
 
 def test_valid_decision_covers_every_unselected_action() -> None:

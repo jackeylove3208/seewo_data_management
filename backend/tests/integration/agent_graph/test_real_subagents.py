@@ -1174,7 +1174,7 @@ async def test_interrupted_invocation_after_tool_result_preserves_audit_and_resu
 
 
 @pytest.mark.asyncio
-async def test_analysis_action_invokes_reconciliation_and_solution_skills(session) -> None:
+async def test_analysis_action_returns_findings_and_solutions_in_one_skill(session) -> None:
     task, run, state, manifest = await _graph_invocation_fixture(
         session,
         node="analyze_actionable_batches",
@@ -1196,6 +1196,9 @@ async def test_analysis_action_invokes_reconciliation_and_solution_skills(sessio
                             "analysis_zh": "引用了不属于本任务的证据。",
                             "proposed_operation": "update",
                             "evidence_refs": ["paired-record:foreign"],
+                            "solution_zh": "按第三方权威班级更新希沃目标记录。",
+                            "risk": "high",
+                            "dependency_finding_ids": [],
                         }
                     ],
                 }
@@ -1212,18 +1215,7 @@ async def test_analysis_action_invokes_reconciliation_and_solution_skills(sessio
                             "analysis_zh": "权威班级与希沃目标班级不一致。",
                             "proposed_operation": "update",
                             "evidence_refs": ["source:authoritative:inspection"],
-                        }
-                    ],
-                }
-            },
-            {
-                "result": {
-                    "schema_version": "agent-contract-v1",
-                    "solutions": [
-                        {
-                            "finding_id": str(finding_id),
                             "solution_zh": "按第三方权威班级更新希沃目标记录。",
-                            "operation": "update",
                             "risk": "high",
                             "dependency_finding_ids": [],
                         }
@@ -1272,6 +1264,30 @@ async def test_analysis_action_invokes_reconciliation_and_solution_skills(sessio
                         "candidate_evidence_refs": [
                             "source:authoritative:inspection"
                         ],
+                        "paired_evidence": {
+                            "evidence_ref": "source:authoritative:inspection",
+                            "work_item_id": str(work_item_id),
+                            "persisted_kind": "field_difference",
+                            "entity_kind": "student",
+                            "target_record": {
+                                "locator": "csv:2",
+                                "class_name": "一班",
+                            },
+                            "authority_record": {
+                                "locator": "csv:2",
+                                "class_name": "二班",
+                            },
+                            "identity_key_hits": [],
+                            "candidate_conflicts": [],
+                            "authority_claim": None,
+                            "target_stable_order": 1,
+                            "field_differences": ["class_name"],
+                            "allowed_candidates": [],
+                            "allowed_operations": ["retain", "update"],
+                            "evidence_refs": [
+                                "source:authoritative:inspection"
+                            ],
+                        },
                     }
                 ],
             },
@@ -1289,8 +1305,7 @@ async def test_analysis_action_invokes_reconciliation_and_solution_skills(sessio
         )
     )
     assert {record.skill_name for record in invocations} == {
-        "reconcile-entity-batch",
-        "generate-governance-solutions",
+        "reconcile-entity-batch"
     }
     assert {record.execution_mode for record in invocations} == {"skill_model"}
     reconciliation_attempts = sorted(
@@ -1302,6 +1317,7 @@ async def test_analysis_action_invokes_reconciliation_and_solution_skills(sessio
         if record.skill_name == "reconcile-entity-batch"
     )
     assert reconciliation_attempts == [(1, "failed"), (2, "completed")]
+    assert len(provider.requests) == 2
 
 
 @pytest.mark.asyncio

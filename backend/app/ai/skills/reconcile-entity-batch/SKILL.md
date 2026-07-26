@@ -47,10 +47,11 @@ output_schema: AgentFindingBatch
 8. 被标记的第三方异常行从身份索引中不可见，按 `authority_invalid` 单独生成 AI 异常分析；
    只能建议修复权威源后重跑并输出 `skip`，不能把它当作希沃修改依据。
 9. 已确认身份且全部适用字段一致的正确数据保持静默，不产生 finding、方案或前端记录。
-10. 需要字段证据时，先用 `read_work_item` 确认工作项，再用
-    `read_paired_record_evidence` 读取 manifest 中的完整双边记录；只有服务端提供的
-    `query_identity_postings` 和 `read_claim_state` 可用于解释身份命中与认领状态。
-    `submit_finding_batch` 只用于预校验当前批次，最终结果仍必须符合输出 schema。
+10. 每个 work item 已在 `paired_evidence` 中携带服务端生成的完整双边证据，正常路径直接一次
+    返回整个批次的 findings 与方案，不得逐条调用工具。只有输入证据缺失或内部引用不一致时，
+    才可用 `read_work_item`、`read_paired_record_evidence`、`query_identity_postings` 和
+    `read_claim_state` 对异常单项复核。`submit_finding_batch` 只用于必要的预校验，最终结果仍
+    必须符合输出 schema。
 
 ## 决策规则
 
@@ -69,7 +70,9 @@ output_schema: AgentFindingBatch
 只输出当前响应 schema 的严格 JSON。对服务端要求分析的每个工作项必须输出且仅输出一个同
 ID 结果，不遗漏、不重复、不添加。`category_zh` 使用简短中文业务类别，`analysis_zh` 必须
 说明身份证据、异常原因、影响及为什么需要该处理；`evidence_refs` 只能从输入原样选取。
-若当前调用同时要求方案，则每项一至三条方案、恰好一条推荐，并遵守 kind 的操作白名单。
+每个 finding 必须在同一响应中给出 `solution_zh`、`risk` 和
+`dependency_finding_ids`，其中 `proposed_operation` 同时是唯一推荐操作。方案必须说明
+具体治理对象和修改方向并遵守 kind 的操作白名单，不再另起一次模型调用生成方案。
 
 ## 禁止事项
 
