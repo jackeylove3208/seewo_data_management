@@ -309,7 +309,7 @@ def test_graph_progress_and_tenant_safe_gate_decision(
                     task_id=task.id,
                     tenant_id=task.tenant_id,
                     group_key="target_extra:teacher:delete:agent-risk-v1",
-                    membership_hash="delete-membership-hash",
+                    membership_hash="d" * 64,
                     finding_ids=delete_finding_ids,
                     issue_kind="target_extra",
                     entity_kind="teacher",
@@ -347,7 +347,7 @@ def test_graph_progress_and_tenant_safe_gate_decision(
     assert progress.status_code == 200, progress.text
     body = progress.json()
     assert body["business_stage"] == "governance_execution"
-    assert body["current_action_zh"] == "正在等待高风险操作审批"
+    assert body["current_action_zh"] == "正在等待治理操作审核"
     gates = {item["id"]: item for item in body["human_gates"]}
     update_gate = gates[gate_id]
     assert update_gate["item_count"] == 1
@@ -447,12 +447,21 @@ def test_graph_progress_and_tenant_safe_gate_decision(
     assert decided_gates[gate_id]["summary_zh"] == "修改 1 条学生手机号"
     assert decided_gates[delete_gate_id]["status"] == "pending"
 
-    rejected = agent_client.post(
+    delete_finding_ids = [
+        item["finding_id"] for item in delete_gate["items"]
+    ]
+    mixed = agent_client.post(
         f"/api/agent/tasks/{task_id}/graph/gates/{delete_gate_id}/decision",
-        json={"decision": "reject"},
+        json={
+            "decision": "approve",
+            "approved_finding_ids": delete_finding_ids[:2],
+            "rejected_finding_ids": delete_finding_ids[2:],
+            "graph_cursor": 1,
+            "membership_hash": "d" * 64,
+        },
     )
-    assert rejected.status_code == 200, rejected.text
-    assert rejected.json()["status"] == "rejected"
+    assert mixed.status_code == 200, mixed.text
+    assert mixed.json()["status"] == "approved"
 
     completed_decisions = agent_client.get(
         f"/api/agent/tasks/{task_id}/graph"
@@ -461,7 +470,11 @@ def test_graph_progress_and_tenant_safe_gate_decision(
         item["id"]: item for item in completed_decisions["human_gates"]
     }
     assert completed_decisions["status"] == "running"
-    assert completed_gates[delete_gate_id]["status"] == "rejected"
+    assert completed_gates[delete_gate_id]["status"] == "approved"
+    assert completed_gates[delete_gate_id]["member_decisions"] == {
+        **{finding_id: "approved" for finding_id in delete_finding_ids[:2]},
+        **{finding_id: "rejected" for finding_id in delete_finding_ids[2:]},
+    }
 
 
 def test_blocked_graph_progress_preserves_the_original_business_stage(

@@ -347,7 +347,10 @@ class AgentApprovalGroupRecord(Base, TimestampMixin):
             "status IN ('pending', 'approved', 'rejected', 'stale')",
             name="ck_agent_approval_group_status",
         ),
-        CheckConstraint("risk = 'high'", name="ck_agent_approval_group_risk"),
+        CheckConstraint(
+            "risk IN ('medium', 'high')",
+            name="ck_agent_approval_group_risk",
+        ),
     )
 
 

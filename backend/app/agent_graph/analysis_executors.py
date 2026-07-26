@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai.agent_analysis import operation_is_allowed
 from app.ai.graph_subagents import (
     GraphSkillInvocation,
     GraphSkillModelRunner,
@@ -309,6 +310,8 @@ def compile_analysis_payloads(
         solution = solution_by_id[finding.finding_id]
         if solution.operation != finding.proposed_operation:
             raise ValueError("AI solution operation conflicts with analysis finding")
+        if not operation_is_allowed(finding.disposition, solution.operation):
+            raise ValueError("AI solution operation is incompatible with persisted work")
         payloads.append(
             AgentFindingPayload(
                 work_item_id=finding.work_item_id,

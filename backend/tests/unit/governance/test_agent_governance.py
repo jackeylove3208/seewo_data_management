@@ -58,7 +58,16 @@ def test_student_create_with_phone_is_not_high_risk() -> None:
     )
 
     assert decision.risk == "medium"
-    assert decision.requires_approval is False
+    assert decision.requires_approval is True
+
+
+def test_medium_risk_findings_are_grouped_for_operator_review() -> None:
+    medium = finding(kind="target_missing", operation="create", fields=("name",))
+
+    groups = group_high_risk_findings((medium,))
+
+    assert len(groups) == 1
+    assert groups[0].risk == "medium"
 
 
 def test_grouping_freezes_compatible_membership() -> None:
@@ -119,6 +128,21 @@ def test_compiled_plan_binds_high_risk_approval_and_frozen_target_version() -> N
     assert plan.target_version == high.target_version
     assert len(plan.operations) == 1
     assert plan.operations[0].operation == AgentOperation.DELETE
+
+
+def test_compiled_plan_supports_mixed_per_finding_decisions() -> None:
+    approved = finding(entity="teacher", fields=("name",))
+    rejected = finding(entity="teacher", fields=("email",))
+
+    plan = compile_agent_plan(
+        (approved, rejected),
+        approved_group_ids=frozenset(),
+        approved_finding_ids=frozenset({approved.finding_id}),
+        rejected_finding_ids=frozenset({rejected.finding_id}),
+        confirmed_conflicts=frozenset(),
+    )
+
+    assert [item.finding_id for item in plan.operations] == [approved.finding_id]
 
 
 def test_conflict_remains_non_executable_until_confirmed_work_item_is_present() -> None:

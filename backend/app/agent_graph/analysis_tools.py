@@ -29,7 +29,7 @@ from app.models.snapshots import Snapshot, SourceFile
 from app.reconciliation.agent_identity import ordinary_field_differences
 
 _ALLOWED_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
-    "target_extra": ("delete", "retain"),
+    "target_extra": ("delete",),
     "target_duplicate": ("delete", "retain"),
     "target_missing": ("create", "retain"),
     "field_difference": ("retain", "update"),

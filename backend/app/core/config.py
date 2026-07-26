@@ -23,6 +23,14 @@ from app.connectors.configured import (
 DEFAULT_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 
 
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
 class LLMResponseMode(StrEnum):
     JSON_SCHEMA = "json_schema"
     JSON_OBJECT = "json_object"
@@ -48,6 +56,7 @@ class Settings(BaseSettings):
     quarantine_root: Path = Path("storage/quarantine")
     export_root: Path = Path("storage/exports")
     agent_local_read_roots: tuple[Path, ...] = ()
+    agent_local_write_roots: tuple[Path, ...] = ()
     max_upload_bytes: PositiveInt = 50 * 1024 * 1024
     demo_operator_id: str = "demo-operator"
     demo_tenant_id: str = "school-1"
@@ -117,9 +126,9 @@ class Settings(BaseSettings):
             raise ValueError("LLM gateway setting must be a non-blank single line")
         return stripped
 
-    @field_validator("agent_local_read_roots")
+    @field_validator("agent_local_read_roots", "agent_local_write_roots")
     @classmethod
-    def canonicalize_agent_local_read_roots(
+    def canonicalize_agent_local_roots(
         cls, values: tuple[Path, ...]
     ) -> tuple[Path, ...]:
         return tuple(path.expanduser().resolve() for path in values)
@@ -134,6 +143,14 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_gateway_extensions(self) -> "Settings":
+        for write_root in self.agent_local_write_roots:
+            if not any(
+                _path_is_within(write_root, read_root)
+                for read_root in self.agent_local_read_roots
+            ):
+                raise ValueError(
+                    "local write root must be contained by a configured local read root"
+                )
         body_overlap = sorted(RESERVED_LLM_BODY_FIELDS.intersection(self.llm_extra_body_json))
         if body_overlap:
             raise ValueError(f"reserved LLM body field cannot be overridden: {body_overlap[0]}")

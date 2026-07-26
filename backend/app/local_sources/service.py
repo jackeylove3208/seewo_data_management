@@ -33,6 +33,7 @@ class LocalSourceSummary(BaseModel):
 
     source_ref: str = Field(min_length=1)
     kind: str = "csv"
+    writable_as_target: bool = False
 
 
 class LocalSourcePage(BaseModel):
@@ -46,6 +47,7 @@ class LocalSourcePage(BaseModel):
 class LocalSourceService:
     def __init__(self, settings: Settings) -> None:
         self._roots = settings.agent_local_read_roots
+        self._write_roots = settings.agent_local_write_roots
 
     def list_sources(self) -> tuple[LocalSourceSummary, ...]:
         summaries: list[LocalSourceSummary] = []
@@ -59,7 +61,15 @@ class LocalSourceService:
                     source_ref = self._source_ref(candidate)
                 except LocalSourceAccessError:
                     continue
-                summaries.append(LocalSourceSummary(source_ref=source_ref))
+                resolved = candidate.resolve(strict=True)
+                summaries.append(
+                    LocalSourceSummary(
+                        source_ref=source_ref,
+                        writable_as_target=any(
+                            _is_within(resolved, root) for root in self._write_roots
+                        ),
+                    )
+                )
         return tuple(summaries)
 
     def read_page(
@@ -92,6 +102,12 @@ class LocalSourceService:
             size_bytes=path.stat().st_size,
         )
 
+    def describe_target_for_write(self, source_ref: str) -> LocalSourceMaterial:
+        material = self.describe(source_ref)
+        if not any(_is_within(material.path, root) for root in self._write_roots):
+            raise LocalSourceAccessError("target_not_writable")
+        return material
+
     def _resolve(self, source_ref: str) -> Path:
         if not source_ref or Path(source_ref).is_absolute():
             raise LocalSourceAccessError("outside_allowed_roots")
@@ -99,6 +115,8 @@ class LocalSourceService:
         if any(part in _BLOCKED_PARTS for part in candidate.parts):
             raise LocalSourceAccessError("outside_allowed_roots")
         for root in self._roots:
+            if _contains_symlink(root, candidate):
+                raise LocalSourceAccessError("outside_allowed_roots")
             path = (root / candidate).resolve(strict=False)
             if not _is_within(path, root):
                 continue
@@ -129,6 +147,15 @@ def _is_within(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _contains_symlink(root: Path, relative: Path) -> bool:
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            return True
+    return False
 
 
 def _file_sha256(path: Path) -> str:

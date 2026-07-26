@@ -11,10 +11,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent_reporting.service import AgentReportingService
+from app.agent_runtime.local_publication import publish_local_target
 from app.agent_runtime.observability import agent_observability
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentPhase, AgentRunStatus
 from app.agent_runtime.worker import AgentWorkContext, AgentWorkResult
+from app.core.config import Settings
 from app.executions.agent_service import (
     AgentExecutionService,
     CsvAgentTargetAdapter,
@@ -27,6 +29,7 @@ from app.governance.agent_governance import (
     compile_agent_plan,
     group_high_risk_findings,
 )
+from app.local_sources.publisher import copy_managed_initial_version
 from app.models.agent_analysis import (
     AgentApprovalGroupRecord,
     AgentClarificationRecord,
@@ -40,6 +43,7 @@ from app.models.agent_analysis import (
     AgentInputRecord,
     AgentWorkItemRecord,
 )
+from app.models.agent_graph import AgentGraphRunRecord, AgentHumanGateRecord
 from app.models.agent_runtime import AgentRunRecord
 from app.models.executions import TargetVersionRecord
 from app.models.reconciliation import ReconciliationTask
@@ -60,14 +64,15 @@ class AgentTargetVersionRepository:
 
 
 class CsvGovernanceHandlers:
-    def __init__(self, *, output_root: Path) -> None:
+    def __init__(self, *, output_root: Path, settings: Settings | None = None) -> None:
         self._output_root = output_root
+        self._settings = settings
 
     async def aggregate(
         self, session: AsyncSession, context: AgentWorkContext
     ) -> AgentWorkResult:
         run, task, _source, _target, _version, findings = await _finding_inputs(
-            session, context.run_id
+            session, context.run_id, output_root=self._output_root
         )
         repository = AgentGovernanceRepository(session)
         groups = group_high_risk_findings(findings)
@@ -156,7 +161,7 @@ class CsvGovernanceHandlers:
         self, session: AsyncSession, context: AgentWorkContext
     ) -> AgentWorkResult:
         run, task, source, target, _version, findings = await _finding_inputs(
-            session, context.run_id
+            session, context.run_id, output_root=self._output_root
         )
         approvals = tuple(
             await session.scalars(
@@ -165,13 +170,45 @@ class CsvGovernanceHandlers:
                 )
             )
         )
-        approved = frozenset(item.id for item in approvals if item.status == "approved")
+        approved_groups = {item.id for item in approvals if item.status == "approved"}
+        approved_findings: set[UUID] = set()
         rejected_findings = {
             UUID(finding_id)
             for group in approvals
             if group.status in {"rejected", "stale"}
             for finding_id in group.finding_ids
         }
+        graph = await session.scalar(
+            select(AgentGraphRunRecord).where(AgentGraphRunRecord.run_id == run.id)
+        )
+        if graph is not None:
+            review_gates = tuple(
+                await session.scalars(
+                    select(AgentHumanGateRecord).where(
+                        AgentHumanGateRecord.graph_run_id == graph.id,
+                        AgentHumanGateRecord.gate_kind == "high_risk_approval",
+                    )
+                )
+            )
+            groups_by_members = {
+                frozenset(group.finding_ids): group for group in approvals
+            }
+            for gate in review_gates:
+                decision = gate.decision if isinstance(gate.decision, dict) else {}
+                approved_ids = {
+                    UUID(str(item))
+                    for item in decision.get("approved_finding_ids", [])
+                }
+                rejected_ids = {
+                    UUID(str(item))
+                    for item in decision.get("rejected_finding_ids", [])
+                }
+                if approved_ids or rejected_ids:
+                    approved_findings.update(approved_ids)
+                    rejected_findings.update(rejected_ids)
+                    group = groups_by_members.get(frozenset(gate.member_ids))
+                    if group is not None:
+                        approved_groups.discard(group.id)
         clarifications = tuple(
             await session.scalars(
                 select(AgentClarificationRecord).where(
@@ -182,7 +219,21 @@ class CsvGovernanceHandlers:
         confirmed = frozenset(
             item.work_item_id for item in clarifications if item.status == "confirmed"
         )
-        eligible = tuple(item for item in findings if item.finding_id not in rejected_findings)
+        dependency_blocked: set[UUID] = set()
+        changed = True
+        while changed:
+            changed = False
+            for item in findings:
+                if item.finding_id in rejected_findings | dependency_blocked:
+                    continue
+                if item.dependencies.intersection(rejected_findings | dependency_blocked):
+                    dependency_blocked.add(item.finding_id)
+                    changed = True
+        eligible = tuple(
+            item
+            for item in findings
+            if item.finding_id not in rejected_findings | dependency_blocked
+        )
         executable = tuple(
             item
             for item in eligible
@@ -196,13 +247,23 @@ class CsvGovernanceHandlers:
                 phase=AgentPhase.COMPILE_EXECUTION_PLAN,
                 checkpoint_key="agent-no-executable-plan-v1",
                 input_hash=_hash([str(item.finding_id) for item in eligible]),
-                payload={"operation_count": 0},
+                payload={
+                    "operation_count": 0,
+                    "rejected_finding_ids": [
+                        str(item) for item in sorted(rejected_findings, key=str)
+                    ],
+                    "dependency_blocked_finding_ids": [
+                        str(item) for item in sorted(dependency_blocked, key=str)
+                    ],
+                },
             )
             return AgentWorkResult(next_phase=AgentPhase.EXECUTE_AND_VERIFY)
 
         plan = compile_agent_plan(
             eligible,
-            approved_group_ids=approved,
+            approved_group_ids=frozenset(approved_groups),
+            approved_finding_ids=frozenset(approved_findings),
+            rejected_finding_ids=frozenset(rejected_findings),
             confirmed_conflicts=confirmed,
         )
         operations = [_operation_payload(operation) for operation in plan.operations]
@@ -471,6 +532,20 @@ class CsvGovernanceHandlers:
         if run is None or task is None:
             raise LookupError("Agent reporting context is missing")
         facts = await build_agent_report_facts(session, run_id=run.id)
+        if self._settings is not None:
+            output_version_id = facts.get("output_target_version_id")
+            facts["publication"] = await publish_local_target(
+                session,
+                settings=self._settings,
+                task_id=task.id,
+                run_id=run.id,
+                phase=AgentPhase.GENERATE_REPORT,
+                target_version_id=(
+                    UUID(str(output_version_id))
+                    if output_version_id is not None
+                    else None
+                ),
+            )
         operations = tuple(
             await session.scalars(
                 select(AgentGovernanceOperationRecord).where(
@@ -512,9 +587,39 @@ async def build_agent_report_facts(
 
     findings = tuple(
         await session.scalars(
-            select(AgentFindingRecord).where(AgentFindingRecord.run_id == run_id)
+            select(AgentFindingRecord)
+            .where(AgentFindingRecord.run_id == run_id)
+            .order_by(AgentFindingRecord.id)
         )
     )
+    work_items = {
+        item.id: item
+        for item in await session.scalars(
+            select(AgentWorkItemRecord).where(AgentWorkItemRecord.run_id == run_id)
+        )
+    }
+    subject_ids = {
+        item.subject_input_id
+        for item in work_items.values()
+        if item.id in {finding.work_item_id for finding in findings}
+    }
+    subjects = {
+        item.id: item
+        for item in await session.scalars(
+            select(AgentInputRecord).where(AgentInputRecord.id.in_(subject_ids))
+        )
+    } if subject_ids else {}
+    solutions = {
+        item.finding_id: item
+        for item in await session.scalars(
+            select(AgentFindingSolutionRecord).where(
+                AgentFindingSolutionRecord.finding_id.in_(
+                    finding.id for finding in findings
+                ),
+                AgentFindingSolutionRecord.recommended.is_(True),
+            )
+        )
+    } if findings else {}
     marks = tuple(
         await session.scalars(
             select(AgentInputMarkRecord)
@@ -529,6 +634,35 @@ async def build_agent_report_facts(
             )
         )
     )
+    operations_by_finding = {item.finding_id: item for item in operations}
+    approval_groups = tuple(
+        await session.scalars(
+            select(AgentApprovalGroupRecord).where(
+                AgentApprovalGroupRecord.run_id == run_id
+            )
+        )
+    )
+    decisions_by_finding: dict[UUID, str] = {}
+    for group in approval_groups:
+        for finding_id in group.finding_ids:
+            decisions_by_finding[UUID(str(finding_id))] = group.status
+    graph = await session.scalar(
+        select(AgentGraphRunRecord).where(AgentGraphRunRecord.run_id == run_id)
+    )
+    if graph is not None:
+        gates = tuple(
+            await session.scalars(
+                select(AgentHumanGateRecord).where(
+                    AgentHumanGateRecord.graph_run_id == graph.id,
+                    AgentHumanGateRecord.gate_kind == "high_risk_approval",
+                )
+            )
+        )
+        for gate in gates:
+            decision = gate.decision if isinstance(gate.decision, dict) else {}
+            for finding_id, status in decision.get("member_decisions", {}).items():
+                if status in {"approved", "rejected"}:
+                    decisions_by_finding[UUID(str(finding_id))] = status
     checkpoint = await AgentRuntimeRepository(session).get_checkpoint(
         run_id,
         phase=AgentPhase.EXECUTE_AND_VERIFY,
@@ -536,7 +670,16 @@ async def build_agent_report_facts(
     )
     facts: dict[str, Any] = {
         "findings": [
-            {"id": str(item.id), "kind": item.kind, "category_zh": item.category_zh}
+            _report_finding(
+                item,
+                work=work_items.get(item.work_item_id),
+                subject=subjects.get(
+                    work_items[item.work_item_id].subject_input_id
+                ) if item.work_item_id in work_items else None,
+                solution=solutions.get(item.id),
+                operator_decision=decisions_by_finding.get(item.id),
+                operation=operations_by_finding.get(item.id),
+            )
             for item in findings
         ],
         "excluded_findings": [
@@ -573,8 +716,56 @@ async def build_agent_report_facts(
     return facts
 
 
+def _report_finding(
+    finding: AgentFindingRecord,
+    *,
+    work: AgentWorkItemRecord | None,
+    subject: AgentInputRecord | None,
+    solution: AgentFindingSolutionRecord | None,
+    operator_decision: str | None,
+    operation: AgentGovernanceOperationRecord | None,
+) -> dict[str, Any]:
+    resolved_after = (
+        operation.actual_after or operation.after or {}
+        if operation is not None and operation.operation_type in {"create", "update"}
+        else {}
+    )
+
+    def identity_value(field: str) -> str | None:
+        value = resolved_after.get(field)
+        if value is not None:
+            return str(value)
+        return getattr(subject, field) if subject is not None else None
+
+    return {
+        "id": str(finding.id),
+        "kind": finding.kind,
+        "category_zh": finding.category_zh,
+        "entity_kind": work.entity_kind if work is not None else None,
+        "entity_name": identity_value("name"),
+        "entity_number": identity_value("number"),
+        "class_name": identity_value("class_name"),
+        "source_locator": subject.stable_locator if subject is not None else None,
+        "analysis_zh": finding.analysis_zh,
+        "solution_zh": solution.solution_zh if solution is not None else None,
+        "recommended_operation": solution.operation if solution is not None else None,
+        "risk": solution.risk if solution is not None else None,
+        "operator_decision": operator_decision or "not_required",
+        "execution_status": (
+            operation.status
+            if operation is not None
+            else "rejected"
+            if operator_decision == "rejected"
+            else "not_executed"
+        ),
+    }
+
+
 async def _finding_inputs(
-    session: AsyncSession, run_id: UUID
+    session: AsyncSession,
+    run_id: UUID,
+    *,
+    output_root: Path,
 ) -> tuple[
     AgentRunRecord,
     ReconciliationTask,
@@ -598,6 +789,16 @@ async def _finding_inputs(
         target_file = await session.get(SourceFile, target.source_file_id)
         if target_file is None:
             raise LookupError("Agent target CSV is missing")
+        storage_path = Path(target_file.storage_path)
+        target_intent = (task.agent_intent or {}).get("target", {})
+        if isinstance(target_intent, dict) and target_intent.get("kind") == "local":
+            managed = copy_managed_initial_version(
+                storage_path,
+                output_root=output_root / "initial",
+                task_id=task.id,
+                expected_sha256=target.file_hash,
+            )
+            storage_path = managed.path
         version = await executions.create_target_version(
             task_id=task.id,
             tenant_id=task.tenant_id,
@@ -606,7 +807,7 @@ async def _finding_inputs(
             batch_id=None,
             file_sha256=target.file_hash,
             content_hash=target.content_hash,
-            storage_path=target_file.storage_path,
+            storage_path=storage_path,
         )
     rows = tuple(
         await session.execute(

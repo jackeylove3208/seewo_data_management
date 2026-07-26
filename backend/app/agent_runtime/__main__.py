@@ -67,6 +67,7 @@ async def run() -> None:
                     max_retries=settings.model_retry_attempts,
                     output_root=settings.export_root / "agent-targets",
                     csv_execution_enabled=settings.agent_graph_csv_execution_enabled,
+                    settings=settings,
                 ),
             )
         )

@@ -242,6 +242,96 @@ describe("controlled Agent graph task detail", () => {
     client.clear();
   });
 
+  it("defaults medium-risk items to approved but submits an exact mixed review", async () => {
+    const user = userEvent.setup();
+    vi.mocked(agentApi.graph).mockResolvedValue({
+      task_id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      graph_version: "agent-sync-graph-v1",
+      graph_cursor: 8,
+      current_node: "wait_high_risk_approvals",
+      business_stage: "governance_execution",
+      current_action_zh: "正在等待治理操作确认",
+      status: "waiting_human",
+      can_terminate: true,
+      termination_requested: false,
+      human_gates: [
+        {
+          id: "gate-medium",
+          kind: "high_risk_approval",
+          status: "pending",
+          risk: "medium",
+          cursor: 8,
+          membership_hash: "medium-membership-hash",
+          member_decisions: {},
+          item_count: 2,
+          entity_kind: "student",
+          operation: "update",
+          issue_kind: "field_difference",
+          summary_zh: "修改 2 条学生普通字段",
+          risk_reason_zh: "该操作属于中风险变更，默认建议同意，但仍可逐项拒绝。",
+          actionable: true,
+          items: [
+            {
+              finding_id: "finding-a",
+              entity_kind: "student",
+              entity_name: "张三",
+              entity_number: "S-001",
+              class_name: "一班",
+              source_locator: "csv:2",
+              source_row_number: 2,
+              operation_zh: "修改希沃中的学生记录",
+              issue_zh: "姓名不一致",
+              analysis_zh: "姓名需要按第三方权威值修正。",
+              solution_zh: "将希沃姓名修改为张三。",
+              changes: [],
+            },
+            {
+              finding_id: "finding-b",
+              entity_kind: "student",
+              entity_name: "李四",
+              entity_number: "S-002",
+              class_name: "二班",
+              source_locator: "csv:3",
+              source_row_number: 3,
+              operation_zh: "修改希沃中的学生记录",
+              issue_zh: "班级不一致",
+              analysis_zh: "班级需要按第三方权威值修正。",
+              solution_zh: "将希沃班级修改为二班。",
+              changes: [],
+            },
+          ],
+        },
+      ],
+    });
+    vi.mocked(agentApi.decideGraphGate).mockResolvedValue({
+      gate_id: "gate-medium",
+      status: "approved",
+      graph_cursor: 8,
+    });
+    const { client } = renderPage();
+
+    expect(await screen.findByText("中风险 · 默认同意")).toBeInTheDocument();
+    expect(screen.getAllByText("默认同意")).toHaveLength(2);
+    await user.click(screen.getByRole("button", { name: "拒绝李四" }));
+    await user.click(screen.getByRole("button", { name: "按当前选择继续" }));
+
+    expect(agentApi.decideGraphGate).toHaveBeenCalledWith(
+      "task-graph-1",
+      "gate-medium",
+      "approve",
+      "操作人完成中风险逐项复核",
+      {
+        approved_finding_ids: ["finding-a"],
+        rejected_finding_ids: ["finding-b"],
+        graph_cursor: 8,
+        membership_hash: "medium-membership-hash",
+      },
+    );
+    expect(await screen.findByText("已拒绝李四")).toBeInTheDocument();
+    client.clear();
+  });
+
   it("shows a rejected high-risk group as decided", async () => {
     const user = userEvent.setup();
     vi.mocked(agentApi.decideGraphGate).mockResolvedValue({

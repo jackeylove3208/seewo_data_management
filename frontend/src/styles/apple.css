@@ -508,6 +508,281 @@ select {
   color: inherit;
 }
 
+.apple-page .graph-item-review {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(191, 219, 254, 0.12);
+}
+
+.apple-page .graph-item-review-status {
+  color: #b9cdf5;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.apple-page .graph-item-review-status.rejected {
+  color: #ffaaa8;
+}
+
+.apple-page .graph-item-review-actions,
+.apple-page .graph-medium-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.agent-report-page {
+  color: var(--apple-ink);
+}
+
+.agent-report-hero,
+.agent-report-metrics article,
+.agent-report-publication,
+.agent-report-section {
+  border: 1px solid var(--apple-border);
+  background:
+    linear-gradient(145deg, rgba(17, 37, 70, 0.96), rgba(27, 43, 84, 0.9));
+  box-shadow: var(--apple-shadow);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+}
+
+.agent-report-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-top: 18px;
+  padding: 32px;
+  border-radius: 28px;
+}
+
+.agent-report-hero .eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 10px;
+  color: #9ebcff;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.agent-report-hero h1 {
+  margin: 0;
+  color: var(--apple-ink);
+  font-size: clamp(28px, 4vw, 44px);
+  letter-spacing: -0.035em;
+}
+
+.agent-report-lead {
+  max-width: 760px;
+  margin: 16px 0 0;
+  color: var(--apple-ink-soft);
+  font-size: 16px;
+  line-height: 1.8;
+}
+
+.agent-report-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin: 18px 0;
+}
+
+.agent-report-metrics article {
+  display: grid;
+  gap: 8px;
+  padding: 20px;
+  border-radius: 20px;
+}
+
+.agent-report-metrics span {
+  color: var(--apple-ink-soft);
+  font-size: 13px;
+}
+
+.agent-report-metrics strong {
+  color: var(--apple-ink);
+  font-size: 28px;
+}
+
+.agent-report-publication {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 18px;
+  padding: 20px 22px;
+  border-color: rgba(94, 234, 212, 0.28);
+  border-radius: 22px;
+  background:
+    linear-gradient(145deg, rgba(19, 64, 72, 0.9), rgba(22, 48, 78, 0.9));
+}
+
+.agent-report-publication h2,
+.agent-report-publication p {
+  margin: 0;
+}
+
+.agent-report-publication h2 {
+  color: #e8fffa;
+  font-size: 17px;
+}
+
+.agent-report-publication p {
+  margin-top: 4px;
+  color: #aadbd3;
+  font-size: 13px;
+}
+
+.agent-report-section {
+  margin-top: 18px;
+  padding: 26px;
+  border-radius: 26px;
+}
+
+.agent-report-section > header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.agent-report-section > header p,
+.agent-report-section > header h2 {
+  margin: 0;
+}
+
+.agent-report-section > header p {
+  color: #91aff4;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
+
+.agent-report-section > header h2 {
+  margin-top: 3px;
+  color: var(--apple-ink);
+  font-size: 20px;
+}
+
+.agent-report-section-icon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  color: #d9e7ff;
+  border: 1px solid rgba(167, 196, 255, 0.22);
+  border-radius: 14px;
+  background: rgba(71, 104, 174, 0.24);
+}
+
+.agent-report-findings,
+.agent-report-exclusions,
+.agent-report-mutations {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-report-findings > li,
+.agent-report-exclusions > li,
+.agent-report-mutations > li {
+  color: var(--apple-ink-soft);
+  border: 1px solid rgba(191, 219, 254, 0.13);
+  border-radius: 18px;
+  background: rgba(8, 21, 49, 0.48);
+}
+
+.agent-report-findings > li {
+  padding: 20px;
+}
+
+.agent-report-finding-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.agent-report-finding-heading span {
+  color: #89a9ec;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.agent-report-finding-heading h3 {
+  margin: 4px 0 0;
+  color: var(--apple-ink);
+  font-size: 17px;
+}
+
+.agent-report-findings p {
+  line-height: 1.7;
+}
+
+.agent-report-identity {
+  color: #b6cef9;
+  font-size: 13px;
+}
+
+.agent-report-solution {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border-left: 3px solid #7799f5;
+  border-radius: 4px 14px 14px 4px;
+  background: rgba(74, 96, 168, 0.18);
+}
+
+.agent-report-solution strong {
+  color: #dbe6ff;
+  font-size: 13px;
+}
+
+.agent-report-solution p {
+  margin: 6px 0 0;
+}
+
+.agent-report-exclusions > li,
+.agent-report-mutations > li {
+  padding: 15px 17px;
+}
+
+.agent-report-mutations > li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.agent-report-page .ant-empty-description,
+.agent-report-page .ant-skeleton-title,
+.agent-report-page .ant-skeleton-paragraph > li {
+  color: var(--apple-ink-soft);
+}
+
+@media (max-width: 760px) {
+  .agent-report-hero {
+    flex-direction: column;
+    padding: 24px;
+  }
+
+  .agent-report-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .apple-page .graph-item-review {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 .apple-page .agent-task-actions .ant-btn-dangerous {
   color: #ffb9c5;
   border-color: rgba(232, 105, 128, 0.48);

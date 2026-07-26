@@ -137,3 +137,28 @@ def test_agent_worker_configuration_requires_gateway_retry_and_privacy_contract(
                 "llm_timeout_seconds": 60,
             }
         ).validate_agent_worker_configuration()
+
+
+def test_agent_local_write_roots_are_canonical_and_nested_under_read_roots(
+    tmp_path: Path,
+) -> None:
+    read_root = tmp_path / "sources"
+    write_root = read_root / "seewo"
+
+    settings = Settings(
+        agent_local_read_roots=(read_root,),
+        agent_local_write_roots=(write_root,),
+        _env_file=None,
+    )
+
+    assert settings.agent_local_read_roots == (read_root.resolve(),)
+    assert settings.agent_local_write_roots == (write_root.resolve(),)
+
+
+def test_agent_local_write_root_outside_read_roots_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="local write root must be contained"):
+        Settings(
+            agent_local_read_roots=(tmp_path / "read",),
+            agent_local_write_roots=(tmp_path / "write",),
+            _env_file=None,
+        )

@@ -287,6 +287,9 @@ def test_conversation_uses_model_discovered_local_sources(
             encoding="utf-8",
         )
     agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
+    agent_client.app.state.settings.agent_local_write_roots = (
+        (root / "seewo").resolve(),
+    )
     provider = ConversationProvider()
     agent_client.app.state.conversation_provider = provider
 
@@ -317,6 +320,68 @@ def test_conversation_uses_model_discovered_local_sources(
     assert created.status_code == 202, created.text
     assert created.json()["title"] == "本地学生同步"
     assert agent_client.get("/api/agent/history").json()["items"][0]["id"] == created.json()["id"]
+
+
+def test_local_source_api_returns_only_safe_server_capabilities(
+    agent_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "listed-local-sources"
+    for relative in ("data/authority.csv", "seewo/target.csv"):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("编号,姓名\n001,测试", encoding="utf-8")
+    agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
+    agent_client.app.state.settings.agent_local_write_roots = (
+        (root / "seewo").resolve(),
+    )
+
+    response = agent_client.get("/api/agent/local-sources")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == [
+        {
+            "source_ref": "data/authority.csv",
+            "kind": "csv",
+            "writable_as_target": False,
+        },
+        {
+            "source_ref": "seewo/target.csv",
+            "kind": "csv",
+            "writable_as_target": True,
+        },
+    ]
+    assert str(root) not in response.text
+
+
+def test_local_task_rejects_target_outside_server_write_roots(
+    agent_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "read-only-local-target"
+    for relative in ("data/authority.csv", "readonly/target.csv"):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("编号,姓名\n001,测试", encoding="utf-8")
+    agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
+    agent_client.app.state.settings.agent_local_write_roots = (
+        (root / "seewo").resolve(),
+    )
+
+    response = agent_client.post(
+        "/api/agent/tasks",
+        headers={"Idempotency-Key": "read-only-local-target"},
+        json={
+            "title": "不应启动的本地任务",
+            "entity_types": ["student"],
+            "source": {"kind": "local", "source_ref": "data/authority.csv"},
+            "target": {"kind": "local", "source_ref": "readonly/target.csv"},
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid_agent_intent"
+    assert agent_client.get("/api/agent/active-lock").json()["active"] is False
 
 
 def test_conversation_returns_sanitized_error_for_invalid_model_output(
@@ -350,6 +415,9 @@ def test_current_conversation_restores_persisted_messages_and_active_task(
             encoding="utf-8",
         )
     agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
+    agent_client.app.state.settings.agent_local_write_roots = (
+        (root / "seewo").resolve(),
+    )
     agent_client.app.state.conversation_provider = ConversationProvider()
     conversation = agent_client.post("/api/agent/conversations").json()
 
@@ -394,6 +462,9 @@ def test_current_conversation_restores_an_unstarted_confirmation(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("类别,姓名,编号,班级,电话,邮箱\n", encoding="utf-8")
     agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
+    agent_client.app.state.settings.agent_local_write_roots = (
+        (root / "seewo").resolve(),
+    )
     agent_client.app.state.conversation_provider = ConversationProvider()
     conversation = agent_client.post("/api/agent/conversations").json()
     sent = agent_client.post(
@@ -445,6 +516,9 @@ def test_current_conversation_prioritizes_the_school_lock_owner_over_a_new_empty
             encoding="utf-8",
         )
     agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
+    agent_client.app.state.settings.agent_local_write_roots = (
+        (root / "seewo").resolve(),
+    )
     agent_client.app.state.conversation_provider = ConversationProvider()
     owner = agent_client.post("/api/agent/conversations").json()
     message = agent_client.post(

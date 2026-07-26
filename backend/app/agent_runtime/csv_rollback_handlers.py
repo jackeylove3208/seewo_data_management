@@ -8,10 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent_reporting.service import AgentReportingService
 from app.agent_runtime.csv_governance_handlers import AgentTargetVersionRepository
+from app.agent_runtime.local_publication import publish_local_target
 from app.agent_runtime.observability import agent_observability
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentPhase
 from app.agent_runtime.worker import AgentWorkContext, AgentWorkResult
+from app.core.config import Settings
 from app.executions.agent_service import AgentExecutionService, CsvAgentTargetAdapter
 from app.executions.csv_versioning import CsvTargetVersioner
 from app.governance.agent_governance import AgentGovernanceOperation, AgentOperation
@@ -21,8 +23,9 @@ from app.repositories.executions import ExecutionRepository
 
 
 class CsvRollbackHandlers:
-    def __init__(self, *, output_root: Path) -> None:
+    def __init__(self, *, output_root: Path, settings: Settings | None = None) -> None:
         self._output_root = output_root
+        self._settings = settings
 
     async def plan(
         self, session: AsyncSession, context: AgentWorkContext
@@ -243,7 +246,21 @@ class CsvRollbackHandlers:
             phase=AgentPhase.EXECUTE_RESTORE,
             checkpoint_key="agent-csv-rollback-execution-v1",
         )
-        facts = checkpoint.payload if checkpoint is not None else {"mutations": []}
+        facts = dict(checkpoint.payload) if checkpoint is not None else {"mutations": []}
+        if self._settings is not None:
+            output_version_id = facts.get("output_target_version_id")
+            facts["publication"] = await publish_local_target(
+                session,
+                settings=self._settings,
+                task_id=task.id,
+                run_id=context.run_id,
+                phase=AgentPhase.REPORT_RESTORE,
+                target_version_id=(
+                    UUID(str(output_version_id))
+                    if output_version_id is not None
+                    else None
+                ),
+            )
         report = await AgentReportingService(session).generate(
             task_id=task.id,
             tenant_id=task.tenant_id,

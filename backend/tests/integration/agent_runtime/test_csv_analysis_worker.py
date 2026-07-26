@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -15,6 +16,7 @@ from app.agent_runtime.service import AgentSupervisorService
 from app.agent_runtime.state_machine import AgentPhase, AgentRunStatus
 from app.agent_runtime.worker import AgentWorker
 from app.ai.providers.base import LLMRequest, LLMResponse, TransientModelError
+from app.core.config import Settings
 from app.core.database import Database
 from app.core.security import OperatorContext
 from app.models import Base
@@ -157,13 +159,16 @@ async def test_model_timeout_attempts_are_visible_before_task_is_blocked(
         session.add(task)
         await session.flush()
         for role, path in (("authoritative", authority), ("target", target)):
+            file_sha256 = await asyncio.to_thread(
+                lambda path=path: hashlib.sha256(path.read_bytes()).hexdigest()
+            )
             source = SourceFile(
                 task_id=task.id,
                 source_role=role,
                 original_name=path.name,
                 storage_name=f"{uuid4()}.csv",
                 storage_path=str(path),
-                sha256=uuid4().hex * 2,
+                sha256=file_sha256,
                 size_bytes=path.stat().st_size,
             )
             session.add(source)
@@ -518,12 +523,15 @@ class _FieldDifferenceProvider:
 async def test_complete_csv_agent_pipeline_executes_verified_change_and_reports(
     database, tmp_path: Path
 ) -> None:
-    authority = tmp_path / "authority-full.csv"
+    local_root = tmp_path / "local-sources"
+    authority = local_root / "data" / "authority-full.csv"
+    target = local_root / "seewo" / "target-full.csv"
+    authority.parent.mkdir(parents=True)
+    target.parent.mkdir(parents=True)
     authority.write_text(
         "类别,姓名,编号,班级,电话,邮箱\n学生,李四,S-1,一班,13800138000,s@example.test\n",
         encoding="utf-8",
     )
-    target = tmp_path / "target-full.csv"
     target.write_text(
         "类别,姓名,编号,班级,电话,邮箱\n学生,错名,S-1,一班,13800138000,s@example.test\n",
         encoding="utf-8",
@@ -535,19 +543,26 @@ async def test_complete_csv_agent_pipeline_executes_verified_change_and_reports(
             snapshot_mode="full",
             entity_types=["student"],
             workflow_version="new-agent-v1",
+            agent_intent={
+                "source": {"kind": "local", "source_ref": "data/authority-full.csv"},
+                "target": {"kind": "local", "source_ref": "seewo/target-full.csv"},
+            },
             idempotency_key=f"csv-full-worker-{uuid4()}",
             request_hash="b" * 64,
         )
         session.add(task)
         await session.flush()
         for role, path in (("authoritative", authority), ("target", target)):
+            file_sha256 = await asyncio.to_thread(
+                lambda path=path: hashlib.sha256(path.read_bytes()).hexdigest()
+            )
             source = SourceFile(
                 task_id=task.id,
                 source_role=role,
                 original_name=path.name,
                 storage_name=f"{uuid4()}.csv",
                 storage_path=str(path),
-                sha256=uuid4().hex * 2,
+                sha256=file_sha256,
                 size_bytes=path.stat().st_size,
             )
             session.add(source)
@@ -580,6 +595,11 @@ async def test_complete_csv_agent_pipeline_executes_verified_change_and_reports(
         analysis_only=False,
         csv_execution_enabled=True,
         output_root=tmp_path / "agent-outputs",
+        settings=Settings(
+            agent_local_read_roots=(local_root,),
+            agent_local_write_roots=(local_root / "seewo",),
+            _env_file=None,
+        ),
     )
     worker = AgentWorker(
         database.session_factory,
@@ -587,7 +607,35 @@ async def test_complete_csv_agent_pipeline_executes_verified_change_and_reports(
         lease_seconds=60,
         handlers=factory.handlers(),
     )
-    for _step in range(8):
+    for _step in range(5):
+        assert await worker.run_once() is True
+
+    async with database.session_factory() as session:
+        run = await session.get(AgentRunRecord, run_id)
+        groups = tuple(
+            await session.scalars(
+                select(AgentApprovalGroupRecord).where(
+                    AgentApprovalGroupRecord.run_id == run_id,
+                    AgentApprovalGroupRecord.status == "pending",
+                )
+            )
+        )
+        assert run is not None and run.status == AgentRunStatus.WAITING_HUMAN.value
+        assert groups
+        for group in groups:
+            await AgentGovernanceRepository(session).decide_approval(
+                group.id,
+                membership_hash=group.membership_hash,
+                approved=True,
+                actor_id="operator-1",
+                reason="approved in test",
+            )
+        await AgentRuntimeRepository(session).transition_run(
+            run.id, requested_status=AgentRunStatus.RUNNING
+        )
+        await session.commit()
+
+    for _step in range(4):
         assert await worker.run_once() is True
 
     async with database.session_factory() as session:
@@ -605,12 +653,32 @@ async def test_complete_csv_agent_pipeline_executes_verified_change_and_reports(
         assert run is not None and run.status == AgentRunStatus.COMPLETED.value
         assert run.phase == AgentPhase.TERMINAL.value
         assert report is not None and report.rollback_eligible is True
+        assert report.facts["findings"] == [
+            {
+                "id": report.facts["findings"][0]["id"],
+                "kind": "field_difference",
+                "category_zh": "姓名不一致",
+                "entity_kind": "student",
+                "entity_name": "李四",
+                "entity_number": "S-1",
+                "class_name": "一班",
+                "source_locator": "csv:2",
+                "analysis_zh": "身份键一致，但希沃姓名与权威数据不同。",
+                "solution_zh": "按第三方权威姓名更新希沃数据。",
+                "recommended_operation": "update",
+                "risk": "medium",
+                "operator_decision": "approved",
+                "execution_status": "succeeded",
+            }
+        ]
         assert len(operations) == 1
         assert operations[0].status == "succeeded"
         output_path = Path(report.facts["output_target_path"])
         assert await asyncio.to_thread(output_path.exists)
         content = await asyncio.to_thread(output_path.read_text, encoding="utf-8")
         assert "学生,李四,S-1" in content
+        local_content = await asyncio.to_thread(target.read_text, encoding="utf-8")
+        assert "学生,李四,S-1" in local_content
 
         rollback_preview = await AgentReportingService(session).create_rollback_task(
             source_task_id=task_id,
@@ -640,6 +708,8 @@ async def test_complete_csv_agent_pipeline_executes_verified_change_and_reports(
             rollback_path.read_text, encoding="utf-8"
         )
         assert "学生,错名,S-1" in rollback_content
+        local_content = await asyncio.to_thread(target.read_text, encoding="utf-8")
+        assert "学生,错名,S-1" in local_content
 
 
 @pytest.mark.asyncio

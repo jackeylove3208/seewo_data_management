@@ -43,3 +43,48 @@ def test_local_source_summary_never_exposes_absolute_path(tmp_path: Path) -> Non
 
     assert [source.source_ref for source in sources] == ["seewo/roster.csv"]
     assert str(allowed) not in sources[0].model_dump_json()
+
+
+def test_local_source_summary_marks_only_authorized_target_as_writable(
+    tmp_path: Path,
+) -> None:
+    allowed = tmp_path / "allowed"
+    _write_roster(allowed / "data" / "authority.csv", 1)
+    _write_roster(allowed / "seewo" / "target.csv", 1)
+    service = LocalSourceService(
+        Settings(
+            agent_local_read_roots=(allowed,),
+            agent_local_write_roots=(allowed / "seewo",),
+            _env_file=None,
+        )
+    )
+
+    sources = {source.source_ref: source for source in service.list_sources()}
+
+    assert sources["data/authority.csv"].writable_as_target is False
+    assert sources["seewo/target.csv"].writable_as_target is True
+    assert (
+        service.describe_target_for_write("seewo/target.csv").source_ref
+        == "seewo/target.csv"
+    )
+    with pytest.raises(LocalSourceAccessError, match="target_not_writable"):
+        service.describe_target_for_write("data/authority.csv")
+
+
+def test_local_target_write_resolution_rejects_symlink_substitution(tmp_path: Path) -> None:
+    allowed = tmp_path / "allowed"
+    outside = tmp_path / "outside.csv"
+    _write_roster(outside, 1)
+    link = allowed / "seewo" / "target.csv"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(outside)
+    service = LocalSourceService(
+        Settings(
+            agent_local_read_roots=(allowed,),
+            agent_local_write_roots=(allowed / "seewo",),
+            _env_file=None,
+        )
+    )
+
+    with pytest.raises(LocalSourceAccessError, match="outside_allowed_roots"):
+        service.describe_target_for_write("seewo/target.csv")

@@ -38,7 +38,7 @@ output_schema: GovernanceSolutionBatch
 
 ## 决策规则
 
-- `target_extra`：只能给出 delete 或 retain。删除是破坏性高风险；推荐删除时说明无权威身份
+- `target_extra`：只能给出 delete。删除是破坏性高风险；说明无权威身份
   命中和删除前置版本校验。
 - `target_duplicate`：只能给出 delete 或 retain。必须说明按稳定顺序保留一条规范希沃记录，
   后续重复记录才是删除候选。

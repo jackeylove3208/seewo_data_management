@@ -18,7 +18,7 @@ from app.ai.agent_analysis_service import AgentAnalysisService, SingleAttemptMod
 from app.ai.agent_batching import AgentBatchPlanner
 from app.ai.agent_durable_analysis import DurableAgentBatchAnalyzer
 from app.ai.providers.llm import HttpLLMProvider
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.ingestion.agent_contract import AgentContractError
 from app.models.agent_analysis import AgentModelBatchRecord
 from app.models.agent_runtime import AgentRunRecord
@@ -39,12 +39,13 @@ class CsvAnalysisHandlerFactory:
         analysis_only: bool | None = None,
         csv_execution_enabled: bool | None = None,
         output_root: Path | None = None,
+        settings: Settings | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._tokenization_secret = tokenization_secret
         self._provider = provider or HttpLLMProvider(settings=get_settings())
         self._lease_seconds = lease_seconds
-        settings = get_settings()
+        settings = settings or get_settings()
         self._analysis_only = (
             settings.new_agent_analysis_only if analysis_only is None else analysis_only
         )
@@ -54,10 +55,12 @@ class CsvAnalysisHandlerFactory:
             else csv_execution_enabled
         )
         self._governance = CsvGovernanceHandlers(
-            output_root=output_root or settings.export_root / "agent-targets"
+            output_root=output_root or settings.export_root / "agent-targets",
+            settings=settings,
         )
         self._rollback = CsvRollbackHandlers(
-            output_root=output_root or settings.export_root / "agent-targets"
+            output_root=output_root or settings.export_root / "agent-targets",
+            settings=settings,
         )
 
     def handlers(self) -> dict[AgentPhase, AgentHandler]:

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -99,6 +99,62 @@ describe("manual Agent data sync", () => {
       source: { kind: "api", configuration_id: "third-party-api" },
       target: { kind: "database", configuration_id: "seewo-db" },
     }), expect.any(String));
+  });
+
+  it("selects authorized local CSV files and requires a writable target", async () => {
+    const user = userEvent.setup();
+    const startManualTask = vi.fn().mockResolvedValue({
+      id: "agent-task-local",
+      workflow_version: "agent-graph-v1",
+      phase: "ingest_and_normalize",
+      status: "running",
+    });
+    const localSources = vi.fn().mockResolvedValue([
+      {
+        source_ref: "third-party/authority.csv",
+        kind: "csv",
+        writable_as_target: false,
+      },
+      {
+        source_ref: "seewo/current.csv",
+        kind: "csv",
+        writable_as_target: true,
+      },
+    ]);
+    renderPage({ startManualTask, localSources });
+    await user.click(screen.getByRole("button", { name: "手动同步" }));
+
+    await user.selectOptions(screen.getByLabelText("三方系统连接方式"), "local");
+    await user.selectOptions(
+      await screen.findByLabelText("三方系统本地 CSV"),
+      "third-party/authority.csv",
+    );
+    await user.selectOptions(screen.getByLabelText("希沃魔方连接方式"), "local");
+
+    const targetSelect = await screen.findByLabelText("希沃魔方本地 CSV");
+    expect(
+      within(targetSelect).queryByRole("option", {
+        name: "third-party/authority.csv",
+      }),
+    ).not.toBeInTheDocument();
+    await user.selectOptions(targetSelect, "seewo/current.csv");
+    await user.click(screen.getByRole("button", { name: "开始同步" }));
+
+    expect(await screen.findByText("/tasks/agent-task-local")).toBeInTheDocument();
+    expect(ingestionApi.upload).not.toHaveBeenCalled();
+    expect(startManualTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: {
+          kind: "local",
+          source_ref: "third-party/authority.csv",
+        },
+        target: {
+          kind: "local",
+          source_ref: "seewo/current.csv",
+        },
+      }),
+      expect.any(String),
+    );
   });
 
   it("keeps completed connector selections after a backend rejection", async () => {

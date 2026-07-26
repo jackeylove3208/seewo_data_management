@@ -74,6 +74,7 @@ from app.schemas.agent_api import (
     AgentHistoryPage,
     AgentIntentView,
     AgentInteractionResponse,
+    AgentLocalSourceView,
     AgentMessageRequest,
     AgentMessageResponse,
     AgentReportResponse,
@@ -133,6 +134,19 @@ _GRAPH_STAGE_BY_NODE = {
     "terminal": "terminal",
 }
 
+
+@router.get("/local-sources", response_model=tuple[AgentLocalSourceView, ...])
+async def list_agent_local_sources(request: Request) -> tuple[AgentLocalSourceView, ...]:
+    _require_enabled(request)
+    return tuple(
+        AgentLocalSourceView(
+            source_ref=source.source_ref,
+            kind="csv",
+            writable_as_target=source.writable_as_target,
+        )
+        for source in LocalSourceService(request.app.state.settings).list_sources()
+    )
+
 _GRAPH_ACTION_LABELS = {
     "inspect_sources": "正在检查第三方与希沃数据来源",
     "normalize_input_batches": "正在分批理解并规范化组织数据",
@@ -141,7 +155,7 @@ _GRAPH_ACTION_LABELS = {
     "construct_identity_work": "正在构建对账工作项",
     "analyze_actionable_batches": "正在生成 AI 分析与治理方案",
     "resolve_identity_conflicts": "正在等待身份冲突说明",
-    "wait_high_risk_approvals": "正在等待高风险操作审批",
+    "wait_high_risk_approvals": "正在等待治理操作审核",
     "compile_execution_plan": "正在编译治理执行计划",
     "execute_ready_operations": "正在执行并验证已批准操作",
     "generate_terminal_report": "正在生成任务报告",
@@ -722,7 +736,11 @@ def _graph_human_gate_view(
             summary_zh = (
                 f"{operation_label} {len(gate.member_ids)} 条{entity_label}记录"
             )
-            risk_reason_zh = "该操作已被服务端风险策略判定为高风险。"
+            risk_reason_zh = (
+                "该操作属于中风险变更，默认建议同意，但仍可逐项拒绝。"
+                if approval_group.risk == "medium"
+                else "该操作已被服务端风险策略判定为高风险。"
+            )
     actionable, unavailable_reason_zh = _graph_gate_actionability(
         gate,
         graph=graph,
@@ -745,6 +763,16 @@ def _graph_human_gate_view(
         entity_kind=approval_group.entity_kind if approval_group else None,
         operation=approval_group.operation if approval_group else None,
         issue_kind=approval_group.issue_kind if approval_group else None,
+        risk=approval_group.risk if approval_group else None,
+        cursor=gate.cursor,
+        membership_hash=(
+            approval_group.membership_hash if approval_group is not None else None
+        ),
+        member_decisions=(
+            dict(gate.decision.get("member_decisions", {}))
+            if isinstance(gate.decision, dict)
+            else {}
+        ),
         summary_zh=summary_zh,
         risk_reason_zh=risk_reason_zh,
         actionable=actionable,
@@ -1163,12 +1191,64 @@ async def decide_agent_graph_gate(
                     "Frozen approval group detail is incomplete",
                 ),
             )
-    status_value = "approved" if body.decision == "approve" else "rejected"
+    approved_member_ids: tuple[str, ...] = ()
+    rejected_member_ids: tuple[str, ...] = ()
+    if gate.gate_kind == "high_risk_approval":
+        assert matching_group is not None
+        if body.membership_hash is not None:
+            if (
+                body.membership_hash != matching_group.membership_hash
+                or body.graph_cursor != graph.cursor
+            ):
+                raise HTTPException(
+                    409,
+                    detail=_error(
+                        "stale_graph_gate",
+                        "Gate cursor or membership is stale",
+                    ),
+                )
+            approved_member_ids = tuple(str(item) for item in body.approved_finding_ids)
+            rejected_member_ids = tuple(str(item) for item in body.rejected_finding_ids)
+            approved_set = set(approved_member_ids)
+            rejected_set = set(rejected_member_ids)
+            if (
+                approved_set.intersection(rejected_set)
+                or approved_set.union(rejected_set) != set(gate.member_ids)
+                or len(approved_set) != len(approved_member_ids)
+                or len(rejected_set) != len(rejected_member_ids)
+            ):
+                raise HTTPException(
+                    422,
+                    detail=_error(
+                        "invalid_member_partition",
+                        "Review decision must partition every frozen finding",
+                    ),
+                )
+        elif body.decision == "approve":
+            approved_member_ids = tuple(gate.member_ids)
+        else:
+            rejected_member_ids = tuple(gate.member_ids)
+    status_value = (
+        "approved"
+        if gate.gate_kind == "high_risk_approval" and approved_member_ids
+        else "approved"
+        if body.decision == "approve" and gate.gate_kind != "high_risk_approval"
+        else "rejected"
+    )
     gate.status = status_value
     gate.decision = {
         "decision": body.decision,
         "reason": body.reason,
         "graph_cursor": graph.cursor,
+        "membership_hash": (
+            matching_group.membership_hash if matching_group is not None else None
+        ),
+        "approved_finding_ids": list(approved_member_ids),
+        "rejected_finding_ids": list(rejected_member_ids),
+        "member_decisions": {
+            **{item: "approved" for item in approved_member_ids},
+            **{item: "rejected" for item in rejected_member_ids},
+        },
     }
     gate.decided_by = operator.operator_id
     gate.decided_at = datetime.now(UTC)
@@ -1283,6 +1363,7 @@ async def preview_agent_graph_termination(
         kind=gate.gate_kind,
         status=gate.status,
         item_count=len(gate.member_ids),
+        cursor=gate.cursor,
     )
 
 

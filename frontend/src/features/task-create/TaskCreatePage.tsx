@@ -1,9 +1,15 @@
 import { Alert, Button, Checkbox, Spin } from "antd";
 import { Check, FileSpreadsheet, FileUp, Paperclip, RefreshCw } from "lucide-react";
-import { useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { agentApi as defaultAgentApi, type AgentConnectorSelection, type AgentEntityType, type AgentManualTaskApi } from "../../api/agent";
+import {
+  agentApi as defaultAgentApi,
+  type AgentConnectorSelection,
+  type AgentEntityType,
+  type AgentLocalSource,
+  type AgentManualTaskApi,
+} from "../../api/agent";
 import { ingestionApi } from "../../api/ingestion";
 import { summarizeCsv, type CsvSummary } from "./csvSummary";
 
@@ -13,6 +19,7 @@ type ConnectorDraft = {
   file?: File;
   summary?: CsvSummary;
   configurationId?: string;
+  sourceRef?: string;
   error?: string;
 };
 
@@ -38,7 +45,9 @@ function sessionKey() {
 
 function readyConnector(connector?: ConnectorDraft) {
   if (!connector || connector.error) return false;
-  return connector.kind === "csv" ? Boolean(connector.file && connector.summary) : Boolean(connector.configurationId?.trim());
+  if (connector.kind === "csv") return Boolean(connector.file && connector.summary);
+  if (connector.kind === "local") return Boolean(connector.sourceRef?.trim());
+  return Boolean(connector.configurationId?.trim());
 }
 
 function AttachmentPicker({
@@ -97,7 +106,42 @@ export function TaskCreatePage({
   });
   const [submissionState, setSubmissionState] = useState<SubmissionState>("idle");
   const [submitError, setSubmitError] = useState<string>();
+  const [localSources, setLocalSources] = useState<AgentLocalSource[]>([]);
+  const [localSourcesError, setLocalSourcesError] = useState<string>();
+  const [localSourcesLoading, setLocalSourcesLoading] = useState(false);
   const fileRequestTokens = useRef({ source: 0, target: 0 });
+  const localSourcesRequested = useRef(false);
+  const needsLocalSources = draft.source?.kind === "local" || draft.target?.kind === "local";
+
+  useEffect(() => {
+    if (!needsLocalSources || localSourcesRequested.current) return;
+    if (!api.localSources) {
+      setLocalSourcesError("当前后端未启用本地 CSV 授权目录");
+      return;
+    }
+    let cancelled = false;
+    localSourcesRequested.current = true;
+    setLocalSourcesLoading(true);
+    setLocalSourcesError(undefined);
+    void api.localSources()
+      .then((sources) => {
+        if (!cancelled) setLocalSources(sources);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          localSourcesRequested.current = false;
+          setLocalSourcesError(
+            error instanceof Error ? error.message : "本地 CSV 列表读取失败",
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLocalSourcesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, needsLocalSources]);
 
   async function prepareFile(role: "source" | "target", file: File) {
     const requestToken = ++fileRequestTokens.current[role];
@@ -150,6 +194,13 @@ export function TaskCreatePage({
   }
 
   async function uploadConnector(connector: ConnectorDraft, role: "authoritative" | "target") {
+    if (connector.kind === "local") {
+      if (!connector.sourceRef) throw new Error("本地 CSV 尚未选择");
+      return {
+        kind: "local",
+        source_ref: connector.sourceRef,
+      } satisfies AgentConnectorSelection;
+    }
     if (connector.kind !== "csv") return { kind: connector.kind, configuration_id: connector.configurationId } satisfies AgentConnectorSelection;
     if (!connector.file) throw new Error("CSV 文件尚未选择");
     const upload = await ingestionApi.upload(connector.file, role);
@@ -189,10 +240,40 @@ export function TaskCreatePage({
                 <fieldset className="draft-fieldset" key={role}>
                   <legend>{label}连接方式</legend>
                   <select aria-label={`${label}连接方式`} disabled={isSubmitting} value={connector?.kind ?? "csv"} onChange={(event) => setConnectorKind(role, event.target.value as ConnectorKind)}>
-                    <option value="csv">CSV 文件</option><option value="api">API 连接</option><option value="database">数据库连接</option>
+                    <option value="csv">上传 CSV 副本</option><option value="local">本地授权 CSV（直接写回）</option><option value="api">API 连接</option><option value="database">数据库连接</option>
                   </select>
                   {connector?.kind === "csv" && <AttachmentPicker label={`${label} CSV`} inputLabel={`选择${label} CSV`} tone={role === "source" ? "source" : "target"} connector={connector} disabled={isSubmitting} onChange={(file) => void prepareFile(role, file)} />}
-                  {connector?.kind !== "csv" && <><input aria-label={`${label}配置 ID`} placeholder="输入后端配置 ID" disabled={isSubmitting} value={connector?.configurationId ?? ""} onChange={(event) => setDraft((current) => ({ ...current, [role]: { kind: connector?.kind ?? "api", configurationId: event.target.value } }))} /><small className="connector-capability-note">当前连接器仅支持配置占位，真实读取与写入暂不支持。</small></>}
+                  {connector?.kind === "local" && (
+                    <>
+                      <select
+                        aria-label={`${label}本地 CSV`}
+                        disabled={isSubmitting || localSourcesLoading}
+                        value={connector.sourceRef ?? ""}
+                        onChange={(event) => setDraft((current) => ({
+                          ...current,
+                          [role]: { kind: "local", sourceRef: event.target.value },
+                        }))}
+                      >
+                        <option value="">
+                          {localSourcesLoading ? "正在读取授权目录…" : `选择${label}本地 CSV`}
+                        </option>
+                        {localSources
+                          .filter((source) => role === "source" || source.writable_as_target)
+                          .map((source) => (
+                            <option key={source.source_ref} value={source.source_ref}>
+                              {source.source_ref}
+                            </option>
+                          ))}
+                      </select>
+                      <small className="connector-capability-note">
+                        {role === "target"
+                          ? "治理通过后将原子写回这个已授权的希沃 CSV。"
+                          : "第三方权威 CSV 只读，不会被治理修改。"}
+                      </small>
+                      {localSourcesError && <small className="connector-error">{localSourcesError}</small>}
+                    </>
+                  )}
+                  {connector?.kind !== "csv" && connector?.kind !== "local" && <><input aria-label={`${label}配置 ID`} placeholder="输入后端配置 ID" disabled={isSubmitting} value={connector?.configurationId ?? ""} onChange={(event) => setDraft((current) => ({ ...current, [role]: { kind: connector?.kind ?? "api", configurationId: event.target.value } }))} /><small className="connector-capability-note">当前连接器仅支持配置占位，真实读取与写入暂不支持。</small></>}
                 </fieldset>
               );
             })}

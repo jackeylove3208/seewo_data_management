@@ -53,6 +53,7 @@ class AgentGovernanceRepository:
             "entity_kind": group.entity_kind,
             "operation": str(group.operation),
             "policy_version": group.policy_version,
+            "risk": group.risk,
         }
         if existing is not None:
             if any(getattr(existing, key) != value for key, value in values.items()):
@@ -66,7 +67,6 @@ class AgentGovernanceRepository:
             task_id=task.id,
             tenant_id=task.tenant_id,
             group_key=group_key,
-            risk="high",
             status="pending",
             **values,
         )

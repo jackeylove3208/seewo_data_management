@@ -176,8 +176,8 @@ class GraphHumanGateService:
         records: list[AgentHumanGateRecord] = []
         seen: set[UUID] = set()
         for group in groups:
-            if group.risk != "high":
-                raise ValueError("only server-classified high risk may create approval gates")
+            if group.risk not in {"medium", "high"}:
+                raise ValueError("only server-classified reviewable risk may create approval gates")
             if not group.finding_ids or len(set(group.finding_ids)) != len(
                 group.finding_ids
             ):
