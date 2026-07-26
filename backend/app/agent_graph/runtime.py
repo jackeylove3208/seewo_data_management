@@ -37,6 +37,7 @@ ActionKind = Literal[
     "terminate",
 ]
 RiskKind = Literal["low", "medium", "high"]
+MAX_EXECUTION_BATCH_SIZE = 50
 
 
 def _action(
@@ -61,6 +62,32 @@ def _action(
         risk=risk,
         requires_human=requires_human,
         successor_node=successor,
+    )
+
+
+def _execution_batch_action(
+    context: GraphWorkContext,
+    *,
+    plan_id: UUID,
+    operation_ids: tuple[UUID, ...],
+) -> AllowedActionV1:
+    bounded_ids = operation_ids[:MAX_EXECUTION_BATCH_SIZE]
+    if not bounded_ids:
+        raise ValueError("execution batch requires at least one ready operation")
+    return _action(
+        "execute_operations_batch",
+        graph_action_kind="verify_operations",
+        successor="verify_operations",
+        kind="dispatch_sub_agent",
+        sub_agent="governance-execution",
+        risk="high",
+        resource_ids=(
+            f"execution-plan:{plan_id}",
+            *(f"operation:{item}" for item in bounded_ids),
+        ),
+        required_evidence=tuple(
+            f"execution-outcome:{item}" for item in bounded_ids
+        ),
     )
 
 
@@ -453,23 +480,12 @@ class ProductionGraphCandidateProvider:
             )
             if not ready:
                 return (_template(context, "verify_operations"),)
-            return tuple(
-                _action(
-                    f"execute_operation_{str(item.id)[:8]}",
-                    graph_action_kind="verify_operations",
-                    successor="verify_operations",
-                    kind="dispatch_sub_agent",
-                    sub_agent="governance-execution",
-                    risk="high",
-                    resource_ids=(
-                        f"execution-plan:{plan.id}",
-                        f"operation:{item.id}",
-                    ),
-                    required_evidence=(
-                        f"execution-outcome:{item.id}",
-                    ),
-                )
-                for item in ready
+            return (
+                _execution_batch_action(
+                    context,
+                    plan_id=plan.id,
+                    operation_ids=tuple(item.id for item in ready),
+                ),
             )
         if context.current_node in {
             "generate_terminal_report",
@@ -553,17 +569,17 @@ class ProductionGraphCandidateProvider:
                         required_evidence=(f"source:{role}:inspection",),
                     )
                 )
-        if not actions:
-            actions.append(
-                _action(
-                    "normalize_ready_sources:pair",
-                    graph_action_kind="normalize_ready_sources",
-                    successor="normalize_input_batches",
-                    resource_ids=("snapshot-pair:current",),
-                    required_evidence=("normalization-work:ready",),
-                )
-            )
-        return tuple(actions)
+        if actions:
+            return (actions[0],)
+        return (
+            _action(
+                "normalize_ready_sources:pair",
+                graph_action_kind="normalize_ready_sources",
+                successor="normalize_input_batches",
+                resource_ids=("snapshot-pair:current",),
+                required_evidence=("normalization-work:ready",),
+            ),
+        )
 
     async def _normalization_actions(
         self,
@@ -601,14 +617,14 @@ class ProductionGraphCandidateProvider:
                         required_evidence=(f"normalized:{role}:page:{next_page}",),
                     )
                 )
-        if not actions:
-            actions.append(
-                _action(
-                    "validate_normalized_input",
-                    successor="validate_input_contract",
-                )
-            )
-        return tuple(actions)
+        if actions:
+            return (actions[0],)
+        return (
+            _action(
+                "validate_normalized_input",
+                successor="validate_input_contract",
+            ),
+        )
 
     async def _validation_action(
         self,
@@ -688,7 +704,7 @@ class ProductionGraphCandidateProvider:
                 )
             )
         if actions:
-            return tuple(actions)
+            return (actions[0],)
         if repair:
             raise RuntimeError("analysis repair node has no pending batch")
         unresolved = await session.scalar(
@@ -785,6 +801,11 @@ def _rejected_guard_code(
     if "terminate_requested" in passed_kinds:
         return "termination_requested"
     if node == "inspect_sources":
+        if (
+            action_kind == "inspect_target"
+            and "inspect_authority" in passed_kinds
+        ):
+            return "server_order_deferred"
         return (
             "source_already_inspected"
             if action_kind in {"inspect_authority", "inspect_target"}

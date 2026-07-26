@@ -15,9 +15,8 @@ from app.ai.graph_subagents import (
 from app.ai.skills.contracts import (
     AgentFinding,
     AgentFindingBatch,
-    FindingReference,
+    GovernanceSolution,
     GovernanceSolutionBatch,
-    GovernanceSolutionBatchInput,
     NormalizedOrganizationBatch,
     SourceInspectionResult,
 )
@@ -131,7 +130,7 @@ class GraphIngestionAnalysisExecutors:
         def validate_findings(output: BaseModel) -> BaseModel:
             if not isinstance(output, AgentFindingBatch):
                 raise ValueError("reconciliation Skill returned another schema")
-            _validate_finding_membership(
+            compile_combined_analysis_payloads(
                 expected_work_item_kinds=expected_work_item_kinds,
                 allowed_evidence_refs=allowed_evidence_refs,
                 findings=output,
@@ -151,54 +150,14 @@ class GraphIngestionAnalysisExecutors:
         if not isinstance(findings, AgentFindingBatch):
             raise RuntimeError("validated reconciliation output changed type")
 
-        solution_input = GovernanceSolutionBatchInput(
-            task_id=invocation.task_id,
-            run_id=invocation.run_id,
-            phase="analyze_batches",
-            evidence_refs=tuple(sorted(allowed_evidence_refs)),
-            findings=tuple(
-                FindingReference(
-                    finding_id=finding.finding_id,
-                    evidence_refs=finding.evidence_refs,
-                    proposed_operation=finding.proposed_operation,
-                )
-                for finding in findings.findings
-            ),
-        )
-
-        def validate_solutions(output: BaseModel) -> BaseModel:
-            if not isinstance(output, GovernanceSolutionBatch):
-                raise ValueError("governance solution Skill returned another schema")
-            compile_analysis_payloads(
-                expected_work_item_kinds=expected_work_item_kinds,
-                allowed_evidence_refs=allowed_evidence_refs,
-                findings=findings,
-                solutions=output,
-            )
-            return output
-
-        solution = await self._runner.run(
-            invocation.model_copy(
-                update={
-                    "skill_name": "generate-governance-solutions",
-                    "skill_version": "1.0.0",
-                    "input_payload": solution_input.model_dump(mode="json"),
-                }
-            ),
-            result_validator=validate_solutions,
-        )
-        solutions = solution.output
-        if not isinstance(solutions, GovernanceSolutionBatch):
-            raise RuntimeError("validated solution output changed type")
         return GraphAnalysisActionResult(
-            payloads=compile_analysis_payloads(
+            payloads=compile_combined_analysis_payloads(
                 expected_work_item_kinds=expected_work_item_kinds,
                 allowed_evidence_refs=allowed_evidence_refs,
                 findings=findings,
-                solutions=solutions,
             ),
             reconciliation_invocation_id=reconciliation.invocation_id,
-            solution_invocation_id=solution.invocation_id,
+            solution_invocation_id=reconciliation.invocation_id,
         )
 
 
@@ -369,6 +328,32 @@ def compile_analysis_payloads(
             )
         )
     return tuple(payloads)
+
+
+def compile_combined_analysis_payloads(
+    *,
+    expected_work_item_kinds: Mapping[UUID, str],
+    allowed_evidence_refs: frozenset[str],
+    findings: AgentFindingBatch,
+) -> tuple[AgentFindingPayload, ...]:
+    return compile_analysis_payloads(
+        expected_work_item_kinds=expected_work_item_kinds,
+        allowed_evidence_refs=allowed_evidence_refs,
+        findings=findings,
+        solutions=GovernanceSolutionBatch(
+            schema_version=findings.schema_version,
+            solutions=tuple(
+                GovernanceSolution(
+                    finding_id=finding.finding_id,
+                    solution_zh=finding.solution_zh,
+                    operation=finding.proposed_operation,
+                    risk=finding.risk,
+                    dependency_finding_ids=finding.dependency_finding_ids,
+                )
+                for finding in findings.findings
+            ),
+        ),
+    )
 
 
 def _validate_finding_membership(

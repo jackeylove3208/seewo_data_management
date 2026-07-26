@@ -920,6 +920,93 @@ def test_termination_requires_preview_and_explicit_confirmation(
     assert agent_client.portal.call(termination_requested) is True
 
 
+@pytest.mark.parametrize(
+    ("decision", "expected_run_status", "expected_termination_requested"),
+    (
+        ("approve", "running", True),
+        ("reject", "blocked_model_error", False),
+    ),
+)
+def test_blocked_model_error_allows_termination_confirmation_decision(
+    graph_agent_client: TestClient,
+    decision: str,
+    expected_run_status: str,
+    expected_termination_requested: bool,
+) -> None:
+    agent_client = graph_agent_client
+
+    async def seed() -> str:
+        async with agent_client.app.state.database.session_factory() as session:
+            task = ReconciliationTask(
+                tenant_id="school-1",
+                scope_id="all",
+                snapshot_mode="full",
+                entity_types=["student"],
+                status="running",
+                stage="governance",
+                workflow_version="agent-graph-v1",
+                idempotency_key=str(uuid4()),
+                request_hash=str(uuid4()),
+            )
+            session.add(task)
+            await session.flush()
+            run = await AgentRuntimeRepository(session).create_run(
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                conversation_id=None,
+                kind=AgentRunKind.SYNC,
+                workflow_version="agent-graph-v1",
+            )
+            run.status = "blocked_model_error"
+            graph = await AgentGraphRepository(session).create_run_state(
+                run_id=run.id,
+                graph_version="agent-sync-graph-v1",
+                initial_node="inspect_sources",
+            )
+            graph.current_node = "blocked_model_error"
+            graph.status = "blocked_model_error"
+            await session.commit()
+            return str(task.id)
+
+    task_id = agent_client.portal.call(seed)
+    preview = agent_client.post(
+        f"/api/agent/tasks/{task_id}/termination-preview"
+    )
+    assert preview.status_code == 200, preview.text
+
+    response = agent_client.post(
+        (
+            f"/api/agent/tasks/{task_id}/graph/gates/"
+            f"{preview.json()['id']}/decision"
+        ),
+        json={"decision": decision},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == (
+        "approved" if decision == "approve" else "rejected"
+    )
+
+    async def inspect() -> tuple[str, bool]:
+        async with agent_client.app.state.database.session_factory() as session:
+            run = await session.scalar(
+                select(AgentRunRecord).where(
+                    AgentRunRecord.task_id == UUID(task_id)
+                )
+            )
+            assert run is not None
+            graph = await AgentGraphRepository(
+                session
+            ).get_run_state_for_agent_run(run.id)
+            assert graph is not None
+            return run.status, graph.termination_requested
+
+    assert agent_client.portal.call(inspect) == (
+        expected_run_status,
+        expected_termination_requested,
+    )
+
+
 def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
     graph_agent_client: TestClient,
 ) -> None:

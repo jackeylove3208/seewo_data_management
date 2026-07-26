@@ -237,6 +237,7 @@ class GraphExecutionTools:
         return {
             "read_execution_plan": self.read_execution_plan,
             "read_ready_operations": self.read_ready_operations,
+            "request_execution_batch": self.request_execution_batch,
             "request_operation_execution": self.request_operation_execution,
             "read_operation_verification": self.read_operation_verification,
         }
@@ -285,13 +286,34 @@ class GraphExecutionTools:
         operation_id = _operation_resource(arguments)
         if operation_id not in self._operation_ids:
             raise ValueError("operation is outside frozen execution plan")
+        outcome = await self._execute_once(operation_id)
+        return outcome.model_dump(mode="json")
+
+    async def request_execution_batch(
+        self,
+        context: GraphToolContext,
+        arguments: Mapping[str, object],
+    ) -> dict[str, Any]:
+        self._require_context(context)
+        self._require_plan_resource(arguments)
+        outcomes = [
+            await self._execute_once(operation_id)
+            for operation_id in self._operation_ids
+        ]
+        return {
+            "outcomes": [
+                outcome.model_dump(mode="json") for outcome in outcomes
+            ]
+        }
+
+    async def _execute_once(self, operation_id: UUID) -> OperationOutcome:
         outcome = self._outcomes.get(operation_id)
         if outcome is None:
             outcome = await self._execute_operation(operation_id)
             if outcome.operation_id != operation_id:
                 raise ValueError("execution callback returned another operation")
             self._outcomes[operation_id] = outcome
-        return outcome.model_dump(mode="json")
+        return outcome
 
     async def read_operation_verification(
         self,

@@ -7,6 +7,7 @@ from sqlalchemy.exc import DBAPIError
 from app.agent_graph.contracts import (
     AllowedActionV1,
     CandidateActionEvaluationV1,
+    SingleActionReasonCode,
     SupervisorDecisionV1,
     UnselectedActionReasonV1,
 )
@@ -212,7 +213,9 @@ async def test_old_worker_claim_filter_does_not_claim_graph_runs(database) -> No
 
 
 @pytest.mark.asyncio
-async def test_crash_replays_the_frozen_decision_without_replanning(database) -> None:
+async def test_single_guarded_action_replays_without_supervisor_or_replanning(
+    database,
+) -> None:
     _task_id, _run_id = await _start_graph_run(database)
     candidate = _candidate(
         "inspect_authority:page-1",
@@ -235,14 +238,10 @@ async def test_crash_replays_the_frozen_decision_without_replanning(database) ->
             single_action_reason_code=SingleActionReasonCode.ONLY_GUARD_SATISFIED,
         )
 
-    class CountingSupervisor(Supervisor):
-        calls = 0
+    class SupervisorMustNotRun:
+        async def decide_with_provenance(self, _context):
+            raise AssertionError("a single guarded action called the model Supervisor")
 
-        async def decide_with_provenance(self, context):
-            self.calls += 1
-            return await super().decide_with_provenance(context)
-
-    supervisor = CountingSupervisor("inspect_authority:page-1")
     execution_calls = 0
 
     async def execute(
@@ -262,7 +261,7 @@ async def test_crash_replays_the_frozen_decision_without_replanning(database) ->
         database.session_factory,
         worker_id="graph-worker-recovery",
         lease_seconds=60,
-        supervisor=supervisor,
+        supervisor=SupervisorMustNotRun(),
         candidate_provider=plan,
         executor=execute,
     )
@@ -271,7 +270,6 @@ async def test_crash_replays_the_frozen_decision_without_replanning(database) ->
         await worker.run_once()
     assert await worker.run_once() is True
     assert plan_calls == 1
-    assert supervisor.calls == 1
     assert execution_calls == 2
 
 
@@ -782,11 +780,15 @@ async def test_production_candidates_audit_rejected_graph_templates(database) ->
         for item in plan.candidate_evaluations
         if not item.passed
     }
-    assert passed == {"inspect_authority", "inspect_target"}
+    assert passed == {"inspect_authority"}
     assert rejected == {
+        "inspect_target": ("server_order_deferred",),
         "normalize_ready_sources": ("source_inspection_incomplete",),
     }
-    assert plan.single_action_reason_code is None
+    assert (
+        plan.single_action_reason_code
+        is SingleActionReasonCode.ONLY_GUARD_SATISFIED
+    )
 
 
 @pytest.mark.asyncio

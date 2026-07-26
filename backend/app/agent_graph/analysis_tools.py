@@ -252,6 +252,14 @@ class GraphAnalysisEvidenceTools:
     ) -> dict[str, Any]:
         self._require_context(context)
         evidence_ref = _required_string(arguments, "evidence_ref")
+        return (
+            await self.paired_record_evidence(evidence_ref)
+        ).model_dump(mode="json")
+
+    async def paired_record_evidence(
+        self,
+        evidence_ref: str,
+    ) -> PairedRecordEvidenceV1:
         work_id = _parse_prefixed_uuid(evidence_ref, "paired-record")
         work = await self._require_work(work_id)
         claim = await self._session.scalar(
@@ -319,7 +327,7 @@ class GraphAnalysisEvidenceTools:
             allowed_candidates=candidate_refs,
             allowed_operations=_ALLOWED_OPERATIONS_BY_KIND[work.kind],
             evidence_refs=(evidence_ref,),
-        ).model_dump(mode="json")
+        )
 
     async def query_identity_postings(
         self,

@@ -83,8 +83,10 @@ async def test_phone_risk_group_waits_once_for_homogeneous_batch(session) -> Non
 class ExecutionProvider:
     def __init__(self, outputs):
         self.outputs = list(outputs)
+        self.request_count = 0
 
     async def complete_json_once(self, _request: LLMRequest) -> LLMResponse:
+        self.request_count += 1
         return LLMResponse(
             output=self.outputs.pop(0),
             provider="scripted",
@@ -94,7 +96,14 @@ class ExecutionProvider:
 
 
 @pytest.mark.asyncio
-async def test_execution_continues_independent_operation_after_failure(session) -> None:
+@pytest.mark.parametrize(
+    "graph_node",
+    ("execute_ready_operations", "execute_remaining_independent"),
+)
+async def test_execution_continues_independent_operation_after_failure(
+    session,
+    graph_node: str,
+) -> None:
     task = ReconciliationTask(
         tenant_id="school-graph-execution",
         scope_id="all",
@@ -118,12 +127,12 @@ async def test_execution_continues_independent_operation_after_failure(session) 
     graph = await AgentGraphRepository(session).create_run_state(
         run_id=run.id,
         graph_version="agent-sync-graph-v1",
-        initial_node="execute_ready_operations",
+        initial_node=graph_node,
     )
     plan_id = uuid4()
     failed_id = uuid4()
     independent_id = uuid4()
-    action_id = "execute_ready_operations"
+    action_id = graph_node
     resources = (
         f"execution-plan:{plan_id}",
         f"operation:{failed_id}",
@@ -174,16 +183,10 @@ async def test_execution_continues_independent_operation_after_failure(session) 
             {
                 "result": {
                     "tool_call": {
-                        "name": "request_operation_execution",
-                        "arguments": {"resource_id": f"operation:{failed_id}"},
-                    }
-                }
-            },
-            {
-                "result": {
-                    "tool_call": {
-                        "name": "request_operation_execution",
-                        "arguments": {"resource_id": f"operation:{independent_id}"},
+                        "name": "request_execution_batch",
+                        "arguments": {
+                            "resource_id": f"execution-plan:{plan_id}"
+                        },
                     }
                 }
             },
@@ -250,6 +253,7 @@ async def test_execution_continues_independent_operation_after_failure(session) 
 
     assert {item.status for item in result.outcomes} == {"failed", "succeeded"}
     assert set(tools.outcomes) == {failed_id, independent_id}
+    assert provider.request_count == 2
 
 
 @pytest.mark.asyncio
@@ -304,6 +308,60 @@ async def test_single_operation_action_cannot_execute_another_ready_operation() 
     )
     assert result["operation_id"] == str(selected_id)
     assert executed == [selected_id]
+
+
+@pytest.mark.asyncio
+async def test_execution_batch_runs_every_frozen_operation_once() -> None:
+    task_id = uuid4()
+    run_id = uuid4()
+    operation_ids = (uuid4(), uuid4(), uuid4())
+    executed: list = []
+
+    async def execute(operation_id):
+        executed.append(operation_id)
+        return OperationOutcome(
+            operation_id=operation_id,
+            status="succeeded",
+            verification_ref=f"verification:{operation_id}",
+        )
+
+    plan_id = uuid4()
+    tools = GraphExecutionTools(
+        task_id=task_id,
+        run_id=run_id,
+        tenant_id="school-execution-batch",
+        plan_id=plan_id,
+        operation_ids=operation_ids,
+        execute_operation=execute,
+    )
+    context = GraphToolContext(
+        operator_id="operator-1",
+        tenant_id="school-execution-batch",
+        task_id=task_id,
+        run_id=run_id,
+        graph_run_id=uuid4(),
+        graph_node="execute_ready_operations",
+        graph_cursor=9,
+        action_id="execute_operations_batch",
+        evidence_manifest_id=uuid4(),
+        invocation_id=uuid4(),
+        allowed_tools=frozenset({"request_execution_batch"}),
+    )
+
+    first = await tools.request_execution_batch(
+        context,
+        {"resource_id": f"execution-plan:{plan_id}"},
+    )
+    second = await tools.request_execution_batch(
+        context,
+        {"resource_id": f"execution-plan:{plan_id}"},
+    )
+
+    assert [item["operation_id"] for item in first["outcomes"]] == [
+        str(item) for item in operation_ids
+    ]
+    assert second == first
+    assert executed == list(operation_ids)
 
 
 @pytest.mark.asyncio

@@ -45,6 +45,7 @@ GRAPH_SKILL_TOOLS_BY_PHASE: dict[str, frozenset[str]] = {
         {
             "read_execution_plan",
             "read_ready_operations",
+            "request_execution_batch",
             "request_operation_execution",
             "read_operation_verification",
         }
@@ -60,6 +61,7 @@ GRAPH_SKILL_TOOLS_BY_PHASE: dict[str, frozenset[str]] = {
         {
             "read_execution_plan",
             "read_ready_operations",
+            "request_execution_batch",
             "request_operation_execution",
             "read_operation_verification",
         }

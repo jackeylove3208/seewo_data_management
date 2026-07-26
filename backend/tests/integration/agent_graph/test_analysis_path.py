@@ -64,6 +64,8 @@ def test_analysis_rejects_forged_evidence_and_compiles_one_ai_solution() -> None
                 analysis_zh="权威记录与希沃目标记录的班级字段不一致。",
                 proposed_operation="update",
                 evidence_refs=("paired-record:1",),
+                solution_zh="按第三方权威值更新希沃目标中的班级字段。",
+                risk="high",
             ),
         ),
     )

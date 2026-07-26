@@ -4,6 +4,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.agent_graph.contracts import SupervisorContextV1, SupervisorDecisionV1
+from app.agent_graph.evidence import PairedRecordEvidenceV1
 from app.agent_runtime.state_machine import AgentPhase, AgentRunStatus
 
 EntityKind = Literal["department", "student", "teacher"]
@@ -38,6 +39,7 @@ class IdentityWorkItem(StrictContract):
     entity_kind: EntityKind
     target_locator: str
     candidate_evidence_refs: tuple[str, ...]
+    paired_evidence: PairedRecordEvidenceV1
 
 
 class FindingReference(StrictContract):
@@ -118,6 +120,9 @@ class AgentFinding(StrictContract):
     analysis_zh: str = Field(min_length=1)
     proposed_operation: OperationKind
     evidence_refs: tuple[str, ...]
+    solution_zh: str = Field(min_length=1)
+    risk: RiskLevel
+    dependency_finding_ids: tuple[UUID, ...] = ()
 
 
 class AgentFindingBatch(AgentSkillOutput):

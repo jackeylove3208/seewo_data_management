@@ -240,9 +240,9 @@ class AgentGraphWorker:
         node_kind = get_graph_definition(context.graph_version).node(
             context.current_node
         ).kind
-        deterministic_termination = (
+        deterministic_guarded_action = (
             len(action_set.allowed_actions) == 1
-            and action_set.allowed_actions[0].kind == "terminate"
+            and action_set.single_action_reason_code is not None
         )
         if existing_decision is not None:
             decision = validate_supervisor_decision(
@@ -250,7 +250,7 @@ class AgentGraphWorker:
                 SupervisorDecisionV1.model_validate(existing_decision.decision),
             )
             decision_provenance = dict(existing_decision.model_provenance)
-        elif node_kind is GraphNodeKind.DECISION and not deterministic_termination:
+        elif node_kind is GraphNodeKind.DECISION and not deterministic_guarded_action:
             supervisor_result = await self._supervisor.decide_with_provenance(
                 supervisor_context
             )
