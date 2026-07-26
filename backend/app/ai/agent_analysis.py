@@ -13,13 +13,17 @@ class AgentModelOutputError(ValueError):
 
 
 _ALLOWED_OPERATIONS: dict[str, frozenset[str]] = {
-    "target_extra": frozenset({"delete", "retain"}),
+    "target_extra": frozenset({"delete"}),
     "target_duplicate": frozenset({"delete", "retain"}),
     "target_missing": frozenset({"create", "retain"}),
     "field_difference": frozenset({"update", "retain"}),
     "authority_invalid": frozenset({"skip"}),
     "identity_conflict": frozenset({"update", "delete", "retain"}),
 }
+
+
+def operation_is_allowed(kind: str, operation: str) -> bool:
+    return operation in _ALLOWED_OPERATIONS.get(kind, frozenset())
 
 
 def validate_agent_model_output(

@@ -88,3 +88,16 @@ def test_rejects_operation_that_is_incompatible_with_persisted_finding(
             authority_invalid_ids=set(),
             expected_kinds={work_item_id: kind},
         )
+
+
+def test_target_extra_cannot_be_recommended_for_retention() -> None:
+    work_item_id = uuid4()
+    output = _output(work_item_id)
+    output["findings"][0]["solutions"][0]["operation"] = "retain"
+
+    with pytest.raises(AgentModelOutputError, match="operation"):
+        validate_agent_model_output(
+            output,
+            (work_item_id,),
+            expected_kinds={work_item_id: "target_extra"},
+        )

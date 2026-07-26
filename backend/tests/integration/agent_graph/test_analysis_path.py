@@ -123,3 +123,42 @@ def test_correct_rows_are_not_accepted_as_actionable_findings() -> None:
                 solutions=(),
             ),
         )
+
+
+def test_graph_analysis_rejects_retention_for_target_extra() -> None:
+    work_item_id = uuid4()
+    finding_id = uuid4()
+    findings = AgentFindingBatch(
+        schema_version="agent-contract-v1",
+        findings=(
+            AgentFinding(
+                finding_id=finding_id,
+                work_item_id=work_item_id,
+                disposition="target_extra",
+                category_zh="希沃多余",
+                analysis_zh="第三方权威数据没有对应记录。",
+                proposed_operation="retain",
+                evidence_refs=("paired-record:extra",),
+                solution_zh="保留该记录。",
+                risk="low",
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="operation"):
+        compile_analysis_payloads(
+            expected_work_item_kinds={work_item_id: "target_extra"},
+            allowed_evidence_refs=frozenset({"paired-record:extra"}),
+            findings=findings,
+            solutions=GovernanceSolutionBatch(
+                schema_version="agent-contract-v1",
+                solutions=(
+                    GovernanceSolution(
+                        finding_id=finding_id,
+                        solution_zh="保留该记录。",
+                        operation="retain",
+                        risk="low",
+                    ),
+                ),
+            ),
+        )

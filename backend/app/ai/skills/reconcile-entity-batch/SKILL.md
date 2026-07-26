@@ -55,7 +55,8 @@ output_schema: AgentFindingBatch
 
 ## 决策规则
 
-- `target_extra`：希沃无任何身份键候选，或希沃行没有编号/电话/邮箱；允许 delete、retain。
+- `target_extra`：希沃无任何身份键候选，或希沃行没有编号/电话/邮箱；只能提出 delete，
+  不得提出 retain、skip、update 或 create。
 - `target_duplicate`：稳定顺序靠后的希沃记录重复认领已占用权威行；允许 delete、retain，
   分析中明确保留最早的规范记录。
 - `target_missing`：有效权威行未被任何希沃行认领；允许 create、retain。
