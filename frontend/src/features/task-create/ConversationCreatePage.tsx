@@ -1,8 +1,15 @@
 import { Alert, Modal, Spin } from "antd";
-import { ArrowUp, Bot, MessageSquareText, UserRound } from "lucide-react";
+import {
+  ArrowUp,
+  Bot,
+  MessageSquarePlus,
+  MessageSquareText,
+  UserRound,
+} from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 
 import { agentApi as defaultAgentApi, type AgentConversationApi, type AgentGraphHumanGate, type AgentIntent, type AgentStartConfirmation, type AgentTask, type AgentTaskEvent } from "../../api/agent";
+import { ApiError } from "../../api/client";
 import { presentAgentEvent, presentAgentPhase } from "../agent-events/presentation";
 
 type ConversationState = "idle" | "collecting" | "needs-input" | "draft-ready" | "submitting" | "failed" | "created";
@@ -48,6 +55,10 @@ export function ConversationCreatePage({
   const [terminationLoading, setTerminationLoading] = useState(false);
   const [terminationError, setTerminationError] = useState<string>();
   const [hydrating, setHydrating] = useState(true);
+  const [newConversationOpen, setNewConversationOpen] = useState(false);
+  const [newConversationLoading, setNewConversationLoading] = useState(false);
+  const [newConversationError, setNewConversationError] = useState<string>();
+  const [contextLimitReached, setContextLimitReached] = useState(false);
 
   const backendApi = agentApi ?? defaultAgentApi;
 
@@ -168,6 +179,7 @@ export function ConversationCreatePage({
         conversationId ?? await createConversation(),
         message,
       );
+      setContextLimitReached(false);
       setAgentIntent(response.intent);
       setMessages((current) => [...current, {
         id: messageId(),
@@ -179,6 +191,9 @@ export function ConversationCreatePage({
       }
       setState(response.start_confirmation ? "draft-ready" : "needs-input");
     } catch (error) {
+      setContextLimitReached(
+        error instanceof ApiError && error.code === "conversation_context_limit",
+      );
       setMessages((current) => [...current, {
         id: messageId(),
         role: "assistant",
@@ -188,6 +203,38 @@ export function ConversationCreatePage({
         kind: "error",
       }]);
       setState("failed");
+    }
+  }
+
+  async function confirmNewConversation() {
+    if (taskActive || newConversationLoading) return;
+    setNewConversationLoading(true);
+    setNewConversationError(undefined);
+    try {
+      const conversation = await backendApi.resetConversation(sessionKey());
+      setConversationId(conversation.id);
+      setMessages(initialMessages);
+      setInput("");
+      setState("idle");
+      setConfirmation(undefined);
+      setAgentIntent(undefined);
+      setTask(undefined);
+      setEvents([]);
+      setEventCursor(undefined);
+      setClarificationOpen(false);
+      setHandledApprovalGroups([]);
+      setConfirmedClarifications([]);
+      setTerminationGate(undefined);
+      setTerminationError(undefined);
+      setContextLimitReached(false);
+      setNewConversationOpen(false);
+    } catch (error) {
+      setNewConversationError(
+        error instanceof Error ? error.message : "开启新对话失败，请稍后重试",
+      );
+      setNewConversationOpen(false);
+    } finally {
+      setNewConversationLoading(false);
     }
   }
 
@@ -307,8 +354,30 @@ export function ConversationCreatePage({
           <h1>新建对话</h1>
           <p>当前学校 · 智能数据同步助手</p>
         </div>
+        <button
+          className={`conversation-reset-button${contextLimitReached ? " is-emphasized" : ""}`}
+          type="button"
+          aria-label="开启新对话"
+          title={taskActive ? "当前任务结束或终止后才能开启新对话" : "永久删除当前聊天并开启新对话"}
+          disabled={hydrating || newConversationLoading || taskActive}
+          onClick={() => {
+            setNewConversationError(undefined);
+            setNewConversationOpen(true);
+          }}
+        >
+          <MessageSquarePlus size={16} />
+          <span>开启新对话</span>
+        </button>
       </header>
 
+      {newConversationError && (
+        <Alert
+          className="conversation-reset-error"
+          type="error"
+          showIcon
+          message={newConversationError}
+        />
+      )}
       <section className="conversation-surface" aria-label="新建对话">
         <div className="conversation-messages" aria-live="polite">
           {messages.map((message) => (
@@ -388,6 +457,21 @@ export function ConversationCreatePage({
           </button>
         </form>
       </section>
+      <Modal
+        rootClassName="apple-agent-modal"
+        title="开启新对话？"
+        open={newConversationOpen}
+        okText="永久删除并开启"
+        cancelText="保留当前对话"
+        okButtonProps={{ danger: true }}
+        confirmLoading={newConversationLoading}
+        closable={!newConversationLoading}
+        maskClosable={false}
+        onOk={() => void confirmNewConversation()}
+        onCancel={() => setNewConversationOpen(false)}
+      >
+        <p>聊天记录将永久删除，但数据同步任务、治理记录和报告不会被删除。</p>
+      </Modal>
       <Modal
         rootClassName="apple-agent-modal"
         title="确认终止当前任务？"

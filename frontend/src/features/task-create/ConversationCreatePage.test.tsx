@@ -3,12 +3,17 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentConversationApi } from "../../api/agent";
+import { ApiError } from "../../api/client";
 import { ConversationCreatePage } from "./ConversationCreatePage";
 
 function api(overrides: Partial<AgentConversationApi> = {}): AgentConversationApi {
   return {
     currentConversation: vi.fn().mockResolvedValue(null),
     createConversation: vi.fn().mockResolvedValue({ id: "conversation-1", status: "active" }),
+    resetConversation: vi.fn().mockResolvedValue({
+      id: "conversation-reset",
+      status: "active",
+    }),
     sendMessage: vi.fn().mockResolvedValue({
       message: "已整理好全校教师同步需求。",
       intent: { title: "全校教师同步", entity_types: ["teacher"] },
@@ -51,6 +56,76 @@ describe("backend Agent conversation", () => {
     expect(screen.queryByRole("region", { name: "任务草案" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("任务名称")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("选择三方系统 CSV")).not.toBeInTheDocument();
+  });
+
+  it("permanently replaces chat after explicit new-conversation confirmation", async () => {
+    const resetConversation = vi.fn().mockResolvedValue({
+      id: "conversation-reset",
+      status: "active",
+    });
+    const backend = api({
+      currentConversation: vi.fn().mockResolvedValue({
+        id: "conversation-old",
+        status: "active",
+        messages: [
+          {
+            id: "old-message",
+            role: "user",
+            kind: "normal",
+            text: "这段旧聊天会被删除",
+            created_at: "",
+          },
+        ],
+        task: null,
+      }),
+      resetConversation,
+    });
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    expect(await screen.findByText("这段旧聊天会被删除")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "开启新对话" }));
+
+    expect(screen.getByRole("dialog", { name: "开启新对话？" })).toBeInTheDocument();
+    expect(screen.getByText(/数据同步任务、治理记录和报告不会被删除/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "永久删除并开启" }));
+
+    await waitFor(() => expect(resetConversation).toHaveBeenCalledWith(expect.any(String)));
+    expect(screen.queryByText("这段旧聊天会被删除")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("你好，我是智能数据同步助手。告诉我希望同步的范围和对象。"),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps existing chat when new-conversation reset fails", async () => {
+    const backend = api({
+      currentConversation: vi.fn().mockResolvedValue({
+        id: "conversation-old",
+        status: "active",
+        messages: [
+          {
+            id: "old-message",
+            role: "assistant",
+            kind: "normal",
+            text: "需要保留的旧聊天",
+            created_at: "",
+          },
+        ],
+        task: null,
+      }),
+      resetConversation: vi.fn().mockRejectedValue(
+        new ApiError("当前学校仍有任务正在处理", 409, "conversation_active_task"),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    expect(await screen.findByText("需要保留的旧聊天")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "开启新对话" }));
+    await user.click(screen.getByRole("button", { name: "永久删除并开启" }));
+
+    expect(await screen.findByText("当前学校仍有任务正在处理")).toBeInTheDocument();
+    expect(screen.getByText("需要保留的旧聊天")).toBeInTheDocument();
   });
 
   it("keeps the composer disabled until conversation recovery finishes", () => {
@@ -148,6 +223,7 @@ describe("backend Agent conversation", () => {
     expect(await screen.findByText("同步全校学生")).toBeInTheDocument();
     expect(screen.getByText("任务已经开始。")).toBeInTheDocument();
     expect(screen.getByText(/Agent 分析/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "开启新对话" })).toBeDisabled();
     first.unmount();
 
     render(<ConversationCreatePage agentApi={backend} />);
@@ -338,5 +414,30 @@ describe("backend Agent conversation", () => {
       await screen.findByText("对话模型暂时无法生成有效回复，请稍后重试。"),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("对账目标")).toBeEnabled();
+  });
+
+  it("emphasizes new conversation when complete context reaches the model limit", async () => {
+    const backend = api({
+      sendMessage: vi.fn().mockRejectedValue(
+        new ApiError(
+          "当前对话内容已达到模型处理上限，请开启新对话",
+          409,
+          "conversation_context_limit",
+        ),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    await waitForComposer();
+    await user.type(screen.getByLabelText("对账目标"), "继续使用完整历史");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(
+      await screen.findByText("当前对话内容已达到模型处理上限，请开启新对话"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "开启新对话" })).toHaveClass(
+      "is-emphasized",
+    );
   });
 });

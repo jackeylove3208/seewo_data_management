@@ -29,6 +29,18 @@ describe("Agent API", () => {
     expect((calls[2]?.[1] as RequestInit).headers).toEqual(expect.objectContaining({ "Idempotency-Key": "start-key" }));
   });
 
+  it("atomically resets the current conversation with an idempotency key", async () => {
+    await agentApi.resetConversation("reset-key");
+
+    const [path, request] = vi.mocked(fetch).mock.calls[0]!;
+    expect(path).toBe("/api/agent/conversations/current/reset");
+    expect((request as RequestInit).method).toBe("POST");
+    expect((request as RequestInit).headers).toEqual(expect.objectContaining({
+      "Idempotency-Key": "reset-key",
+    }));
+    expect(JSON.parse(String((request as RequestInit).body))).toEqual({});
+  });
+
   it("reads persisted task events and sends only control commands", async () => {
     await agentApi.events("task-1", "cursor-2");
     await agentApi.terminate("task-1");

@@ -173,6 +173,7 @@ export interface AgentClarificationConfirmation {
 export interface AgentConversationApi {
   currentConversation(): Promise<AgentConversationCurrent | null>;
   createConversation(): Promise<AgentConversation>;
+  resetConversation(idempotencyKey: string): Promise<AgentConversation>;
   sendMessage(conversationId: string, message: string): Promise<AgentMessageResponse>;
   startTask(conversationId: string, intent: AgentIntent, idempotencyKey: string): Promise<AgentTask>;
   task?(taskId: string, signal?: AbortSignal): Promise<AgentTask>;
@@ -272,6 +273,14 @@ async function createConversation() {
 
 async function currentConversation() {
   return requestJson<AgentConversationCurrent | null>("/api/agent/conversations/current");
+}
+
+async function resetConversation(idempotencyKey: string) {
+  return requestJson<AgentConversation>("/api/agent/conversations/current/reset", {
+    method: "POST",
+    headers: { ...jsonHeaders, "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify({}),
+  });
 }
 
 async function sendMessage(conversationId: string, message: string) {
@@ -460,6 +469,7 @@ export const agentApi: AgentConversationApi & AgentManualTaskApi & {
 } = {
   currentConversation,
   createConversation,
+  resetConversation,
   sendMessage,
   startTask,
   startManualTask,

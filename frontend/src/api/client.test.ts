@@ -40,4 +40,22 @@ describe("requestJson", () => {
       method: "DELETE",
     })).resolves.toBeUndefined();
   });
+
+  it("preserves a stable backend error code for UI recovery actions", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      detail: {
+        code: "conversation_active_task",
+        message: "当前学校仍有任务正在处理",
+      },
+    }), {
+      status: 409,
+      headers: { "Content-Type": "application/json" },
+    })));
+
+    await expect(requestJson("/api/agent/conversations/current/reset")).rejects.toMatchObject({
+      status: 409,
+      code: "conversation_active_task",
+      message: "当前学校仍有任务正在处理",
+    });
+  });
 });
