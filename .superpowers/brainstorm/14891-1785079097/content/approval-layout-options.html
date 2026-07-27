@@ -1,0 +1,328 @@
+<style>
+  .approval-choice-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px;
+    margin-top: 24px;
+  }
+  .approval-choice {
+    overflow: hidden;
+    border: 1px solid #dfe3e8;
+    border-radius: 18px;
+    background: #f7f8fa;
+    cursor: pointer;
+    transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease;
+  }
+  .approval-choice:hover {
+    transform: translateY(-2px);
+    border-color: #9db6e8;
+    box-shadow: 0 14px 36px rgba(28, 38, 55, .10);
+  }
+  .approval-choice.selected {
+    border-color: #3e6ecf;
+    box-shadow: 0 0 0 3px rgba(62, 110, 207, .13);
+  }
+  .choice-meta {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 16px;
+    border-bottom: 1px solid #e1e4e8;
+    background: #fff;
+  }
+  .choice-meta strong { color: #202226; }
+  .choice-meta span {
+    padding: 3px 8px;
+    color: #315baf;
+    border-radius: 999px;
+    background: #edf3ff;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .mini-app {
+    display: grid;
+    min-height: 610px;
+    grid-template-columns: 72px minmax(0, 1fr);
+    color: #202226;
+    background: #f7f8fa;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  }
+  .mini-nav {
+    padding: 12px 8px;
+    border-right: 1px solid #e2e5e8;
+    background: #f1f2f4;
+  }
+  .mini-logo {
+    display: grid;
+    width: 28px;
+    height: 28px;
+    margin: 0 auto 18px;
+    place-items: center;
+    color: #fff;
+    border-radius: 9px;
+    background: #1f2125;
+    font-size: 11px;
+    font-weight: 800;
+  }
+  .mini-nav i {
+    display: block;
+    width: 38px;
+    height: 8px;
+    margin: 12px auto;
+    border-radius: 99px;
+    background: #d8dce1;
+  }
+  .mini-nav i.active { background: #91ade6; }
+  .mini-main { padding: 18px; }
+  .mini-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  .mini-title small {
+    display: block;
+    color: #838a94;
+    font-size: 8px;
+    letter-spacing: .08em;
+  }
+  .mini-title b {
+    display: block;
+    margin-top: 4px;
+    font-size: 16px;
+  }
+  .stop-button {
+    padding: 6px 9px;
+    color: #a33a31;
+    border: 1px solid #e7bdb9;
+    border-radius: 8px;
+    background: #fff;
+    font-size: 9px;
+    font-weight: 700;
+  }
+  .stage-bar {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4px;
+    padding: 8px;
+    border: 1px solid #e1e4e8;
+    border-radius: 10px;
+    background: #fff;
+  }
+  .stage-bar span {
+    padding: 7px 4px;
+    color: #868d97;
+    border-radius: 7px;
+    background: #f5f6f7;
+    font-size: 7px;
+    text-align: center;
+  }
+  .stage-bar span.done { color: #287456; background: #eef7f1; }
+  .stage-bar span.active { color: #315baf; background: #edf3ff; font-weight: 800; }
+  .layout-a-overview {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 124px;
+    gap: 10px;
+  }
+  .live-box, .status-box, .risk-panel {
+    border: 1px solid #dfe3e8;
+    border-radius: 11px;
+    background: #fff;
+  }
+  .live-box {
+    display: flex;
+    align-items: center;
+    min-height: 68px;
+    gap: 9px;
+    padding: 10px;
+    border-left: 3px solid #6688d8;
+  }
+  .flow-dots {
+    display: flex;
+    gap: 3px;
+    padding: 8px;
+    border-radius: 99px;
+    background: #edf3ff;
+  }
+  .flow-dots i {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: #5176c8;
+  }
+  .live-box b, .live-box small { display: block; }
+  .live-box b { font-size: 9px; }
+  .live-box small { margin-top: 4px; color: #7a828d; font-size: 7px; }
+  .status-box { padding: 9px; }
+  .status-box > b { display: block; margin-bottom: 7px; font-size: 8px; }
+  .status-box span {
+    display: block;
+    margin-top: 4px;
+    padding: 5px 6px;
+    color: #747b85;
+    border-radius: 6px;
+    background: #f4f5f6;
+    font-size: 6px;
+  }
+  .status-box span.active { color: #315baf; background: #edf3ff; font-weight: 800; }
+  .risk-panel {
+    margin-top: 10px;
+    padding: 12px;
+  }
+  .risk-panel.medium { border-left: 3px solid #6385cf; }
+  .risk-panel.high { border-left: 3px solid #c46a5d; }
+  .risk-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 9px;
+  }
+  .risk-head b { font-size: 10px; }
+  .badge {
+    padding: 3px 7px;
+    border-radius: 99px;
+    background: #edf3ff;
+    color: #315baf;
+    font-size: 6px;
+    font-weight: 800;
+  }
+  .high .badge { color: #a34236; background: #fff0ed; }
+  .review-row {
+    display: grid;
+    grid-template-columns: 14px minmax(0, 1fr) max-content;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 0;
+    border-top: 1px solid #eceef1;
+  }
+  .review-row:first-of-type { border-top: 0; }
+  .review-row input { accent-color: #3f69bd; }
+  .review-row b, .review-row small { display: block; }
+  .review-row b { font-size: 8px; }
+  .review-row small { margin-top: 3px; color: #858c95; font-size: 6px; }
+  .change-pill {
+    color: #5f6874;
+    font-size: 6px;
+    white-space: nowrap;
+  }
+  .review-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+    margin-top: 10px;
+    padding-top: 9px;
+    border-top: 1px solid #eceef1;
+  }
+  .review-actions button {
+    padding: 6px 9px;
+    border: 1px solid #d9dde2;
+    border-radius: 7px;
+    background: #fff;
+    font-size: 7px;
+    font-weight: 750;
+  }
+  .review-actions button.primary {
+    color: #fff;
+    border-color: #315fae;
+    background: #315fae;
+  }
+  .dual-column {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 120px;
+    gap: 10px;
+  }
+  .choice-foot {
+    min-height: 84px;
+    padding: 14px 16px 16px;
+    border-top: 1px solid #e1e4e8;
+    background: #fff;
+  }
+  .choice-foot h3 { margin: 0 0 5px; font-size: 14px; }
+  .choice-foot p { margin: 0; color: #68717c; font-size: 11px; line-height: 1.5; }
+  @media (max-width: 900px) {
+    .approval-choice-grid { grid-template-columns: 1fr; }
+  }
+</style>
+
+<h2>治理审批界面布局</h2>
+<p class="subtitle">两版都修复按钮与进度重叠，并采用“高风险一项一卡；中风险统一审核、默认同意、勾选拒绝”。点击选择你更喜欢的一版。</p>
+
+<div class="approval-choice-grid">
+  <div class="approval-choice" data-choice="a" onclick="toggleSelect(this)">
+    <div class="choice-meta"><strong>A · 全宽审批</strong><span>推荐</span></div>
+    <div class="mini-app">
+      <aside class="mini-nav"><div class="mini-logo">M</div><i class="active"></i><i></i><i></i><i></i></aside>
+      <main class="mini-main">
+        <div class="mini-top">
+          <div class="mini-title"><small>AGENT TASK</small><b>全校组织数据同步</b></div>
+          <button class="stop-button">终止任务</button>
+        </div>
+        <div class="layout-a-overview">
+          <div>
+            <div class="stage-bar">
+              <span class="done">数据接入 ✓</span><span class="done">Agent 分析 ✓</span><span class="active">治理执行</span><span>报告生成</span>
+            </div>
+            <div class="live-box" style="margin-top:8px">
+              <span class="flow-dots"><i></i><i></i><i></i></span>
+              <span><b>正在等待治理操作审核</b><small>治理执行 Agent · 0 / 9</small></span>
+            </div>
+          </div>
+          <aside class="status-box"><b>任务处理状态 ⟨</b><span>数据接入 · 已完成</span><span>分析决策 · 已完成</span><span class="active">治理执行 · 当前</span><span>报告生成 · 等待</span></aside>
+        </div>
+        <section class="risk-panel medium">
+          <div class="risk-head"><b>中风险治理建议 · 共 7 条</b><span class="badge">默认全部同意</span></div>
+          <label class="review-row"><input type="checkbox"><span><b>张敏 · 教师类别修正</b><small>teacher → 教师</small></span><span class="change-pill">拒绝此项</span></label>
+          <label class="review-row"><input type="checkbox"><span><b>李强 · 教师类别与邮箱修正</b><small>2 个字段变更，已合并展示</small></span><span class="change-pill">拒绝此项</span></label>
+          <label class="review-row"><input type="checkbox"><span><b>教务处、信息中心 · 部门信息修正</b><small>同类字段已归并，共 2 条记录</small></span><span class="change-pill">拒绝所选</span></label>
+          <label class="review-row"><input type="checkbox"><span><b>陈子涵 · 新增学生记录</b><small>权威数据存在，希沃缺失</small></span><span class="change-pill">拒绝此项</span></label>
+          <div class="review-actions"><button>展开全部详情</button><button class="primary">全部同意并继续</button></div>
+        </section>
+        <section class="risk-panel high">
+          <div class="risk-head"><b>高风险 · 删除教师李强（T099）</b><span class="badge">单独审批</span></div>
+          <div class="review-row"><span></span><span><b>删除希沃第 6 行重复记录</b><small>保留 T002；删除 T099。可展开查看分析与回滚说明。</small></span><span></span></div>
+          <div class="review-actions"><button>拒绝</button><button class="primary">同意</button></div>
+        </section>
+      </main>
+    </div>
+    <div class="choice-foot"><h3>审批内容使用完整工作区宽度</h3><p>右侧状态栏只占顶部概览区域；审批卡片从其下方开始铺满主工作区，按钮固定在卡片底部，不再与进度重叠。</p></div>
+  </div>
+
+  <div class="approval-choice" data-choice="b" onclick="toggleSelect(this)">
+    <div class="choice-meta"><strong>B · 常驻双栏</strong><span>保守调整</span></div>
+    <div class="mini-app">
+      <aside class="mini-nav"><div class="mini-logo">M</div><i class="active"></i><i></i><i></i><i></i></aside>
+      <main class="mini-main">
+        <div class="mini-top">
+          <div class="mini-title"><small>AGENT TASK</small><b>全校组织数据同步</b></div>
+          <button class="stop-button">终止任务</button>
+        </div>
+        <div class="dual-column">
+          <div>
+            <div class="live-box">
+              <span class="flow-dots"><i></i><i></i><i></i></span>
+              <span><b>正在等待治理操作审核</b><small>治理执行 Agent · 0 / 9</small></span>
+            </div>
+            <section class="risk-panel medium">
+              <div class="risk-head"><b>中风险统一审核</b><span class="badge">7 条</span></div>
+              <label class="review-row"><input type="checkbox"><span><b>教师字段修正 · 2 条</b><small>点击展开具体人员</small></span><span></span></label>
+              <label class="review-row"><input type="checkbox"><span><b>部门字段修正 · 2 条</b><small>点击展开具体部门</small></span><span></span></label>
+              <label class="review-row"><input type="checkbox"><span><b>学生普通变更 · 3 条</b><small>默认同意，勾选拒绝</small></span><span></span></label>
+              <div class="review-actions"><button class="primary">按当前选择继续</button></div>
+            </section>
+            <section class="risk-panel high">
+              <div class="risk-head"><b>高风险 · 删除孙浩然</b><span class="badge">单独审批</span></div>
+              <div class="review-actions"><button>拒绝</button><button class="primary">同意</button></div>
+            </section>
+          </div>
+          <aside class="status-box">
+            <b>任务处理状态 ⟨</b>
+            <span>数据接入 · 已完成</span><span>分析决策 · 已完成</span><span class="active">治理执行 · 当前</span><span>报告生成 · 等待</span>
+          </aside>
+        </div>
+      </main>
+    </div>
+    <div class="choice-foot"><h3>维持右侧状态栏全程可见</h3><p>改动较小，但审批内容仍受双栏宽度限制；在普通笔记本窗口中，详情会比 A 版更拥挤。</p></div>
+  </div>
+</div>
