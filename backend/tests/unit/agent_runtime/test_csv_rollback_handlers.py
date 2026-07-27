@@ -6,6 +6,7 @@ import pytest
 from app.agent_runtime.csv_rollback_handlers import (
     CsvRollbackHandlers,
     _rollback_operation,
+    compare_csv_rollback_mutation,
 )
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentPhase
@@ -60,34 +61,142 @@ async def test_rollback_plan_fails_closed_when_version_artifact_is_missing(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_rollback_plan_rejects_intervening_target_version(
+async def test_rollback_plan_uses_current_values_when_target_version_advanced(
     monkeypatch, tmp_path
 ) -> None:
     task_id = uuid4()
+    target_path = tmp_path / "current.csv"
+    target_path.write_text(
+        "id,姓名,手机号,班级\nstudent-1,张三,13800000000,二班\n",
+        encoding="utf-8",
+    )
     expected = SimpleNamespace(id=uuid4(), task_id=uuid4())
-    intervening = SimpleNamespace(id=uuid4())
+    intervening = SimpleNamespace(id=uuid4(), storage_path=str(target_path))
+    mutation_id = uuid4()
     task = SimpleNamespace(
         id=task_id,
+        parent_task_id=uuid4(),
+        request_hash="request-hash",
         agent_intent={
             "target_version_id": str(expected.id),
-            "operations": [{"id": str(uuid4())}],
+            "operations": [
+                {
+                    "id": str(mutation_id),
+                    "operation": "update",
+                    "entity_kind": "student",
+                    "target_source_identifier": "student-1",
+                    "before": {"phone": ""},
+                    "after": {"phone": "13800000000"},
+                }
+            ],
         },
     )
+    saved_payload = None
 
     async def current_target_version(_repository, _task_id):
         return intervening
+
+    async def save_checkpoint(_repository, *_args, **kwargs):
+        nonlocal saved_payload
+        saved_payload = kwargs["payload"]
+        return SimpleNamespace(payload=saved_payload)
 
     monkeypatch.setattr(
         ExecutionRepository,
         "current_target_version",
         current_target_version,
     )
+    monkeypatch.setattr(AgentRuntimeRepository, "save_checkpoint", save_checkpoint)
 
-    with pytest.raises(ValueError, match="intervening change"):
-        await CsvRollbackHandlers(output_root=tmp_path).plan(
-            _Session(task, expected),  # type: ignore[arg-type]
-            _context(task_id),
-        )
+    result = await CsvRollbackHandlers(output_root=tmp_path).plan(
+        _Session(task, expected),  # type: ignore[arg-type]
+        _context(task_id),
+    )
+
+    assert result.next_phase == AgentPhase.CLARIFY_RESTORE_CONFLICTS
+    assert saved_payload is not None
+    assert saved_payload["restore_comparisons"] == [
+        {
+            "operation_id": str(mutation_id),
+            "disposition": "safe_to_restore",
+            "reason_code": "current_matches_after",
+            "affected_fields": ["phone"],
+            "comparison_hash": saved_payload["restore_comparisons"][0][
+                "comparison_hash"
+            ],
+        }
+    ]
+
+
+def test_update_comparison_distinguishes_after_before_and_conflict_by_affected_fields() -> None:
+    mutation_id = uuid4()
+    mutation = {
+        "id": str(mutation_id),
+        "operation": "update",
+        "entity_kind": "student",
+        "target_source_identifier": "student-1",
+        "before": {"phone": "A"},
+        "after": {"phone": "B"},
+    }
+
+    safe = compare_csv_rollback_mutation(
+        mutation,
+        current={"source_id": "student-1", "phone": "B", "class_name": "二班"},
+    )
+    already_restored = compare_csv_rollback_mutation(
+        mutation,
+        current={"source_id": "student-1", "phone": "A", "class_name": "三班"},
+    )
+    conflict = compare_csv_rollback_mutation(
+        mutation,
+        current={"source_id": "student-1", "phone": "C", "class_name": "四班"},
+    )
+
+    assert safe["disposition"] == "safe_to_restore"
+    assert safe["affected_fields"] == ["phone"]
+    assert already_restored["disposition"] == "already_restored"
+    assert conflict["disposition"] == "conflict"
+    assert safe["comparison_hash"] != already_restored["comparison_hash"]
+    assert conflict["reason_code"] == "affected_fields_changed"
+
+
+@pytest.mark.parametrize(
+    ("operation", "current", "expected_disposition"),
+    [
+        (
+            {
+                "operation": "create",
+                "target_source_identifier": "student-created",
+                "before": None,
+                "after": {"name": "新学生", "phone": "13800000000"},
+            },
+            None,
+            "already_restored",
+        ),
+        (
+            {
+                "operation": "delete",
+                "target_source_identifier": "student-deleted",
+                "before": {"name": "被删学生", "phone": ""},
+                "after": None,
+            },
+            None,
+            "safe_to_restore",
+        ),
+    ],
+)
+def test_create_and_delete_comparison_handle_record_absence(
+    operation, current, expected_disposition
+) -> None:
+    mutation = {
+        "id": str(uuid4()),
+        "entity_kind": "student",
+        **operation,
+    }
+
+    result = compare_csv_rollback_mutation(mutation, current=current)
+
+    assert result["disposition"] == expected_disposition
 
 
 @pytest.mark.asyncio

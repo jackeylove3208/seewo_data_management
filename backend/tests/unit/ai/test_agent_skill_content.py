@@ -1,5 +1,6 @@
 from app.ai.agent_prompting import COMMON_AGENT_SAFETY_CONTRACT
 from app.ai.prompting import build_messages
+from app.ai.skills.contracts import AgentRollbackAssessment
 from app.ai.skills.registry import SkillRegistry
 
 NEW_AGENT_SKILLS = {
@@ -113,7 +114,9 @@ NEW_AGENT_SKILLS = {
         "学校锁",
         "验证成功",
         "前后值",
-        "版本冲突",
+        "actual current",
+        "already_restored",
+        "comparison_hash",
         "人工确认",
     ),
     "execute-approved-rollback": (
@@ -124,6 +127,10 @@ NEW_AGENT_SKILLS = {
         "验证",
         "第三方",
     ),
+}
+
+NEW_AGENT_SKILL_VERSIONS = {
+    "assess-agent-rollback-impact": "2.0.0",
 }
 
 LEGACY_SKILLS = {
@@ -150,13 +157,62 @@ def test_every_new_agent_skill_is_a_complete_operating_procedure() -> None:
     registry = SkillRegistry()
 
     for name, required_terms in NEW_AGENT_SKILLS.items():
-        instructions = registry.load(name, "1.0.0").instructions
+        instructions = registry.load(
+            name,
+            NEW_AGENT_SKILL_VERSIONS.get(name, "1.0.0"),
+        ).instructions
 
         assert len(instructions) >= 1400, name
         for section in REQUIRED_SECTIONS:
             assert section in instructions, f"{name} missing {section}"
         for term in required_terms:
             assert term in instructions, f"{name} missing {term}"
+
+
+def test_rollback_assessment_skill_uses_current_data_not_version_as_the_gate() -> None:
+    skill = SkillRegistry().load("assess-agent-rollback-impact", "2.0.0")
+
+    assert set(skill.allowed_tools) == {
+        "read_verified_mutations",
+        "read_restore_comparison_facts",
+        "submit_restore_assessment",
+    }
+    for term in (
+        "before",
+        "after",
+        "current",
+        "safe_to_restore",
+        "already_restored",
+        "conflict",
+        "comparison_hash",
+        "版本 ID 不能作为",
+        "只比较原操作影响的字段",
+        "保留无关字段",
+    ):
+        assert term in skill.instructions
+
+
+def test_rollback_assessment_contract_distinguishes_no_write_from_restore() -> None:
+    operation_ids = (
+        "1e81d16b-4c26-4ae1-bb3d-e43bff86f351",
+        "e01bb39a-3d42-4c37-a416-b031fac14576",
+        "ee0f28d0-7474-4aec-97ca-cf8292af803d",
+    )
+
+    assessment = AgentRollbackAssessment.model_validate(
+        {
+            "schema_version": "agent-contract-v1",
+            "restorable_operation_ids": [operation_ids[0]],
+            "already_restored_operation_ids": [operation_ids[1]],
+            "conflict_operation_ids": [operation_ids[2]],
+            "impact_zh": "一个待恢复、一个已恢复、一个发生数据冲突。",
+            "requires_confirmation": True,
+        }
+    )
+
+    assert tuple(str(item) for item in assessment.already_restored_operation_ids) == (
+        operation_ids[1],
+    )
 
 
 def test_every_legacy_skill_is_detailed_and_cannot_enter_new_agent_workflow() -> None:

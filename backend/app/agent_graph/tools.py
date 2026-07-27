@@ -144,7 +144,7 @@ GRAPH_NODE_TOOL_NAMES: dict[str, frozenset[str]] = {
     "assess_restore_impact": frozenset(
         {
             "read_verified_mutations",
-            "read_restore_conflicts",
+            "read_restore_comparison_facts",
             "submit_restore_assessment",
         }
     ),

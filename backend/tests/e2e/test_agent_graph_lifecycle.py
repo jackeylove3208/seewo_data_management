@@ -226,7 +226,7 @@ class ScriptedSkillProvider:
                     "outcomes": outcomes,
                 }
             )
-        if "assess-agent-rollback-impact@1.0.0" in system:
+        if "assess-agent-rollback-impact@2.0.0" in system:
             if "authorized_tool_result" not in latest:
                 bounded = json.loads(request.messages[1].content)[
                     "bounded_input_contract"
@@ -248,6 +248,7 @@ class ScriptedSkillProvider:
                     "restorable_operation_ids": [
                         item["id"] for item in mutations
                     ],
+                    "already_restored_operation_ids": [],
                     "conflict_operation_ids": [],
                     "impact_zh": "当前版本连续，可按验证成功事实执行补偿。",
                     "requires_confirmation": True,

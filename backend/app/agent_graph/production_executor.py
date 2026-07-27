@@ -1672,6 +1672,13 @@ class ProductionGraphActionExecutor:
                 if task is None or not task.agent_intent:
                     raise LookupError("rollback task facts are missing")
                 mutations = tuple(dict(item) for item in task.agent_intent.get("operations", []))
+                restore_comparisons = tuple(
+                    dict(item)
+                    for item in task.agent_intent.get(
+                        "restore_comparisons",
+                        [],
+                    )
+                )
                 operation_ids = tuple(UUID(str(item["id"])) for item in mutations)
                 original_task_id = UUID(str(task.agent_intent["source_task_id"]))
                 resource_id = f"rollback-facts:{context.run_id}"
@@ -1699,6 +1706,7 @@ class ProductionGraphActionExecutor:
                     tenant_id=context.tenant_id,
                     resource_id=resource_id,
                     verified_mutations=mutations,
+                    restore_comparisons=restore_comparisons,
                 )
                 runner = GraphSkillModelRunner(
                     session,
@@ -1721,7 +1729,7 @@ class ProductionGraphActionExecutor:
                         action_id=action.action_id,
                         evidence_manifest_id=manifest_id,
                         skill_name="assess-agent-rollback-impact",
-                        skill_version="1.0.0",
+                        skill_version="2.0.0",
                         input_payload=RollbackAssessmentInput(
                             task_id=context.task_id,
                             run_id=context.run_id,
@@ -1732,6 +1740,7 @@ class ProductionGraphActionExecutor:
                         ).model_dump(mode="json"),
                     ),
                     operation_ids=operation_ids,
+                    restore_comparisons=restore_comparisons,
                 )
                 if assessment.conflict_operation_ids:
                     await AgentGraphRepository(session).record_human_gate(

@@ -297,6 +297,7 @@ class RollbackAssessmentInput(AgentSkillInput):
 
 class AgentRollbackAssessment(AgentSkillOutput):
     restorable_operation_ids: tuple[UUID, ...]
+    already_restored_operation_ids: tuple[UUID, ...]
     conflict_operation_ids: tuple[UUID, ...]
     impact_zh: str = Field(min_length=1)
     requires_confirmation: Literal[True]

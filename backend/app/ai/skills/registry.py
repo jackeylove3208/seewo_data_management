@@ -53,7 +53,7 @@ GRAPH_SKILL_TOOLS_BY_PHASE: dict[str, frozenset[str]] = {
     "plan_restore": frozenset(
         {
             "read_verified_mutations",
-            "read_restore_conflicts",
+            "read_restore_comparison_facts",
             "submit_restore_assessment",
         }
     ),

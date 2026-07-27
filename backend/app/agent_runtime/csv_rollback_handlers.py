@@ -1,5 +1,7 @@
 """Independent, school-exclusive rollback handlers for verified Agent CSV facts."""
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -15,7 +17,11 @@ from app.agent_runtime.state_machine import AgentPhase
 from app.agent_runtime.worker import AgentWorkContext, AgentWorkResult
 from app.core.config import Settings
 from app.executions.agent_service import AgentExecutionService, CsvAgentTargetAdapter
-from app.executions.csv_versioning import CsvTargetVersioner
+from app.executions.csv_versioning import (
+    CsvMutationError,
+    CsvTargetVersioner,
+    read_target_rows,
+)
 from app.governance.agent_governance import AgentGovernanceOperation, AgentOperation
 from app.models.executions import TargetVersionRecord
 from app.models.reconciliation import ReconciliationTask
@@ -41,8 +47,27 @@ class CsvRollbackHandlers:
         current = await ExecutionRepository(session).current_target_version(
             target.task_id
         )
-        if current is None or current.id != target.id:
-            raise ValueError("rollback target version has an intervening change")
+        if current is None:
+            raise LookupError("current rollback target version is missing")
+        try:
+            current_rows = read_target_rows(Path(current.storage_path))
+            restore_comparisons = [
+                compare_csv_rollback_mutation(
+                    mutation,
+                    current=current_rows.get(
+                        _mutation_target_identifier(mutation)
+                    ),
+                )
+                for mutation in operations
+            ]
+        except (CsvMutationError, OSError):
+            restore_comparisons = [
+                _unavailable_comparison(mutation) for mutation in operations
+            ]
+        updated_intent = dict(task.agent_intent)
+        updated_intent["restore_comparisons"] = restore_comparisons
+        updated_intent["comparison_target_version_id"] = str(current.id)
+        task.agent_intent = updated_intent
         await AgentRuntimeRepository(session).save_checkpoint(
             context.run_id,
             phase=AgentPhase.PLAN_RESTORE,
@@ -51,7 +76,9 @@ class CsvRollbackHandlers:
             payload={
                 "source_task_id": str(task.parent_task_id),
                 "target_version_id": str(target.id),
+                "comparison_target_version_id": str(current.id),
                 "operations": operations,
+                "restore_comparisons": restore_comparisons,
             },
         )
         return AgentWorkResult(next_phase=AgentPhase.CLARIFY_RESTORE_CONFLICTS)
@@ -284,6 +311,183 @@ class CsvRollbackHandlers:
             outcome="completed",
         )
         return AgentWorkResult(next_phase=AgentPhase.TERMINAL)
+
+
+_FULL_RECORD_FIELDS = frozenset(
+    {
+        "source_id",
+        "category",
+        "name",
+        "number",
+        "class_name",
+        "phone",
+        "email",
+    }
+)
+
+
+def compare_csv_rollback_mutation(
+    mutation: dict[str, Any],
+    *,
+    current: dict[str, object] | None,
+) -> dict[str, object]:
+    """Classify one verified mutation from its affected current target values."""
+    operation_id = str(mutation["id"])
+    operation = AgentOperation(str(mutation["operation"]))
+    before = _fact_mapping(mutation.get("before"))
+    after = _fact_mapping(mutation.get("after"))
+    identifier = _mutation_target_identifier(mutation)
+
+    if not identifier:
+        fields = []
+        disposition = "conflict"
+        reason_code = "target_identifier_missing"
+    elif operation == AgentOperation.UPDATE:
+        fields = sorted(
+            (set(before) | set(after)) - {"source_id", "entity_type"}
+        )
+        if not fields or current is None:
+            disposition = "conflict"
+            reason_code = (
+                "mutation_values_missing"
+                if not fields
+                else "target_record_missing"
+            )
+        elif _fields_match(current, before, fields):
+            disposition = "already_restored"
+            reason_code = "current_matches_before"
+        elif _fields_match(current, after, fields):
+            disposition = "safe_to_restore"
+            reason_code = "current_matches_after"
+        else:
+            disposition = "conflict"
+            reason_code = "affected_fields_changed"
+    elif operation == AgentOperation.CREATE:
+        fields = sorted(_FULL_RECORD_FIELDS | set(after))
+        if current is None:
+            disposition = "already_restored"
+            reason_code = "created_record_absent"
+        elif not after:
+            disposition = "conflict"
+            reason_code = "mutation_values_missing"
+        elif _fields_match(
+            current,
+            _complete_record(
+                after,
+                identifier=identifier,
+                fields=fields,
+            ),
+            fields,
+        ):
+            disposition = "safe_to_restore"
+            reason_code = "current_matches_after"
+        else:
+            disposition = "conflict"
+            reason_code = "created_record_changed"
+    else:
+        fields = sorted(_FULL_RECORD_FIELDS | set(before))
+        if current is None:
+            disposition = "safe_to_restore"
+            reason_code = "deleted_record_still_absent"
+        elif not before:
+            disposition = "conflict"
+            reason_code = "mutation_values_missing"
+        elif _fields_match(
+            current,
+            _complete_record(
+                before,
+                identifier=identifier,
+                fields=fields,
+            ),
+            fields,
+        ):
+            disposition = "already_restored"
+            reason_code = "current_matches_before"
+        else:
+            disposition = "conflict"
+            reason_code = "deleted_record_replacement_changed"
+
+    comparison_material = {
+        "operation_id": operation_id,
+        "operation": str(operation),
+        "affected_fields": fields,
+        "current": {
+            "present": current is not None,
+            "values": {
+                field: _csv_fact_value(current.get(field))
+                for field in fields
+            }
+            if current is not None
+            else {},
+        },
+    }
+    return {
+        "operation_id": operation_id,
+        "disposition": disposition,
+        "reason_code": reason_code,
+        "affected_fields": fields,
+        "comparison_hash": hashlib.sha256(
+            json.dumps(
+                comparison_material,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def _unavailable_comparison(mutation: dict[str, Any]) -> dict[str, object]:
+    operation_id = str(mutation["id"])
+    material = f"{operation_id}:current_target_unavailable"
+    return {
+        "operation_id": operation_id,
+        "disposition": "conflict",
+        "reason_code": "current_target_unavailable",
+        "affected_fields": [],
+        "comparison_hash": hashlib.sha256(material.encode()).hexdigest(),
+    }
+
+
+def _mutation_target_identifier(mutation: dict[str, Any]) -> str:
+    identifier = mutation.get("target_source_identifier")
+    after = _fact_mapping(mutation.get("after"))
+    resolved = identifier or after.get("source_id")
+    return str(resolved or "")
+
+
+def _fact_mapping(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(field): item for field, item in value.items()}
+
+
+def _complete_record(
+    values: dict[str, object],
+    *,
+    identifier: str,
+    fields: list[str],
+) -> dict[str, object]:
+    completed = {field: "" for field in fields}
+    completed.update(values)
+    completed["source_id"] = identifier
+    return completed
+
+
+def _fields_match(
+    current: dict[str, object],
+    expected: dict[str, object],
+    fields: list[str],
+) -> bool:
+    return all(
+        _csv_fact_value(current.get(field))
+        == _csv_fact_value(expected.get(field))
+        for field in fields
+    )
+
+
+def _csv_fact_value(value: object) -> str:
+    return "" if value is None else str(value)
 
 
 def _rollback_operation(
