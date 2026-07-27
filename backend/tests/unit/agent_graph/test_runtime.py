@@ -31,8 +31,7 @@ def test_production_runtime_has_a_guarded_action_for_every_non_terminal_node() -
     missing = {
         node.node_id
         for node in SYNC_GRAPH_V1.nodes
-        if node.node_id != "terminal"
-        and not production_candidate_templates(node.node_id)
+        if node.node_id != "terminal" and not production_candidate_templates(node.node_id)
     }
 
     assert missing == set()
@@ -52,31 +51,40 @@ def test_single_action_reason_uses_semantic_server_fact() -> None:
         lease_token=uuid4(),
     )
 
-    assert _single_action_reason(
-        context,
-        (
-            _action(
-                "terminate_requested",
-                successor="drain_current_atomic_unit",
-                kind="terminate",
+    assert (
+        _single_action_reason(
+            context,
+            (
+                _action(
+                    "terminate_requested",
+                    successor="drain_current_atomic_unit",
+                    kind="terminate",
+                ),
             ),
-        ),
-    ) is SingleActionReasonCode.TERMINATION_REQUESTED
-    assert _single_action_reason(
-        context,
-        (
-            _action(
-                "wait_for_operator",
-                successor="wait_high_risk_approvals",
-                kind="wait_human",
-                requires_human=True,
+        )
+        is SingleActionReasonCode.TERMINATION_REQUESTED
+    )
+    assert (
+        _single_action_reason(
+            context,
+            (
+                _action(
+                    "wait_for_operator",
+                    successor="wait_high_risk_approvals",
+                    kind="wait_human",
+                    requires_human=True,
+                ),
             ),
-        ),
-    ) is SingleActionReasonCode.HUMAN_GATE_REQUIRED
-    assert _single_action_reason(
-        context,
-        (_action("finish", successor="terminal"),),
-    ) is SingleActionReasonCode.TERMINALIZATION_REQUIRED
+        )
+        is SingleActionReasonCode.HUMAN_GATE_REQUIRED
+    )
+    assert (
+        _single_action_reason(
+            context,
+            (_action("finish", successor="terminal"),),
+        )
+        is SingleActionReasonCode.TERMINALIZATION_REQUIRED
+    )
 
 
 def test_ready_governance_operations_are_dispatched_as_one_bounded_batch() -> None:
@@ -110,3 +118,28 @@ def test_ready_governance_operations_are_dispatched_as_one_bounded_batch() -> No
     assert action.required_evidence == tuple(
         f"execution-outcome:{item}" for item in operation_ids[:50]
     )
+
+
+def test_execution_v2_batch_is_server_deterministic() -> None:
+    context = GraphWorkContext(
+        worker_id="worker",
+        run_id=uuid4(),
+        task_id=uuid4(),
+        tenant_id="school-1",
+        graph_run_id=uuid4(),
+        graph_version="agent-sync-graph-v1",
+        current_node="execute_ready_operations",
+        graph_cursor=20,
+        attempt_count=1,
+        lease_token=uuid4(),
+        execution_contract_version="deterministic-execution-v2",
+    )
+
+    action = graph_runtime._execution_batch_action(
+        context,
+        plan_id=uuid4(),
+        operation_ids=(uuid4(),),
+    )
+
+    assert action.kind == "run_deterministic"
+    assert action.sub_agent is None

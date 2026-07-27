@@ -38,15 +38,30 @@ class AgentContractMapper:
     }
 
     def assert_recognizable_headers(self, headers: Sequence[str]) -> None:
-        normalized = {header.strip().casefold() for header in headers}
-        category_aliases = self._aliases["category"]
-        identity_aliases = (
-            self._aliases["number"] + self._aliases["phone"] + self._aliases["email"]
-        )
-        if not any(alias.casefold() in normalized for alias in category_aliases):
+        mapping = self.resolve_header_mapping(headers)
+        if "category" not in mapping:
             raise AgentContractError("unrecognizable agent CSV schema: category column is required")
-        if not any(alias.casefold() in normalized for alias in identity_aliases):
+        if not {"number", "phone", "email"}.intersection(mapping):
             raise AgentContractError("unrecognizable agent CSV schema: identity column is required")
+
+    def resolve_header_mapping(self, headers: Sequence[str]) -> dict[str, str]:
+        actual_by_normalized: dict[str, list[str]] = {}
+        for header in headers:
+            actual_by_normalized.setdefault(header.strip().casefold(), []).append(header)
+        mapping: dict[str, str] = {}
+        for canonical, aliases in self._aliases.items():
+            matches = [
+                actual
+                for alias in aliases
+                for actual in actual_by_normalized.get(alias.casefold(), ())
+            ]
+            if len(matches) > 1:
+                raise AgentContractError(
+                    f"ambiguous agent CSV schema: {canonical} has multiple columns"
+                )
+            if matches:
+                mapping[canonical] = matches[0]
+        return mapping
 
     def map_row(
         self,
@@ -58,8 +73,9 @@ class AgentContractMapper:
         source_role: AgentSourceRole,
         row_number: int,
         row: Mapping[str, object],
+        field_mapping: Mapping[str, str] | None = None,
     ) -> AgentContractRecord:
-        values = {key: self._value(row, key) for key in self._aliases}
+        values = {key: self._value(row, key, field_mapping=field_mapping) for key in self._aliases}
         category = normalize_null(values["category"])
         entity_kind = self._entity_labels.get(category.casefold()) if category else None
         if entity_kind is None:
@@ -126,8 +142,25 @@ class AgentContractMapper:
             )
         return None
 
-    def _value(self, row: Mapping[str, object], canonical: str) -> str | None:
+    def _value(
+        self,
+        row: Mapping[str, object],
+        canonical: str,
+        *,
+        field_mapping: Mapping[str, str] | None,
+    ) -> str | None:
         normalized = {str(key).strip().casefold(): value for key, value in row.items()}
+        if field_mapping is not None:
+            unknown_fields = set(field_mapping).difference(self._aliases)
+            if unknown_fields:
+                raise AgentContractError(
+                    f"unknown fixed contract field: {sorted(unknown_fields)[0]}"
+                )
+            physical = field_mapping.get(canonical)
+            if physical is None:
+                return None
+            value = normalized.get(physical.strip().casefold())
+            return str(value) if value is not None else None
         for alias in self._aliases[canonical]:
             value = normalized.get(alias.casefold())
             if value is not None:

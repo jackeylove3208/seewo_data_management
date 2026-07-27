@@ -190,6 +190,7 @@ def test_clean_postgresql_migration_reaches_head(monkeypatch: pytest.MonkeyPatch
             "agent_subagent_invocations",
             "agent_tool_calls",
             "agent_human_gates",
+            "agent_database_schema_mappings",
             "execution_batches",
             "execution_operations",
             "report_jobs",
@@ -489,6 +490,8 @@ def test_initial_migration_creates_ingestion_tables(tmp_path: Path) -> None:
     }
     assert "attempt_count" in run_columns
     assert "lease_token" in run_columns
+    assert "ingestion_contract_version" in run_columns
+    assert "execution_contract_version" in run_columns
     conversation_inspector = inspect(create_engine(f"sqlite:///{database_path}"))
     conversation_columns = {
         column["name"]

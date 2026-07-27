@@ -81,6 +81,7 @@ class SkillDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     name: str = Field(min_length=1, max_length=128)
+    description: str | None = Field(default=None, min_length=1, max_length=1024)
     version: str = Field(min_length=1, max_length=64)
     phase: str | None = Field(default=None, min_length=1, max_length=64)
     allowed_tools: tuple[str, ...]
@@ -125,9 +126,7 @@ class SkillRegistry:
                 raise UnsafeSkillError(name)
         return definition
 
-    def validate_input(
-        self, definition: SkillDefinition, payload: object
-    ) -> BaseModel:
+    def validate_input(self, definition: SkillDefinition, payload: object) -> BaseModel:
         if definition.input_schema is None:
             raise UnsafeSkillError(definition.name)
         schema = AGENT_SKILL_SCHEMAS.get(definition.input_schema)
@@ -143,9 +142,7 @@ class SkillRegistry:
             raise UnsafeSkillError(definition.name)
         return validated
 
-    def validate_output(
-        self, definition: SkillDefinition, payload: object
-    ) -> BaseModel:
+    def validate_output(self, definition: SkillDefinition, payload: object) -> BaseModel:
         schema = AGENT_SKILL_SCHEMAS.get(definition.output_schema)
         if schema is None:
             raise UnsafeSkillError(definition.name)
@@ -163,8 +160,13 @@ def _parse_skill(content: str) -> SkillDefinition:
             raise ValueError("invalid Skill frontmatter")
         normalized_key = key.strip()
         normalized_value = value.strip()
-        if normalized_key == "allowed_tools":
-            values[normalized_key] = _parse_allowed_tools(normalized_value)
+        if normalized_key in {"allowed_tools", "allowed-tools"}:
+            values["allowed_tools"] = _parse_allowed_tools(normalized_value)
+        elif normalized_key == "metadata":
+            metadata = json.loads(normalized_value)
+            if not isinstance(metadata, dict):
+                raise ValueError("Skill metadata must be an object")
+            values.update(metadata)
         else:
             values[normalized_key] = normalized_value
     values["instructions"] = instructions.strip()

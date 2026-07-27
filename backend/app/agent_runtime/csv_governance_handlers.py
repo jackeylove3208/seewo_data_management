@@ -70,9 +70,7 @@ class CsvGovernanceHandlers:
         self._output_root = output_root
         self._settings = settings
 
-    async def aggregate(
-        self, session: AsyncSession, context: AgentWorkContext
-    ) -> AgentWorkResult:
+    async def aggregate(self, session: AsyncSession, context: AgentWorkContext) -> AgentWorkResult:
         run, task, _source, _target, _version, findings = await _finding_inputs(
             session, context.run_id, output_root=self._output_root
         )
@@ -108,8 +106,7 @@ class CsvGovernanceHandlers:
                 )
             )
             if len(saved_groups) != len(expected_groups) or any(
-                saved.membership_hash
-                != expected_groups[saved.id].membership_hash
+                saved.membership_hash != expected_groups[saved.id].membership_hash
                 for saved in saved_groups
             ):
                 raise ValueError("risk aggregation checkpoint has incomplete approval facts")
@@ -159,17 +156,13 @@ class CsvGovernanceHandlers:
             return AgentWorkResult(next_status=AgentRunStatus.WAITING_HUMAN)
         return AgentWorkResult(next_phase=AgentPhase.COMPILE_EXECUTION_PLAN)
 
-    async def compile(
-        self, session: AsyncSession, context: AgentWorkContext
-    ) -> AgentWorkResult:
+    async def compile(self, session: AsyncSession, context: AgentWorkContext) -> AgentWorkResult:
         run, task, source, target, _version, findings = await _finding_inputs(
             session, context.run_id, output_root=self._output_root
         )
         approvals = tuple(
             await session.scalars(
-                select(AgentApprovalGroupRecord).where(
-                    AgentApprovalGroupRecord.run_id == run.id
-                )
+                select(AgentApprovalGroupRecord).where(AgentApprovalGroupRecord.run_id == run.id)
             )
         )
         approved_groups = {item.id for item in approvals if item.status == "approved"}
@@ -192,18 +185,14 @@ class CsvGovernanceHandlers:
                     )
                 )
             )
-            groups_by_members = {
-                frozenset(group.finding_ids): group for group in approvals
-            }
+            groups_by_members = {frozenset(group.finding_ids): group for group in approvals}
             for gate in review_gates:
                 decision = gate.decision if isinstance(gate.decision, dict) else {}
                 approved_ids = {
-                    UUID(str(item))
-                    for item in decision.get("approved_finding_ids", [])
+                    UUID(str(item)) for item in decision.get("approved_finding_ids", [])
                 }
                 rejected_ids = {
-                    UUID(str(item))
-                    for item in decision.get("rejected_finding_ids", [])
+                    UUID(str(item)) for item in decision.get("rejected_finding_ids", [])
                 }
                 if approved_ids or rejected_ids:
                     approved_findings.update(approved_ids)
@@ -213,9 +202,7 @@ class CsvGovernanceHandlers:
                         approved_groups.discard(group.id)
         clarifications = tuple(
             await session.scalars(
-                select(AgentClarificationRecord).where(
-                    AgentClarificationRecord.run_id == run.id
-                )
+                select(AgentClarificationRecord).where(AgentClarificationRecord.run_id == run.id)
             )
         )
         confirmed = frozenset(
@@ -286,9 +273,7 @@ class CsvGovernanceHandlers:
         )
         return AgentWorkResult(next_phase=AgentPhase.EXECUTE_AND_VERIFY)
 
-    async def execute(
-        self, session: AsyncSession, context: AgentWorkContext
-    ) -> AgentWorkResult:
+    async def execute(self, session: AsyncSession, context: AgentWorkContext) -> AgentWorkResult:
         plan = await session.scalar(
             select(AgentGovernancePlanRecord)
             .where(AgentGovernancePlanRecord.run_id == context.run_id)
@@ -385,15 +370,11 @@ class CsvGovernanceHandlers:
             by_id = {item.id: item for item in dependencies}
             if set(by_id) != set(dependency_ids):
                 raise ValueError("Agent operation dependency is missing")
-            incomplete = tuple(
-                item for item in dependencies if item.status != "succeeded"
-            )
+            incomplete = tuple(item for item in dependencies if item.status != "succeeded")
             if incomplete:
                 if any(item.status in {"pending", "running"} for item in incomplete):
                     raise ValueError("Agent operation dependency is not ready")
-                return await AgentGovernanceRepository(
-                    session
-                ).record_operation_outcome(
+                return await AgentGovernanceRepository(session).record_operation_outcome(
                     record.id,
                     status="blocked",
                     attempts=0,
@@ -418,17 +399,12 @@ class CsvGovernanceHandlers:
             output_version_ids = {
                 UUID(str(item.verification["output_target_version_id"]))
                 for item in succeeded
-                if item.verification
-                and item.verification.get("output_target_version_id")
+                if item.verification and item.verification.get("output_target_version_id")
             }
             if parent.id not in output_version_ids:
                 raise ValueError("Agent CSV target version changed outside the plan")
         payload = next(
-            (
-                item
-                for item in plan.operations
-                if UUID(str(item["id"])) == operation_id
-            ),
+            (item for item in plan.operations if UUID(str(item["id"])) == operation_id),
             None,
         )
         if payload is None:
@@ -480,13 +456,9 @@ class CsvGovernanceHandlers:
                 for dependent in pending:
                     if dependent.id in blocked_dependency_ids:
                         continue
-                    dependent_ids = {
-                        UUID(str(value)) for value in dependent.dependencies
-                    }
+                    dependent_ids = {UUID(str(value)) for value in dependent.dependencies}
                     if dependent_ids.intersection(blocked_dependency_ids):
-                        await AgentGovernanceRepository(
-                            session
-                        ).record_operation_outcome(
+                        await AgentGovernanceRepository(session).record_operation_outcome(
                             dependent.id,
                             status="blocked",
                             attempts=0,
@@ -518,17 +490,13 @@ class CsvGovernanceHandlers:
                 "operation_id": str(operation_id),
                 "status": stored.status,
                 "output_target_version_id": (
-                    str(output.id)
-                    if isinstance(output, TargetVersionRecord)
-                    else None
+                    str(output.id) if isinstance(output, TargetVersionRecord) else None
                 ),
             },
         )
         return stored
 
-    async def report(
-        self, session: AsyncSession, context: AgentWorkContext
-    ) -> AgentWorkResult:
+    async def report(self, session: AsyncSession, context: AgentWorkContext) -> AgentWorkResult:
         run = await session.get(AgentRunRecord, context.run_id)
         task = await session.get(ReconciliationTask, context.task_id)
         if run is None or task is None:
@@ -543,9 +511,7 @@ class CsvGovernanceHandlers:
                 run_id=run.id,
                 phase=AgentPhase.GENERATE_REPORT,
                 target_version_id=(
-                    UUID(str(output_version_id))
-                    if output_version_id is not None
-                    else None
+                    UUID(str(output_version_id)) if output_version_id is not None else None
                 ),
             )
         operations = tuple(
@@ -605,23 +571,29 @@ async def build_agent_report_facts(
         for item in work_items.values()
         if item.id in {finding.work_item_id for finding in findings}
     }
-    subjects = {
-        item.id: item
-        for item in await session.scalars(
-            select(AgentInputRecord).where(AgentInputRecord.id.in_(subject_ids))
-        )
-    } if subject_ids else {}
-    solutions = {
-        item.finding_id: item
-        for item in await session.scalars(
-            select(AgentFindingSolutionRecord).where(
-                AgentFindingSolutionRecord.finding_id.in_(
-                    finding.id for finding in findings
-                ),
-                AgentFindingSolutionRecord.recommended.is_(True),
+    subjects = (
+        {
+            item.id: item
+            for item in await session.scalars(
+                select(AgentInputRecord).where(AgentInputRecord.id.in_(subject_ids))
             )
-        )
-    } if findings else {}
+        }
+        if subject_ids
+        else {}
+    )
+    solutions = (
+        {
+            item.finding_id: item
+            for item in await session.scalars(
+                select(AgentFindingSolutionRecord).where(
+                    AgentFindingSolutionRecord.finding_id.in_(finding.id for finding in findings),
+                    AgentFindingSolutionRecord.recommended.is_(True),
+                )
+            )
+        }
+        if findings
+        else {}
+    )
     marks = tuple(
         await session.scalars(
             select(AgentInputMarkRecord)
@@ -639,9 +611,7 @@ async def build_agent_report_facts(
     operations_by_finding = {item.finding_id: item for item in operations}
     approval_groups = tuple(
         await session.scalars(
-            select(AgentApprovalGroupRecord).where(
-                AgentApprovalGroupRecord.run_id == run_id
-            )
+            select(AgentApprovalGroupRecord).where(AgentApprovalGroupRecord.run_id == run_id)
         )
     )
     decisions_by_finding: dict[UUID, str] = {}
@@ -675,9 +645,9 @@ async def build_agent_report_facts(
             _report_finding(
                 item,
                 work=work_items.get(item.work_item_id),
-                subject=subjects.get(
-                    work_items[item.work_item_id].subject_input_id
-                ) if item.work_item_id in work_items else None,
+                subject=subjects.get(work_items[item.work_item_id].subject_input_id)
+                if item.work_item_id in work_items
+                else None,
                 solution=solutions.get(item.id),
                 operator_decision=decisions_by_finding.get(item.id),
                 operation=operations_by_finding.get(item.id),
@@ -685,8 +655,7 @@ async def build_agent_report_facts(
             for item in findings
         ],
         "excluded_findings": [
-            {"reason": item.reason_code, "disposition": item.report_disposition}
-            for item in marks
+            {"reason": item.reason_code, "disposition": item.report_disposition} for item in marks
         ],
         "mutations": [
             {
@@ -697,8 +666,7 @@ async def build_agent_report_facts(
                 "target_source_identifier": item.target_source_identifier,
                 "before": item.before,
                 "after": item.actual_after,
-                "verification": item.verification
-                or {"valid": item.status == "succeeded"},
+                "verification": item.verification or {"valid": item.status == "succeeded"},
             }
             for item in operations
         ],
@@ -811,7 +779,18 @@ async def _finding_inputs(
             content_hash=target.content_hash,
             storage_path=storage_path,
         )
-    raw_target_rows = read_target_rows(Path(version.storage_path))
+    if version.storage_path.startswith("database://"):
+        target_inputs = tuple(
+            await session.scalars(
+                select(AgentInputRecord).where(
+                    AgentInputRecord.run_id == run.id,
+                    AgentInputRecord.source_role == "target",
+                )
+            )
+        )
+        raw_target_rows = {item.stable_locator: _record_values(item) for item in target_inputs}
+    else:
+        raw_target_rows = read_target_rows(Path(version.storage_path))
     rows = tuple(
         await session.execute(
             select(

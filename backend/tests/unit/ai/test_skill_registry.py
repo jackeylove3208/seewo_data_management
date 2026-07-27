@@ -99,6 +99,49 @@ def test_conflict_skill_uses_only_controlled_graph_conflict_tools() -> None:
     assert skill.output_schema == "ConflictDecisionDraft"
 
 
+def test_csv_schema_mapping_skill_is_pinned_and_has_no_data_tools() -> None:
+    skill = SkillRegistry().load("map-csv-organization-schema", "1.0.0")
+
+    assert skill.phase == "ingest_and_normalize"
+    assert skill.allowed_tools == ()
+    assert skill.input_schema == "CsvSchemaMappingInput"
+    assert skill.output_schema == "CsvSchemaMappingOutput"
+
+    validated = SkillRegistry().validate_output(
+        skill,
+        {
+            "schema_version": "fixed-six-field-mapping-v2",
+            "authoritative_mappings": [],
+            "target_mappings": [],
+            "unresolved_required_fields": ["authoritative.number"],
+        },
+    )
+    assert validated.schema_version == "fixed-six-field-mapping-v2"
+
+
+def test_database_schema_mapping_skill_is_pinned_and_cannot_execute_sql() -> None:
+    skill = SkillRegistry().load(
+        "understand-organization-database-schema",
+        "1.0.0",
+    )
+
+    assert skill.phase == "ingest_and_normalize"
+    assert skill.allowed_tools == ()
+    assert skill.input_schema == "DatabaseSchemaMappingInput"
+    assert skill.output_schema == "DatabaseSchemaMappingOutput"
+
+    validated = SkillRegistry().validate_output(
+        skill,
+        {
+            "schema_version": "fixed-six-field-sql-mapping-v2",
+            "authoritative_mappings": [],
+            "target_mappings": [],
+            "unresolved_required_fields": ["authoritative.number"],
+        },
+    )
+    assert validated.schema_version == "fixed-six-field-sql-mapping-v2"
+
+
 def test_agent_skill_contract_rejects_unknown_fields_and_schema_names(tmp_path: Path) -> None:
     skill = SkillRegistry().load("reconcile-entity-batch", "1.0.0")
     with pytest.raises(ValueError, match="Extra inputs"):

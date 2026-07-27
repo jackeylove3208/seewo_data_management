@@ -47,10 +47,12 @@ class GraphSubAgentFailure(RuntimeError):
         *,
         failure_categories: tuple[str, ...] = (),
         attempt_count: int = 0,
+        attempt_details: tuple[dict[str, object], ...] = (),
     ) -> None:
         super().__init__(message)
         self.failure_categories = failure_categories
         self.attempt_count = attempt_count
+        self.attempt_details = attempt_details
 
 
 class _RepairableGraphModelOutput(RuntimeError):
@@ -181,12 +183,14 @@ class GraphSkillModelRunner:
             )
         )
         failure_categories = list(persisted_failure_categories)
+        attempt_details: list[dict[str, object]] = []
         attempted = min(total_attempts, max(0, start_attempt - 1))
         if "tool_authorization_failure" in failure_categories:
             raise GraphSubAgentFailure(
                 "graph sub-agent durable authorization previously failed",
                 failure_categories=tuple(failure_categories),
                 attempt_count=attempted,
+                attempt_details=tuple(attempt_details),
             )
         if persisted_repair_feedback:
             repair_feedback = persisted_repair_feedback
@@ -254,6 +258,13 @@ class GraphSkillModelRunner:
                     failure_provenance["repair_feedback"] = list(
                         error.repair_feedback
                     )
+                attempt_detail: dict[str, object] = {
+                    "attempt": attempt,
+                    "safe_error_code": safe_error_code,
+                }
+                if repair_feedback:
+                    attempt_detail["repair_feedback"] = list(repair_feedback)
+                attempt_details.append(attempt_detail)
                 await self._repository.finalize_invocation(
                     record.id,
                     status="failed",
@@ -274,6 +285,7 @@ class GraphSkillModelRunner:
             ),
             failure_categories=tuple(failure_categories),
             attempt_count=attempted,
+            attempt_details=tuple(attempt_details),
         ) from last_error
 
     async def _load_evidence_manifest(

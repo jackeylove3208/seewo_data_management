@@ -484,11 +484,24 @@ async def test_model_failure_blocks_graph_run_and_keeps_school_lock(
     async def execute(_context, _action):
         from app.ai.graph_subagents import GraphSubAgentFailure
 
-        raise GraphSubAgentFailure(
+        error = GraphSubAgentFailure(
             "provider detail must not escape",
             failure_categories=failure_categories,
             attempt_count=attempt_count,
         )
+        error.attempt_details = (
+            {
+                "attempt": max(attempt_count, 1),
+                "safe_error_code": failure_categories[0],
+                "repair_feedback": [
+                    {
+                        "path": "result.findings",
+                        "code": "missing_required_field",
+                    }
+                ],
+            },
+        )
+        raise error
 
     worker = AgentGraphWorker(
         database.session_factory,
@@ -528,10 +541,27 @@ async def test_model_failure_blocks_graph_run_and_keeps_school_lock(
         assert event.payload["failed_node"] == "inspect_sources"
         assert event.payload["attempt_count"] == attempt_count
         assert event.payload["failure_categories"] == list(failure_categories)
+        assert event.payload["safe_failure_category"] == failure_categories[0]
         assert event.payload["code"] == expected_code
         assert failure is not None
         assert failure.attempt_count == attempt_count
         assert failure.code == expected_code
+        assert failure.details == {
+            "attempts": [
+                {
+                    "attempt": max(attempt_count, 1),
+                    "safe_error_code": failure_categories[0],
+                    "repair_feedback": [
+                        {
+                            "path": "result.findings",
+                            "code": "missing_required_field",
+                        }
+                    ],
+                }
+            ],
+            "failed_node": "inspect_sources",
+            "failure_categories": list(failure_categories),
+        }
 
 
 @pytest.mark.asyncio

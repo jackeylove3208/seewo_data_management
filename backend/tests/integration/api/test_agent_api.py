@@ -43,6 +43,25 @@ class ConversationProvider:
         )
 
 
+class SqlConversationProvider:
+    async def complete_json_once(self, request: LLMRequest) -> LLMResponse:
+        del request
+        return LLMResponse(
+            output={
+                "result": {
+                    "kind": "start_confirmation",
+                    "title": "SQL 全校数据同步",
+                    "entity_types": ["department", "student", "teacher"],
+                    "source_configuration_id": "authority-postgres",
+                    "target_configuration_id": "seewo-mysql",
+                    "message_zh": "已确认 PostgreSQL 权威来源和 MySQL 希沃目标。",
+                }
+            },
+            provider="stub",
+            model="stub",
+        )
+
+
 class InvalidConversationProvider:
     async def complete_json_once(self, request: LLMRequest) -> LLMResponse:
         del request
@@ -113,11 +132,29 @@ def graph_agent_client(tmp_path: Path):
         yield client
 
 
+@pytest.fixture
+def graph_agent_v2_client(tmp_path: Path):
+    settings = Settings(
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'agent-graph-v2-api.db'}",
+        upload_root=tmp_path / "uploads",
+        snapshot_root=tmp_path / "snapshots",
+        quarantine_root=tmp_path / "quarantine",
+        export_root=tmp_path / "exports",
+        auto_create_schema=True,
+        new_agent_enabled=True,
+        agent_graph_enabled=True,
+        source_ingestion_v2_enabled=True,
+        new_agent_analysis_only=True,
+        tokenization_secret="test-tokenization-secret",
+    )
+    with TestClient(create_app(settings)) as client:
+        yield client
+
+
 def _upload(client: TestClient, tmp_path: Path, role: str, name: str) -> str:
     path = tmp_path / name
     path.write_text(
-        "类别,姓名,编号,班级,电话,邮箱\n"
-        "学生,张三,S001,一班,13800000001,student@example.test\n",
+        "类别,姓名,编号,班级,电话,邮箱\n学生,张三,S001,一班,13800000001,student@example.test\n",
         encoding="utf-8",
     )
     with path.open("rb") as handle:
@@ -197,6 +234,50 @@ def test_graph_flag_routes_only_new_tasks_to_agent_graph_version(
     assert created.json()["workflow_version"] == "agent-graph-v1"
 
 
+def test_source_ingestion_v2_freezes_run_contract_versions(
+    graph_agent_v2_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    source_id = _upload(
+        graph_agent_v2_client,
+        tmp_path,
+        "authoritative",
+        "graph-v2-authority.csv",
+    )
+    target_id = _upload(
+        graph_agent_v2_client,
+        tmp_path,
+        "target",
+        "graph-v2-target.csv",
+    )
+
+    created = graph_agent_v2_client.post(
+        "/api/agent/tasks",
+        headers={"Idempotency-Key": "agent-graph-v2-contract"},
+        json={
+            "title": "全校学生图同步 V2",
+            "entity_types": ["student"],
+            "source": {"kind": "csv", "upload_id": source_id},
+            "target": {"kind": "csv", "upload_id": target_id},
+        },
+    )
+
+    assert created.status_code == 202, created.text
+
+    async def load_run() -> AgentRunRecord:
+        async with graph_agent_v2_client.app.state.database.session_factory() as session:
+            run = await session.scalar(
+                select(AgentRunRecord).where(AgentRunRecord.task_id == UUID(created.json()["id"]))
+            )
+            assert run is not None
+            return run
+
+    run = graph_agent_v2_client.portal.call(load_run)
+    assert run.workflow_version == "agent-graph-v1"
+    assert run.ingestion_contract_version == "source-ingestion-v2"
+    assert run.execution_contract_version == "deterministic-execution-v2"
+
+
 def test_agent_task_start_returns_stable_school_lock_conflict(
     agent_client: TestClient,
     tmp_path: Path,
@@ -255,7 +336,7 @@ def test_agent_api_rejects_client_tenant_override(
     assert response.status_code == 422
 
 
-def test_configured_connector_is_rejected_before_task_and_lock_are_created(
+def test_manual_api_rejects_non_csv_connector_before_task_and_lock_are_created(
     agent_client: TestClient,
 ) -> None:
     response = agent_client.post(
@@ -270,7 +351,7 @@ def test_configured_connector_is_rejected_before_task_and_lock_are_created(
     )
 
     assert response.status_code == 422
-    assert response.json()["detail"]["code"] == "connector_capability_failure"
+    assert response.json()["detail"]["code"] == "manual_csv_only"
     assert agent_client.get("/api/agent/active-lock").json() == {
         "active": False,
         "owner_task_id": None,
@@ -279,6 +360,163 @@ def test_configured_connector_is_rejected_before_task_and_lock_are_created(
         "heartbeat_at": None,
     }
     assert agent_client.get("/api/agent/history").json()["items"] == []
+
+
+def test_sql_pair_creates_durable_task_without_exposing_database_credentials(
+    tmp_path: Path,
+) -> None:
+    fixed_fields = {
+        "category": "category",
+        "name": "name",
+        "number": "number",
+        "class_name": "class_name",
+        "phone": "phone",
+        "email": "email",
+    }
+    settings = Settings(
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'agent-sql-api.db'}",
+        upload_root=tmp_path / "uploads",
+        snapshot_root=tmp_path / "snapshots",
+        quarantine_root=tmp_path / "quarantine",
+        export_root=tmp_path / "exports",
+        auto_create_schema=True,
+        new_agent_enabled=True,
+        agent_graph_enabled=True,
+        source_ingestion_v2_enabled=True,
+        agent_graph_sql_execution_enabled=True,
+        new_agent_analysis_only=False,
+        tokenization_secret="test-tokenization-secret",
+        database_connector_configurations={
+            "authority-postgres": {
+                "credential_reference": "secret://connectors/authority-postgres",
+                "dialect": "postgresql",
+                "table_name": "organization_people",
+                "primary_key": "id",
+                "version_column": "row_version",
+                "field_columns": fixed_fields,
+                "source_role": "authoritative",
+                "capabilities": {"read": True, "paginated": True},
+            },
+            "seewo-mysql": {
+                "credential_reference": "secret://connectors/seewo-mysql",
+                "dialect": "mysql",
+                "table_name": "organization_people",
+                "primary_key": "id",
+                "version_column": "row_version",
+                "field_columns": fixed_fields,
+                "source_role": "target",
+                "capabilities": {
+                    "read": True,
+                    "paginated": True,
+                    "create": True,
+                    "update": True,
+                    "delete": True,
+                    "optimistic_version": True,
+                },
+            },
+        },
+        database_connector_credentials={
+            "secret://connectors/authority-postgres": (
+                "postgresql+asyncpg://user:authority-secret@db/authority"
+            ),
+            "secret://connectors/seewo-mysql": ("mysql+asyncmy://user:target-secret@db/seewo"),
+        },
+    )
+    with TestClient(create_app(settings)) as client:
+        rejected_manual = client.post(
+            "/api/agent/tasks",
+            headers={"Idempotency-Key": "manual-sql-is-not-supported"},
+            json={
+                "title": "SQL 全校数据同步",
+                "entity_types": ["department", "student", "teacher"],
+                "source": {
+                    "kind": "database",
+                    "configuration_id": "authority-postgres",
+                },
+                "target": {
+                    "kind": "database",
+                    "configuration_id": "seewo-mysql",
+                },
+            },
+        )
+        assert rejected_manual.status_code == 422
+        assert rejected_manual.json()["detail"]["code"] == "manual_csv_only"
+
+        client.app.state.conversation_provider = SqlConversationProvider()
+        conversation = client.post("/api/agent/conversations")
+        message = client.post(
+            f"/api/agent/conversations/{conversation.json()['id']}/messages",
+            json={"message": "使用 PostgreSQL 权威库同步到 MySQL 希沃库"},
+        )
+        assert message.status_code == 200, message.text
+        response = client.post(
+            f"/api/agent/conversations/{conversation.json()['id']}/tasks",
+            headers={"Idempotency-Key": "sql-postgres-to-mysql"},
+            json={
+                "title": "客户端不能覆盖 SQL 意图",
+                "entity_types": ["student"],
+                "source": {
+                    "kind": "database",
+                    "configuration_id": "seewo-mysql",
+                },
+                "target": {
+                    "kind": "database",
+                    "configuration_id": "authority-postgres",
+                },
+            },
+        )
+
+        assert response.status_code == 202, response.text
+        task_id = UUID(response.json()["id"])
+
+        async def load_facts() -> tuple[ReconciliationTask, tuple[SourceFile, ...]]:
+            async with client.app.state.database.session_factory() as session:
+                task = await session.get(ReconciliationTask, task_id)
+                assert task is not None
+                sources = tuple(
+                    await session.scalars(
+                        select(SourceFile)
+                        .where(SourceFile.task_id == task_id)
+                        .order_by(SourceFile.source_role)
+                    )
+                )
+                return task, sources
+
+        task, sources = client.portal.call(load_facts)
+        assert task.agent_intent["source"]["configuration_id"] == "authority-postgres"
+        assert [item.source_role for item in sources] == ["authoritative", "target"]
+        assert [item.storage_path for item in sources] == [
+            "database://authority-postgres",
+            "database://seewo-mysql",
+        ]
+        assert "authority-secret" not in response.text
+        assert "target-secret" not in response.text
+
+
+def test_sql_runtime_rejects_csv_database_mixed_pair_before_lock(
+    graph_agent_v2_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    source_id = _upload(
+        graph_agent_v2_client,
+        tmp_path,
+        "authoritative",
+        "mixed-authority.csv",
+    )
+
+    response = graph_agent_v2_client.post(
+        "/api/agent/tasks",
+        headers={"Idempotency-Key": "mixed-csv-sql"},
+        json={
+            "title": "不允许的混合数据源",
+            "entity_types": ["student"],
+            "source": {"kind": "csv", "upload_id": source_id},
+            "target": {"kind": "database", "configuration_id": "seewo-mysql"},
+        },
+    )
+
+    assert response.status_code == 422
+    assert graph_agent_v2_client.get("/api/agent/active-lock").json()["active"] is False
 
 
 def test_conversation_uses_model_discovered_local_sources(
@@ -294,9 +532,7 @@ def test_conversation_uses_model_discovered_local_sources(
             encoding="utf-8",
         )
     agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
-    agent_client.app.state.settings.agent_local_write_roots = (
-        (root / "seewo").resolve(),
-    )
+    agent_client.app.state.settings.agent_local_write_roots = ((root / "seewo").resolve(),)
     provider = ConversationProvider()
     agent_client.app.state.conversation_provider = provider
 
@@ -309,7 +545,8 @@ def test_conversation_uses_model_discovered_local_sources(
     assert message.status_code == 200, message.text
     assert message.json()["message"] == "已确认两份本地数据。"
     assert message.json()["intent"]["source"] == {
-        "kind": "local", "source_ref": "third-party/roster.csv"
+        "kind": "local",
+        "source_ref": "third-party/roster.csv",
     }
     assert "converse-school-data-sync@1.0.0" in provider.requests[0].messages[0].content
 
@@ -339,9 +576,7 @@ def test_local_source_api_returns_only_safe_server_capabilities(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("编号,姓名\n001,测试", encoding="utf-8")
     agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
-    agent_client.app.state.settings.agent_local_write_roots = (
-        (root / "seewo").resolve(),
-    )
+    agent_client.app.state.settings.agent_local_write_roots = ((root / "seewo").resolve(),)
 
     response = agent_client.get("/api/agent/local-sources")
 
@@ -371,9 +606,7 @@ def test_local_task_rejects_target_outside_server_write_roots(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("编号,姓名\n001,测试", encoding="utf-8")
     agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
-    agent_client.app.state.settings.agent_local_write_roots = (
-        (root / "seewo").resolve(),
-    )
+    agent_client.app.state.settings.agent_local_write_roots = ((root / "seewo").resolve(),)
 
     response = agent_client.post(
         "/api/agent/tasks",
@@ -405,14 +638,11 @@ def test_uploaded_authority_can_bind_to_a_writable_local_target(
     target = root / "seewo/target.csv"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
-        "类别,姓名,编号,班级,电话,邮箱\n"
-        "学生,张三,S001,一班,13800000002,student@example.test\n",
+        "类别,姓名,编号,班级,电话,邮箱\n学生,张三,S001,一班,13800000002,student@example.test\n",
         encoding="utf-8",
     )
     graph_agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
-    graph_agent_client.app.state.settings.agent_local_write_roots = (
-        (root / "seewo").resolve(),
-    )
+    graph_agent_client.app.state.settings.agent_local_write_roots = ((root / "seewo").resolve(),)
 
     response = graph_agent_client.post(
         "/api/agent/tasks",
@@ -506,9 +736,7 @@ def test_current_conversation_restores_persisted_messages_and_active_task(
             encoding="utf-8",
         )
     agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
-    agent_client.app.state.settings.agent_local_write_roots = (
-        (root / "seewo").resolve(),
-    )
+    agent_client.app.state.settings.agent_local_write_roots = ((root / "seewo").resolve(),)
     agent_client.app.state.conversation_provider = ConversationProvider()
     conversation = agent_client.post("/api/agent/conversations").json()
 
@@ -553,9 +781,7 @@ def test_current_conversation_restores_an_unstarted_confirmation(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("类别,姓名,编号,班级,电话,邮箱\n", encoding="utf-8")
     agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
-    agent_client.app.state.settings.agent_local_write_roots = (
-        (root / "seewo").resolve(),
-    )
+    agent_client.app.state.settings.agent_local_write_roots = ((root / "seewo").resolve(),)
     agent_client.app.state.conversation_provider = ConversationProvider()
     conversation = agent_client.post("/api/agent/conversations").json()
     sent = agent_client.post(
@@ -607,9 +833,7 @@ def test_current_conversation_prioritizes_the_school_lock_owner_over_a_new_empty
             encoding="utf-8",
         )
     agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
-    agent_client.app.state.settings.agent_local_write_roots = (
-        (root / "seewo").resolve(),
-    )
+    agent_client.app.state.settings.agent_local_write_roots = ((root / "seewo").resolve(),)
     agent_client.app.state.conversation_provider = ConversationProvider()
     owner = agent_client.post("/api/agent/conversations").json()
     message = agent_client.post(
@@ -716,9 +940,7 @@ def test_conversation_reset_deletes_chat_but_preserves_completed_task_facts(
                     )
                 )
             )
-            messages = list(
-                await session.scalars(select(AgentConversationMessageRecord))
-            )
+            messages = list(await session.scalars(select(AgentConversationMessageRecord)))
             run = await session.get(AgentRunRecord, run_id)
             task = await session.get(ReconciliationTask, task_id)
             return (
@@ -728,8 +950,8 @@ def test_conversation_reset_deletes_chat_but_preserves_completed_task_facts(
                 task is not None,
             )
 
-    conversation_ids, message_count, run_conversation_id, task_exists = (
-        agent_client.portal.call(inspect_reset)
+    conversation_ids, message_count, run_conversation_id, task_exists = agent_client.portal.call(
+        inspect_reset
     )
     assert conversation_ids == [new_conversation_id]
     assert message_count == 0
@@ -854,15 +1076,12 @@ def test_conversation_context_limit_preserves_user_message_without_calling_model
 
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "conversation_context_limit"
-    assert response.json()["detail"]["message"] == (
-        "当前对话内容已达到模型处理上限，请开启新对话"
-    )
+    assert response.json()["detail"]["message"] == ("当前对话内容已达到模型处理上限，请开启新对话")
     assert provider.requests == []
     current = agent_client.get("/api/agent/conversations/current")
-    assert [
-        (item["role"], item["kind"], item["text"])
-        for item in current.json()["messages"]
-    ] == [("user", "normal", "我要同步学生")]
+    assert [(item["role"], item["kind"], item["text"]) for item in current.json()["messages"]] == [
+        ("user", "normal", "我要同步学生")
+    ]
 
 
 def test_termination_persists_history_before_releasing_school_lock(
@@ -955,22 +1174,16 @@ def test_rollback_preview_requires_a_separate_confirmation_before_locking(
     assert rejected.json()["report_id"] is not None
 
     source_task_id = agent_client.portal.call(seed_completed_task)
-    preview = agent_client.post(
-        f"/api/agent/tasks/{source_task_id}/rollback-preview"
-    )
+    preview = agent_client.post(f"/api/agent/tasks/{source_task_id}/rollback-preview")
     assert preview.status_code == 201, preview.text
     assert preview.json()["requires_confirmation"] is True
     rollback_task_id = preview.json()["task_id"]
 
-    task_before_confirmation = agent_client.get(
-        f"/api/agent/tasks/{rollback_task_id}"
-    )
+    task_before_confirmation = agent_client.get(f"/api/agent/tasks/{rollback_task_id}")
     assert task_before_confirmation.json()["phase"] == "intent_confirmed"
     assert task_before_confirmation.json()["status"] == "pending"
 
-    confirmed = agent_client.post(
-        f"/api/agent/rollback-tasks/{rollback_task_id}/confirm"
-    )
+    confirmed = agent_client.post(f"/api/agent/rollback-tasks/{rollback_task_id}/confirm")
     assert confirmed.status_code == 200, confirmed.text
     assert confirmed.json()["phase"] == "plan_restore"
     assert confirmed.json()["status"] == "running"

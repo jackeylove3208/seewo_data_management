@@ -150,9 +150,7 @@ class AgentReportingService:
             raise ValueError(f"school lock is owned by task {active.owner_task_id}")
         idempotency_key = f"rollback:{source_task_id}:{target_version_id}"
         existing_task = await self.session.scalar(
-            select(ReconciliationTask).where(
-                ReconciliationTask.idempotency_key == idempotency_key
-            )
+            select(ReconciliationTask).where(ReconciliationTask.idempotency_key == idempotency_key)
         )
         if existing_task is not None:
             return RollbackTaskPreview(
@@ -166,20 +164,40 @@ class AgentReportingService:
         if source is None:
             raise LookupError("source Agent task not found")
         workflow_version = (
-            "agent-graph-v1"
-            if source.workflow_version == "agent-graph-v1"
-            else "new-agent-v1"
+            "agent-graph-v1" if source.workflow_version == "agent-graph-v1" else "new-agent-v1"
+        )
+        source_target = (
+            source.agent_intent.get("target") if isinstance(source.agent_intent, dict) else None
+        )
+        rollback_source_mode = (
+            "database"
+            if isinstance(source_target, dict) and source_target.get("kind") == "database"
+            else "csv"
+        )
+        rollback_target = (
+            dict(source_target)
+            if isinstance(source_target, dict)
+            and source_target.get("kind") in {"database", "local", "csv"}
+            else None
         )
         task = ReconciliationTask(
-            id=uuid4(), tenant_id=tenant_id, scope_id=source.scope_id,
-            snapshot_mode=source.snapshot_mode, entity_types=list(source.entity_types),
-            status="created", stage="rollback", workflow_version=workflow_version,
-            task_kind="rollback", parent_task_id=source_task_id,
+            id=uuid4(),
+            tenant_id=tenant_id,
+            scope_id=source.scope_id,
+            snapshot_mode=source.snapshot_mode,
+            entity_types=list(source.entity_types),
+            status="created",
+            stage="rollback",
+            workflow_version=workflow_version,
+            task_kind="rollback",
+            parent_task_id=source_task_id,
             title=f"回滚：{source.title or source_task_id}",
             agent_intent={
                 "source_task_id": str(source_task_id),
                 "target_version_id": str(target_version_id),
                 "operations": [],
+                "source_mode": rollback_source_mode,
+                "target": rollback_target,
             },
             idempotency_key=idempotency_key,
             request_hash=_hash(
@@ -189,12 +207,23 @@ class AgentReportingService:
         self.session.add(task)
         await self.session.flush()
         runtime = AgentRuntimeRepository(self.session)
+        source_run = await runtime.get_run_for_task(source_task_id)
         run = await runtime.create_run(
             task_id=task.id,
             tenant_id=tenant_id,
             conversation_id=None,
             kind=AgentRunKind.ROLLBACK,
             workflow_version=workflow_version,
+            ingestion_contract_version=(
+                source_run.ingestion_contract_version
+                if source_run is not None
+                else "model-mediated-ingestion-v1"
+            ),
+            execution_contract_version=(
+                source_run.execution_contract_version
+                if source_run is not None
+                else "model-mediated-execution-v1"
+            ),
         )
         if workflow_version == "agent-graph-v1":
             from app.agent_graph.repository import AgentGraphRepository
@@ -228,6 +257,8 @@ class AgentReportingService:
             "source_task_id": str(source_task_id),
             "target_version_id": str(target_version_id),
             "operations": list(operations),
+            "source_mode": rollback_source_mode,
+            "target": rollback_target,
         }
         return RollbackTaskPreview(
             task_id=task.id,

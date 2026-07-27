@@ -94,6 +94,7 @@ from app.schemas.agent_api import (
 )
 from app.schemas.agent_conversation import (
     ConversationAgentContext,
+    ConversationDatabaseConnector,
     ConversationHistoryMessage,
 )
 from app.schemas.agent_graph_api import (
@@ -156,6 +157,7 @@ async def list_agent_local_sources(request: Request) -> tuple[AgentLocalSourceVi
         )
         for source in LocalSourceService(request.app.state.settings).list_sources()
     )
+
 
 _GRAPH_ACTION_LABELS = {
     "inspect_sources": "正在检查第三方与希沃数据来源",
@@ -438,9 +440,7 @@ async def send_agent_message(
     try:
         decision = await ConversationSupervisorAgent(
             provider,
-            max_context_tokens=(
-                request.app.state.settings.conversation_context_max_tokens
-            ),
+            max_context_tokens=(request.app.state.settings.conversation_context_max_tokens),
             reserved_output_tokens=(
                 request.app.state.settings.conversation_context_reserved_output_tokens
             ),
@@ -458,6 +458,17 @@ async def send_agent_message(
                     for message in messages
                 ),
                 available_source_refs=tuple(source.source_ref for source in sources),
+                available_database_connectors=tuple(
+                    ConversationDatabaseConnector(
+                        connector_id=connector_id,
+                        dialect=configuration.dialect,
+                        source_role=configuration.source_role,
+                    )
+                    for connector_id, configuration in sorted(
+                        request.app.state.settings.database_connector_configurations.items()
+                    )
+                    if request.app.state.settings.agent_graph_sql_execution_enabled
+                ),
                 current_intent=dict(conversation.context),
             )
         )
@@ -500,11 +511,21 @@ async def send_agent_message(
         "source": (
             {"kind": "local", "source_ref": decision.source_ref}
             if decision.source_ref is not None
+            else {
+                "kind": "database",
+                "configuration_id": decision.source_configuration_id,
+            }
+            if decision.source_configuration_id is not None
             else previous_intent.get("source")
         ),
         "target": (
             {"kind": "local", "source_ref": decision.target_ref}
             if decision.target_ref is not None
+            else {
+                "kind": "database",
+                "configuration_id": decision.target_configuration_id,
+            }
+            if decision.target_configuration_id is not None
             else previous_intent.get("target")
         ),
         "decision_kind": decision.kind,
@@ -578,9 +599,7 @@ async def start_conversation_agent_task(
                 "start_confirmation_missing", "Conversation has no confirmed Agent intent"
             ),
         )
-    service = AgentTaskService(
-        session, operator=operator, settings=request.app.state.settings
-    )
+    service = AgentTaskService(session, operator=operator, settings=request.app.state.settings)
     try:
         task, _run = await service.create(
             intent, idempotency_key=idempotency_key, conversation_id=conversation_id
@@ -636,9 +655,15 @@ async def start_manual_agent_task(
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=128)],
 ) -> AgentTaskResponse:
     _require_enabled(request)
-    service = AgentTaskService(
-        session, operator=operator, settings=request.app.state.settings
-    )
+    if body.source.kind == "database" or body.target.kind == "database":
+        raise HTTPException(
+            422,
+            detail=_error(
+                "manual_csv_only",
+                "手动同步只支持 CSV；SQL 数据源请通过新建对话发起。",
+            ),
+        )
+    service = AgentTaskService(session, operator=operator, settings=request.app.state.settings)
     try:
         task, _run = await service.create(body, idempotency_key=idempotency_key)
         return await _task_response(service, task.id)
@@ -691,9 +716,7 @@ async def get_agent_graph_progress(
     try:
         task, run = await AgentTaskService(session, operator=operator).get(task_id)
     except LookupError as error:
-        raise HTTPException(
-            404, detail=_error("agent_task_not_found", str(error))
-        ) from error
+        raise HTTPException(404, detail=_error("agent_task_not_found", str(error))) from error
     if task.workflow_version != "agent-graph-v1":
         raise HTTPException(
             409,
@@ -720,14 +743,10 @@ async def get_agent_graph_progress(
     )
     approval_groups = tuple(
         await session.scalars(
-            select(AgentApprovalGroupRecord).where(
-                AgentApprovalGroupRecord.run_id == run.id
-            )
+            select(AgentApprovalGroupRecord).where(AgentApprovalGroupRecord.run_id == run.id)
         )
     )
-    approval_groups_by_members = {
-        frozenset(group.finding_ids): group for group in approval_groups
-    }
+    approval_groups_by_members = {frozenset(group.finding_ids): group for group in approval_groups}
     approval_items_by_gate: dict[UUID, tuple[AgentGraphApprovalItemView, ...]] = {}
     for gate in gates:
         if gate.gate_kind == "high_risk_approval":
@@ -761,9 +780,7 @@ async def get_agent_graph_progress(
                 gate,
                 graph=graph,
                 run=run,
-                approval_group=approval_groups_by_members.get(
-                    frozenset(gate.member_ids)
-                ),
+                approval_group=approval_groups_by_members.get(frozenset(gate.member_ids)),
                 items=approval_items_by_gate.get(gate.id, ()),
             )
             for gate in gates
@@ -789,14 +806,10 @@ def _graph_human_gate_view(
         }.get(approval_group.entity_kind, "组织")
         if _is_student_phone_approval_group(approval_group):
             summary_zh = f"修改 {len(gate.member_ids)} 条学生手机号"
-            risk_reason_zh = (
-                "学生手机号属于高危隐私字段，本次操作会修改希沃目标中的手机号。"
-            )
+            risk_reason_zh = "学生手机号属于高危隐私字段，本次操作会修改希沃目标中的手机号。"
         elif approval_group.operation == "delete":
             summary_zh = f"删除 {len(gate.member_ids)} 条{entity_label}记录"
-            risk_reason_zh = (
-                "删除会永久移除希沃目标中的记录，治理后只能通过回滚任务恢复。"
-            )
+            risk_reason_zh = "删除会永久移除希沃目标中的记录，治理后只能通过回滚任务恢复。"
         else:
             operation_label = {
                 "create": "新增",
@@ -804,9 +817,7 @@ def _graph_human_gate_view(
                 "retain": "保留",
                 "skip": "跳过",
             }.get(approval_group.operation, "处理")
-            summary_zh = (
-                f"{operation_label} {len(gate.member_ids)} 条{entity_label}记录"
-            )
+            summary_zh = f"{operation_label} {len(gate.member_ids)} 条{entity_label}记录"
             risk_reason_zh = (
                 "该操作属于中风险变更，默认建议同意，但仍可逐项拒绝。"
                 if approval_group.risk == "medium"
@@ -823,9 +834,7 @@ def _graph_human_gate_view(
         items=items,
     ):
         actionable = False
-        unavailable_reason_zh = (
-            "审批明细不完整，任务不能继续治理，请终止任务后重新发起。"
-        )
+        unavailable_reason_zh = "审批明细不完整，任务不能继续治理，请终止任务后重新发起。"
     return AgentGraphHumanGateView(
         id=gate.id,
         kind=gate.gate_kind,
@@ -836,9 +845,7 @@ def _graph_human_gate_view(
         issue_kind=approval_group.issue_kind if approval_group else None,
         risk=approval_group.risk if approval_group else None,
         cursor=gate.cursor,
-        membership_hash=(
-            approval_group.membership_hash if approval_group is not None else None
-        ),
+        membership_hash=(approval_group.membership_hash if approval_group is not None else None),
         member_decisions=(
             dict(gate.decision.get("member_decisions", {}))
             if isinstance(gate.decision, dict)
@@ -914,9 +921,7 @@ def _is_student_phone_approval_group(
 
 
 def _student_phone_change_is_complete(item: AgentGraphApprovalItemView) -> bool:
-    phone_changes = tuple(
-        change for change in item.changes if change.field == "phone"
-    )
+    phone_changes = tuple(change for change in item.changes if change.field == "phone")
     if len(phone_changes) != 1:
         return False
     change = phone_changes[0]
@@ -970,9 +975,7 @@ async def _graph_approval_items(
         tuple(
             await session.scalars(
                 select(AgentIdentityClaimRecord).where(
-                    AgentIdentityClaimRecord.work_item_id.in_(
-                        field_difference_work_item_ids
-                    )
+                    AgentIdentityClaimRecord.work_item_id.in_(field_difference_work_item_ids)
                 )
             )
         )
@@ -988,9 +991,7 @@ async def _graph_approval_items(
     claimed_inputs = (
         tuple(
             await session.scalars(
-                select(AgentInputRecord).where(
-                    AgentInputRecord.id.in_(claimed_input_ids)
-                )
+                select(AgentInputRecord).where(AgentInputRecord.id.in_(claimed_input_ids))
             )
         )
         if claimed_input_ids
@@ -1026,11 +1027,7 @@ async def _graph_approval_items(
             solution_zh=str(_sanitize_public(solution.solution_zh)),
             changes=changes,
         )
-    return tuple(
-        by_finding[finding_id]
-        for finding_id in parsed_ids
-        if finding_id in by_finding
-    )
+    return tuple(by_finding[finding_id] for finding_id in parsed_ids if finding_id in by_finding)
 
 
 def _graph_approval_changes(
@@ -1216,9 +1213,7 @@ async def decide_agent_graph_gate(
     try:
         task, run = await AgentTaskService(session, operator=operator).get(task_id)
     except LookupError as error:
-        raise HTTPException(
-            404, detail=_error("agent_task_not_found", str(error))
-        ) from error
+        raise HTTPException(404, detail=_error("agent_task_not_found", str(error))) from error
     if task.workflow_version != "agent-graph-v1":
         raise HTTPException(
             409,
@@ -1245,9 +1240,7 @@ async def decide_agent_graph_gate(
         )
     gate, graph = row
     locked_run = await session.scalar(
-        select(AgentRunRecord)
-        .where(AgentRunRecord.id == run.id)
-        .with_for_update()
+        select(AgentRunRecord).where(AgentRunRecord.id == run.id).with_for_update()
     )
     if locked_run is None:
         raise HTTPException(
@@ -1273,24 +1266,16 @@ async def decide_agent_graph_gate(
         run=run,
     )
     if not actionable:
-        raise HTTPException(
-            409, detail=_error("stale_graph_gate", "Gate cursor is stale")
-        )
+        raise HTTPException(409, detail=_error("stale_graph_gate", "Gate cursor is stale"))
     matching_group: AgentApprovalGroupRecord | None = None
     if gate.gate_kind == "high_risk_approval":
         legacy_groups = tuple(
             await session.scalars(
-                select(AgentApprovalGroupRecord).where(
-                    AgentApprovalGroupRecord.run_id == run.id
-                )
+                select(AgentApprovalGroupRecord).where(AgentApprovalGroupRecord.run_id == run.id)
             )
         )
         matching_group = next(
-            (
-                group
-                for group in legacy_groups
-                if group.finding_ids == gate.member_ids
-            ),
+            (group for group in legacy_groups if group.finding_ids == gate.member_ids),
             None,
         )
         approval_items = await _graph_approval_items(
@@ -1358,9 +1343,7 @@ async def decide_agent_graph_gate(
         "decision": body.decision,
         "reason": body.reason,
         "graph_cursor": graph.cursor,
-        "membership_hash": (
-            matching_group.membership_hash if matching_group is not None else None
-        ),
+        "membership_hash": (matching_group.membership_hash if matching_group is not None else None),
         "approved_finding_ids": list(approved_member_ids),
         "rejected_finding_ids": list(rejected_member_ids),
         "member_decisions": {
@@ -1375,11 +1358,11 @@ async def decide_agent_graph_gate(
             run_id=run.id,
             reason="operator_confirmed",
         )
-    if (
-        status_value == "rejected"
-        and gate.gate_kind
-        in {"rollback_conflict", "rollback_approval", "cross_phase_replan"}
-    ):
+    if status_value == "rejected" and gate.gate_kind in {
+        "rollback_conflict",
+        "rollback_approval",
+        "cross_phase_replan",
+    }:
         graph.termination_requested = True
     if gate.gate_kind == "high_risk_approval":
         assert matching_group is not None
@@ -1430,9 +1413,7 @@ async def preview_agent_graph_termination(
     try:
         task, run = await AgentTaskService(session, operator=operator).get(task_id)
     except LookupError as error:
-        raise HTTPException(
-            404, detail=_error("agent_task_not_found", str(error))
-        ) from error
+        raise HTTPException(404, detail=_error("agent_task_not_found", str(error))) from error
     if task.workflow_version != "agent-graph-v1":
         raise HTTPException(
             409,
@@ -1469,10 +1450,7 @@ async def preview_agent_graph_termination(
         gate_kind="termination_confirmation",
         member_ids=(str(task.id),),
         content_hash=(
-            "sha256:"
-            + sha256(
-                f"{graph.id}:{graph.cursor}:termination".encode()
-            ).hexdigest()
+            "sha256:" + sha256(f"{graph.id}:{graph.cursor}:termination".encode()).hexdigest()
         ),
         status="pending",
     )
@@ -1644,9 +1622,7 @@ async def get_agent_history(
                 .outerjoin(AgentReportRecord, AgentReportRecord.task_id == ReconciliationTask.id)
                 .where(
                     ReconciliationTask.tenant_id == operator.tenant_id,
-                    ReconciliationTask.workflow_version.in_(
-                        ("new-agent-v1", "agent-graph-v1")
-                    ),
+                    ReconciliationTask.workflow_version.in_(("new-agent-v1", "agent-graph-v1")),
                 )
                 .order_by(ReconciliationTask.created_at.desc(), ReconciliationTask.id.desc())
             )
@@ -1670,9 +1646,7 @@ async def get_agent_history(
                 issue_summary={
                     "total": len(report.facts.get("findings", [])) if report is not None else 0,
                     "excluded": (
-                        len(report.facts.get("excluded_findings", []))
-                        if report is not None
-                        else 0
+                        len(report.facts.get("excluded_findings", [])) if report is not None else 0
                     ),
                 },
                 operation_summary={
@@ -1759,9 +1733,7 @@ async def confirm_agent_rollback(
 ) -> AgentTaskResponse:
     _require_enabled(request)
     try:
-        await AgentSupervisorService(session, operator=operator).confirm_rollback(
-            task_id=task_id
-        )
+        await AgentSupervisorService(session, operator=operator).confirm_rollback(task_id=task_id)
         return await _task_response(AgentTaskService(session, operator=operator), task_id)
     except LookupError as error:
         raise HTTPException(404, detail=_error("agent_task_not_found", str(error))) from error
@@ -2016,22 +1988,14 @@ async def clarify_agent_conflict(
                 "interpretation_zh": draft.interpretation_zh,
                 "requires_second_confirmation": False,
             }
-        outcome = (
-            "use_candidate"
-            if draft.decision == "select_candidate"
-            else "target_extra"
-        )
-        updated = await AgentGovernanceRepository(
-            session
-        ).record_clarification_interpretation(
+        outcome = "use_candidate" if draft.decision == "select_candidate" else "target_extra"
+        updated = await AgentGovernanceRepository(session).record_clarification_interpretation(
             record.id,
             original_text=body.message,
             interpretation={
                 "outcome": outcome,
                 "candidate_id": (
-                    str(draft.selected_candidate_id)
-                    if draft.selected_candidate_id
-                    else None
+                    str(draft.selected_candidate_id) if draft.selected_candidate_id else None
                 ),
                 "interpretation_zh": draft.interpretation_zh,
                 "model_decision": draft.decision,
@@ -2045,9 +2009,7 @@ async def clarify_agent_conflict(
                 "decision_id": str(updated.id),
                 "outcome": outcome,
                 "candidate_id": (
-                    str(draft.selected_candidate_id)
-                    if draft.selected_candidate_id
-                    else None
+                    str(draft.selected_candidate_id) if draft.selected_candidate_id else None
                 ),
                 "interpretation_zh": draft.interpretation_zh,
             },
@@ -2058,9 +2020,7 @@ async def clarify_agent_conflict(
             "task_id": str(task.id),
             "decision": draft.decision,
             "selected_candidate_id": (
-                str(draft.selected_candidate_id)
-                if draft.selected_candidate_id
-                else None
+                str(draft.selected_candidate_id) if draft.selected_candidate_id else None
             ),
             "interpretation_zh": draft.interpretation_zh,
             "requires_second_confirmation": True,
@@ -2136,9 +2096,7 @@ async def _resume_after_approvals(session: AsyncSession, run_id: UUID) -> None:
     )
     if pending is not None:
         return
-    await _resume_waiting_run(
-        session, run_id, expected_phase="aggregate_risk_and_approvals"
-    )
+    await _resume_waiting_run(session, run_id, expected_phase="aggregate_risk_and_approvals")
 
 
 async def _resume_after_clarifications(session: AsyncSession, run_id: UUID) -> None:
@@ -2173,21 +2131,15 @@ async def _resume_after_clarifications(session: AsyncSession, run_id: UUID) -> N
             }
             gate.decided_by = "operator_dialogue"
             gate.decided_at = decided_at
-    await _resume_waiting_run(
-        session, run_id, expected_phase="clarify_identity_conflicts"
-    )
+    await _resume_waiting_run(session, run_id, expected_phase="clarify_identity_conflicts")
 
 
-async def _resume_waiting_run(
-    session: AsyncSession, run_id: UUID, *, expected_phase: str
-) -> None:
+async def _resume_waiting_run(session: AsyncSession, run_id: UUID, *, expected_phase: str) -> None:
     repository = AgentRuntimeRepository(session)
     run = await repository.get_run(run_id, for_update=True)
     if run is None or run.phase != expected_phase or run.status != "waiting_human":
         return
-    resumed = await repository.transition_run(
-        run.id, requested_status=AgentRunStatus.RUNNING
-    )
+    resumed = await repository.transition_run(run.id, requested_status=AgentRunStatus.RUNNING)
     await repository.append_event(
         run.id,
         "run.resumed",
@@ -2203,10 +2155,7 @@ _EMAIL_PATTERN = re.compile(
 
 def _sanitize_public(value: Any, *, field: str | None = None) -> Any:
     if isinstance(value, dict):
-        return {
-            str(key): _sanitize_public(item, field=str(key))
-            for key, item in value.items()
-        }
+        return {str(key): _sanitize_public(item, field=str(key)) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_sanitize_public(item, field=field) for item in value]
     if isinstance(value, str):

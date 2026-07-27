@@ -5,6 +5,7 @@ complete vocabulary here makes it impossible for the launcher to invent an actio
 that is absent from the reviewed graph definition.
 """
 
+import hashlib
 from pathlib import Path
 from typing import Literal
 from uuid import UUID
@@ -19,6 +20,7 @@ from app.agent_graph.contracts import (
 )
 from app.agent_graph.worker import GraphCandidatePlan, GraphWorkContext
 from app.agent_runtime.state_machine import AgentPhase
+from app.connectors.database_runtime import DatabaseConnectorResolver
 from app.ingestion.csv_reader import inspect_csv, read_csv_frame
 from app.models.agent_analysis import (
     AgentClarificationRecord,
@@ -27,6 +29,7 @@ from app.models.agent_analysis import (
     AgentModelBatchItemRecord,
     AgentModelBatchRecord,
 )
+from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import Snapshot, SourceFile
 from app.repositories.executions import ExecutionRepository
 
@@ -78,16 +81,22 @@ def _execution_batch_action(
         "execute_operations_batch",
         graph_action_kind="verify_operations",
         successor="verify_operations",
-        kind="dispatch_sub_agent",
-        sub_agent="governance-execution",
+        kind=(
+            "run_deterministic"
+            if context.execution_contract_version == "deterministic-execution-v2"
+            else "dispatch_sub_agent"
+        ),
+        sub_agent=(
+            None
+            if context.execution_contract_version == "deterministic-execution-v2"
+            else "governance-execution"
+        ),
         risk="high",
         resource_ids=(
             f"execution-plan:{plan_id}",
             *(f"operation:{item}" for item in bounded_ids),
         ),
-        required_evidence=tuple(
-            f"execution-outcome:{item}" for item in bounded_ids
-        ),
+        required_evidence=tuple(f"execution-outcome:{item}" for item in bounded_ids),
     )
 
 
@@ -130,9 +139,7 @@ _SYNC_TEMPLATES: dict[str, tuple[AllowedActionV1, ...]] = {
             sub_agent="reporting",
         ),
     ),
-    "build_identity_index": (
-        _action("build_identity_index", successor="construct_identity_work"),
-    ),
+    "build_identity_index": (_action("build_identity_index", successor="construct_identity_work"),),
     "construct_identity_work": (
         _action("construct_identity_work", successor="analyze_actionable_batches"),
     ),
@@ -166,18 +173,12 @@ _SYNC_TEMPLATES: dict[str, tuple[AllowedActionV1, ...]] = {
             sub_agent="reconciliation-analysis",
         ),
     ),
-    "resolve_identity_conflicts": (
-        _action("enter_aggregate_risk", successor="aggregate_risk"),
-    ),
-    "aggregate_risk": (
-        _action("aggregate_risk", successor="wait_high_risk_approvals"),
-    ),
+    "resolve_identity_conflicts": (_action("enter_aggregate_risk", successor="aggregate_risk"),),
+    "aggregate_risk": (_action("aggregate_risk", successor="wait_high_risk_approvals"),),
     "wait_high_risk_approvals": (
         _action("compile_execution_plan", successor="compile_execution_plan"),
     ),
-    "compile_execution_plan": (
-        _action("preflight_execution", successor="preflight_execution"),
-    ),
+    "compile_execution_plan": (_action("preflight_execution", successor="preflight_execution"),),
     "preflight_execution": (
         _action(
             "request_cross_phase_replan",
@@ -227,9 +228,7 @@ _SYNC_TEMPLATES: dict[str, tuple[AllowedActionV1, ...]] = {
             sub_agent="reporting",
         ),
     ),
-    "drain_current_atomic_unit": (
-        _action("termination_report", successor="termination_report"),
-    ),
+    "drain_current_atomic_unit": (_action("termination_report", successor="termination_report"),),
     "termination_report": (
         _action(
             "finish_termination_report",
@@ -249,9 +248,7 @@ _SYNC_TEMPLATES: dict[str, tuple[AllowedActionV1, ...]] = {
 
 
 _ROLLBACK_TEMPLATES: dict[str, tuple[AllowedActionV1, ...]] = {
-    "rollback_intent_confirmed": (
-        _action("acquire_school_lock", successor="acquire_school_lock"),
-    ),
+    "rollback_intent_confirmed": (_action("acquire_school_lock", successor="acquire_school_lock"),),
     "acquire_school_lock": (
         _action("load_verified_mutations", successor="load_verified_mutations"),
     ),
@@ -281,12 +278,8 @@ _ROLLBACK_TEMPLATES: dict[str, tuple[AllowedActionV1, ...]] = {
             requires_human=True,
         ),
     ),
-    "wait_rollback_approval": (
-        _action("compile_restore_plan", successor="compile_restore_plan"),
-    ),
-    "compile_restore_plan": (
-        _action("preflight_restore", successor="preflight_restore"),
-    ),
+    "wait_rollback_approval": (_action("compile_restore_plan", successor="compile_restore_plan"),),
+    "compile_restore_plan": (_action("preflight_restore", successor="preflight_restore"),),
     "preflight_restore": (
         _action("execute_restore_operations", successor="execute_restore_operations"),
     ),
@@ -310,9 +303,7 @@ _ROLLBACK_TEMPLATES: dict[str, tuple[AllowedActionV1, ...]] = {
             sub_agent="reporting",
         ),
     ),
-    "drain_current_atomic_unit": (
-        _action("termination_report", successor="termination_report"),
-    ),
+    "drain_current_atomic_unit": (_action("termination_report", successor="termination_report"),),
     "termination_report": (
         _action(
             "finish_termination_report",
@@ -336,11 +327,7 @@ def production_candidate_templates(
     *,
     graph_version: str = "agent-sync-graph-v1",
 ) -> tuple[AllowedActionV1, ...]:
-    templates = (
-        _SYNC_TEMPLATES
-        if graph_version == "agent-sync-graph-v1"
-        else _ROLLBACK_TEMPLATES
-    )
+    templates = _SYNC_TEMPLATES if graph_version == "agent-sync-graph-v1" else _ROLLBACK_TEMPLATES
     return templates.get(node, ())
 
 
@@ -350,8 +337,11 @@ class ProductionGraphCandidateProvider:
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
+        *,
+        database_connectors: DatabaseConnectorResolver | None = None,
     ) -> None:
         self._session_factory = session_factory
+        self._database_connectors = database_connectors
 
     async def __call__(self, context: GraphWorkContext) -> GraphCandidatePlan:
         async with self._session_factory() as session:
@@ -360,12 +350,9 @@ class ProductionGraphCandidateProvider:
             raise RuntimeError(
                 f"no production graph action is available for {context.current_node}"
             )
-        passed_kinds = {
-            action.graph_action_kind or action.action_id for action in actions
-        }
+        passed_kinds = {action.graph_action_kind or action.action_id for action in actions}
         evaluations = [
-            CandidateActionEvaluationV1(action=action, passed=True)
-            for action in actions
+            CandidateActionEvaluationV1(action=action, passed=True) for action in actions
         ]
         for template in production_candidate_templates(
             context.current_node,
@@ -445,9 +432,7 @@ class ProductionGraphCandidateProvider:
                 or 0
             )
             action_id = (
-                "execute_remaining_independent"
-                if pending_count
-                else "generate_terminal_report"
+                "execute_remaining_independent" if pending_count else "generate_terminal_report"
             )
             return (_template(context, action_id),)
         if context.current_node in {
@@ -519,26 +504,46 @@ class ProductionGraphCandidateProvider:
                 .where(AgentGovernancePlanRecord.run_id == context.run_id)
                 .order_by(AgentGovernancePlanRecord.created_at.desc())
             )
-            current = await ExecutionRepository(session).current_target_version(
-                context.task_id
-            )
-            stale = (
-                plan is not None
-                and (
-                    current is None
-                    or f"sha256:{current.file_sha256}" != plan.target_version
+            current = await ExecutionRepository(session).current_target_version(context.task_id)
+            task = await session.get(ReconciliationTask, context.task_id)
+            external_version_hash: str | None = None
+            connector_id = _database_target_connector_id(task)
+            if connector_id is not None:
+                if self._database_connectors is None:
+                    raise RuntimeError("SQL connector runtime is unavailable")
+                connector = await self._database_connectors.connector(connector_id)
+                external_version_hash = hashlib.sha256(
+                    (await connector.version()).value.encode()
+                ).hexdigest()
+            stale = plan is not None and (
+                current is None
+                or f"sha256:{current.file_sha256}" != plan.target_version
+                or (
+                    external_version_hash is not None
+                    and current.file_sha256 != external_version_hash
                 )
             )
             return (
                 _template(
                     context,
-                    "request_cross_phase_replan"
-                    if stale
-                    else "execute_ready_operations",
+                    "request_cross_phase_replan" if stale else "execute_ready_operations",
                 ),
             )
         if context.current_node == "assess_restore_impact":
             return (_template(context, "assess_restore_impact"),)
+        if (
+            context.current_node == "execute_restore_operations"
+            and context.execution_contract_version == "deterministic-execution-v2"
+        ):
+            action = _template(context, "verify_restore_operations")
+            return (
+                action.model_copy(
+                    update={
+                        "kind": "run_deterministic",
+                        "sub_agent": None,
+                    }
+                ),
+            )
         return templates
 
     async def _inspection_actions(
@@ -546,11 +551,7 @@ class ProductionGraphCandidateProvider:
         session: AsyncSession,
         context: GraphWorkContext,
     ) -> tuple[AllowedActionV1, ...]:
-        completed = set(
-            await session.scalars(
-                select_transition_action_ids(context.graph_run_id)
-            )
-        )
+        completed = set(await session.scalars(select_transition_action_ids(context.graph_run_id)))
         actions: list[AllowedActionV1] = []
         for role, action_kind in (
             ("authoritative", "inspect_authority"),
@@ -558,6 +559,17 @@ class ProductionGraphCandidateProvider:
         ):
             action_id = f"{action_kind}:source"
             if action_id not in completed:
+                if context.ingestion_contract_version == "source-ingestion-v2":
+                    return (
+                        _action(
+                            action_id,
+                            graph_action_kind=action_kind,
+                            successor="inspect_sources",
+                            kind="run_deterministic",
+                            resource_ids=(f"source:{role}:full",),
+                            required_evidence=(f"source:{role}:inspection",),
+                        ),
+                    )
                 actions.append(
                     _action(
                         action_id,
@@ -586,11 +598,103 @@ class ProductionGraphCandidateProvider:
         session: AsyncSession,
         context: GraphWorkContext,
     ) -> tuple[AllowedActionV1, ...]:
-        completed = set(
-            await session.scalars(
-                select_transition_action_ids(context.graph_run_id)
+        completed = set(await session.scalars(select_transition_action_ids(context.graph_run_id)))
+        if context.ingestion_contract_version == "source-ingestion-v2":
+            from app.agent_runtime.repository import AgentRuntimeRepository
+
+            runtime = AgentRuntimeRepository(session)
+            source_mode = await _source_pair_mode(session, context.task_id)
+            mapping_checkpoint_key = (
+                "graph-database-field-mapping-v2"
+                if source_mode == "database"
+                else "graph-csv-field-mapping-v2"
             )
-        )
+            mapping = await runtime.get_checkpoint(
+                context.run_id,
+                phase=AgentPhase.INGEST_AND_NORMALIZE,
+                checkpoint_key=mapping_checkpoint_key,
+            )
+            if mapping is None:
+                inspections = tuple(
+                    [
+                        await runtime.get_checkpoint(
+                            context.run_id,
+                            phase=AgentPhase.INGEST_AND_NORMALIZE,
+                            checkpoint_key=f"graph-source-inspection:{role}",
+                        )
+                        for role in ("authoritative", "target")
+                    ]
+                )
+                fatal_inspection = any(
+                    checkpoint is None
+                    or (
+                        not checkpoint.payload.get("recognized", False)
+                        and not checkpoint.payload.get("mapping_required", False)
+                    )
+                    for checkpoint in inspections
+                )
+                if fatal_inspection:
+                    return (
+                        _action(
+                            "validate_normalized_input",
+                            successor="validate_input_contract",
+                        ),
+                    )
+                mapping_required = any(
+                    checkpoint.payload.get("mapping_required", False)
+                    or (source_mode == "csv" and not checkpoint.payload.get("recognized", False))
+                    for checkpoint in inspections
+                    if checkpoint is not None
+                )
+                return (
+                    _action(
+                        (
+                            "resolve_database_fixed_field_mapping"
+                            if source_mode == "database"
+                            else "resolve_csv_fixed_field_mapping"
+                        ),
+                        graph_action_kind="normalize_next_batch",
+                        successor="normalize_input_batches",
+                        kind=("dispatch_sub_agent" if mapping_required else "run_deterministic"),
+                        sub_agent=(
+                            (
+                                "database-schema-mapping"
+                                if source_mode == "database"
+                                else "csv-schema-mapping"
+                            )
+                            if mapping_required
+                            else None
+                        ),
+                        resource_ids=("source-pair:current",),
+                        required_evidence=("mapping:fixed-six-field-v2",),
+                    ),
+                )
+            if not mapping.payload.get("resolved", False):
+                return (
+                    _action(
+                        "validate_normalized_input",
+                        successor="validate_input_contract",
+                    ),
+                )
+            for role in ("authoritative", "target"):
+                action_id = f"normalize_{role}_full"
+                if action_id not in completed:
+                    return (
+                        _action(
+                            action_id,
+                            graph_action_kind="normalize_next_batch",
+                            successor="normalize_input_batches",
+                            kind="run_deterministic",
+                            resource_ids=(f"source:{role}:full",),
+                            required_evidence=(f"normalized:{role}:full",),
+                        ),
+                    )
+            return (
+                _action(
+                    "validate_normalized_input",
+                    successor="validate_input_contract",
+                ),
+            )
         actions: list[AllowedActionV1] = []
         for role, page_count in await _source_page_counts(
             session,
@@ -634,6 +738,38 @@ class ProductionGraphCandidateProvider:
         from app.agent_runtime.repository import AgentRuntimeRepository
 
         runtime = AgentRuntimeRepository(session)
+        if context.ingestion_contract_version == "source-ingestion-v2":
+            source_mode = await _source_pair_mode(session, context.task_id)
+            mapping = await runtime.get_checkpoint(
+                context.run_id,
+                phase=AgentPhase.INGEST_AND_NORMALIZE,
+                checkpoint_key=(
+                    "graph-database-field-mapping-v2"
+                    if source_mode == "database"
+                    else "graph-csv-field-mapping-v2"
+                ),
+            )
+            normalizations = tuple(
+                [
+                    await runtime.get_checkpoint(
+                        context.run_id,
+                        phase=AgentPhase.INGEST_AND_NORMALIZE,
+                        checkpoint_key=f"graph-source-normalization:{role}",
+                    )
+                    for role in ("authoritative", "target")
+                ]
+            )
+            abnormal = (
+                mapping is None
+                or not mapping.payload.get("resolved", False)
+                or any(checkpoint is None for checkpoint in normalizations)
+            )
+            return (
+                _template(
+                    context,
+                    "report_abnormal_input" if abnormal else "build_identity_index",
+                ),
+            )
         inspections = []
         for role in ("authoritative", "target"):
             inspections.append(
@@ -693,9 +829,7 @@ class ProductionGraphCandidateProvider:
                         if repair
                         else f"analyze_batch_{str(batch.id)[:8]}"
                     ),
-                    graph_action_kind=(
-                        "repair_analysis_batch" if repair else "analyze_next_batch"
-                    ),
+                    graph_action_kind=("repair_analysis_batch" if repair else "analyze_next_batch"),
                     successor="analyze_actionable_batches",
                     kind="dispatch_sub_agent",
                     sub_agent="reconciliation-analysis",
@@ -716,9 +850,7 @@ class ProductionGraphCandidateProvider:
         return (
             _template(
                 context,
-                "resolve_identity_conflicts"
-                if unresolved is not None
-                else "enter_aggregate_risk",
+                "resolve_identity_conflicts" if unresolved is not None else "enter_aggregate_risk",
             ),
         )
 
@@ -730,9 +862,7 @@ def _template(context: GraphWorkContext, action_id: str) -> AllowedActionV1:
     ):
         if item.action_id == action_id:
             return item
-    raise RuntimeError(
-        f"production action {action_id} is not declared at {context.current_node}"
-    )
+    raise RuntimeError(f"production action {action_id} is not declared at {context.current_node}")
 
 
 def _single_action_reason(
@@ -758,6 +888,36 @@ def _single_action_reason(
     }:
         return SingleActionReasonCode.SAFETY_MANDATORY
     return SingleActionReasonCode.ONLY_GUARD_SATISFIED
+
+
+async def _source_pair_mode(session: AsyncSession, task_id: UUID) -> str:
+    intent = await session.scalar(
+        select(ReconciliationTask.agent_intent).where(ReconciliationTask.id == task_id)
+    )
+    if not isinstance(intent, dict):
+        return "csv"
+    source = intent.get("source")
+    target = intent.get("target")
+    if (
+        isinstance(source, dict)
+        and isinstance(target, dict)
+        and source.get("kind") == "database"
+        and target.get("kind") == "database"
+    ):
+        return "database"
+    return "csv"
+
+
+def _database_target_connector_id(
+    task: ReconciliationTask | None,
+) -> str | None:
+    if task is None or not isinstance(task.agent_intent, dict):
+        return None
+    target = task.agent_intent.get("target")
+    if not isinstance(target, dict) or target.get("kind") != "database":
+        return None
+    connector_id = target.get("configuration_id")
+    return connector_id if isinstance(connector_id, str) and connector_id else None
 
 
 def select_transition_action_ids(graph_run_id: UUID) -> Select[tuple[str]]:
@@ -801,10 +961,7 @@ def _rejected_guard_code(
     if "terminate_requested" in passed_kinds:
         return "termination_requested"
     if node == "inspect_sources":
-        if (
-            action_kind == "inspect_target"
-            and "inspect_authority" in passed_kinds
-        ):
+        if action_kind == "inspect_target" and "inspect_authority" in passed_kinds:
             return "server_order_deferred"
         return (
             "source_already_inspected"

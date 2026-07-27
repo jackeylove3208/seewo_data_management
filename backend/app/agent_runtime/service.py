@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agent_graph.repository import AgentGraphRepository
 from app.agent_runtime.repository import AgentRunNotFound, AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentPhase, AgentRunKind, AgentRunStatus
+from app.core.config import Settings
 from app.core.security import OperatorContext
 from app.models.agent_analysis import AgentGovernanceOperationRecord
 from app.models.agent_runtime import AgentRunRecord, SchoolTaskLockRecord
@@ -30,10 +31,12 @@ class AgentSupervisorService:
         *,
         operator: OperatorContext,
         repository: AgentRuntimeRepository | None = None,
+        settings: Settings | None = None,
     ) -> None:
         self.session = session
         self.operator = operator
         self.repository = repository or AgentRuntimeRepository(session)
+        self.settings = settings
 
     async def start(
         self,
@@ -72,11 +75,31 @@ class AgentSupervisorService:
             conversation_id=conversation_id,
             kind=AgentRunKind.SYNC,
             workflow_version=task.workflow_version,
+            ingestion_contract_version=(
+                "source-ingestion-v2"
+                if self.settings is not None
+                and self.settings.source_ingestion_v2_enabled
+                and task.workflow_version == "agent-graph-v1"
+                else "model-mediated-ingestion-v1"
+            ),
+            execution_contract_version=(
+                "deterministic-execution-v2"
+                if self.settings is not None
+                and self.settings.source_ingestion_v2_enabled
+                and task.workflow_version == "agent-graph-v1"
+                else "model-mediated-execution-v1"
+            ),
         )
         await self.repository.append_event(
             run.id,
             "run.created",
-            {"phase": run.phase, "status": run.status, "workflow_version": run.workflow_version},
+            {
+                "phase": run.phase,
+                "status": run.status,
+                "workflow_version": run.workflow_version,
+                "ingestion_contract_version": run.ingestion_contract_version,
+                "execution_contract_version": run.execution_contract_version,
+            },
         )
         graph_repository = (
             AgentGraphRepository(self.session)
@@ -194,9 +217,7 @@ class AgentSupervisorService:
             .where(
                 ReconciliationTask.id == task_id,
                 ReconciliationTask.tenant_id == self.operator.tenant_id,
-                ReconciliationTask.workflow_version.in_(
-                    ("new-agent-v1", "agent-graph-v1")
-                ),
+                ReconciliationTask.workflow_version.in_(("new-agent-v1", "agent-graph-v1")),
                 ReconciliationTask.task_kind == AgentRunKind.ROLLBACK.value,
             )
             .with_for_update()
@@ -244,9 +265,7 @@ class AgentSupervisorService:
             "rollback.confirmed",
             {"phase": run.phase, "status": run.status},
         )
-        run = await self.repository.transition_run(
-            run.id, requested_phase=AgentPhase.PLAN_RESTORE
-        )
+        run = await self.repository.transition_run(run.id, requested_phase=AgentPhase.PLAN_RESTORE)
         if graph_repository is not None and graph_state is not None:
             await graph_repository.record_transition(
                 graph_state.id,
@@ -273,9 +292,9 @@ class AgentSupervisorService:
         if current_status in {AgentRunStatus.COMPLETED, AgentRunStatus.TERMINATED}:
             return run
         if run.workflow_version == "agent-graph-v1":
-            graph = await AgentGraphRepository(
-                self.session
-            ).get_run_state_for_agent_run(run.id, for_update=True)
+            graph = await AgentGraphRepository(self.session).get_run_state_for_agent_run(
+                run.id, for_update=True
+            )
             if graph is None:
                 raise LookupError("Agent graph state is missing")
             graph.termination_requested = True
@@ -375,8 +394,7 @@ def _termination_mutations(
             "target_source_identifier": operation.target_source_identifier,
             "before": operation.before,
             "after": operation.actual_after,
-            "verification": operation.verification
-            or {"valid": operation.status == "succeeded"},
+            "verification": operation.verification or {"valid": operation.status == "succeeded"},
         }
         for operation in operations
     ]

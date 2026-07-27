@@ -53,9 +53,7 @@ class AgentTaskService:
         payload = intent.model_dump(mode="json")
         request_hash = _hash({"tenant_id": self.operator.tenant_id, **payload})
         existing = await self.session.scalar(
-            select(ReconciliationTask).where(
-                ReconciliationTask.idempotency_key == idempotency_key
-            )
+            select(ReconciliationTask).where(ReconciliationTask.idempotency_key == idempotency_key)
         )
         if existing is not None:
             if existing.request_hash != request_hash:
@@ -75,9 +73,7 @@ class AgentTaskService:
             raise SchoolLockConflict(active_lock.owner_task_id)
 
         workflow_version = (
-            self.settings.new_task_workflow_version
-            if self.settings is not None
-            else "new-agent-v1"
+            self.settings.new_task_workflow_version if self.settings is not None else "new-agent-v1"
         )
         task = ReconciliationTask(
             id=uuid4(),
@@ -117,32 +113,115 @@ class AgentTaskService:
                 source_id=intent.source.upload_id,
                 target_ref=intent.target.source_ref,
             )
+        elif intent.source.kind == "database" and intent.target.kind == "database":
+            assert intent.source.configuration_id is not None
+            assert intent.target.configuration_id is not None
+            await self._bind_database_pair(
+                task,
+                source_configuration_id=intent.source.configuration_id,
+                target_configuration_id=intent.target.configuration_id,
+            )
         run = await AgentSupervisorService(
-            self.session, operator=self.operator, repository=self.runtime
+            self.session,
+            operator=self.operator,
+            repository=self.runtime,
+            settings=self.settings,
         ).start(task_id=task.id, conversation_id=conversation_id)
         return task, run
 
     def _validate_connector_runtime(self, intent: AgentTaskIntent) -> None:
-        configured = tuple(
-            selection
-            for selection in (intent.source, intent.target)
-            if selection.kind not in {"csv", "local"}
-        )
-        if not configured:
+        source_kind = intent.source.kind
+        target_kind = intent.target.kind
+        if source_kind in {"csv", "local"} and target_kind in {"csv", "local"}:
             return
-        # The safe connector façades are available, but a configured connector must not be
-        # accepted until the durable Agent worker can materialize its immutable input evidence
-        # and bind its mutation adapter.  Failing before task/lock creation prevents a task from
-        # becoming permanently stuck in ingestion.
+        if source_kind == "database" and target_kind == "database":
+            self._validate_database_pair(intent)
+            return
         agent_observability.observe(
             "connector_failed",
-            connector_kind="+".join(sorted(selection.kind for selection in configured)),
+            connector_kind=f"{source_kind}+{target_kind}",
             outcome="rejected",
-            error_code="durable_runtime_unavailable",
+            error_code="unsupported_or_mixed_connector_pair",
         )
         raise AgentConnectorCapabilityFailure(
-            "Configured API/database connector is not available in the durable Agent runtime"
+            "Agent task requires CSV-to-CSV or SQL-to-SQL sources"
         )
+
+    def _validate_database_pair(self, intent: AgentTaskIntent) -> None:
+        if (
+            self.settings is None
+            or not self.settings.source_ingestion_v2_enabled
+            or not self.settings.agent_graph_sql_execution_enabled
+        ):
+            raise AgentConnectorCapabilityFailure("SQL Agent runtime is disabled")
+        source_id = intent.source.configuration_id
+        target_id = intent.target.configuration_id
+        if source_id is None or target_id is None or source_id == target_id:
+            raise AgentConnectorCapabilityFailure(
+                "SQL Agent task requires two different configured connectors"
+            )
+        configurations = self.settings.database_connector_configurations
+        source = configurations.get(source_id)
+        target = configurations.get(target_id)
+        if source is None or target is None:
+            raise AgentConnectorCapabilityFailure("SQL connector is not configured by the server")
+        if source.source_role != "authoritative":
+            raise AgentConnectorCapabilityFailure("SQL source connector must be authoritative")
+        if target.source_role != "target" or target.dialect != "mysql":
+            raise AgentConnectorCapabilityFailure(
+                "SQL target connector must be a writable MySQL target"
+            )
+
+    async def _bind_database_pair(
+        self,
+        task: ReconciliationTask,
+        *,
+        source_configuration_id: str,
+        target_configuration_id: str,
+    ) -> None:
+        if self.settings is None:
+            raise ValueError("SQL Agent task requires server connector settings")
+        configurations = self.settings.database_connector_configurations
+        files: list[SourceFile] = []
+        for role, configuration_id in (
+            (SourceRole.AUTHORITATIVE, source_configuration_id),
+            (SourceRole.TARGET, target_configuration_id),
+        ):
+            configuration = configurations[configuration_id]
+            fingerprint = _hash(
+                {
+                    "configuration_id": configuration_id,
+                    "dialect": configuration.dialect,
+                    "table_name": configuration.table_name,
+                    "primary_key": configuration.primary_key,
+                    "version_column": configuration.version_column,
+                    "field_columns": configuration.field_columns,
+                    "allowed_columns": configuration.allowed_columns,
+                    "source_role": configuration.source_role,
+                }
+            )
+            source = SourceFile(
+                id=uuid4(),
+                task_id=task.id,
+                source_role=role.value,
+                original_name=configuration_id,
+                storage_name=f"database-{uuid4().hex}",
+                storage_path=f"database://{configuration_id}",
+                managed_storage=False,
+                sha256=fingerprint,
+                size_bytes=1,
+                detected_encoding=None,
+            )
+            files.append(source)
+        self.session.add_all(files)
+        await self.session.flush()
+        self.session.add_all(
+            (
+                _agent_snapshot(task.id, files[0], mapping_version="agent-sql-v2"),
+                _agent_snapshot(task.id, files[1], mapping_version="agent-sql-v2"),
+            )
+        )
+        await self.session.flush()
 
     async def _bind_local_pair(
         self,
@@ -200,9 +279,7 @@ class AgentTaskService:
             raise LookupError("Agent CSV upload not found")
         if source.source_role != SourceRole.AUTHORITATIVE.value:
             raise ValueError("Agent CSV upload role mismatch")
-        target_material = LocalSourceService(self.settings).describe_target_for_write(
-            target_ref
-        )
+        target_material = LocalSourceService(self.settings).describe_target_for_write(target_ref)
         target = await files.create(
             source_role=SourceRole.TARGET,
             original_name=target_material.path.name,
@@ -216,9 +293,7 @@ class AgentTaskService:
         await self.session.flush()
         await files.bind_to_task(source.id, task.id)
         await files.bind_to_task(target.id, task.id)
-        self.session.add_all(
-            (_agent_snapshot(task.id, source), _agent_snapshot(task.id, target))
-        )
+        self.session.add_all((_agent_snapshot(task.id, source), _agent_snapshot(task.id, target)))
         await self.session.flush()
 
     async def get(self, task_id: UUID) -> tuple[ReconciliationTask, AgentRunRecord]:
@@ -267,14 +342,19 @@ class AgentTaskService:
         await self.session.flush()
 
 
-def _agent_snapshot(task_id: UUID, source: SourceFile) -> Snapshot:
+def _agent_snapshot(
+    task_id: UUID,
+    source: SourceFile,
+    *,
+    mapping_version: str = "agent-csv-v1",
+) -> Snapshot:
     return Snapshot(
         id=uuid4(),
         task_id=task_id,
         source_file_id=source.id,
         source_role=source.source_role,
         schema_version="agent-contract-v1",
-        mapping_version="agent-csv-v1",
+        mapping_version=mapping_version,
         file_hash=source.sha256,
         content_hash=_hash({"source_file_id": str(source.id), "sha256": source.sha256}),
         state="published",

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from pydantic import SecretStr
 
 from app.core.config import DEFAULT_ENV_FILE, Settings
 
@@ -17,6 +18,8 @@ def test_new_agent_rollout_is_safe_by_default() -> None:
     assert settings.new_agent_enabled is False
     assert settings.agent_graph_enabled is False
     assert settings.agent_graph_csv_execution_enabled is False
+    assert settings.source_ingestion_v2_enabled is False
+    assert settings.agent_graph_sql_execution_enabled is False
     assert settings.new_agent_analysis_only is True
     assert settings.new_agent_csv_execution_enabled is False
     assert settings.new_agent_api_connector_enabled is False
@@ -49,6 +52,23 @@ def test_agent_graph_execution_flags_fail_closed_without_graph_runtime() -> None
             new_agent_enabled=True,
             new_agent_analysis_only=False,
             agent_graph_csv_execution_enabled=True,
+            _env_file=None,
+        )
+
+    with pytest.raises(ValueError, match="agent_graph_enabled"):
+        Settings(
+            new_agent_enabled=True,
+            new_agent_analysis_only=False,
+            agent_graph_sql_execution_enabled=True,
+            _env_file=None,
+        )
+
+
+def test_source_ingestion_v2_requires_agent_graph_runtime() -> None:
+    with pytest.raises(ValueError, match="agent_graph_enabled"):
+        Settings(
+            new_agent_enabled=True,
+            source_ingestion_v2_enabled=True,
             _env_file=None,
         )
 
@@ -95,6 +115,154 @@ def test_connector_execution_flags_require_server_side_connector_configuration()
     assert configured.api_connector_configurations["seewo"].credential_reference.endswith(
         "seewo-api"
     )
+
+
+def test_sql_graph_accepts_read_only_postgresql_source_and_writable_mysql_target() -> None:
+    settings = Settings(
+        new_agent_enabled=True,
+        agent_graph_enabled=True,
+        source_ingestion_v2_enabled=True,
+        agent_graph_sql_execution_enabled=True,
+        new_agent_analysis_only=False,
+        database_connector_configurations={
+            "authority-postgres": {
+                "credential_reference": "secret://connectors/authority-postgres",
+                "dialect": "postgresql",
+                "table_name": "organization_people",
+                "primary_key": "id",
+                "version_column": "row_version",
+                "field_columns": {
+                    "category": "category",
+                    "name": "name",
+                    "number": "number",
+                    "class_name": "class_name",
+                    "phone": "phone",
+                    "email": "email",
+                },
+                "source_role": "authoritative",
+                "capabilities": {"read": True, "paginated": True},
+            },
+            "seewo-mysql": {
+                "credential_reference": "secret://connectors/seewo-mysql",
+                "dialect": "mysql",
+                "table_name": "organization_people",
+                "primary_key": "id",
+                "version_column": "row_version",
+                "field_columns": {
+                    "category": "category",
+                    "name": "name",
+                    "number": "number",
+                    "class_name": "class_name",
+                    "phone": "phone",
+                    "email": "email",
+                },
+                "source_role": "target",
+                "capabilities": {
+                    "read": True,
+                    "paginated": True,
+                    "create": True,
+                    "update": True,
+                    "delete": True,
+                    "optimistic_version": True,
+                    "read_after_write": True,
+                },
+            },
+        },
+        database_connector_credentials={
+            "secret://connectors/authority-postgres": "postgresql+asyncpg://hidden",
+            "secret://connectors/seewo-mysql": "mysql+asyncmy://hidden",
+        },
+        _env_file=None,
+    )
+
+    assert settings.database_connector_configurations["authority-postgres"].dialect == (
+        "postgresql"
+    )
+    assert settings.database_connector_configurations["seewo-mysql"].dialect == "mysql"
+    secret = settings.database_connector_credentials["secret://connectors/seewo-mysql"]
+    assert isinstance(secret, SecretStr)
+    assert "hidden" not in repr(settings)
+
+
+def test_sql_graph_allows_authority_mapping_to_be_resolved_but_requires_target_mapping() -> None:
+    common = {
+        "new_agent_enabled": True,
+        "agent_graph_enabled": True,
+        "source_ingestion_v2_enabled": True,
+        "agent_graph_sql_execution_enabled": True,
+        "new_agent_analysis_only": False,
+        "database_connector_credentials": {
+            "secret://connectors/authority-postgres": ("postgresql+asyncpg://hidden"),
+            "secret://connectors/seewo-mysql": "mysql+asyncmy://hidden",
+        },
+        "_env_file": None,
+    }
+    authority = {
+        "credential_reference": "secret://connectors/authority-postgres",
+        "dialect": "postgresql",
+        "table_name": "organization_people",
+        "primary_key": "id",
+        "version_column": "row_version",
+        "field_columns": {},
+        "allowed_columns": [
+            "id",
+            "row_version",
+            "entity_type",
+            "full_name",
+            "person_code",
+            "class_label",
+            "mobile",
+            "mail",
+        ],
+        "source_role": "authoritative",
+        "capabilities": {"read": True, "paginated": True},
+    }
+    target = {
+        "credential_reference": "secret://connectors/seewo-mysql",
+        "dialect": "mysql",
+        "table_name": "organization_people",
+        "primary_key": "id",
+        "version_column": "row_version",
+        "field_columns": {
+            "category": "category",
+            "name": "name",
+            "number": "number",
+            "class_name": "class_name",
+            "phone": "phone",
+            "email": "email",
+        },
+        "source_role": "target",
+        "capabilities": {
+            "read": True,
+            "paginated": True,
+            "create": True,
+            "update": True,
+            "delete": True,
+            "optimistic_version": True,
+            "read_after_write": True,
+        },
+    }
+
+    settings = Settings(
+        **common,
+        database_connector_configurations={
+            "authority-postgres": authority,
+            "seewo-mysql": target,
+        },
+    )
+    assert settings.database_connector_configurations["authority-postgres"].field_columns == {}
+
+    with pytest.raises(
+        ValueError,
+        match="target.*missing fixed organization fields",
+    ):
+        Settings(
+            **common,
+            database_connector_configurations={
+                "authority-postgres": authority,
+                "seewo-mysql": {**target, "field_columns": {}},
+            },
+        )
 
 
 def test_agent_batch_size_cannot_exceed_connector_contract_limit() -> None:

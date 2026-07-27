@@ -1,7 +1,8 @@
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import uuid4
+from types import SimpleNamespace
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import pytest
 from sqlalchemy import select
@@ -20,8 +21,17 @@ from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentPhase, AgentRunKind
 from app.ai.graph_subagents import GraphSubAgentFailure
 from app.ai.providers.base import LLMResponse, ModelUsage
+from app.connectors.base import ConnectorVersion
+from app.connectors.configured import (
+    ConfiguredApiConnector,
+    ConnectorCapabilities,
+    ConnectorConflictError,
+    DatabaseConnectorConfiguration,
+    InMemoryConnectorStore,
+)
 from app.models.agent_analysis import (
     AgentGovernancePlanRecord,
+    AgentInputRecord,
     AgentModelBatchRecord,
 )
 from app.models.agent_graph import (
@@ -34,6 +44,7 @@ from app.models.executions import TargetVersionRecord
 from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import Snapshot, SourceFile
 from app.repositories.agent_analysis import AgentAnalysisRepository
+from app.repositories.executions import ExecutionRepository
 from app.schemas.agent_ingestion import (
     AgentContractRecord,
     AgentEntityKind,
@@ -44,6 +55,26 @@ from app.schemas.agent_ingestion import (
 class ModelMustNotRun:
     async def complete_json_once(self, _request):
         raise AssertionError("deterministic preflight called a model")
+
+
+class StaticDatabaseConnectorRuntime:
+    def __init__(self, connectors: dict[str, ConfiguredApiConnector]) -> None:
+        self._connectors = connectors
+
+    async def connector(self, connector_id: str) -> ConfiguredApiConnector:
+        return self._connectors[connector_id]
+
+
+class VersionDriftingConnector(ConfiguredApiConnector):
+    def __init__(self, connector: ConfiguredApiConnector) -> None:
+        super().__init__(
+            configuration=connector.configuration,
+            store=connector._store,
+        )
+        self._versions = iter(("v1", "v2"))
+
+    async def version(self) -> ConnectorVersion:
+        return ConnectorVersion(value=next(self._versions, "v2"))
 
 
 class InvalidManifestResourceProvider:
@@ -82,10 +113,7 @@ class InvalidExecutionPlanResourceProvider:
                     "tool_call": {
                         "name": "request_execution_batch",
                         "arguments": {
-                            "resource_id": (
-                                "execution-plan:"
-                                "00000000-0000-0000-0000-000000000000"
-                            )
+                            "resource_id": ("execution-plan:00000000-0000-0000-0000-000000000000")
                         },
                     }
                 }
@@ -93,6 +121,124 @@ class InvalidExecutionPlanResourceProvider:
             provider="scripted",
             model="scripted-long-context",
             request_id=f"request-{len(self.requests)}",
+            usage=ModelUsage(input_tokens=10, output_tokens=5),
+        )
+
+
+class CsvMappingProvider:
+    def __init__(self) -> None:
+        self.requests = []
+
+    async def complete_json_once(self, request):
+        self.requests.append(request)
+
+        def mappings(role: str) -> list[dict[str, object]]:
+            fields = (
+                ("category", "normalize_category", ("department", "student", "teacher")),
+                ("name", "trim_text", ("department", "student", "teacher")),
+                ("number", "trim_identifier", ("department", "student", "teacher")),
+                ("class_name", "trim_text", ("student",)),
+                ("phone", "normalize_phone", ("department", "student", "teacher")),
+                ("email", "normalize_email", ("department", "student", "teacher")),
+            )
+            return [
+                {
+                    "source_field_ref": f"csv-column:{role}:{index}",
+                    "contract_field": field,
+                    "entity_kinds": list(entity_kinds),
+                    "normalizer_id": normalizer,
+                }
+                for index, (field, normalizer, entity_kinds) in enumerate(fields)
+            ]
+
+        return LLMResponse(
+            output={
+                "result": {
+                    "schema_version": "fixed-six-field-mapping-v2",
+                    "authoritative_mappings": mappings("authoritative"),
+                    "target_mappings": mappings("target"),
+                    "unresolved_required_fields": [],
+                }
+            },
+            provider="scripted",
+            model="scripted-long-context",
+            request_id="csv-mapping-1",
+            usage=ModelUsage(input_tokens=10, output_tokens=5),
+        )
+
+
+class DatabaseMappingProvider:
+    def __init__(self) -> None:
+        self.requests = []
+
+    async def complete_json_once(self, request):
+        self.requests.append(request)
+
+        def mappings(
+            role: str,
+            physical_fields: dict[str, str],
+        ) -> list[dict[str, object]]:
+            schema_fields = sorted(
+                {
+                    *physical_fields.values(),
+                    "id",
+                    "row_version",
+                }
+            )
+            fields = (
+                ("category", "normalize_category", ("department", "student", "teacher")),
+                ("name", "trim_text", ("department", "student", "teacher")),
+                ("number", "trim_identifier", ("department", "student", "teacher")),
+                ("class_name", "trim_text", ("student",)),
+                ("phone", "normalize_phone", ("department", "student", "teacher")),
+                ("email", "normalize_email", ("department", "student", "teacher")),
+            )
+            return [
+                {
+                    "source_field_ref": (
+                        f"database-column:{role}:{schema_fields.index(physical_fields[field])}"
+                    ),
+                    "contract_field": field,
+                    "entity_kinds": list(entity_kinds),
+                    "normalizer_id": normalizer,
+                }
+                for field, normalizer, entity_kinds in fields
+            ]
+
+        authority_fields = {
+            "category": "entity_type",
+            "name": "full_name",
+            "number": "person_code",
+            "class_name": "class_label",
+            "phone": "mobile",
+            "email": "mail",
+        }
+        target_fields = {
+            field: field
+            for field in (
+                "category",
+                "name",
+                "number",
+                "class_name",
+                "phone",
+                "email",
+            )
+        }
+        return LLMResponse(
+            output={
+                "result": {
+                    "schema_version": "fixed-six-field-sql-mapping-v2",
+                    "authoritative_mappings": mappings(
+                        "authoritative",
+                        authority_fields,
+                    ),
+                    "target_mappings": mappings("target", target_fields),
+                    "unresolved_required_fields": [],
+                }
+            },
+            provider="scripted",
+            model="scripted-long-context",
+            request_id="database-mapping-1",
             usage=ModelUsage(input_tokens=10, output_tokens=5),
         )
 
@@ -199,18 +345,736 @@ async def _preflight_context(database, tmp_path: Path) -> GraphWorkContext:
             )
 
 
+async def _ingestion_v2_context(
+    database,
+    tmp_path: Path,
+    *,
+    content: str | None = None,
+) -> GraphWorkContext:
+    async with database.session_factory() as session:
+        async with session.begin():
+            task = ReconciliationTask(
+                tenant_id="school-ingestion-v2",
+                scope_id="all",
+                snapshot_mode="full",
+                entity_types=["student"],
+                status="running",
+                stage="ingestion",
+                workflow_version="agent-graph-v1",
+                idempotency_key=str(uuid4()),
+                request_hash=uuid4().hex * 2,
+            )
+            session.add(task)
+            await session.flush()
+            source_content = content or (
+                "category,name,number,class_name,phone,email\n"
+                "student,测试学生,S001,一班,13800000001,student@example.test\n"
+            )
+            for role in ("authoritative", "target"):
+                path = tmp_path / f"ingestion-v2-{role}.csv"
+                path.write_text(source_content, encoding="utf-8")
+                source = SourceFile(
+                    task_id=task.id,
+                    source_role=role,
+                    original_name=path.name,
+                    storage_name=f"{uuid4()}.csv",
+                    storage_path=str(path),
+                    sha256=uuid4().hex * 2,
+                    size_bytes=path.stat().st_size,
+                    detected_encoding="utf-8",
+                )
+                session.add(source)
+                await session.flush()
+                session.add(
+                    Snapshot(
+                        id=uuid4(),
+                        task_id=task.id,
+                        source_file_id=source.id,
+                        source_role=role,
+                        schema_version="agent-contract-v1",
+                        mapping_version="agent-csv-v1",
+                        file_hash=source.sha256,
+                        content_hash=uuid4().hex * 2,
+                        state="published",
+                        summary={},
+                    )
+                )
+            run = await AgentRuntimeRepository(session).create_run(
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                conversation_id=None,
+                kind=AgentRunKind.SYNC,
+                workflow_version="agent-graph-v1",
+                ingestion_contract_version="source-ingestion-v2",
+                execution_contract_version="deterministic-execution-v2",
+            )
+            graph = await AgentGraphRepository(session).create_run_state(
+                run_id=run.id,
+                graph_version="agent-sync-graph-v1",
+                initial_node="inspect_sources",
+            )
+            return GraphWorkContext(
+                worker_id="ingestion-v2-worker",
+                run_id=run.id,
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                graph_run_id=graph.id,
+                graph_version=graph.graph_version,
+                current_node=graph.current_node,
+                graph_cursor=graph.cursor,
+                attempt_count=run.attempt_count,
+                lease_token=uuid4(),
+                ingestion_contract_version=run.ingestion_contract_version,
+                execution_contract_version=run.execution_contract_version,
+            )
+
+
+async def _sql_ingestion_v2_context(database) -> GraphWorkContext:
+    async with database.session_factory() as session:
+        async with session.begin():
+            task = ReconciliationTask(
+                tenant_id="school-sql-ingestion-v2",
+                scope_id="all",
+                snapshot_mode="full",
+                entity_types=["student"],
+                status="running",
+                stage="ingestion",
+                workflow_version="agent-graph-v1",
+                agent_intent={
+                    "title": "SQL 同步",
+                    "entity_types": ["student"],
+                    "source": {
+                        "kind": "database",
+                        "configuration_id": "authority-postgres",
+                    },
+                    "target": {
+                        "kind": "database",
+                        "configuration_id": "seewo-mysql",
+                    },
+                },
+                idempotency_key=str(uuid4()),
+                request_hash=uuid4().hex * 2,
+            )
+            session.add(task)
+            await session.flush()
+            for role, connector_id in (
+                ("authoritative", "authority-postgres"),
+                ("target", "seewo-mysql"),
+            ):
+                source = SourceFile(
+                    task_id=task.id,
+                    source_role=role,
+                    original_name=connector_id,
+                    storage_name=f"database-{uuid4().hex}",
+                    storage_path=f"database://{connector_id}",
+                    managed_storage=False,
+                    sha256=uuid4().hex * 2,
+                    size_bytes=1,
+                    detected_encoding=None,
+                )
+                session.add(source)
+                await session.flush()
+                session.add(
+                    Snapshot(
+                        id=uuid4(),
+                        task_id=task.id,
+                        source_file_id=source.id,
+                        source_role=role,
+                        schema_version="agent-contract-v1",
+                        mapping_version="agent-sql-v2",
+                        file_hash=source.sha256,
+                        content_hash=uuid4().hex * 2,
+                        state="published",
+                        summary={},
+                    )
+                )
+            run = await AgentRuntimeRepository(session).create_run(
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                conversation_id=None,
+                kind=AgentRunKind.SYNC,
+                workflow_version="agent-graph-v1",
+                ingestion_contract_version="source-ingestion-v2",
+                execution_contract_version="deterministic-execution-v2",
+            )
+            graph = await AgentGraphRepository(session).create_run_state(
+                run_id=run.id,
+                graph_version="agent-sync-graph-v1",
+                initial_node="inspect_sources",
+            )
+            return GraphWorkContext(
+                worker_id="sql-ingestion-v2-worker",
+                run_id=run.id,
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                graph_run_id=graph.id,
+                graph_version=graph.graph_version,
+                current_node=graph.current_node,
+                graph_cursor=graph.cursor,
+                attempt_count=run.attempt_count,
+                lease_token=uuid4(),
+                ingestion_contract_version=run.ingestion_contract_version,
+                execution_contract_version=run.execution_contract_version,
+            )
+
+
+def _sql_test_connector(
+    *,
+    connector_id: str,
+    role: str,
+    authority_mapping_required: bool = False,
+) -> ConfiguredApiConnector:
+    field_columns = (
+        {}
+        if authority_mapping_required
+        else {
+            "category": "category",
+            "name": "name",
+            "number": "number",
+            "class_name": "class_name",
+            "phone": "phone",
+            "email": "email",
+        }
+    )
+    row = (
+        {
+            "id": f"{role}-1",
+            "row_version": "v1",
+            "entity_type": "student",
+            "full_name": "测试学生",
+            "person_code": "S001",
+            "class_label": "一班",
+            "mobile": "13800000001",
+            "mail": "student@example.test",
+        }
+        if authority_mapping_required
+        else {
+            "id": f"{role}-1",
+            "row_version": "v1",
+            "category": "student",
+            "name": "测试学生",
+            "number": "S001",
+            "class_name": "一班",
+            "phone": "13800000001",
+            "email": "student@example.test",
+        }
+    )
+    configuration = DatabaseConnectorConfiguration(
+        credential_reference=f"secret://connectors/{connector_id}",
+        dialect="postgresql" if role == "authoritative" else "mysql",
+        table_name="organization_people",
+        primary_key="id",
+        version_column="row_version",
+        field_columns=field_columns,
+        allowed_columns=tuple(row),
+        source_role=role,
+        capabilities=ConnectorCapabilities(
+            read=True,
+            paginated=True,
+            create=role == "target",
+            update=role == "target",
+            delete=role == "target",
+            optimistic_version=role == "target",
+        ),
+    )
+    return ConfiguredApiConnector(
+        configuration=configuration,
+        store=InMemoryConnectorStore(records=[row]),
+    )
+
+
+@pytest.mark.asyncio
+async def test_source_ingestion_v2_candidates_are_deterministic_and_full_source(
+    database,
+    tmp_path: Path,
+) -> None:
+    context = await _ingestion_v2_context(database, tmp_path)
+
+    plan = await ProductionGraphCandidateProvider(database.session_factory)(context)
+    allowed = tuple(item.action for item in plan.candidate_evaluations if item.passed)
+
+    assert len(allowed) == 1
+    assert allowed[0].kind == "run_deterministic"
+    assert allowed[0].sub_agent is None
+    assert allowed[0].resource_ids == ("source:authoritative:full",)
+
+
+@pytest.mark.asyncio
+async def test_standard_csv_v2_inspection_and_normalization_do_not_call_model(
+    database,
+    tmp_path: Path,
+) -> None:
+    context = await _ingestion_v2_context(database, tmp_path)
+    provider = ModelMustNotRun()
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=provider,
+        tokenization_secret="test-tokenization-secret",
+    )
+    inspection = AllowedActionV1(
+        action_id="inspect_authority:source",
+        graph_action_kind="inspect_authority",
+        kind="run_deterministic",
+        resource_ids=("source:authoritative:full",),
+        required_evidence=("source:authoritative:inspection",),
+        risk="low",
+        requires_human=False,
+        successor_node="inspect_sources",
+    )
+
+    await executor(context, inspection)
+
+    normalized_context = replace(context, current_node="normalize_input_batches")
+    normalization = AllowedActionV1(
+        action_id="normalize_authoritative_full",
+        graph_action_kind="normalize_next_batch",
+        kind="run_deterministic",
+        resource_ids=("source:authoritative:full",),
+        required_evidence=("normalized:authoritative:full",),
+        risk="low",
+        requires_human=False,
+        successor_node="normalize_input_batches",
+    )
+    await executor(normalized_context, normalization)
+
+    async with database.session_factory() as session:
+        checkpoint = await AgentRuntimeRepository(session).get_checkpoint(
+            context.run_id,
+            phase=AgentPhase.INGEST_AND_NORMALIZE,
+            checkpoint_key="graph-source-inspection:authoritative",
+        )
+        records = tuple(
+            await session.scalars(
+                select(AgentInputRecord).where(
+                    AgentInputRecord.run_id == context.run_id,
+                    AgentInputRecord.source_role == "authoritative",
+                )
+            )
+        )
+
+    assert checkpoint is not None
+    assert checkpoint.payload["recognized"] is True
+    assert checkpoint.payload["mapping_version"] == "fixed-six-field-mapping-v2"
+    assert len(records) == 1
+    assert records[0].number == "S001"
+
+
+@pytest.mark.asyncio
+async def test_sql_v2_inspection_mapping_and_extraction_are_deterministic(
+    database,
+) -> None:
+    context = await _sql_ingestion_v2_context(database)
+    resolver = StaticDatabaseConnectorRuntime(
+        {
+            "authority-postgres": _sql_test_connector(
+                connector_id="authority-postgres",
+                role="authoritative",
+            ),
+            "seewo-mysql": _sql_test_connector(
+                connector_id="seewo-mysql",
+                role="target",
+            ),
+        }
+    )
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=ModelMustNotRun(),
+        tokenization_secret="test-tokenization-secret",
+        database_connectors=resolver,
+    )
+    for role, graph_action_kind in (
+        ("authoritative", "inspect_authority"),
+        ("target", "inspect_target"),
+    ):
+        await executor(
+            context,
+            AllowedActionV1(
+                action_id=f"{graph_action_kind}:source",
+                graph_action_kind=graph_action_kind,
+                kind="run_deterministic",
+                resource_ids=(f"source:{role}:full",),
+                required_evidence=(f"source:{role}:inspection",),
+                risk="low",
+                requires_human=False,
+                successor_node="inspect_sources",
+            ),
+        )
+    normalized_context = replace(context, current_node="normalize_input_batches")
+    await executor(
+        normalized_context,
+        AllowedActionV1(
+            action_id="resolve_database_fixed_field_mapping",
+            graph_action_kind="normalize_next_batch",
+            kind="run_deterministic",
+            resource_ids=("source-pair:current",),
+            required_evidence=("mapping:fixed-six-field-v2",),
+            risk="low",
+            requires_human=False,
+            successor_node="normalize_input_batches",
+        ),
+    )
+    await executor(
+        normalized_context,
+        AllowedActionV1(
+            action_id="normalize_authoritative_full",
+            graph_action_kind="normalize_next_batch",
+            kind="run_deterministic",
+            resource_ids=("source:authoritative:full",),
+            required_evidence=("normalized:authoritative:full",),
+            risk="low",
+            requires_human=False,
+            successor_node="normalize_input_batches",
+        ),
+    )
+
+    async with database.session_factory() as session:
+        mapping = await AgentRuntimeRepository(session).get_checkpoint(
+            context.run_id,
+            phase=AgentPhase.INGEST_AND_NORMALIZE,
+            checkpoint_key="graph-database-field-mapping-v2",
+        )
+        records = tuple(
+            await session.scalars(
+                select(AgentInputRecord).where(
+                    AgentInputRecord.run_id == context.run_id,
+                    AgentInputRecord.source_role == "authoritative",
+                )
+            )
+        )
+
+    assert mapping is not None
+    assert mapping.payload["model_calls"] == 0
+    assert mapping.payload["schema_version"] == "fixed-six-field-sql-mapping-v2"
+    assert len(records) == 1
+    assert records[0].stable_locator == ("database:authority-postgres:authoritative-1")
+
+
+@pytest.mark.asyncio
+async def test_sql_v2_rejects_source_version_drift_after_mapping_is_frozen(
+    database,
+) -> None:
+    context = await _sql_ingestion_v2_context(database)
+    resolver = StaticDatabaseConnectorRuntime(
+        {
+            "authority-postgres": VersionDriftingConnector(
+                _sql_test_connector(
+                    connector_id="authority-postgres",
+                    role="authoritative",
+                )
+            ),
+            "seewo-mysql": _sql_test_connector(
+                connector_id="seewo-mysql",
+                role="target",
+            ),
+        }
+    )
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=ModelMustNotRun(),
+        tokenization_secret="test-tokenization-secret",
+        database_connectors=resolver,
+    )
+    normalized_context = replace(context, current_node="normalize_input_batches")
+    await executor(
+        normalized_context,
+        AllowedActionV1(
+            action_id="resolve_database_fixed_field_mapping",
+            graph_action_kind="normalize_next_batch",
+            kind="run_deterministic",
+            resource_ids=("source-pair:current",),
+            required_evidence=("mapping:fixed-six-field-v2",),
+            risk="low",
+            requires_human=False,
+            successor_node="normalize_input_batches",
+        ),
+    )
+
+    with pytest.raises(ConnectorConflictError, match="changed after"):
+        await executor(
+            normalized_context,
+            AllowedActionV1(
+                action_id="normalize_authoritative_full",
+                graph_action_kind="normalize_next_batch",
+                kind="run_deterministic",
+                resource_ids=("source:authoritative:full",),
+                required_evidence=("normalized:authoritative:full",),
+                risk="low",
+                requires_human=False,
+                successor_node="normalize_input_batches",
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_sql_v2_calls_schema_skill_once_for_unmapped_postgresql_authority(
+    database,
+) -> None:
+    context = await _sql_ingestion_v2_context(database)
+    resolver = StaticDatabaseConnectorRuntime(
+        {
+            "authority-postgres": _sql_test_connector(
+                connector_id="authority-postgres",
+                role="authoritative",
+                authority_mapping_required=True,
+            ),
+            "seewo-mysql": _sql_test_connector(
+                connector_id="seewo-mysql",
+                role="target",
+            ),
+        }
+    )
+    provider = DatabaseMappingProvider()
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=provider,
+        tokenization_secret="test-tokenization-secret",
+        database_connectors=resolver,
+    )
+    for role, graph_action_kind in (
+        ("authoritative", "inspect_authority"),
+        ("target", "inspect_target"),
+    ):
+        await executor(
+            context,
+            AllowedActionV1(
+                action_id=f"{graph_action_kind}:source",
+                graph_action_kind=graph_action_kind,
+                kind="run_deterministic",
+                resource_ids=(f"source:{role}:full",),
+                required_evidence=(f"source:{role}:inspection",),
+                risk="low",
+                requires_human=False,
+                successor_node="inspect_sources",
+            ),
+        )
+
+    normalized_context = replace(context, current_node="normalize_input_batches")
+    candidate_plan = await ProductionGraphCandidateProvider(
+        database.session_factory,
+    )(normalized_context)
+    mapping_action = next(
+        evaluation.action
+        for evaluation in candidate_plan.candidate_evaluations
+        if evaluation.passed
+    )
+    assert mapping_action.action_id == "resolve_database_fixed_field_mapping"
+    assert mapping_action.kind == "dispatch_sub_agent"
+    assert mapping_action.sub_agent == "database-schema-mapping"
+    await executor(
+        normalized_context,
+        mapping_action,
+    )
+    await executor(
+        normalized_context,
+        AllowedActionV1(
+            action_id="normalize_authoritative_full",
+            graph_action_kind="normalize_next_batch",
+            kind="run_deterministic",
+            resource_ids=("source:authoritative:full",),
+            required_evidence=("normalized:authoritative:full",),
+            risk="low",
+            requires_human=False,
+            successor_node="normalize_input_batches",
+        ),
+    )
+
+    async with database.session_factory() as session:
+        checkpoint = await AgentRuntimeRepository(session).get_checkpoint(
+            context.run_id,
+            phase=AgentPhase.INGEST_AND_NORMALIZE,
+            checkpoint_key="graph-database-field-mapping-v2",
+        )
+        record = await session.scalar(
+            select(AgentInputRecord).where(
+                AgentInputRecord.run_id == context.run_id,
+                AgentInputRecord.source_role == "authoritative",
+            )
+        )
+
+    assert len(provider.requests) == 1
+    assert checkpoint is not None
+    assert checkpoint.payload["model_calls"] == 1
+    assert record is not None
+    assert record.number == "S001"
+
+
+@pytest.mark.asyncio
+async def test_sql_v2_reuses_validated_schema_mapping_for_same_connector_fingerprints(
+    database,
+) -> None:
+    first_context = await _sql_ingestion_v2_context(database)
+    second_context = await _sql_ingestion_v2_context(database)
+    resolver = StaticDatabaseConnectorRuntime(
+        {
+            "authority-postgres": _sql_test_connector(
+                connector_id="authority-postgres",
+                role="authoritative",
+                authority_mapping_required=True,
+            ),
+            "seewo-mysql": _sql_test_connector(
+                connector_id="seewo-mysql",
+                role="target",
+            ),
+        }
+    )
+    provider = DatabaseMappingProvider()
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=provider,
+        tokenization_secret="test-tokenization-secret",
+        database_connectors=resolver,
+    )
+    action = AllowedActionV1(
+        action_id="resolve_database_fixed_field_mapping",
+        graph_action_kind="normalize_next_batch",
+        kind="dispatch_sub_agent",
+        sub_agent="database-schema-mapping",
+        resource_ids=("source-pair:current",),
+        required_evidence=("mapping:fixed-six-field-v2",),
+        risk="low",
+        requires_human=False,
+        successor_node="normalize_input_batches",
+    )
+
+    await executor(replace(first_context, current_node="normalize_input_batches"), action)
+    await executor(replace(second_context, current_node="normalize_input_batches"), action)
+
+    async with database.session_factory() as session:
+        second_checkpoint = await AgentRuntimeRepository(session).get_checkpoint(
+            second_context.run_id,
+            phase=AgentPhase.INGEST_AND_NORMALIZE,
+            checkpoint_key="graph-database-field-mapping-v2",
+        )
+
+    assert len(provider.requests) == 1
+    assert second_checkpoint is not None
+    assert second_checkpoint.payload["cache_hit"] is True
+    assert second_checkpoint.payload["model_calls"] == 0
+
+
+@pytest.mark.asyncio
+async def test_unfamiliar_csv_headers_use_one_pair_mapping_model_call(
+    database,
+    tmp_path: Path,
+) -> None:
+    context = await _ingestion_v2_context(
+        database,
+        tmp_path,
+        content=(
+            "人员类别,显示姓名,学籍号码,行政班名称,联系电话值,电子信箱值\n"
+            "学生,测试学生,S009,九班,13800000009,s009@example.test\n"
+        ),
+    )
+    provider = CsvMappingProvider()
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=provider,
+        tokenization_secret="test-tokenization-secret",
+    )
+    action = AllowedActionV1(
+        action_id="resolve_csv_fixed_field_mapping",
+        graph_action_kind="normalize_next_batch",
+        kind="dispatch_sub_agent",
+        sub_agent="csv-schema-mapping",
+        resource_ids=("source-pair:current",),
+        required_evidence=("mapping:fixed-six-field-v2",),
+        risk="low",
+        requires_human=False,
+        successor_node="normalize_input_batches",
+    )
+
+    await executor(replace(context, current_node="normalize_input_batches"), action)
+    await executor(
+        replace(context, current_node="normalize_input_batches"),
+        AllowedActionV1(
+            action_id="normalize_authoritative_full",
+            graph_action_kind="normalize_next_batch",
+            kind="run_deterministic",
+            resource_ids=("source:authoritative:full",),
+            required_evidence=("normalized:authoritative:full",),
+            risk="low",
+            requires_human=False,
+            successor_node="normalize_input_batches",
+        ),
+    )
+
+    async with database.session_factory() as session:
+        checkpoint = await AgentRuntimeRepository(session).get_checkpoint(
+            context.run_id,
+            phase=AgentPhase.INGEST_AND_NORMALIZE,
+            checkpoint_key="graph-csv-field-mapping-v2",
+        )
+        record = await session.scalar(
+            select(AgentInputRecord).where(
+                AgentInputRecord.run_id == context.run_id,
+                AgentInputRecord.source_role == "authoritative",
+            )
+        )
+
+    assert len(provider.requests) == 1
+    assert checkpoint is not None
+    assert checkpoint.payload["resolved"] is True
+    assert checkpoint.payload["model_calls"] == 1
+    assert record is not None
+    assert record.number == "S009"
+
+
+@pytest.mark.asyncio
+async def test_unfamiliar_but_valid_csv_headers_route_to_schema_mapping_skill(
+    database,
+    tmp_path: Path,
+) -> None:
+    context = await _ingestion_v2_context(
+        database,
+        tmp_path,
+        content=(
+            "人员类别,显示姓名,学籍号码,行政班名称,联系电话值,电子信箱值\n"
+            "学生,测试学生,S009,九班,13800000009,s009@example.test\n"
+        ),
+    )
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=ModelMustNotRun(),
+        tokenization_secret="test-tokenization-secret",
+    )
+    for role, graph_action_kind in (
+        ("authoritative", "inspect_authority"),
+        ("target", "inspect_target"),
+    ):
+        await executor(
+            context,
+            AllowedActionV1(
+                action_id=f"{graph_action_kind}:source",
+                graph_action_kind=graph_action_kind,
+                kind="run_deterministic",
+                resource_ids=(f"source:{role}:full",),
+                required_evidence=(f"source:{role}:inspection",),
+                risk="low",
+                requires_human=False,
+                successor_node="inspect_sources",
+            ),
+        )
+
+    candidate_plan = await ProductionGraphCandidateProvider(
+        database.session_factory,
+    )(replace(context, current_node="normalize_input_batches"))
+    selected = next(
+        item.action for item in candidate_plan.candidate_evaluations if item.passed
+    )
+
+    assert selected.action_id == "resolve_csv_fixed_field_mapping"
+    assert selected.kind == "dispatch_sub_agent"
+    assert selected.sub_agent == "csv-schema-mapping"
+
+
 @pytest.mark.asyncio
 async def test_stale_preflight_requires_frozen_cross_phase_replan(
     database,
     tmp_path: Path,
 ) -> None:
     context = await _preflight_context(database, tmp_path)
-    candidate_plan = await ProductionGraphCandidateProvider(
-        database.session_factory
-    )(context)
-    allowed = tuple(
-        item.action for item in candidate_plan.candidate_evaluations if item.passed
-    )
+    candidate_plan = await ProductionGraphCandidateProvider(database.session_factory)(context)
+    allowed = tuple(item.action for item in candidate_plan.candidate_evaluations if item.passed)
     rejected = {
         item.action.action_id: item.rejected_guard_codes
         for item in candidate_plan.candidate_evaluations
@@ -276,12 +1140,8 @@ async def test_production_manifest_binds_opaque_tenant_snapshots_and_target_vers
     tmp_path: Path,
 ) -> None:
     context = await _preflight_context(database, tmp_path)
-    candidate_plan = await ProductionGraphCandidateProvider(
-        database.session_factory
-    )(context)
-    action = next(
-        item.action for item in candidate_plan.candidate_evaluations if item.passed
-    )
+    candidate_plan = await ProductionGraphCandidateProvider(database.session_factory)(context)
+    action = next(item.action for item in candidate_plan.candidate_evaluations if item.passed)
 
     async with database.session_factory() as session:
         async with session.begin():
@@ -307,12 +1167,8 @@ async def test_production_manifest_replay_reuses_frozen_manifest(
     tmp_path: Path,
 ) -> None:
     context = await _preflight_context(database, tmp_path)
-    candidate_plan = await ProductionGraphCandidateProvider(
-        database.session_factory
-    )(context)
-    action = next(
-        item.action for item in candidate_plan.candidate_evaluations if item.passed
-    )
+    candidate_plan = await ProductionGraphCandidateProvider(database.session_factory)(context)
+    action = next(item.action for item in candidate_plan.candidate_evaluations if item.passed)
 
     async with database.session_factory() as session:
         async with session.begin():
@@ -331,8 +1187,7 @@ async def test_production_manifest_replay_reuses_frozen_manifest(
             records = tuple(
                 await session.scalars(
                     select(AgentEvidenceManifestRecord).where(
-                        AgentEvidenceManifestRecord.graph_run_id
-                        == context.graph_run_id,
+                        AgentEvidenceManifestRecord.graph_run_id == context.graph_run_id,
                         AgentEvidenceManifestRecord.cursor == context.graph_cursor,
                         AgentEvidenceManifestRecord.action_id == action.action_id,
                     )
@@ -374,12 +1229,9 @@ async def test_deterministic_invocation_replay_reuses_completed_record(
             records = tuple(
                 await session.scalars(
                     select(AgentSubAgentInvocationRecord).where(
-                        AgentSubAgentInvocationRecord.graph_run_id
-                        == context.graph_run_id,
-                        AgentSubAgentInvocationRecord.cursor
-                        == context.graph_cursor,
-                        AgentSubAgentInvocationRecord.action_id
-                        == action.action_id,
+                        AgentSubAgentInvocationRecord.graph_run_id == context.graph_run_id,
+                        AgentSubAgentInvocationRecord.cursor == context.graph_cursor,
+                        AgentSubAgentInvocationRecord.action_id == action.action_id,
                         AgentSubAgentInvocationRecord.skill_name == "server-guard",
                         AgentSubAgentInvocationRecord.attempt == 1,
                     )
@@ -387,6 +1239,150 @@ async def test_deterministic_invocation_replay_reuses_completed_record(
             )
 
     assert len(records) == 1
+
+
+@pytest.mark.asyncio
+async def test_deterministic_execution_v2_runs_frozen_governance_without_model(
+    database,
+    tmp_path: Path,
+) -> None:
+    context = replace(
+        await _preflight_context(database, tmp_path),
+        current_node="execute_ready_operations",
+        execution_contract_version="deterministic-execution-v2",
+    )
+    operation_ids = (uuid4(), uuid4())
+    action = AllowedActionV1(
+        action_id="execute_operations_batch",
+        graph_action_kind="verify_operations",
+        kind="run_deterministic",
+        resource_ids=tuple(f"operation:{item}" for item in operation_ids),
+        required_evidence=tuple(f"execution-outcome:{item}" for item in operation_ids),
+        risk="high",
+        requires_human=False,
+        successor_node="verify_operations",
+    )
+    executed: list[object] = []
+
+    class FakeGovernance:
+        async def execute_operation(
+            self,
+            _session,
+            _context,
+            *,
+            operation_id,
+        ):
+            executed.append(operation_id)
+            return SimpleNamespace(
+                id=operation_id,
+                run_id=context.run_id,
+                status="succeeded",
+                verification={"valid": True},
+            )
+
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=ModelMustNotRun(),
+        tokenization_secret="test-tokenization-secret",
+        csv_execution_enabled=True,
+    )
+    executor._governance = FakeGovernance()
+
+    outcome = await executor._execute_governance(context, action)
+
+    assert outcome.action_id == action.action_id
+    assert executed == list(operation_ids)
+    async with database.session_factory() as session:
+        invocation = await session.scalar(
+            select(AgentSubAgentInvocationRecord).where(
+                AgentSubAgentInvocationRecord.graph_run_id == context.graph_run_id,
+                AgentSubAgentInvocationRecord.action_id == action.action_id,
+            )
+        )
+    assert invocation is not None
+    assert invocation.execution_mode == "deterministic_guarded"
+    assert invocation.model_provenance == {"provider": "server", "model": "none"}
+
+
+@pytest.mark.asyncio
+async def test_deterministic_execution_v2_runs_restore_without_model(
+    database,
+    tmp_path: Path,
+) -> None:
+    context = replace(
+        await _preflight_context(database, tmp_path),
+        current_node="execute_restore_operations",
+        execution_contract_version="deterministic-execution-v2",
+    )
+    mutation_ids = (uuid4(), uuid4())
+    async with database.session_factory() as session:
+        async with session.begin():
+            task = await session.get(ReconciliationTask, context.task_id)
+            target = await ExecutionRepository(session).current_target_version(context.task_id)
+            assert task is not None
+            assert target is not None
+            task.task_kind = "rollback"
+            task.agent_intent = {
+                "target_version_id": str(target.id),
+                "source_task_id": str(uuid4()),
+                "operations": [
+                    {
+                        "id": str(mutation_id),
+                        "operation": "update",
+                        "entity_kind": "teacher",
+                        "target_source_identifier": f"csv:{index + 2}",
+                        "before": {"name": f"旧姓名{index}"},
+                        "after": {"name": f"新姓名{index}"},
+                    }
+                    for index, mutation_id in enumerate(mutation_ids)
+                ],
+            }
+
+    executed: list[object] = []
+
+    class FakeRollback:
+        async def execute_operation(
+            self,
+            _session,
+            _context,
+            operation_id,
+        ):
+            executed.append(operation_id)
+            return {"id": str(operation_id), "status": "succeeded"}
+
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=ModelMustNotRun(),
+        tokenization_secret="test-tokenization-secret",
+        csv_execution_enabled=True,
+    )
+    executor._rollback = FakeRollback()
+    action = AllowedActionV1(
+        action_id="execute_restore_operations",
+        kind="run_deterministic",
+        resource_ids=("restore-plan:current",),
+        required_evidence=("rollback-outcomes:v1",),
+        risk="high",
+        requires_human=False,
+        successor_node="generate_rollback_report",
+    )
+
+    outcome = await executor._execute_rollback(context, action)
+
+    expected_operation_ids = [
+        uuid5(NAMESPACE_URL, f"agent-rollback-operation:{mutation_id}")
+        for mutation_id in mutation_ids
+    ]
+    assert outcome.action_id == action.action_id
+    assert executed == expected_operation_ids
+    async with database.session_factory() as session:
+        checkpoint = await AgentRuntimeRepository(session).get_checkpoint(
+            context.run_id,
+            phase=AgentPhase.EXECUTE_RESTORE,
+            checkpoint_key="agent-csv-rollback-execution-v1",
+        )
+    assert checkpoint is not None
+    assert len(checkpoint.payload["mutations"]) == 2
 
 
 @pytest.mark.asyncio
@@ -404,9 +1400,7 @@ async def test_repair_analysis_action_dispatches_the_real_analysis_executor(
         kind="dispatch_sub_agent",
         sub_agent="reconciliation-analysis",
         resource_ids=("work-item:00000000-0000-0000-0000-000000000001",),
-        required_evidence=(
-            "paired-record:00000000-0000-0000-0000-000000000001",
-        ),
+        required_evidence=("paired-record:00000000-0000-0000-0000-000000000001",),
         risk="low",
         requires_human=False,
         successor_node="analyze_actionable_batches",
@@ -621,9 +1615,9 @@ async def test_failed_analysis_preserves_model_and_tool_audit_across_batch_reset
 
     assert len(provider.requests) == 4
     assert [item.status for item in invocations] == ["failed"] * 4
-    assert {
-        item.model_provenance["safe_error_code"] for item in invocations
-    } == {"tool_argument_rejected"}
+    assert {item.model_provenance["safe_error_code"] for item in invocations} == {
+        "tool_argument_rejected"
+    }
     assert len(tool_calls) == 4
     assert all(not item.authorized and item.status == "denied" for item in tool_calls)
     assert saved_batch is not None
@@ -770,10 +1764,7 @@ async def test_failed_governance_execution_preserves_model_and_tool_audit(
         invocations = tuple(
             await session.scalars(
                 select(AgentSubAgentInvocationRecord)
-                .where(
-                    AgentSubAgentInvocationRecord.graph_run_id
-                    == context.graph_run_id
-                )
+                .where(AgentSubAgentInvocationRecord.graph_run_id == context.graph_run_id)
                 .order_by(AgentSubAgentInvocationRecord.attempt)
             )
         )
@@ -782,21 +1773,17 @@ async def test_failed_governance_execution_preserves_model_and_tool_audit(
                 select(AgentToolCallRecord)
                 .join(
                     AgentSubAgentInvocationRecord,
-                    AgentSubAgentInvocationRecord.id
-                    == AgentToolCallRecord.invocation_id,
+                    AgentSubAgentInvocationRecord.id == AgentToolCallRecord.invocation_id,
                 )
-                .where(
-                    AgentSubAgentInvocationRecord.graph_run_id
-                    == context.graph_run_id
-                )
+                .where(AgentSubAgentInvocationRecord.graph_run_id == context.graph_run_id)
                 .order_by(AgentToolCallRecord.created_at)
             )
         )
 
     assert len(provider.requests) == 4
     assert [item.status for item in invocations] == ["failed"] * 4
-    assert {
-        item.model_provenance["safe_error_code"] for item in invocations
-    } == {"tool_argument_rejected"}
+    assert {item.model_provenance["safe_error_code"] for item in invocations} == {
+        "tool_argument_rejected"
+    }
     assert len(tool_calls) == 4
     assert all(not item.authorized and item.status == "denied" for item in tool_calls)

@@ -16,6 +16,7 @@ class ConversationAgentContext(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
     history: tuple["ConversationHistoryMessage", ...] = ()
     available_source_refs: tuple[str, ...] = ()
+    available_database_connectors: tuple["ConversationDatabaseConnector", ...] = ()
     current_intent: dict[str, Any] = Field(default_factory=dict)
     active_task_id: UUID | None = None
 
@@ -26,6 +27,14 @@ class ConversationHistoryMessage(BaseModel):
     role: Literal["assistant", "user"]
     kind: Literal["normal", "guardrail", "error"] = "normal"
     text: str = Field(min_length=1)
+
+
+class ConversationDatabaseConnector(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    connector_id: str = Field(min_length=1, max_length=128)
+    dialect: Literal["mysql", "postgresql"]
+    source_role: Literal["authoritative", "target"]
 
 
 class ConversationAgentDecision(BaseModel):
@@ -43,3 +52,5 @@ class ConversationAgentDecision(BaseModel):
     entity_types: tuple[AgentEntityType, ...] = ()
     source_ref: str | None = Field(default=None, min_length=1)
     target_ref: str | None = Field(default=None, min_length=1)
+    source_configuration_id: str | None = Field(default=None, min_length=1)
+    target_configuration_id: str | None = Field(default=None, min_length=1)

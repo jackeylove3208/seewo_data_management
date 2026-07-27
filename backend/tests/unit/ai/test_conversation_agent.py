@@ -76,6 +76,75 @@ async def test_supervisor_rejects_source_not_returned_by_server_discovery() -> N
 
 
 @pytest.mark.asyncio
+async def test_supervisor_accepts_server_listed_postgresql_to_mysql_pair() -> None:
+    provider = CapturingProvider(
+        {
+            "result": {
+                "kind": "start_confirmation",
+                "title": "SQL 全校同步",
+                "entity_types": ["department", "student", "teacher"],
+                "source_configuration_id": "authority-postgres",
+                "target_configuration_id": "seewo-mysql",
+                "message_zh": "已确认 PostgreSQL 权威来源和 MySQL 希沃目标。",
+            }
+        }
+    )
+
+    decision = await ConversationSupervisorAgent(provider).reply(
+        _context(
+            available_source_refs=(),
+            available_database_connectors=(
+                {
+                    "connector_id": "authority-postgres",
+                    "dialect": "postgresql",
+                    "source_role": "authoritative",
+                },
+                {
+                    "connector_id": "seewo-mysql",
+                    "dialect": "mysql",
+                    "source_role": "target",
+                },
+            ),
+        )
+    )
+
+    assert decision.kind == "start_confirmation"
+    assert decision.source_configuration_id == "authority-postgres"
+    assert decision.target_configuration_id == "seewo-mysql"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_rejects_csv_sql_mixed_selection() -> None:
+    provider = CapturingProvider(
+        {
+            "result": {
+                "kind": "start_confirmation",
+                "title": "混合来源",
+                "entity_types": ["student"],
+                "source_ref": "third-party/roster.csv",
+                "target_configuration_id": "seewo-mysql",
+                "message_zh": "已确认。",
+            }
+        }
+    )
+
+    decision = await ConversationSupervisorAgent(provider).reply(
+        _context(
+            available_database_connectors=(
+                {
+                    "connector_id": "seewo-mysql",
+                    "dialect": "mysql",
+                    "source_role": "target",
+                },
+            )
+        )
+    )
+
+    assert decision.kind == "clarification"
+    assert "同一种" in decision.message_zh
+
+
+@pytest.mark.asyncio
 async def test_supervisor_accepts_flat_json_object_provider_response() -> None:
     provider = CapturingProvider(
         {

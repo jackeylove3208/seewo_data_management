@@ -7,6 +7,7 @@ and allow-listed mutations through this contract.
 
 import json
 import re
+import time
 from collections.abc import AsyncIterator, Mapping
 from hashlib import sha256
 from typing import Any, Literal, Protocol
@@ -66,6 +67,8 @@ class ConnectorSchema(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     fields: tuple[str, ...]
+    field_types: dict[str, str] = Field(default_factory=dict)
+    nullable_fields: tuple[str, ...] = ()
 
 
 class ConnectorConfiguration(BaseModel):
@@ -107,10 +110,14 @@ class ApiConnectorConfiguration(ConnectorConfiguration):
 
 
 class DatabaseConnectorConfiguration(ConnectorConfiguration):
+    dialect: Literal["mysql", "postgresql"] = "mysql"
+    database_name: str | None = None
+    schema_name: str | None = None
     table_name: str
     primary_key: str
     version_column: str
     field_columns: dict[str, str]
+    allowed_columns: tuple[str, ...] = ()
 
     @model_validator(mode="before")
     @classmethod
@@ -120,11 +127,30 @@ class DatabaseConnectorConfiguration(ConnectorConfiguration):
         configured = dict(value)
         configured.setdefault("record_id_field", configured.get("primary_key"))
         configured.setdefault("version_field", configured.get("version_column"))
+        if "allowed_columns" not in configured:
+            configured["allowed_columns"] = tuple(
+                sorted(
+                    {
+                        configured.get("primary_key"),
+                        configured.get("version_column"),
+                        *dict(configured.get("field_columns") or {}).values(),
+                    }
+                    - {None}
+                )
+            )
         return configured
 
-    @field_validator("table_name", "primary_key", "version_column")
+    @field_validator(
+        "database_name",
+        "schema_name",
+        "table_name",
+        "primary_key",
+        "version_column",
+    )
     @classmethod
-    def _safe_database_identifier(cls, value: str) -> str:
+    def _safe_database_identifier(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         if not _IDENTIFIER.fullmatch(value):
             raise ValueError("database connector identifier is invalid")
         return value
@@ -132,14 +158,32 @@ class DatabaseConnectorConfiguration(ConnectorConfiguration):
     @field_validator("field_columns")
     @classmethod
     def _safe_field_columns(cls, value: dict[str, str]) -> dict[str, str]:
-        if not value or any(not _IDENTIFIER.fullmatch(column) for column in value.values()):
+        if any(not _IDENTIFIER.fullmatch(column) for column in value.values()):
             raise ValueError("database connector identifier is invalid")
         return value
+
+    @field_validator("allowed_columns")
+    @classmethod
+    def _safe_allowed_columns(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if (
+            not value
+            or len(set(value)) != len(value)
+            or any(not _IDENTIFIER.fullmatch(column) for column in value)
+        ):
+            raise ValueError("database connector allowed columns are invalid")
+        return tuple(value)
 
     @model_validator(mode="after")
     def _database_fields_are_consistent(self) -> "DatabaseConnectorConfiguration":
         if self.record_id_field != self.primary_key or self.version_field != self.version_column:
             raise ValueError("database identifier and version fields must match configured columns")
+        required_columns = {
+            self.primary_key,
+            self.version_column,
+            *self.field_columns.values(),
+        }
+        if not required_columns <= set(self.allowed_columns):
+            raise ValueError("database field mapping exceeds its readable column allow-list")
         return self
 
 
@@ -149,7 +193,12 @@ class ConnectorStore(Protocol):
     async def version(self, version_field: str) -> str: ...
 
     async def page(
-        self, *, cursor: str | None, page_size: int, record_id_field: str
+        self,
+        *,
+        cursor: str | None,
+        page_size: int,
+        record_id_field: str,
+        fields: tuple[str, ...] | None = None,
     ) -> ConnectorPage: ...
 
     async def mutate(
@@ -241,7 +290,12 @@ class HttpJsonConnectorStore:
         return ConnectorSchema(fields=tuple(sorted(set(fields))))
 
     async def page(
-        self, *, cursor: str | None, page_size: int, record_id_field: str
+        self,
+        *,
+        cursor: str | None,
+        page_size: int,
+        record_id_field: str,
+        fields: tuple[str, ...] | None = None,
     ) -> ConnectorPage:
         try:
             params: dict[str, str | int] = {"limit": page_size}
@@ -272,9 +326,17 @@ class HttpJsonConnectorStore:
         identifiers = [str(record.get(record_id_field, "")) for record in records]
         if not all(identifiers) or identifiers != sorted(identifiers):
             raise ConnectorCapabilityError("connector API page has no stable record ordering")
+        selected = set(fields or ())
         return ConnectorPage(
             cursor=cursor,
-            records=tuple(dict(record) for record in records),
+            records=tuple(
+                {
+                    key: value
+                    for key, value in record.items()
+                    if not selected or key in selected
+                }
+                for record in records
+            ),
             next_cursor=next_cursor,
         )
 
@@ -353,11 +415,7 @@ class SqlAlchemyConnectorStore:
         table: Table,
         configuration: DatabaseConnectorConfiguration,
     ) -> None:
-        allowed_columns = {
-            configuration.primary_key,
-            configuration.version_column,
-            *configuration.field_columns.values(),
-        }
+        allowed_columns = set(configuration.allowed_columns)
         if table.name != configuration.table_name or not allowed_columns.issubset(table.c.keys()):
             raise ValueError("database connector table does not match its server configuration")
         self._engine = engine
@@ -381,16 +439,39 @@ class SqlAlchemyConnectorStore:
         return str(value) if value is not None else "empty"
 
     async def schema(self) -> ConnectorSchema:
-        return ConnectorSchema(fields=tuple(sorted(column.name for column in self._table.columns)))
+        columns = tuple(
+            sorted(
+                (
+                    self._table.c[column_name]
+                    for column_name in self._configuration.allowed_columns
+                ),
+                key=lambda column: column.name,
+            )
+        )
+        return ConnectorSchema(
+            fields=tuple(column.name for column in columns),
+            field_types={column.name: str(column.type) for column in columns},
+            nullable_fields=tuple(column.name for column in columns if column.nullable),
+        )
 
     async def page(
-        self, *, cursor: str | None, page_size: int, record_id_field: str
+        self,
+        *,
+        cursor: str | None,
+        page_size: int,
+        record_id_field: str,
+        fields: tuple[str, ...] | None = None,
     ) -> ConnectorPage:
         offset = int(cursor) if cursor is not None else 0
         if offset < 0:
             raise ConnectorConflictError("database connector cursor is invalid")
+        selected_fields = fields or self._configuration.allowed_columns
+        if not set(selected_fields) <= set(self._configuration.allowed_columns):
+            raise ConnectorCapabilityError(
+                "database connector read references unavailable fields"
+            )
         statement = (
-            select(self._table)
+            select(*(self._table.c[field] for field in selected_fields))
             .order_by(self._table.c[record_id_field])
             .offset(offset)
             .limit(page_size + 1)
@@ -417,7 +498,7 @@ class SqlAlchemyConnectorStore:
         if prior is not None:
             return prior
         allowed = set(self._configuration.field_columns)
-        output = f"z:{sha256(f'{expected_version}:{idempotency_key}'.encode()).hexdigest()}"
+        mutation_version = _next_database_version(expected_version, idempotency_key)
         async with self._engine.begin() as connection:
             current = await connection.scalar(select(func.max(self._table.c[version_field])))
             current_value = str(current) if current is not None else "empty"
@@ -432,13 +513,23 @@ class SqlAlchemyConnectorStore:
                 after = _mapping(operation, "after")
                 if set(before).union(after).difference(allowed):
                     raise ConnectorCapabilityError("database connector field is not allow-listed")
+                physical_before = {
+                    self._configuration.field_columns[field]: value
+                    for field, value in before.items()
+                }
+                physical_after = {
+                    self._configuration.field_columns[field]: value
+                    for field, value in after.items()
+                }
                 predicate = [self._table.c[record_id_field] == identifier]
-                predicate.extend(self._table.c[field] == value for field, value in before.items())
+                predicate.extend(
+                    self._table.c[field] == value for field, value in physical_before.items()
+                )
                 if kind == "update":
                     result = await connection.execute(
                         update(self._table)
                         .where(and_(*predicate))
-                        .values(**after, **{version_field: output})
+                        .values(**physical_after, **{version_field: mutation_version})
                     )
                     if result.rowcount != 1:
                         raise ConnectorConflictError("database connector before value is stale")
@@ -447,15 +538,21 @@ class SqlAlchemyConnectorStore:
                     if result.rowcount != 1:
                         raise ConnectorConflictError("database connector before value is stale")
                 elif kind == "create":
-                    values = {record_id_field: identifier, version_field: output, **after}
+                    values = {
+                        record_id_field: identifier,
+                        version_field: mutation_version,
+                        **physical_after,
+                    }
                     try:
                         await connection.execute(insert(self._table).values(**values))
                     except Exception as error:
                         raise ConnectorConflictError(
                             "database connector record already exists"
                         ) from error
-        self._idempotent_versions[idempotency_key] = output
-        return output
+            current = await connection.scalar(select(func.max(self._table.c[version_field])))
+            output_version = str(current) if current is not None else "empty"
+        self._idempotent_versions[idempotency_key] = output_version
+        return output_version
 
     async def verify(
         self, *, expected: list[dict[str, object]], record_id_field: str
@@ -465,13 +562,20 @@ class SqlAlchemyConnectorStore:
             for item in expected:
                 identifier = item.get("id")
                 row = await connection.execute(
-                    select(self._table).where(self._table.c[record_id_field] == identifier)
+                    select(
+                        *(
+                            self._table.c[column]
+                            for column in self._configuration.allowed_columns
+                        )
+                    ).where(self._table.c[record_id_field] == identifier)
                 )
                 actual = row.mappings().first()
+                after = _mapping(item, "after")
                 outcomes.append(
                     actual is not None
                     and all(
-                        actual.get(key) == value for key, value in _mapping(item, "after").items()
+                        actual.get(self._configuration.field_columns[key]) == value
+                        for key, value in after.items()
                     )
                 )
         return outcomes
@@ -479,7 +583,12 @@ class SqlAlchemyConnectorStore:
     async def record(self, *, identifier: str, record_id_field: str) -> dict[str, object] | None:
         async with self._engine.connect() as connection:
             result = await connection.execute(
-                select(self._table).where(self._table.c[record_id_field] == identifier)
+                select(
+                    *(
+                        self._table.c[column]
+                        for column in self._configuration.allowed_columns
+                    )
+                ).where(self._table.c[record_id_field] == identifier)
             )
             row = result.mappings().first()
         return dict(row) if row is not None else None
@@ -508,17 +617,32 @@ class ConfiguredApiConnector:
         self._require_read()
         return await self._store.schema()
 
-    async def read_pages(self, *, page_size: int = 100) -> AsyncIterator[ConnectorPage]:
+    async def read_pages(
+        self,
+        *,
+        page_size: int = 100,
+        fields: tuple[str, ...] | None = None,
+    ) -> AsyncIterator[ConnectorPage]:
         self._require_read()
         if page_size < 1 or page_size > 1000:
             raise ValueError("page_size must be between 1 and 1000")
         cursor: str | None = None
         seen_cursors: set[str] = set()
+        selected_fields = tuple(
+            dict.fromkeys(
+                (
+                    self.configuration.record_id_field,
+                    self.configuration.version_field,
+                    *(fields or ()),
+                )
+            )
+        )
         while True:
             page = await self._store.page(
                 cursor=cursor,
                 page_size=page_size,
                 record_id_field=self.configuration.record_id_field,
+                fields=selected_fields,
             )
             if page.cursor != cursor:
                 raise ConnectorConflictError("connector returned an inconsistent page cursor")
@@ -601,11 +725,24 @@ class InMemoryConnectorStore:
         )
 
     async def page(
-        self, *, cursor: str | None, page_size: int, record_id_field: str
+        self,
+        *,
+        cursor: str | None,
+        page_size: int,
+        record_id_field: str,
+        fields: tuple[str, ...] | None = None,
     ) -> ConnectorPage:
         ordered = sorted(self._records, key=lambda row: str(row.get(record_id_field, "")))
         start = int(cursor) if cursor is not None else 0
-        records = tuple(ordered[start : start + page_size])
+        selected = set(fields or ())
+        records = tuple(
+            {
+                key: value
+                for key, value in row.items()
+                if not selected or key in selected
+            }
+            for row in ordered[start : start + page_size]
+        )
         next_cursor = str(start + page_size) if start + page_size < len(ordered) else None
         return ConnectorPage(cursor=cursor, records=records, next_cursor=next_cursor)
 
@@ -676,3 +813,27 @@ def _mapping(value: Mapping[str, object], key: str) -> dict[str, object]:
     if not isinstance(candidate, Mapping):
         raise ValueError(f"connector {key} must be an object")
     return {str(field): item for field, item in candidate.items()}
+
+
+def _next_database_version(expected_version: str, idempotency_key: str) -> str:
+    """Build a bounded token that sorts after every version issued by this adapter."""
+
+    prior_counter = 0
+    if expected_version.startswith("z~") and len(expected_version) >= 15:
+        try:
+            prior_counter = int(expected_version[2:15], 36)
+        except ValueError:
+            prior_counter = 0
+    counter = max(time.time_ns(), prior_counter + 1)
+    encoded_counter = _base36(counter).rjust(13, "0")
+    digest = sha256(f"{expected_version}:{idempotency_key}".encode()).hexdigest()
+    return f"z~{encoded_counter}{digest[:49]}"
+
+
+def _base36(value: int) -> str:
+    alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
+    encoded = ""
+    while value:
+        value, remainder = divmod(value, 36)
+        encoded = alphabet[remainder] + encoded
+    return encoded or "0"

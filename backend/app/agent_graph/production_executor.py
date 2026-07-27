@@ -45,6 +45,8 @@ from app.agent_runtime.csv_rollback_handlers import (
 )
 from app.agent_runtime.local_publication import publish_local_target
 from app.agent_runtime.repository import AgentRuntimeRepository
+from app.agent_runtime.sql_governance_handlers import SqlGovernanceExecutionHandler
+from app.agent_runtime.sql_rollback_handlers import SqlRollbackExecutionHandler
 from app.agent_runtime.state_machine import AgentPhase
 from app.agent_runtime.worker import AgentWorkContext
 from app.ai.agent_batching import AgentBatchPlanner
@@ -55,6 +57,16 @@ from app.ai.graph_subagents import (
     GraphSubAgentFailure,
 )
 from app.ai.skills.contracts import (
+    CsvColumnProfile,
+    CsvFieldMapping,
+    CsvSchemaMappingInput,
+    CsvSchemaMappingOutput,
+    CsvSourceSchemaProfile,
+    DatabaseColumnProfile,
+    DatabaseFieldMapping,
+    DatabaseSchemaMappingInput,
+    DatabaseSchemaMappingOutput,
+    DatabaseSourceSchemaProfile,
     GovernanceExecutionInput,
     GovernanceReportInput,
     IdentityWorkItem,
@@ -67,9 +79,21 @@ from app.ai.skills.contracts import (
     SourceInspectionInput,
     SourceInspectionResult,
 )
+from app.connectors.configured import (
+    ConfiguredApiConnector,
+    ConnectorConflictError,
+    DatabaseConnectorConfiguration,
+)
+from app.connectors.database_runtime import (
+    ConfiguredDatabaseConnectorRuntime,
+    DatabaseConnectorResolver,
+)
 from app.core.config import Settings
 from app.core.security import OperatorContext
-from app.ingestion.csv_reader import inspect_csv, read_csv_frame
+from app.ingestion.agent_contract import AgentContractError, AgentContractMapper
+from app.ingestion.agent_csv_adapter import AgentCsvIngestionAdapter
+from app.ingestion.agent_database_adapter import AgentDatabaseIngestionAdapter
+from app.ingestion.csv_reader import CsvFormatError, inspect_csv, read_csv_frame
 from app.models.agent_analysis import (
     AgentApprovalGroupRecord,
     AgentClarificationRecord,
@@ -86,7 +110,7 @@ from app.models.snapshots import Snapshot, SourceFile
 from app.reconciliation.agent_identity import AgentIdentityIndexBuilder
 from app.repositories.agent_analysis import AgentAnalysisRepository
 from app.repositories.executions import ExecutionRepository
-from app.schemas.agent_ingestion import AgentSourceRole
+from app.schemas.agent_ingestion import AgentEntityKind, AgentInputMark, AgentSourceRole
 
 
 class ProductionGraphActionExecutor:
@@ -102,6 +126,7 @@ class ProductionGraphActionExecutor:
         output_root: Path | None = None,
         csv_execution_enabled: bool = False,
         settings: Settings | None = None,
+        database_connectors: DatabaseConnectorResolver | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._provider = provider
@@ -117,6 +142,21 @@ class ProductionGraphActionExecutor:
         )
         self._csv_execution_enabled = csv_execution_enabled
         self._settings = settings
+        self._database_connectors = database_connectors or (
+            ConfiguredDatabaseConnectorRuntime(settings)
+            if settings is not None and settings.agent_graph_sql_execution_enabled
+            else None
+        )
+        self._sql_governance = (
+            SqlGovernanceExecutionHandler(self._database_connectors)
+            if self._database_connectors is not None
+            else None
+        )
+        self._sql_rollback = (
+            SqlRollbackExecutionHandler(self._database_connectors)
+            if self._database_connectors is not None
+            else None
+        )
 
     async def __call__(
         self,
@@ -140,17 +180,14 @@ class ProductionGraphActionExecutor:
             return await self._record_guarded_noop(context, action)
         if action_kind == "aggregate_risk":
             if context.current_node != "aggregate_risk":
-                raise GraphGuardRejected(
-                    "aggregate_risk_action_outside_aggregate_node"
-                )
+                raise GraphGuardRejected("aggregate_risk_action_outside_aggregate_node")
             return await self._aggregate_risk(context, action)
         if action_kind == "compile_execution_plan":
             return await self._compile_execution_plan(context, action)
         if context.current_node == "preflight_execution":
             return await self._preflight_execution(context, action)
         if (
-            context.current_node
-            in {"execute_ready_operations", "execute_remaining_independent"}
+            context.current_node in {"execute_ready_operations", "execute_remaining_independent"}
             and action_kind == "verify_operations"
         ):
             return await self._execute_governance(context, action)
@@ -182,6 +219,10 @@ class ProductionGraphActionExecutor:
         context: GraphWorkContext,
         action: AllowedActionV1,
     ) -> GraphActionOutcome:
+        if context.ingestion_contract_version == "source-ingestion-v2":
+            if await self._task_source_mode(context.task_id) == "database":
+                return await self._inspect_database_source_v2(context, action)
+            return await self._inspect_csv_source_v2(context, action)
         resource_id = _only(action.resource_ids)
         role = _source_role(resource_id)
         async with self._session_factory() as session:
@@ -230,11 +271,164 @@ class ProductionGraphActionExecutor:
                 )
         return _outcome(action)
 
+    async def _inspect_database_source_v2(
+        self,
+        context: GraphWorkContext,
+        action: AllowedActionV1,
+    ) -> GraphActionOutcome:
+        role = _source_role(_only(action.resource_ids))
+        connector_id = await self._database_connector_id(context.task_id, role)
+        connector = await self._database_connector(connector_id)
+        health = await connector.health()
+        schema = await connector.discover_schema()
+        version = await connector.version()
+        configuration = connector.configuration
+        if not isinstance(configuration, DatabaseConnectorConfiguration):
+            raise TypeError("SQL task resolved a non-database connector")
+        physical_fields = set(schema.fields)
+        configured_fields = set(configuration.field_columns.values())
+        missing_contract_fields = _fixed_contract_fields().difference(configuration.field_columns)
+        problem_codes: list[str] = []
+        if not health.ready:
+            problem_codes.append("database_connector_unavailable")
+        if not configured_fields <= physical_fields:
+            problem_codes.append("database_schema_mapping_stale")
+        mapping_required = bool(missing_contract_fields) and not problem_codes
+        payload = {
+            "schema_version": "source-ingestion-v2",
+            "mapping_version": "fixed-six-field-sql-mapping-v2",
+            "connector_kind": "database",
+            "connector_id": connector_id,
+            "dialect": configuration.dialect,
+            "recognized": not problem_codes and not mapping_required,
+            "mapping_required": mapping_required,
+            "schema_fingerprint": _hash(
+                {
+                    "schema": schema.model_dump(mode="json"),
+                    "table": configuration.table_name,
+                    "primary_key": configuration.primary_key,
+                    "version_column": configuration.version_column,
+                }
+            ),
+            "source_version": version.value,
+            "safe_problem_codes": problem_codes,
+            "model_calls": 0,
+        }
+        async with self._session_factory() as session:
+            async with session.begin():
+                await AgentAnalysisRepository(session).persist_capability(
+                    run_id=context.run_id,
+                    task_id=context.task_id,
+                    tenant_id=context.tenant_id,
+                    source_role=role,
+                    connector_kind="database",
+                    capabilities=health.capability_summary.model_dump(mode="json"),
+                )
+                await AgentRuntimeRepository(session).save_checkpoint(
+                    context.run_id,
+                    phase=AgentPhase.INGEST_AND_NORMALIZE,
+                    checkpoint_key=f"graph-source-inspection:{role}",
+                    input_hash=_hash(
+                        {
+                            "connector_id": connector_id,
+                            "source_version": version.value,
+                            "schema_fingerprint": payload["schema_fingerprint"],
+                        }
+                    ),
+                    payload=payload,
+                )
+                await self._record_deterministic_invocation(
+                    session,
+                    context=context,
+                    action=action,
+                    output=payload,
+                )
+        return _outcome(action)
+
+    async def _inspect_csv_source_v2(
+        self,
+        context: GraphWorkContext,
+        action: AllowedActionV1,
+    ) -> GraphActionOutcome:
+        role = _source_role(_only(action.resource_ids))
+        async with self._session_factory() as session:
+            async with session.begin():
+                _snapshot, source = await _source_snapshot(
+                    session,
+                    task_id=context.task_id,
+                    role=role,
+                )
+                problem_codes: tuple[str, ...] = ()
+                headers: tuple[str, ...] = ()
+                recognized = True
+                mapping_required = False
+                try:
+                    inspection = inspect_csv(Path(source.storage_path))
+                    headers = inspection.headers
+                except CsvFormatError as error:
+                    recognized = False
+                    problem_codes = (_safe_csv_problem_code(error),)
+                else:
+                    try:
+                        AgentContractMapper().assert_recognizable_headers(headers)
+                    except AgentContractError as error:
+                        recognized = False
+                        mapping_required = True
+                        problem_codes = (_safe_csv_problem_code(error),)
+                await AgentAnalysisRepository(session).persist_capability(
+                    run_id=context.run_id,
+                    task_id=context.task_id,
+                    tenant_id=context.tenant_id,
+                    source_role=role,
+                    connector_kind="csv",
+                    capabilities={
+                        "read": True,
+                        "write": role == AgentSourceRole.TARGET.value,
+                    },
+                )
+                payload = {
+                    "schema_version": "source-ingestion-v2",
+                    "mapping_version": "fixed-six-field-mapping-v2",
+                    "recognized": recognized,
+                    "mapping_required": mapping_required,
+                    "detected_fields": list(headers),
+                    "safe_problem_codes": list(problem_codes),
+                    "model_calls": 0,
+                }
+                await AgentRuntimeRepository(session).save_checkpoint(
+                    context.run_id,
+                    phase=AgentPhase.INGEST_AND_NORMALIZE,
+                    checkpoint_key=f"graph-source-inspection:{role}",
+                    input_hash=_hash(
+                        {
+                            "action": action.action_id,
+                            "source_hash": source.sha256,
+                            "contract": context.ingestion_contract_version,
+                        }
+                    ),
+                    payload=payload,
+                )
+                await self._record_deterministic_invocation(
+                    session,
+                    context=context,
+                    action=action,
+                    output=payload,
+                )
+        return _outcome(action)
+
     async def _normalize_batch(
         self,
         context: GraphWorkContext,
         action: AllowedActionV1,
     ) -> GraphActionOutcome:
+        if context.ingestion_contract_version == "source-ingestion-v2":
+            if action.resource_ids == ("source-pair:current",):
+                if await self._task_source_mode(context.task_id) == "database":
+                    return await self._resolve_database_mapping_v2(context, action)
+                return await self._resolve_csv_mapping_v2(context, action)
+            if await self._task_source_mode(context.task_id) == "database":
+                return await self._normalize_database_source_v2(context, action)
+            return await self._normalize_csv_source_v2(context, action)
         resource_id = _only(action.resource_ids)
         role = _source_role(resource_id)
         page = _source_page(resource_id)
@@ -253,9 +447,7 @@ class ProductionGraphActionExecutor:
                     context=context,
                     action=action,
                 )
-                result = await GraphIngestionAnalysisExecutors(
-                    runner
-                ).normalize_input_batch(
+                result = await GraphIngestionAnalysisExecutors(runner).normalize_input_batch(
                     GraphSkillInvocation(
                         task_id=context.task_id,
                         run_id=context.run_id,
@@ -298,6 +490,501 @@ class ProductionGraphActionExecutor:
                 )
         return _outcome(action)
 
+    async def _resolve_database_mapping_v2(
+        self,
+        context: GraphWorkContext,
+        action: AllowedActionV1,
+    ) -> GraphActionOutcome:
+        profiles: list[DatabaseSourceSchemaProfile] = []
+        field_refs: dict[str, dict[str, str]] = {}
+        configured_mappings: dict[str, dict[str, str]] = {}
+        connector_ids: dict[str, str] = {}
+        schema_fingerprints: dict[str, str] = {}
+        source_versions: dict[str, str] = {}
+        for role in ("authoritative", "target"):
+            connector_id = await self._database_connector_id(context.task_id, role)
+            connector_ids[role] = connector_id
+            connector = await self._database_connector(connector_id)
+            schema = await connector.discover_schema()
+            configuration = connector.configuration
+            if not isinstance(configuration, DatabaseConnectorConfiguration):
+                raise TypeError("SQL task resolved a non-database connector")
+            missing = set(configuration.field_columns.values()).difference(schema.fields)
+            if missing:
+                raise ValueError(f"{role} database mapping references unavailable fields")
+            schema_fields = tuple(sorted(schema.fields))
+            role_refs = {
+                f"database-column:{role}:{index}": field
+                for index, field in enumerate(schema_fields)
+            }
+            field_refs[role] = role_refs
+            configured_mappings[role] = dict(configuration.field_columns)
+            profiles.append(
+                DatabaseSourceSchemaProfile(
+                    source_role=role,
+                    connector_id=connector_id,
+                    dialect=configuration.dialect,
+                    relation_ref=(f"database-relation:{role}:{configuration.table_name}"),
+                    stable_key_ref=next(
+                        field_ref
+                        for field_ref, field in role_refs.items()
+                        if field == configuration.primary_key
+                    ),
+                    columns=tuple(
+                        DatabaseColumnProfile(
+                            source_field_ref=field_ref,
+                            column_name=field,
+                            inferred_type=_infer_database_column_type(field),
+                            nullable=field in schema.nullable_fields,
+                            candidate_contract_fields=(_database_contract_candidates(field)),
+                        )
+                        for field_ref, field in role_refs.items()
+                    ),
+                )
+            )
+            schema_fingerprints[role] = _hash(
+                {
+                    "schema": schema.model_dump(mode="json"),
+                    "table": configuration.table_name,
+                    "primary_key": configuration.primary_key,
+                    "version_column": configuration.version_column,
+                }
+            )
+            source_versions[role] = (await connector.version()).value
+
+        fixed_fields = _fixed_contract_fields()
+        deterministic = all(
+            set(mapping) == fixed_fields for mapping in configured_mappings.values()
+        )
+        async with self._session_factory() as session:
+            async with session.begin():
+                output: DatabaseSchemaMappingOutput
+                cache_hit = False
+                if deterministic:
+                    output = _database_mapping_output_from_config(
+                        configured_mappings=configured_mappings,
+                        field_refs=field_refs,
+                    )
+                    model_calls = 0
+                else:
+                    runtime = AgentRuntimeRepository(session)
+                    cached = await runtime.get_database_schema_mapping(
+                        tenant_id=context.tenant_id,
+                        authoritative_connector_id=connector_ids["authoritative"],
+                        target_connector_id=connector_ids["target"],
+                        authoritative_schema_fingerprint=schema_fingerprints["authoritative"],
+                        target_schema_fingerprint=schema_fingerprints["target"],
+                        ingestion_contract_version=context.ingestion_contract_version,
+                        skill_name="understand-organization-database-schema",
+                        skill_version="1.0.0",
+                    )
+                    if cached is not None:
+                        if _hash(cached.mapping) != cached.content_hash:
+                            raise ValueError("database schema mapping cache failed integrity check")
+                        output = _validate_database_mapping_output(
+                            DatabaseSchemaMappingOutput.model_validate(cached.mapping),
+                            field_refs=field_refs,
+                            configured_target_mapping=configured_mappings["target"],
+                        )
+                        model_calls = 0
+                        cache_hit = True
+                    else:
+                        _tools, runner, manifest_id = await self._analysis_runtime(
+                            session,
+                            context=context,
+                            action=action,
+                        )
+                        result = await runner.run(
+                            GraphSkillInvocation(
+                                task_id=context.task_id,
+                                run_id=context.run_id,
+                                graph_run_id=context.graph_run_id,
+                                graph_node=context.current_node,
+                                graph_cursor=context.graph_cursor,
+                                action_id=action.action_id,
+                                evidence_manifest_id=manifest_id,
+                                skill_name="understand-organization-database-schema",
+                                skill_version="1.0.0",
+                                input_payload=DatabaseSchemaMappingInput(
+                                    task_id=context.task_id,
+                                    run_id=context.run_id,
+                                    phase=AgentPhase.INGEST_AND_NORMALIZE,
+                                    evidence_refs=action.required_evidence,
+                                    sources=(profiles[0], profiles[1]),
+                                ).model_dump(mode="json"),
+                            ),
+                            result_validator=lambda candidate: _validate_database_mapping_output(
+                                candidate,
+                                field_refs=field_refs,
+                                configured_target_mapping=configured_mappings["target"],
+                            ),
+                        )
+                        validated_output = result.output
+                        if not isinstance(
+                            validated_output,
+                            DatabaseSchemaMappingOutput,
+                        ):
+                            raise RuntimeError("validated database mapping output changed type")
+                        output = validated_output
+                        model_calls = result.attempt_count
+                        if not output.unresolved_required_fields:
+                            mapping = output.model_dump(mode="json")
+                            await runtime.save_database_schema_mapping(
+                                tenant_id=context.tenant_id,
+                                authoritative_connector_id=connector_ids["authoritative"],
+                                target_connector_id=connector_ids["target"],
+                                authoritative_schema_fingerprint=(
+                                    schema_fingerprints["authoritative"]
+                                ),
+                                target_schema_fingerprint=schema_fingerprints["target"],
+                                ingestion_contract_version=context.ingestion_contract_version,
+                                skill_name="understand-organization-database-schema",
+                                skill_version="1.0.0",
+                                mapping=mapping,
+                                content_hash=_hash(mapping),
+                            )
+                payload = _database_mapping_checkpoint_payload(
+                    output,
+                    field_refs=field_refs,
+                    schema_fingerprints=schema_fingerprints,
+                    source_versions=source_versions,
+                    model_calls=model_calls,
+                    cache_hit=cache_hit,
+                )
+                await AgentRuntimeRepository(session).save_checkpoint(
+                    context.run_id,
+                    phase=AgentPhase.INGEST_AND_NORMALIZE,
+                    checkpoint_key="graph-database-field-mapping-v2",
+                    input_hash=_hash(
+                        {
+                            "schema_fingerprints": schema_fingerprints,
+                            "contract": context.ingestion_contract_version,
+                        }
+                    ),
+                    payload=payload,
+                )
+                if deterministic:
+                    await self._record_deterministic_invocation(
+                        session,
+                        context=context,
+                        action=action,
+                        output=payload,
+                    )
+        return _outcome(action)
+
+    async def _normalize_database_source_v2(
+        self,
+        context: GraphWorkContext,
+        action: AllowedActionV1,
+    ) -> GraphActionOutcome:
+        role = _source_role(_only(action.resource_ids))
+        connector_id = await self._database_connector_id(context.task_id, role)
+        connector = await self._database_connector(connector_id)
+        async with self._session_factory() as session:
+            task = await session.get(ReconciliationTask, context.task_id)
+            if task is None:
+                raise LookupError("Agent graph task is missing")
+            mapping = await AgentRuntimeRepository(session).get_checkpoint(
+                context.run_id,
+                phase=AgentPhase.INGEST_AND_NORMALIZE,
+                checkpoint_key="graph-database-field-mapping-v2",
+            )
+            if mapping is None or not mapping.payload.get("resolved", False):
+                raise ValueError("database ingestion mapping is unavailable")
+            role_mappings = mapping.payload.get("mappings")
+            if not isinstance(role_mappings, dict):
+                raise ValueError("database ingestion mapping is invalid")
+            mapped_source_versions = mapping.payload.get("source_versions")
+            expected_source_version = (
+                mapped_source_versions.get(role)
+                if isinstance(mapped_source_versions, dict)
+                else None
+            )
+            if not isinstance(expected_source_version, str):
+                raise ValueError("database ingestion source version is unavailable")
+            frozen_mapping = role_mappings.get(role)
+            if not isinstance(frozen_mapping, dict) or not all(
+                isinstance(field, str) and isinstance(column, str)
+                for field, column in frozen_mapping.items()
+            ):
+                raise ValueError("database ingestion role mapping is invalid")
+            snapshot, _source = await _source_snapshot(
+                session,
+                task_id=context.task_id,
+                role=role,
+            )
+        source_version_before = (await connector.version()).value
+        if source_version_before != expected_source_version:
+            raise ConnectorConflictError(
+                "database source changed after its field mapping was frozen"
+            )
+        outcome = await AgentDatabaseIngestionAdapter().extract(
+            connector=connector,
+            connector_id=connector_id,
+            task_id=context.task_id,
+            run_id=context.run_id,
+            snapshot_id=snapshot.id,
+            tenant_id=context.tenant_id,
+            source_role=AgentSourceRole(role),
+            selected_entities=_selected_agent_entities(task.entity_types),
+            field_mapping=frozen_mapping,
+        )
+        source_version = (await connector.version()).value
+        if source_version != source_version_before:
+            raise ConnectorConflictError("database source changed during bounded extraction")
+        async with self._session_factory() as session:
+            async with session.begin():
+                repository = AgentAnalysisRepository(session)
+                persisted = await repository.persist_inputs(outcome.records)
+                marks = _bind_input_marks(outcome.marks, persisted)
+                await repository.persist_marks(marks)
+                if role == "target":
+                    executions = ExecutionRepository(session)
+                    current = await executions.current_target_version(context.task_id)
+                    if current is None:
+                        version_hash = _hash(source_version)
+                        await executions.create_target_version(
+                            task_id=context.task_id,
+                            tenant_id=context.tenant_id,
+                            source_snapshot_id=snapshot.id,
+                            parent_version_id=None,
+                            batch_id=None,
+                            file_sha256=version_hash,
+                            content_hash=_hash(
+                                {
+                                    "connector_id": connector_id,
+                                    "source_version": source_version,
+                                }
+                            ),
+                            storage_path=(f"database://{connector_id}/version/{version_hash}"),
+                        )
+                payload = {
+                    "schema_version": "source-ingestion-v2",
+                    "mapping_version": "fixed-six-field-sql-mapping-v2",
+                    "source_role": role,
+                    "connector_id": connector_id,
+                    "source_version": source_version,
+                    "record_count": len(persisted),
+                    "mark_count": len(marks),
+                    "model_calls": 0,
+                }
+                await AgentRuntimeRepository(session).save_checkpoint(
+                    context.run_id,
+                    phase=AgentPhase.INGEST_AND_NORMALIZE,
+                    checkpoint_key=f"graph-source-normalization:{role}",
+                    input_hash=_hash(
+                        {
+                            "connector_id": connector_id,
+                            "source_version": payload["source_version"],
+                            "selected_entities": sorted(task.entity_types),
+                        }
+                    ),
+                    payload=payload,
+                )
+                await self._record_deterministic_invocation(
+                    session,
+                    context=context,
+                    action=action,
+                    output=payload,
+                )
+        return _outcome(action)
+
+    async def _task_source_mode(self, task_id: UUID) -> str:
+        async with self._session_factory() as session:
+            task = await session.get(ReconciliationTask, task_id)
+            if task is None or not isinstance(task.agent_intent, dict):
+                return "csv"
+            source = task.agent_intent.get("source")
+            return (
+                "database"
+                if isinstance(source, dict) and source.get("kind") == "database"
+                else "csv"
+            )
+
+    async def _database_connector_id(self, task_id: UUID, role: str) -> str:
+        async with self._session_factory() as session:
+            task = await session.get(ReconciliationTask, task_id)
+            if task is None or not isinstance(task.agent_intent, dict):
+                raise LookupError("SQL Agent task intent is missing")
+            selection = task.agent_intent.get("source" if role == "authoritative" else "target")
+            if not isinstance(selection, dict) or selection.get("kind") != "database":
+                raise ValueError("SQL Agent task source pair changed")
+            connector_id = selection.get("configuration_id")
+            if not isinstance(connector_id, str) or not connector_id:
+                raise ValueError("SQL Agent connector ID is missing")
+            return connector_id
+
+    async def _database_connector(
+        self,
+        connector_id: str,
+    ) -> ConfiguredApiConnector:
+        if self._database_connectors is None:
+            raise RuntimeError("SQL Agent connector runtime is unavailable")
+        return await self._database_connectors.connector(connector_id)
+
+    async def _resolve_csv_mapping_v2(
+        self,
+        context: GraphWorkContext,
+        action: AllowedActionV1,
+    ) -> GraphActionOutcome:
+        async with self._session_factory() as session:
+            async with session.begin():
+                materials = {
+                    role: await _source_snapshot(
+                        session,
+                        task_id=context.task_id,
+                        role=role,
+                    )
+                    for role in ("authoritative", "target")
+                }
+                profiles, field_refs = _csv_source_profiles(materials)
+                deterministic = _deterministic_csv_pair_mapping(profiles)
+                if deterministic is not None:
+                    payload = _csv_mapping_checkpoint_payload(
+                        deterministic,
+                        field_refs=field_refs,
+                        model_calls=0,
+                    )
+                    await AgentRuntimeRepository(session).save_checkpoint(
+                        context.run_id,
+                        phase=AgentPhase.INGEST_AND_NORMALIZE,
+                        checkpoint_key="graph-csv-field-mapping-v2",
+                        input_hash=_csv_mapping_input_hash(materials),
+                        payload=payload,
+                    )
+                    await self._record_deterministic_invocation(
+                        session,
+                        context=context,
+                        action=action,
+                        output=payload,
+                    )
+                    return _outcome(action)
+
+                _tools, runner, manifest_id = await self._analysis_runtime(
+                    session,
+                    context=context,
+                    action=action,
+                )
+                result = await runner.run(
+                    GraphSkillInvocation(
+                        task_id=context.task_id,
+                        run_id=context.run_id,
+                        graph_run_id=context.graph_run_id,
+                        graph_node=context.current_node,
+                        graph_cursor=context.graph_cursor,
+                        action_id=action.action_id,
+                        evidence_manifest_id=manifest_id,
+                        skill_name="map-csv-organization-schema",
+                        skill_version="1.0.0",
+                        input_payload=CsvSchemaMappingInput(
+                            task_id=context.task_id,
+                            run_id=context.run_id,
+                            phase=AgentPhase.INGEST_AND_NORMALIZE,
+                            evidence_refs=action.required_evidence,
+                            sources=profiles,
+                        ).model_dump(mode="json"),
+                    ),
+                    result_validator=lambda output: _validate_csv_mapping_output(
+                        output,
+                        field_refs=field_refs,
+                    ),
+                )
+                output = result.output
+                if not isinstance(output, CsvSchemaMappingOutput):
+                    raise RuntimeError("validated CSV mapping output changed type")
+                payload = _csv_mapping_checkpoint_payload(
+                    output,
+                    field_refs=field_refs,
+                    model_calls=result.attempt_count,
+                )
+                await AgentRuntimeRepository(session).save_checkpoint(
+                    context.run_id,
+                    phase=AgentPhase.INGEST_AND_NORMALIZE,
+                    checkpoint_key="graph-csv-field-mapping-v2",
+                    input_hash=_csv_mapping_input_hash(materials),
+                    payload=payload,
+                )
+        return _outcome(action)
+
+    async def _normalize_csv_source_v2(
+        self,
+        context: GraphWorkContext,
+        action: AllowedActionV1,
+    ) -> GraphActionOutcome:
+        role = _source_role(_only(action.resource_ids))
+        async with self._session_factory() as session:
+            async with session.begin():
+                task = await session.get(ReconciliationTask, context.task_id)
+                if task is None:
+                    raise LookupError("Agent graph task is missing")
+                snapshot, source = await _source_snapshot(
+                    session,
+                    task_id=context.task_id,
+                    role=role,
+                )
+                mapping_checkpoint = await AgentRuntimeRepository(session).get_checkpoint(
+                    context.run_id,
+                    phase=AgentPhase.INGEST_AND_NORMALIZE,
+                    checkpoint_key="graph-csv-field-mapping-v2",
+                )
+                if mapping_checkpoint is None:
+                    field_mapping = AgentContractMapper().resolve_header_mapping(
+                        inspect_csv(Path(source.storage_path)).headers
+                    )
+                else:
+                    if not mapping_checkpoint.payload.get("resolved", False):
+                        raise ValueError("CSV fixed-field mapping is unresolved")
+                    mappings = mapping_checkpoint.payload.get("mappings", {})
+                    role_mapping = mappings.get(role) if isinstance(mappings, dict) else None
+                    if not isinstance(role_mapping, dict):
+                        raise ValueError("CSV fixed-field mapping is missing a source role")
+                    field_mapping = {
+                        str(contract_field): str(header)
+                        for contract_field, header in role_mapping.items()
+                    }
+                outcome = AgentCsvIngestionAdapter().inspect_csv(
+                    path=Path(source.storage_path),
+                    task_id=context.task_id,
+                    run_id=context.run_id,
+                    snapshot_id=snapshot.id,
+                    tenant_id=context.tenant_id,
+                    source_role=AgentSourceRole(role),
+                    selected_entities=_selected_agent_entities(task.entity_types),
+                    field_mapping=field_mapping,
+                )
+                repository = AgentAnalysisRepository(session)
+                persisted = await repository.persist_inputs(outcome.records)
+                marks = _bind_input_marks(outcome.marks, persisted)
+                await repository.persist_marks(marks)
+                payload = {
+                    "schema_version": "source-ingestion-v2",
+                    "mapping_version": "fixed-six-field-mapping-v2",
+                    "source_role": role,
+                    "record_count": len(persisted),
+                    "mark_count": len(marks),
+                    "model_calls": 0,
+                }
+                await AgentRuntimeRepository(session).save_checkpoint(
+                    context.run_id,
+                    phase=AgentPhase.INGEST_AND_NORMALIZE,
+                    checkpoint_key=f"graph-source-normalization:{role}",
+                    input_hash=_hash(
+                        {
+                            "source_hash": source.sha256,
+                            "mapping_version": "fixed-six-field-mapping-v2",
+                            "selected_entities": sorted(task.entity_types),
+                        }
+                    ),
+                    payload=payload,
+                )
+                await self._record_deterministic_invocation(
+                    session,
+                    context=context,
+                    action=action,
+                    output=payload,
+                )
+        return _outcome(action)
+
     async def _build_identity_index(
         self,
         context: GraphWorkContext,
@@ -321,9 +1008,7 @@ class ProductionGraphActionExecutor:
     ) -> GraphActionOutcome:
         async with self._session_factory() as session:
             async with session.begin():
-                batches = await AgentBatchPlanner(session).create_for_run(
-                    run_id=context.run_id
-                )
+                batches = await AgentBatchPlanner(session).create_for_run(run_id=context.run_id)
                 await self._record_deterministic_invocation(
                     session,
                     context=context,
@@ -359,18 +1044,14 @@ class ProductionGraphActionExecutor:
                 batch_id = claimed.id
                 batch_lease_token = claimed.lease_token
                 work_rows = await _work_rows(preparation_session, work_ids)
-                expected_kinds = {
-                    work.id: work.kind for work, _record in work_rows
-                }
+                expected_kinds = {work.id: work.kind for work, _record in work_rows}
                 tools, _runner, manifest_id = await self._analysis_runtime(
                     preparation_session,
                     context=context,
                     action=action,
                 )
                 paired_evidence = {
-                    work.id: await tools.paired_record_evidence(
-                        f"paired-record:{work.id}"
-                    )
+                    work.id: await tools.paired_record_evidence(f"paired-record:{work.id}")
                     for work, _record in work_rows
                 }
                 input_payload = ReconcileEntityBatchInput(
@@ -383,9 +1064,7 @@ class ProductionGraphActionExecutor:
                             work_item_id=work.id,
                             entity_kind=record.entity_kind,
                             target_locator=record.stable_locator,
-                            candidate_evidence_refs=(
-                                f"paired-record:{work.id}",
-                            ),
+                            candidate_evidence_refs=(f"paired-record:{work.id}",),
                             paired_evidence=paired_evidence[work.id],
                         )
                         for work, record in work_rows
@@ -404,9 +1083,7 @@ class ProductionGraphActionExecutor:
                 if replay_manifest_id != manifest_id:
                     raise RuntimeError("analysis evidence manifest replay changed identity")
                 try:
-                    result = await GraphIngestionAnalysisExecutors(
-                        runner
-                    ).analyze_actionable_batch(
+                    result = await GraphIngestionAnalysisExecutors(runner).analyze_actionable_batch(
                         GraphSkillInvocation(
                             task_id=context.task_id,
                             run_id=context.run_id,
@@ -429,9 +1106,7 @@ class ProductionGraphActionExecutor:
         if model_failure is not None:
             async with self._session_factory() as release_session:
                 async with release_session.begin():
-                    await AgentAnalysisRepository(
-                        release_session
-                    ).release_batch_claim(
+                    await AgentAnalysisRepository(release_session).release_batch_claim(
                         batch_id=batch_id,
                         worker_id=context.worker_id,
                         lease_token=batch_lease_token,
@@ -464,9 +1139,7 @@ class ProductionGraphActionExecutor:
                         select(AgentClarificationRecord)
                         .where(
                             AgentClarificationRecord.run_id == context.run_id,
-                            AgentClarificationRecord.status.in_(
-                                ("pending", "interpreted")
-                            ),
+                            AgentClarificationRecord.status.in_(("pending", "interpreted")),
                         )
                         .order_by(
                             AgentClarificationRecord.created_at,
@@ -475,9 +1148,7 @@ class ProductionGraphActionExecutor:
                     )
                 )
                 if not clarifications:
-                    raise ValueError(
-                        "identity conflict action has no unresolved clarification"
-                    )
+                    raise ValueError("identity conflict action has no unresolved clarification")
                 await AgentGraphRepository(session).record_human_gate(
                     graph_run_id=context.graph_run_id,
                     cursor=context.graph_cursor,
@@ -501,9 +1172,7 @@ class ProductionGraphActionExecutor:
                     context=context,
                     action=action,
                     output={
-                        "clarification_ids": [
-                            str(item.id) for item in clarifications
-                        ],
+                        "clarification_ids": [str(item.id) for item in clarifications],
                         "interaction": "operator_dialogue_required",
                     },
                 )
@@ -610,22 +1279,31 @@ class ProductionGraphActionExecutor:
                     .where(AgentGovernancePlanRecord.run_id == context.run_id)
                     .order_by(AgentGovernancePlanRecord.created_at.desc())
                 )
-                current = await ExecutionRepository(
-                    session
-                ).current_target_version(context.task_id)
-                stale = (
-                    plan is not None
-                    and (
-                        current is None
-                        or f"sha256:{current.file_sha256}"
-                        != plan.target_version
+                current = await ExecutionRepository(session).current_target_version(context.task_id)
+                task = await session.get(ReconciliationTask, context.task_id)
+                external_version_hash: str | None = None
+                if _task_uses_database(task):
+                    if task is None or not isinstance(task.agent_intent, dict):
+                        raise LookupError("SQL Agent task intent is missing")
+                    target = task.agent_intent.get("target")
+                    connector_id = (
+                        target.get("configuration_id") if isinstance(target, dict) else None
+                    )
+                    if not isinstance(connector_id, str):
+                        raise ValueError("SQL Agent target connector ID is missing")
+                    connector = await self._database_connector(connector_id)
+                    external_version_hash = SqlGovernanceExecutionHandler.hash_version(
+                        (await connector.version()).value
+                    )
+                stale = plan is not None and (
+                    current is None
+                    or f"sha256:{current.file_sha256}" != plan.target_version
+                    or (
+                        external_version_hash is not None
+                        and current.file_sha256 != external_version_hash
                     )
                 )
-                expected = (
-                    "request_cross_phase_replan"
-                    if stale
-                    else "execute_ready_operations"
-                )
+                expected = "request_cross_phase_replan" if stale else "execute_ready_operations"
                 if action_kind != expected:
                     raise ValueError("preflight action disagrees with target version")
                 if stale:
@@ -640,9 +1318,7 @@ class ProductionGraphActionExecutor:
                                 "plan_id": str(plan.id),
                                 "planned_target_version": plan.target_version,
                                 "current_target_version": (
-                                    f"sha256:{current.file_sha256}"
-                                    if current is not None
-                                    else None
+                                    f"sha256:{current.file_sha256}" if current is not None else None
                                 ),
                             }
                         ),
@@ -697,20 +1373,35 @@ class ProductionGraphActionExecutor:
                         output={"operation_count": 0, "plan_id": str(plan.id)},
                     )
                     return _outcome(action)
-                if not self._csv_execution_enabled:
+                task = await session.get(ReconciliationTask, context.task_id)
+                database_task = _task_uses_database(task)
+                if not database_task and not self._csv_execution_enabled:
                     raise RuntimeError(
                         "Agent graph CSV execution is disabled before a writable plan"
                     )
+                if database_task and self._sql_governance is None:
+                    raise RuntimeError(
+                        "Agent graph SQL execution is disabled before a writable plan"
+                    )
 
                 async def execute_operation(operation_id: UUID) -> OperationOutcome:
-                    record = await self._governance.execute_operation(
-                        session,
-                        _legacy_context(
-                            context,
-                            AgentPhase.EXECUTE_AND_VERIFY,
-                        ),
-                        operation_id=operation_id,
+                    legacy_context = _legacy_context(
+                        context,
+                        AgentPhase.EXECUTE_AND_VERIFY,
                     )
+                    if database_task:
+                        assert self._sql_governance is not None
+                        record = await self._sql_governance.execute_operation(
+                            session,
+                            legacy_context,
+                            operation_id=operation_id,
+                        )
+                    else:
+                        record = await self._governance.execute_operation(
+                            session,
+                            legacy_context,
+                            operation_id=operation_id,
+                        )
                     if record is None or record.run_id != context.run_id:
                         raise LookupError("executed operation fact is missing")
                     status = _operation_status(record.status)
@@ -718,9 +1409,7 @@ class ProductionGraphActionExecutor:
                         operation_id=record.id,
                         status=status,
                         verification_ref=(
-                            f"verification:{record.id}"
-                            if status == "succeeded"
-                            else None
+                            f"verification:{record.id}" if status == "succeeded" else None
                         ),
                         safe_error_code=(
                             None
@@ -734,6 +1423,21 @@ class ProductionGraphActionExecutor:
                         ),
                     )
 
+                if context.execution_contract_version == "deterministic-execution-v2":
+                    outcomes = tuple(
+                        [await execute_operation(operation_id) for operation_id in operation_ids]
+                    )
+                    await self._record_deterministic_invocation(
+                        session,
+                        context=context,
+                        action=action,
+                        output={
+                            "plan_id": str(plan.id),
+                            "outcomes": [outcome.model_dump(mode="json") for outcome in outcomes],
+                        },
+                    )
+                    return _outcome(action)
+
                 bound_action = action.model_copy(
                     update={
                         "resource_ids": (
@@ -741,8 +1445,7 @@ class ProductionGraphActionExecutor:
                             *(f"operation:{item}" for item in operation_ids),
                         ),
                         "required_evidence": tuple(
-                            f"execution-outcome:{item}"
-                            for item in operation_ids
+                            f"execution-outcome:{item}" for item in operation_ids
                         ),
                     }
                 )
@@ -817,7 +1520,8 @@ class ProductionGraphActionExecutor:
                     session,
                     run_id=context.run_id,
                 )
-                if self._settings is not None:
+                task = await session.get(ReconciliationTask, context.task_id)
+                if self._settings is not None and not _task_uses_database(task):
                     output_version_id = facts.get("output_target_version_id")
                     facts["publication"] = await publish_local_target(
                         session,
@@ -826,9 +1530,7 @@ class ProductionGraphActionExecutor:
                         run_id=context.run_id,
                         phase=AgentPhase.GENERATE_REPORT,
                         target_version_id=(
-                            UUID(str(output_version_id))
-                            if output_version_id is not None
-                            else None
+                            UUID(str(output_version_id)) if output_version_id is not None else None
                         ),
                     )
                 terminal_state = (
@@ -838,9 +1540,7 @@ class ProductionGraphActionExecutor:
                     if context.current_node == "termination_report"
                     else "completed"
                 )
-                fact_ref = (
-                    f"report-facts:{context.run_id}:{context.graph_cursor}"
-                )
+                fact_ref = f"report-facts:{context.run_id}:{context.graph_cursor}"
                 bound_action = action.model_copy(
                     update={
                         "resource_ids": (fact_ref,),
@@ -971,9 +1671,7 @@ class ProductionGraphActionExecutor:
                 task = await session.get(ReconciliationTask, context.task_id)
                 if task is None or not task.agent_intent:
                     raise LookupError("rollback task facts are missing")
-                mutations = tuple(
-                    dict(item) for item in task.agent_intent.get("operations", [])
-                )
+                mutations = tuple(dict(item) for item in task.agent_intent.get("operations", []))
                 operation_ids = tuple(UUID(str(item["id"])) for item in mutations)
                 original_task_id = UUID(str(task.agent_intent["source_task_id"]))
                 resource_id = f"rollback-facts:{context.run_id}"
@@ -1013,9 +1711,7 @@ class ProductionGraphActionExecutor:
                     operator=operator,
                     max_retries=self._max_retries,
                 )
-                assessment = await GraphRollbackAssessmentExecutor(
-                    runner=runner
-                ).run(
+                assessment = await GraphRollbackAssessmentExecutor(runner=runner).run(
                     GraphSkillInvocation(
                         task_id=context.task_id,
                         run_id=context.run_id,
@@ -1042,15 +1738,11 @@ class ProductionGraphActionExecutor:
                         graph_run_id=context.graph_run_id,
                         cursor=context.graph_cursor,
                         gate_kind="rollback_conflict",
-                        member_ids=tuple(
-                            str(item)
-                            for item in assessment.conflict_operation_ids
-                        ),
+                        member_ids=tuple(str(item) for item in assessment.conflict_operation_ids),
                         content_hash=_hash(
                             {
                                 "conflict_operation_ids": [
-                                    str(item)
-                                    for item in assessment.conflict_operation_ids
+                                    str(item) for item in assessment.conflict_operation_ids
                                 ],
                                 "impact_zh": assessment.impact_zh,
                             }
@@ -1073,8 +1765,7 @@ class ProductionGraphActionExecutor:
                 conflict_statuses = tuple(
                     await session.scalars(
                         select(AgentHumanGateRecord.status).where(
-                            AgentHumanGateRecord.graph_run_id
-                            == context.graph_run_id,
+                            AgentHumanGateRecord.graph_run_id == context.graph_run_id,
                             AgentHumanGateRecord.gate_kind == "rollback_conflict",
                         )
                     )
@@ -1085,8 +1776,7 @@ class ProductionGraphActionExecutor:
                 if task is None or not task.agent_intent:
                     raise LookupError("rollback task facts are missing")
                 operation_ids = tuple(
-                    str(item["id"])
-                    for item in task.agent_intent.get("operations", [])
+                    str(item["id"]) for item in task.agent_intent.get("operations", [])
                 )
                 if not operation_ids:
                     raise ValueError("rollback approval has no verified operations")
@@ -1119,17 +1809,14 @@ class ProductionGraphActionExecutor:
                 gates = tuple(
                     await session.scalars(
                         select(AgentHumanGateRecord).where(
-                            AgentHumanGateRecord.graph_run_id
-                            == context.graph_run_id,
+                            AgentHumanGateRecord.graph_run_id == context.graph_run_id,
                             AgentHumanGateRecord.gate_kind.in_(
                                 ("rollback_conflict", "rollback_approval")
                             ),
                         )
                     )
                 )
-                approval = tuple(
-                    gate for gate in gates if gate.gate_kind == "rollback_approval"
-                )
+                approval = tuple(gate for gate in gates if gate.gate_kind == "rollback_approval")
                 if len(approval) != 1 or approval[0].status != "approved":
                     raise ValueError("rollback requires one approved frozen gate")
                 if any(
@@ -1173,31 +1860,104 @@ class ProductionGraphActionExecutor:
                     raise ValueError("rollback has no verified operations")
                 operation_ids = tuple(item.id for item in operations)
                 plan_id = uuid5(NAMESPACE_URL, f"agent-rollback:{task.id}")
+                database_rollback = _task_uses_database(task)
+                if database_rollback and self._sql_rollback is None:
+                    raise RuntimeError("SQL rollback connector runtime is unavailable")
 
                 async def execute_operation(operation_id: UUID) -> OperationOutcome:
-                    fact = await self._rollback.execute_operation(
-                        session,
-                        _legacy_context(
-                            context,
-                            AgentPhase.EXECUTE_RESTORE,
-                        ),
-                        operation_id,
+                    legacy_context = _legacy_context(
+                        context,
+                        AgentPhase.EXECUTE_RESTORE,
                     )
+                    if database_rollback:
+                        assert self._sql_rollback is not None
+                        fact = await self._sql_rollback.execute_operation(
+                            session,
+                            legacy_context,
+                            operation_id,
+                        )
+                    else:
+                        fact = await self._rollback.execute_operation(
+                            session,
+                            legacy_context,
+                            operation_id,
+                        )
                     status = _operation_status(str(fact["status"]))
                     return OperationOutcome(
                         operation_id=operation_id,
                         status=status,
                         verification_ref=(
-                            f"verification:{operation_id}"
-                            if status == "succeeded"
-                            else None
+                            f"verification:{operation_id}" if status == "succeeded" else None
                         ),
                         safe_error_code=(
-                            None
-                            if status == "succeeded"
-                            else "rollback_target_write_failed"
+                            None if status == "succeeded" else "rollback_target_write_failed"
                         ),
                     )
+
+                if context.execution_contract_version == "deterministic-execution-v2":
+                    mutation_facts = []
+                    for operation_id in operation_ids:
+                        legacy_context = _legacy_context(
+                            context,
+                            AgentPhase.EXECUTE_RESTORE,
+                        )
+                        if database_rollback:
+                            assert self._sql_rollback is not None
+                            fact = await self._sql_rollback.execute_operation(
+                                session,
+                                legacy_context,
+                                operation_id,
+                            )
+                        else:
+                            fact = await self._rollback.execute_operation(
+                                session,
+                                legacy_context,
+                                operation_id,
+                            )
+                        mutation_facts.append(fact)
+                    facts: dict[str, object] = {
+                        "source_task_id": str(task.parent_task_id),
+                        "mutations": mutation_facts,
+                    }
+                    output_fact = next(
+                        (
+                            item
+                            for item in reversed(mutation_facts)
+                            if item.get("output_target_version_id")
+                        ),
+                        None,
+                    )
+                    if output_fact is not None:
+                        facts.update(
+                            {
+                                "output_target_version_id": output_fact["output_target_version_id"],
+                                "output_target_path": output_fact["output_target_path"],
+                            }
+                        )
+                    await AgentRuntimeRepository(session).save_checkpoint(
+                        context.run_id,
+                        phase=AgentPhase.EXECUTE_RESTORE,
+                        checkpoint_key=(
+                            "agent-sql-rollback-execution-v2"
+                            if database_rollback
+                            else "agent-csv-rollback-execution-v1"
+                        ),
+                        input_hash=str(task.request_hash),
+                        payload=facts,
+                    )
+                    await self._record_deterministic_invocation(
+                        session,
+                        context=context,
+                        action=action,
+                        output={
+                            "restore_plan_id": str(plan_id),
+                            "operation_count": len(operation_ids),
+                            "outcome_statuses": [
+                                str(item.get("status", "skipped")) for item in mutation_facts
+                            ],
+                        },
+                    )
+                    return _outcome(action)
 
                 resources = (
                     f"execution-plan:{plan_id}",
@@ -1281,14 +2041,20 @@ class ProductionGraphActionExecutor:
                 checkpoint = await AgentRuntimeRepository(session).get_checkpoint(
                     context.run_id,
                     phase=AgentPhase.EXECUTE_RESTORE,
-                    checkpoint_key="agent-csv-rollback-execution-v1",
+                    checkpoint_key=(
+                        "agent-sql-rollback-execution-v2"
+                        if _task_uses_database(
+                            await session.get(
+                                ReconciliationTask,
+                                context.task_id,
+                            )
+                        )
+                        else "agent-csv-rollback-execution-v1"
+                    ),
                 )
-                facts = (
-                    dict(checkpoint.payload)
-                    if checkpoint is not None
-                    else {"mutations": []}
-                )
-                if self._settings is not None:
+                facts = dict(checkpoint.payload) if checkpoint is not None else {"mutations": []}
+                task = await session.get(ReconciliationTask, context.task_id)
+                if self._settings is not None and not _task_uses_database(task):
                     output_version_id = facts.get("output_target_version_id")
                     facts["publication"] = await publish_local_target(
                         session,
@@ -1297,9 +2063,7 @@ class ProductionGraphActionExecutor:
                         run_id=context.run_id,
                         phase=AgentPhase.REPORT_RESTORE,
                         target_version_id=(
-                            UUID(str(output_version_id))
-                            if output_version_id is not None
-                            else None
+                            UUID(str(output_version_id)) if output_version_id is not None else None
                         ),
                     )
                 fact_ref = f"report-facts:{context.run_id}:{context.graph_cursor}"
@@ -1338,8 +2102,7 @@ class ProductionGraphActionExecutor:
                     max_retries=self._max_retries,
                 )
                 rollback_eligible = any(
-                    item.get("status") == "succeeded"
-                    for item in facts.get("mutations", [])
+                    item.get("status") == "succeeded" for item in facts.get("mutations", [])
                 )
                 await GraphReportExecutor(session, runner=runner).generate(
                     GraphSkillInvocation(
@@ -1406,9 +2169,7 @@ class ProductionGraphActionExecutor:
             tenant_id=context.tenant_id,
             tokenization_secret=self._tokenization_secret,
         )
-        issued_sensitive_tokens = await tools.prepare_manifest_tokens(
-            action.resource_ids
-        )
+        issued_sensitive_tokens = await tools.prepare_manifest_tokens(action.resource_ids)
         manifest_id = await _record_manifest(
             session,
             context=context,
@@ -1487,17 +2248,11 @@ async def _record_manifest(
         if authority_snapshot is not None and target_snapshot is not None
         else None
     )
-    current_target = await ExecutionRepository(session).current_target_version(
-        context.task_id
-    )
+    current_target = await ExecutionRepository(session).current_target_version(context.task_id)
     target_version = (
         f"sha256:{current_target.file_sha256}"
         if current_target is not None
-        else (
-            f"sha256:{target_snapshot.file_hash}"
-            if target_snapshot is not None
-            else None
-        )
+        else (f"sha256:{target_snapshot.file_hash}" if target_snapshot is not None else None)
     )
     existing_record = await session.scalar(
         select(AgentEvidenceManifestRecord).where(
@@ -1555,8 +2310,7 @@ async def _page_locators(
     path = Path(source.storage_path)
     frame = read_csv_frame(path, inspect_csv(path))
     return tuple(
-        f"csv:{int(row['_row_number'])}"
-        for row in frame.slice((page - 1) * 50, 50).to_dicts()
+        f"csv:{int(row['_row_number'])}" for row in frame.slice((page - 1) * 50, 50).to_dicts()
     )
 
 
@@ -1596,6 +2350,374 @@ async def _source(
     if source is None:
         raise LookupError("Agent source file is missing")
     return source
+
+
+async def _source_snapshot(
+    session: AsyncSession,
+    *,
+    task_id: UUID,
+    role: str,
+) -> tuple[Snapshot, SourceFile]:
+    row = (
+        await session.execute(
+            select(Snapshot, SourceFile)
+            .join(SourceFile, Snapshot.source_file_id == SourceFile.id)
+            .where(
+                Snapshot.task_id == task_id,
+                Snapshot.source_role == role,
+                SourceFile.task_id == task_id,
+                SourceFile.source_role == role,
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        raise LookupError("Agent source snapshot is missing")
+    return row[0], row[1]
+
+
+def _selected_agent_entities(values: list[str]) -> frozenset[AgentEntityKind]:
+    aliases = {
+        "department": AgentEntityKind.DEPARTMENT,
+        "organization_unit": AgentEntityKind.DEPARTMENT,
+        "student": AgentEntityKind.STUDENT,
+        "teacher": AgentEntityKind.TEACHER,
+    }
+    selected = frozenset(aliases[value] for value in values if value in aliases)
+    return selected or frozenset(AgentEntityKind)
+
+
+def _bind_input_marks(
+    marks: tuple[AgentInputMark, ...],
+    persisted: tuple[AgentInputRecord, ...],
+) -> tuple[AgentInputMark, ...]:
+    by_row = {record.raw_row_number: record.id for record in persisted}
+    result: list[AgentInputMark] = []
+    for mark in marks:
+        row_number = mark.safe_evidence.get("row_number")
+        if not isinstance(row_number, int) or row_number not in by_row:
+            raise ValueError("ingestion mark does not correspond to a persisted input")
+        result.append(mark.model_copy(update={"input_record_id": by_row[row_number]}))
+    return tuple(result)
+
+
+def _safe_csv_problem_code(error: CsvFormatError | AgentContractError) -> str:
+    if isinstance(error, CsvFormatError):
+        return "csv_format_invalid"
+    return "fixed_field_mapping_unresolved"
+
+
+def _csv_source_profiles(
+    materials: dict[str, tuple[Snapshot, SourceFile]],
+) -> tuple[
+    tuple[CsvSourceSchemaProfile, CsvSourceSchemaProfile],
+    dict[str, dict[str, str]],
+]:
+    profiles: list[CsvSourceSchemaProfile] = []
+    field_refs: dict[str, dict[str, str]] = {}
+    mapper = AgentContractMapper()
+    for role in ("authoritative", "target"):
+        _snapshot, source = materials[role]
+        path = Path(source.storage_path)
+        inspection = inspect_csv(path)
+        frame = read_csv_frame(path, inspection)
+        columns: list[CsvColumnProfile] = []
+        role_refs: dict[str, str] = {}
+        for index, header in enumerate(inspection.headers):
+            field_ref = f"csv-column:{role}:{index}"
+            role_refs[field_ref] = header
+            values = [
+                str(value).strip()
+                for value in frame.get_column(header).to_list()
+                if value is not None and str(value).strip()
+            ]
+            total = max(frame.height, 1)
+            deterministic = mapper.resolve_header_mapping((header,))
+            columns.append(
+                CsvColumnProfile(
+                    source_field_ref=field_ref,
+                    header=header,
+                    inferred_type=_infer_csv_column_type(values),
+                    empty_ratio=(frame.height - len(values)) / total,
+                    unique_ratio=(len(set(values)) / len(values) if values else 0),
+                    candidate_contract_fields=tuple(deterministic),
+                )
+            )
+        field_refs[role] = role_refs
+        profiles.append(
+            CsvSourceSchemaProfile(
+                source_role=role,
+                columns=tuple(columns),
+            )
+        )
+    return (profiles[0], profiles[1]), field_refs
+
+
+def _infer_csv_column_type(values: list[str]) -> str:
+    if not values:
+        return "unknown"
+    sample = values[:50]
+    if sum("@" in value for value in sample) * 2 >= len(sample):
+        return "email"
+    compact_digits = [
+        "".join(character for character in value if character.isdigit()) for value in sample
+    ]
+    if sum(len(value) == 11 and value.startswith("1") for value in compact_digits) * 2 >= len(
+        sample
+    ):
+        return "phone"
+    if len(set(sample)) == len(sample):
+        return "identifier"
+    return "text"
+
+
+def _deterministic_csv_pair_mapping(
+    profiles: tuple[CsvSourceSchemaProfile, CsvSourceSchemaProfile],
+) -> CsvSchemaMappingOutput | None:
+    by_role: dict[str, tuple[CsvFieldMapping, ...]] = {}
+    mapper = AgentContractMapper()
+    for profile in profiles:
+        headers = tuple(column.header for column in profile.columns)
+        try:
+            mapper.assert_recognizable_headers(headers)
+            mapping = mapper.resolve_header_mapping(headers)
+        except AgentContractError:
+            return None
+        refs_by_header = {column.header: column.source_field_ref for column in profile.columns}
+        by_role[profile.source_role] = tuple(
+            CsvFieldMapping(
+                source_field_ref=refs_by_header[header],
+                contract_field=contract_field,
+                entity_kinds=(
+                    ("student",)
+                    if contract_field == "class_name"
+                    else ("department", "student", "teacher")
+                ),
+                normalizer_id=_normalizer_for_contract_field(contract_field),
+            )
+            for contract_field, header in mapping.items()
+        )
+    return CsvSchemaMappingOutput(
+        schema_version="fixed-six-field-mapping-v2",
+        authoritative_mappings=by_role["authoritative"],
+        target_mappings=by_role["target"],
+        unresolved_required_fields=(),
+    )
+
+
+def _normalizer_for_contract_field(field: str) -> str:
+    return {
+        "category": "normalize_category",
+        "name": "trim_text",
+        "number": "trim_identifier",
+        "class_name": "trim_text",
+        "phone": "normalize_phone",
+        "email": "normalize_email",
+    }[field]
+
+
+def _validate_csv_mapping_output(
+    output: object,
+    *,
+    field_refs: dict[str, dict[str, str]],
+) -> CsvSchemaMappingOutput:
+    if not isinstance(output, CsvSchemaMappingOutput):
+        raise ValueError("CSV mapping Skill returned another schema")
+    for role, mappings in (
+        ("authoritative", output.authoritative_mappings),
+        ("target", output.target_mappings),
+    ):
+        contract_fields = [mapping.contract_field for mapping in mappings]
+        source_refs = [mapping.source_field_ref for mapping in mappings]
+        if len(set(contract_fields)) != len(contract_fields):
+            raise ValueError(f"{role} CSV mapping repeats a contract field")
+        if len(set(source_refs)) != len(source_refs):
+            raise ValueError(f"{role} CSV mapping repeats a source field")
+        for mapping in mappings:
+            if mapping.source_field_ref not in field_refs[role]:
+                raise ValueError(f"{role} CSV mapping references an unknown source field")
+            if mapping.normalizer_id != _normalizer_for_contract_field(mapping.contract_field):
+                raise ValueError(f"{role} CSV mapping uses an invalid normalizer")
+            if mapping.contract_field == "class_name" and mapping.entity_kinds != ("student",):
+                raise ValueError("class_name CSV mapping only applies to students")
+    allowed_unresolved = {
+        f"{role}.{field}"
+        for role in ("authoritative", "target")
+        for field in ("category", "name", "number", "class_name", "phone", "email")
+    }
+    if not set(output.unresolved_required_fields) <= allowed_unresolved:
+        raise ValueError("CSV mapping returned an unknown unresolved field")
+    return output
+
+
+def _csv_mapping_checkpoint_payload(
+    output: CsvSchemaMappingOutput,
+    *,
+    field_refs: dict[str, dict[str, str]],
+    model_calls: int,
+) -> dict[str, object]:
+    mappings: dict[str, dict[str, str]] = {}
+    for role, items in (
+        ("authoritative", output.authoritative_mappings),
+        ("target", output.target_mappings),
+    ):
+        mappings[role] = {
+            item.contract_field: field_refs[role][item.source_field_ref] for item in items
+        }
+    return {
+        "schema_version": output.schema_version,
+        "resolved": not output.unresolved_required_fields,
+        "mappings": mappings,
+        "unresolved_required_fields": list(output.unresolved_required_fields),
+        "model_calls": model_calls,
+    }
+
+
+def _csv_mapping_input_hash(
+    materials: dict[str, tuple[Snapshot, SourceFile]],
+) -> str:
+    return _hash(
+        {
+            role: {
+                "snapshot_id": str(snapshot.id),
+                "source_hash": source.sha256,
+            }
+            for role, (snapshot, source) in materials.items()
+        }
+    )
+
+
+def _fixed_contract_fields() -> set[str]:
+    return {
+        "category",
+        "name",
+        "number",
+        "class_name",
+        "phone",
+        "email",
+    }
+
+
+def _infer_database_column_type(column_name: str) -> str:
+    candidates = _database_contract_candidates(column_name)
+    if "phone" in candidates:
+        return "phone"
+    if "email" in candidates:
+        return "email"
+    if "number" in candidates:
+        return "identifier"
+    if candidates:
+        return "text"
+    return "unknown"
+
+
+def _database_contract_candidates(column_name: str) -> tuple[str, ...]:
+    try:
+        mapping = AgentContractMapper().resolve_header_mapping((column_name,))
+    except AgentContractError:
+        return ()
+    return tuple(mapping)
+
+
+def _database_mapping_output_from_config(
+    *,
+    configured_mappings: dict[str, dict[str, str]],
+    field_refs: dict[str, dict[str, str]],
+) -> DatabaseSchemaMappingOutput:
+    by_role: dict[str, tuple[DatabaseFieldMapping, ...]] = {}
+    for role in ("authoritative", "target"):
+        refs_by_column = {column: field_ref for field_ref, column in field_refs[role].items()}
+        by_role[role] = tuple(
+            DatabaseFieldMapping(
+                source_field_ref=refs_by_column[column],
+                contract_field=field,
+                entity_kinds=(
+                    ("student",) if field == "class_name" else ("department", "student", "teacher")
+                ),
+                normalizer_id=_normalizer_for_contract_field(field),
+            )
+            for field, column in configured_mappings[role].items()
+        )
+    return DatabaseSchemaMappingOutput(
+        schema_version="fixed-six-field-sql-mapping-v2",
+        authoritative_mappings=by_role["authoritative"],
+        target_mappings=by_role["target"],
+        unresolved_required_fields=(),
+    )
+
+
+def _validate_database_mapping_output(
+    output: object,
+    *,
+    field_refs: dict[str, dict[str, str]],
+    configured_target_mapping: dict[str, str],
+) -> DatabaseSchemaMappingOutput:
+    if not isinstance(output, DatabaseSchemaMappingOutput):
+        raise ValueError("database mapping Skill returned another schema")
+    unresolved = set(output.unresolved_required_fields)
+    allowed_unresolved = {
+        f"{role}.{field}"
+        for role in ("authoritative", "target")
+        for field in _fixed_contract_fields()
+    }
+    if not unresolved <= allowed_unresolved:
+        raise ValueError("database mapping returned an unknown unresolved field")
+
+    compiled: dict[str, dict[str, str]] = {}
+    for role, mappings in (
+        ("authoritative", output.authoritative_mappings),
+        ("target", output.target_mappings),
+    ):
+        contract_fields = [mapping.contract_field for mapping in mappings]
+        source_refs = [mapping.source_field_ref for mapping in mappings]
+        if len(set(contract_fields)) != len(contract_fields):
+            raise ValueError(f"{role} database mapping repeats a contract field")
+        if len(set(source_refs)) != len(source_refs):
+            raise ValueError(f"{role} database mapping repeats a source field")
+        compiled[role] = {}
+        for mapping in mappings:
+            if mapping.source_field_ref not in field_refs[role]:
+                raise ValueError(f"{role} database mapping references an unknown source field")
+            if mapping.normalizer_id != _normalizer_for_contract_field(mapping.contract_field):
+                raise ValueError(f"{role} database mapping uses an invalid normalizer")
+            if mapping.contract_field == "class_name" and mapping.entity_kinds != ("student",):
+                raise ValueError("class_name database mapping only applies to students")
+            compiled[role][mapping.contract_field] = field_refs[role][mapping.source_field_ref]
+        missing = _fixed_contract_fields().difference(compiled[role])
+        unreported = {f"{role}.{field}" for field in missing}.difference(unresolved)
+        if unreported:
+            raise ValueError(f"{role} database mapping omitted fields without marking unresolved")
+    if compiled["target"] != configured_target_mapping:
+        raise ValueError("target database mapping differs from the server write allow-list")
+    return output
+
+
+def _database_mapping_checkpoint_payload(
+    output: DatabaseSchemaMappingOutput,
+    *,
+    field_refs: dict[str, dict[str, str]],
+    schema_fingerprints: dict[str, str],
+    source_versions: dict[str, str],
+    model_calls: int,
+    cache_hit: bool = False,
+) -> dict[str, object]:
+    mappings: dict[str, dict[str, str]] = {}
+    for role, items in (
+        ("authoritative", output.authoritative_mappings),
+        ("target", output.target_mappings),
+    ):
+        mappings[role] = {
+            item.contract_field: field_refs[role][item.source_field_ref] for item in items
+        }
+    return {
+        "schema_version": output.schema_version,
+        "resolved": not output.unresolved_required_fields,
+        "mappings": mappings,
+        "schema_fingerprints": schema_fingerprints,
+        "source_versions": source_versions,
+        "unresolved_required_fields": list(output.unresolved_required_fields),
+        "model_calls": model_calls,
+        "cache_hit": cache_hit,
+    }
 
 
 async def _find_exact_batch(
@@ -1654,6 +2776,16 @@ def _outcome(action: AllowedActionV1) -> GraphActionOutcome:
     )
 
 
+def _task_uses_database(task: ReconciliationTask | None) -> bool:
+    if task is None or not isinstance(task.agent_intent, dict):
+        return False
+    for key in ("source", "target"):
+        selection = task.agent_intent.get(key)
+        if isinstance(selection, dict) and selection.get("kind") == "database":
+            return True
+    return task.agent_intent.get("source_mode") == "database"
+
+
 def _legacy_context(
     context: GraphWorkContext,
     phase: AgentPhase,
@@ -1683,10 +2815,15 @@ def _operation_status(
 
 def _source_role(resource_id: str) -> str:
     parts = resource_id.split(":")
-    if len(parts) != 4 or parts[0] != "source" or parts[1] not in {
-        "authoritative",
-        "target",
-    }:
+    if (
+        len(parts) not in {3, 4}
+        or parts[0] != "source"
+        or parts[1]
+        not in {
+            "authoritative",
+            "target",
+        }
+    ):
         raise ValueError("source resource is invalid")
     return parts[1]
 

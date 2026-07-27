@@ -1,5 +1,6 @@
 """CSV reader adapter for the new Agent ingestion contract."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
@@ -36,9 +37,11 @@ class AgentCsvIngestionAdapter:
         tenant_id: str,
         source_role: AgentSourceRole,
         selected_entities: frozenset[AgentEntityKind],
+        field_mapping: Mapping[str, str] | None = None,
     ) -> AgentIngestionOutcome:
         inspection = inspect_csv(path)
-        self._mapper.assert_recognizable_headers(inspection.headers)
+        if field_mapping is None:
+            self._mapper.assert_recognizable_headers(inspection.headers)
         frame = read_csv_frame(path, inspection)
         records: list[AgentContractRecord] = []
         marks: list[AgentInputMark] = []
@@ -52,6 +55,7 @@ class AgentCsvIngestionAdapter:
                 source_role=source_role,
                 row_number=row_number,
                 row=raw_row,
+                field_mapping=field_mapping,
             )
             if record.entity_kind not in selected_entities:
                 continue

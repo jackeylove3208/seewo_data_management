@@ -34,9 +34,7 @@ class AgentConversationRecord(Base, TimestampMixin):
     created_by: Mapped[str] = mapped_column(String(255), index=True)
     status: Mapped[str] = mapped_column(String(32), default="active", index=True)
     context: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
-    reset_idempotency_key: Mapped[str | None] = mapped_column(
-        String(128), nullable=True
-    )
+    reset_idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     __table_args__ = (
         UniqueConstraint(
@@ -91,6 +89,16 @@ class AgentRunRecord(Base, TimestampMixin):
     tenant_id: Mapped[str] = mapped_column(String(128), index=True)
     kind: Mapped[str] = mapped_column(String(32), index=True)
     workflow_version: Mapped[str] = mapped_column(String(32), default="new-agent-v1")
+    ingestion_contract_version: Mapped[str] = mapped_column(
+        String(64),
+        default="model-mediated-ingestion-v1",
+        server_default="model-mediated-ingestion-v1",
+    )
+    execution_contract_version: Mapped[str] = mapped_column(
+        String(64),
+        default="model-mediated-execution-v1",
+        server_default="model-mediated-execution-v1",
+    )
     phase: Mapped[str] = mapped_column(String(64), index=True)
     status: Mapped[str] = mapped_column(String(32), index=True)
     version: Mapped[int] = mapped_column(Integer, default=1)
@@ -122,9 +130,7 @@ class AgentTaskEventRecord(Base, TimestampMixin):
     event_type: Mapped[str] = mapped_column(String(64), index=True)
     payload: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
 
-    __table_args__ = (
-        UniqueConstraint("run_id", "sequence", name="uq_agent_task_event_sequence"),
-    )
+    __table_args__ = (UniqueConstraint("run_id", "sequence", name="uq_agent_task_event_sequence"),)
 
 
 class AgentCheckpointRecord(Base, TimestampMixin):
@@ -145,9 +151,7 @@ class AgentCheckpointRecord(Base, TimestampMixin):
     )
 
     __table_args__ = (
-        UniqueConstraint(
-            "run_id", "phase", "checkpoint_key", name="uq_agent_checkpoint_key"
-        ),
+        UniqueConstraint("run_id", "phase", "checkpoint_key", name="uq_agent_checkpoint_key"),
     )
 
 
@@ -165,6 +169,36 @@ class AgentFailureRecord(Base, TimestampMixin):
     gateway_request_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     attempt_count: Mapped[int] = mapped_column(Integer)
     details: Mapped[dict[str, Any]] = mapped_column(_json_type(), default=dict)
+
+
+class AgentDatabaseSchemaMappingRecord(Base, TimestampMixin):
+    __tablename__ = "agent_database_schema_mappings"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(128), index=True)
+    authoritative_connector_id: Mapped[str] = mapped_column(String(128))
+    target_connector_id: Mapped[str] = mapped_column(String(128))
+    authoritative_schema_fingerprint: Mapped[str] = mapped_column(String(64))
+    target_schema_fingerprint: Mapped[str] = mapped_column(String(64))
+    ingestion_contract_version: Mapped[str] = mapped_column(String(64))
+    skill_name: Mapped[str] = mapped_column(String(128))
+    skill_version: Mapped[str] = mapped_column(String(64))
+    mapping: Mapped[dict[str, Any]] = mapped_column(_json_type())
+    content_hash: Mapped[str] = mapped_column(String(64))
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "authoritative_connector_id",
+            "target_connector_id",
+            "authoritative_schema_fingerprint",
+            "target_schema_fingerprint",
+            "ingestion_contract_version",
+            "skill_name",
+            "skill_version",
+            name="uq_agent_database_schema_mapping_cache",
+        ),
+    )
 
 
 class SchoolTaskLockRecord(Base):

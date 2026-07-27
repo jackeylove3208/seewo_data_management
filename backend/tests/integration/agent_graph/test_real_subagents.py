@@ -937,6 +937,13 @@ async def test_model_exhaustion_records_four_failures_without_legacy_delegate(se
 
     assert captured.value.failure_categories == ("model_provider_failure",)
     assert captured.value.attempt_count == 4
+    assert captured.value.attempt_details == tuple(
+        {
+            "attempt": attempt,
+            "safe_error_code": "model_provider_failure",
+        }
+        for attempt in range(1, 5)
+    )
     replay_provider = ScriptedProvider([])
     replay_runner = GraphSkillModelRunner(
         session,

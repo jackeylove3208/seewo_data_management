@@ -1,0 +1,4 @@
+interface:
+  display_name: "理解组织数据库结构"
+  short_description: "将受控 PostgreSQL 与 MySQL 结构映射为固定组织字段合同"
+  default_prompt: "Use $understand-organization-database-schema to map the bounded database schema profiles to the fixed organization contract."

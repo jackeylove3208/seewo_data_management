@@ -17,6 +17,7 @@ from app.models.agent_runtime import (
     AgentCheckpointRecord,
     AgentConversationMessageRecord,
     AgentConversationRecord,
+    AgentDatabaseSchemaMappingRecord,
     AgentFailureRecord,
     AgentRunRecord,
     AgentTaskEventRecord,
@@ -296,6 +297,8 @@ class AgentRuntimeRepository:
         conversation_id: UUID | None,
         kind: AgentRunKind,
         workflow_version: str = "new-agent-v1",
+        ingestion_contract_version: str = "model-mediated-ingestion-v1",
+        execution_contract_version: str = "model-mediated-execution-v1",
     ) -> AgentRunRecord:
         record = AgentRunRecord(
             id=uuid4(),
@@ -304,6 +307,8 @@ class AgentRuntimeRepository:
             conversation_id=conversation_id,
             kind=kind.value,
             workflow_version=workflow_version,
+            ingestion_contract_version=ingestion_contract_version,
+            execution_contract_version=execution_contract_version,
             phase=AgentPhase.INTENT_CONFIRMED.value,
             status=AgentRunStatus.PENDING.value,
             version=1,
@@ -365,9 +370,7 @@ class AgentRuntimeRepository:
     ) -> bool:
         run = await self.get_run(run_id, for_update=True)
         now = datetime.now(UTC)
-        if not run_claim_is_active(
-            run, worker_id=worker_id, lease_token=lease_token, now=now
-        ):
+        if not run_claim_is_active(run, worker_id=worker_id, lease_token=lease_token, now=now):
             return False
         assert run is not None
         run.heartbeat_at = now
@@ -376,15 +379,9 @@ class AgentRuntimeRepository:
         await self.session.flush()
         return True
 
-    async def release_run_claim(
-        self, run_id: UUID, *, worker_id: str, lease_token: UUID
-    ) -> bool:
+    async def release_run_claim(self, run_id: UUID, *, worker_id: str, lease_token: UUID) -> bool:
         run = await self.get_run(run_id, for_update=True)
-        if (
-            run is None
-            or run.lease_owner != worker_id
-            or run.lease_token != lease_token
-        ):
+        if run is None or run.lease_owner != worker_id or run.lease_token != lease_token:
             return False
         run.lease_owner = None
         run.lease_token = None
@@ -502,6 +499,84 @@ class AgentRuntimeRepository:
             ),
         )
 
+    async def get_database_schema_mapping(
+        self,
+        *,
+        tenant_id: str,
+        authoritative_connector_id: str,
+        target_connector_id: str,
+        authoritative_schema_fingerprint: str,
+        target_schema_fingerprint: str,
+        ingestion_contract_version: str,
+        skill_name: str,
+        skill_version: str,
+    ) -> AgentDatabaseSchemaMappingRecord | None:
+        return cast(
+            AgentDatabaseSchemaMappingRecord | None,
+            await self.session.scalar(
+                select(AgentDatabaseSchemaMappingRecord).where(
+                    AgentDatabaseSchemaMappingRecord.tenant_id == tenant_id,
+                    AgentDatabaseSchemaMappingRecord.authoritative_connector_id
+                    == authoritative_connector_id,
+                    AgentDatabaseSchemaMappingRecord.target_connector_id
+                    == target_connector_id,
+                    AgentDatabaseSchemaMappingRecord.authoritative_schema_fingerprint
+                    == authoritative_schema_fingerprint,
+                    AgentDatabaseSchemaMappingRecord.target_schema_fingerprint
+                    == target_schema_fingerprint,
+                    AgentDatabaseSchemaMappingRecord.ingestion_contract_version
+                    == ingestion_contract_version,
+                    AgentDatabaseSchemaMappingRecord.skill_name == skill_name,
+                    AgentDatabaseSchemaMappingRecord.skill_version == skill_version,
+                )
+            ),
+        )
+
+    async def save_database_schema_mapping(
+        self,
+        *,
+        tenant_id: str,
+        authoritative_connector_id: str,
+        target_connector_id: str,
+        authoritative_schema_fingerprint: str,
+        target_schema_fingerprint: str,
+        ingestion_contract_version: str,
+        skill_name: str,
+        skill_version: str,
+        mapping: dict[str, Any],
+        content_hash: str,
+    ) -> AgentDatabaseSchemaMappingRecord:
+        existing = await self.get_database_schema_mapping(
+            tenant_id=tenant_id,
+            authoritative_connector_id=authoritative_connector_id,
+            target_connector_id=target_connector_id,
+            authoritative_schema_fingerprint=authoritative_schema_fingerprint,
+            target_schema_fingerprint=target_schema_fingerprint,
+            ingestion_contract_version=ingestion_contract_version,
+            skill_name=skill_name,
+            skill_version=skill_version,
+        )
+        if existing is not None:
+            if existing.content_hash != content_hash:
+                raise CheckpointConflict("database schema mapping cache changed")
+            return existing
+        record = AgentDatabaseSchemaMappingRecord(
+            id=uuid4(),
+            tenant_id=tenant_id,
+            authoritative_connector_id=authoritative_connector_id,
+            target_connector_id=target_connector_id,
+            authoritative_schema_fingerprint=authoritative_schema_fingerprint,
+            target_schema_fingerprint=target_schema_fingerprint,
+            ingestion_contract_version=ingestion_contract_version,
+            skill_name=skill_name,
+            skill_version=skill_version,
+            mapping=mapping,
+            content_hash=content_hash,
+        )
+        self.session.add(record)
+        await self.session.flush()
+        return record
+
     async def record_failure(
         self,
         run_id: UUID,
@@ -511,6 +586,7 @@ class AgentRuntimeRepository:
         safe_message: str,
         attempt_count: int,
         gateway_request_id: str | None = None,
+        details: dict[str, Any] | None = None,
     ) -> AgentFailureRecord:
         run = await self.get_run(run_id)
         if run is None:
@@ -524,7 +600,7 @@ class AgentRuntimeRepository:
             safe_message=safe_message,
             gateway_request_id=gateway_request_id,
             attempt_count=attempt_count,
-            details={},
+            details=details or {},
         )
         self.session.add(failure)
         await self.session.flush()

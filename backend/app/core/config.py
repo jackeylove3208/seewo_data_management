@@ -107,12 +107,15 @@ class Settings(BaseSettings):
     new_agent_enabled: bool = False
     agent_graph_enabled: bool = False
     agent_graph_csv_execution_enabled: bool = False
+    source_ingestion_v2_enabled: bool = False
+    agent_graph_sql_execution_enabled: bool = False
     new_agent_analysis_only: bool = True
     new_agent_csv_execution_enabled: bool = False
     new_agent_api_connector_enabled: bool = False
     new_agent_database_connector_enabled: bool = False
     api_connector_configurations: dict[str, ApiConnectorConfiguration] = {}
     database_connector_configurations: dict[str, DatabaseConnectorConfiguration] = {}
+    database_connector_credentials: dict[str, SecretStr] = {}
 
     @field_validator(
         "llm_auth_header",
@@ -130,9 +133,7 @@ class Settings(BaseSettings):
 
     @field_validator("agent_local_read_roots", "agent_local_write_roots")
     @classmethod
-    def canonicalize_agent_local_roots(
-        cls, values: tuple[Path, ...]
-    ) -> tuple[Path, ...]:
+    def canonicalize_agent_local_roots(cls, values: tuple[Path, ...]) -> tuple[Path, ...]:
         return tuple(path.expanduser().resolve() for path in values)
 
     @field_validator("llm_auth_scheme", "embedding_auth_scheme")
@@ -145,17 +146,13 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_gateway_extensions(self) -> "Settings":
-        if (
-            self.conversation_context_reserved_output_tokens
-            >= self.conversation_context_max_tokens
-        ):
+        if self.conversation_context_reserved_output_tokens >= self.conversation_context_max_tokens:
             raise ValueError(
                 "conversation reserved output tokens must be smaller than context maximum"
             )
         for write_root in self.agent_local_write_roots:
             if not any(
-                _path_is_within(write_root, read_root)
-                for read_root in self.agent_local_read_roots
+                _path_is_within(write_root, read_root) for read_root in self.agent_local_read_roots
             ):
                 raise ValueError(
                     "local write root must be contained by a configured local read root"
@@ -223,9 +220,68 @@ class Settings(BaseSettings):
             raise ValueError(
                 "agent_graph_enabled is required for agent_graph_csv_execution_enabled"
             )
+        if self.source_ingestion_v2_enabled and not self.agent_graph_enabled:
+            raise ValueError("agent_graph_enabled is required for source_ingestion_v2_enabled")
+        if self.agent_graph_sql_execution_enabled and not self.agent_graph_enabled:
+            raise ValueError(
+                "agent_graph_enabled is required for agent_graph_sql_execution_enabled"
+            )
+        if self.agent_graph_sql_execution_enabled and not self.source_ingestion_v2_enabled:
+            raise ValueError("source_ingestion_v2_enabled is required for SQL graph execution")
+        if self.agent_graph_sql_execution_enabled:
+            self._validate_sql_graph_connectors()
         if self.new_agent_analysis_only and self.agent_graph_csv_execution_enabled:
             raise ValueError("new_agent_analysis_only cannot enable Agent graph target execution")
+        if self.new_agent_analysis_only and self.agent_graph_sql_execution_enabled:
+            raise ValueError("new_agent_analysis_only cannot enable Agent graph target execution")
         return self
+
+    def _validate_sql_graph_connectors(self) -> None:
+        if not self.database_connector_configurations:
+            raise ValueError("database connector configuration is required for SQL graph execution")
+        fixed_fields = {
+            "category",
+            "name",
+            "number",
+            "class_name",
+            "phone",
+            "email",
+        }
+        authoritative_count = 0
+        target_count = 0
+        for configuration in self.database_connector_configurations.values():
+            missing_fields = fixed_fields.difference(configuration.field_columns)
+            unknown_fields = set(configuration.field_columns).difference(fixed_fields)
+            if unknown_fields:
+                raise ValueError("SQL graph connector contains unsupported organization fields")
+            if configuration.credential_reference not in self.database_connector_credentials:
+                raise ValueError("SQL graph connector credential reference is unavailable")
+            capabilities = configuration.capabilities
+            if not capabilities.read or not capabilities.paginated:
+                raise ValueError("SQL graph connector requires stable paginated reads")
+            if configuration.source_role == "authoritative":
+                authoritative_count += 1
+                if capabilities.create or capabilities.update or capabilities.delete:
+                    raise ValueError("authoritative SQL graph connector must be read-only")
+                continue
+            target_count += 1
+            if missing_fields:
+                raise ValueError("SQL graph target is missing fixed organization fields")
+            if configuration.dialect != "mysql":
+                raise ValueError("SQL graph writable target must use MySQL")
+            if not (
+                capabilities.create
+                and capabilities.update
+                and capabilities.delete
+                and capabilities.optimistic_version
+                and capabilities.read_after_write
+            ):
+                raise ValueError(
+                    "SQL graph target requires create, update, delete, "
+                    "optimistic version, and read-after-write capabilities"
+                )
+        if authoritative_count == 0 or target_count == 0:
+            raise ValueError("SQL graph execution requires authoritative and target connectors")
 
     @property
     def model_gateway_configured(self) -> bool:

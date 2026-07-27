@@ -54,6 +54,8 @@ class GraphWorkContext:
     graph_cursor: int
     attempt_count: int
     lease_token: UUID
+    ingestion_contract_version: str = "model-mediated-ingestion-v1"
+    execution_contract_version: str = "model-mediated-execution-v1"
 
 
 @dataclass(frozen=True)
@@ -117,9 +119,7 @@ class AgentGraphWorker:
         if context is None:
             return False
         heartbeat_stopped = asyncio.Event()
-        heartbeat_task = asyncio.create_task(
-            self._maintain_heartbeat(context, heartbeat_stopped)
-        )
+        heartbeat_task = asyncio.create_task(self._maintain_heartbeat(context, heartbeat_stopped))
         processing_task = asyncio.create_task(self._process_claimed(context))
         try:
             done, _pending = await asyncio.wait(
@@ -131,9 +131,7 @@ class AgentGraphWorker:
                 if heartbeat_error is not None:
                     raise heartbeat_error
                 if not heartbeat_task.result():
-                    raise AgentGraphLeaseLost(
-                        f"Agent graph lease lost: {context.run_id}"
-                    )
+                    raise AgentGraphLeaseLost(f"Agent graph lease lost: {context.run_id}")
                 raise RuntimeError("Agent graph heartbeat stopped before work completion")
             heartbeat_stopped.set()
             if not await heartbeat_task:
@@ -187,12 +185,8 @@ class AgentGraphWorker:
                 {
                     "allowed_actions": existing_candidate.allowed_actions,
                     "action_set_hash": existing_candidate.action_set_hash,
-                    "single_action_reason_code": (
-                        existing_candidate.single_action_reason_code
-                    ),
-                    "excluded_action_summaries": (
-                        existing_candidate.excluded_action_summaries
-                    ),
+                    "single_action_reason_code": (existing_candidate.single_action_reason_code),
+                    "excluded_action_summaries": (existing_candidate.excluded_action_summaries),
                 }
             )
         async with self._session_factory() as session:
@@ -222,9 +216,7 @@ class AgentGraphWorker:
                         cursor=state.cursor,
                     )
                     if reloaded_candidate is None:
-                        raise AgentGraphNotFound(
-                            "frozen graph candidate set disappeared"
-                        )
+                        raise AgentGraphNotFound("frozen graph candidate set disappeared")
                     candidate_record = reloaded_candidate
                 candidate_set_id = candidate_record.id
                 existing_decision = await repository.get_supervisor_decision(
@@ -237,9 +229,7 @@ class AgentGraphWorker:
                 )
                 persisted_replan_count = state.replan_count
 
-        node_kind = get_graph_definition(context.graph_version).node(
-            context.current_node
-        ).kind
+        node_kind = get_graph_definition(context.graph_version).node(context.current_node).kind
         deterministic_guarded_action = (
             len(action_set.allowed_actions) == 1
             and action_set.single_action_reason_code is not None
@@ -251,9 +241,7 @@ class AgentGraphWorker:
             )
             decision_provenance = dict(existing_decision.model_provenance)
         elif node_kind is GraphNodeKind.DECISION and not deterministic_guarded_action:
-            supervisor_result = await self._supervisor.decide_with_provenance(
-                supervisor_context
-            )
+            supervisor_result = await self._supervisor.decide_with_provenance(supervisor_context)
             decision = validate_supervisor_decision(
                 supervisor_context,
                 supervisor_result.decision,
@@ -332,9 +320,7 @@ class AgentGraphWorker:
                     return None
                 if claimed.lease_token is None:
                     raise RuntimeError("claimed Agent graph run has no lease token")
-                state = await AgentGraphRepository(session).get_run_state_for_agent_run(
-                    claimed.id
-                )
+                state = await AgentGraphRepository(session).get_run_state_for_agent_run(claimed.id)
                 if state is None:
                     raise AgentGraphNotFound("Agent graph state is missing")
                 lock = await session.scalar(
@@ -357,6 +343,8 @@ class AgentGraphWorker:
                     graph_cursor=state.cursor,
                     attempt_count=claimed.attempt_count,
                     lease_token=claimed.lease_token,
+                    ingestion_contract_version=claimed.ingestion_contract_version,
+                    execution_contract_version=claimed.execution_contract_version,
                 )
 
     async def _maintain_heartbeat(
@@ -449,9 +437,7 @@ class AgentGraphWorker:
                         "wait_rollback_approval",
                         "blocked_model_error",
                     }:
-                        raise GraphGuardRejected(
-                            "human pause successor is not a human-gate node"
-                        )
+                        raise GraphGuardRejected("human pause successor is not a human-gate node")
                     run.status = "waiting_human"
                 if action.successor_node == "terminal":
                     terminal_status = (
@@ -507,6 +493,12 @@ class AgentGraphWorker:
             attempt_count=attempt_count,
         )
         safe_message = _safe_blocked_failure_message(failure_categories)
+        attempt_details = _safe_model_attempt_details(error)
+        failure_details = {
+            "attempts": attempt_details,
+            "failed_node": context.current_node,
+            "failure_categories": failure_categories,
+        }
         async with self._session_factory() as session:
             async with session.begin():
                 runtime = AgentRuntimeRepository(session)
@@ -516,9 +508,7 @@ class AgentGraphWorker:
                     for_update=True,
                 )
                 if run is None or state is None:
-                    raise AgentGraphNotFound(
-                        "Agent graph state disappeared during model failure"
-                    )
+                    raise AgentGraphNotFound("Agent graph state disappeared during model failure")
                 self._guard.validate_fencing(
                     expected_worker_id=context.worker_id,
                     expected_lease_token=context.lease_token,
@@ -536,9 +526,7 @@ class AgentGraphWorker:
                     action_id="block_model_error",
                     guard_results={
                         "model_attempts": (
-                            "exhausted"
-                            if attempt_count >= 4
-                            else "stopped_non_retryable"
+                            "exhausted" if attempt_count >= 4 else "stopped_non_retryable"
                         ),
                         "safe_error_code": failure_code,
                         "failed_node": context.current_node,
@@ -554,6 +542,7 @@ class AgentGraphWorker:
                     code=failure_code,
                     safe_message=safe_message,
                     attempt_count=attempt_count,
+                    details=failure_details,
                 )
                 await runtime.append_event(
                     run.id,
@@ -565,6 +554,10 @@ class AgentGraphWorker:
                         "allowed_commands": ["terminate"],
                         "failed_node": context.current_node,
                         "failure_categories": failure_categories,
+                        "safe_failure_category": failure_categories[-1],
+                        "business_stage": _coarse_phase(
+                            context.current_node
+                        ).value,
                     },
                 )
                 await runtime.release_run_claim(
@@ -578,10 +571,7 @@ class AgentGraphWorker:
         context: GraphWorkContext,
     ) -> None:
         code = "agent_persistence_contract_error"
-        message = (
-            "任务状态保存失败，系统已停止自动重试，"
-            "请检查数据库结构或数据合同后重新发起任务。"
-        )
+        message = "任务状态保存失败，系统已停止自动重试，请检查数据库结构或数据合同后重新发起任务。"
         async with self._session_factory() as session:
             async with session.begin():
                 runtime = AgentRuntimeRepository(session)
@@ -657,6 +647,45 @@ def _safe_model_failure_categories(
     return ["subagent_model_failure"]
 
 
+def _safe_model_attempt_details(
+    error: GraphSubAgentFailure | GraphSupervisorFailure,
+) -> list[dict[str, object]]:
+    raw_details = getattr(error, "attempt_details", ())
+    if not isinstance(raw_details, (list, tuple)):
+        return []
+    safe_details: list[dict[str, object]] = []
+    for raw_detail in raw_details[:4]:
+        if not isinstance(raw_detail, dict):
+            continue
+        attempt = raw_detail.get("attempt")
+        safe_error_code = raw_detail.get("safe_error_code")
+        if not isinstance(attempt, int) or not isinstance(safe_error_code, str):
+            continue
+        detail: dict[str, object] = {
+            "attempt": max(1, min(attempt, 4)),
+            "safe_error_code": safe_error_code[:128],
+        }
+        raw_feedback = raw_detail.get("repair_feedback")
+        if isinstance(raw_feedback, (list, tuple)):
+            feedback: list[dict[str, str]] = []
+            for raw_item in raw_feedback[:20]:
+                if not isinstance(raw_item, dict):
+                    continue
+                path = raw_item.get("path")
+                code = raw_item.get("code")
+                if isinstance(path, str) and isinstance(code, str):
+                    feedback.append(
+                        {
+                            "path": path[:256],
+                            "code": code[:128],
+                        }
+                    )
+            if feedback:
+                detail["repair_feedback"] = feedback
+        safe_details.append(detail)
+    return safe_details
+
+
 def _safe_model_attempt_count(
     error: GraphSubAgentFailure | GraphSupervisorFailure,
 ) -> int:
@@ -675,10 +704,7 @@ def _safe_blocked_failure_code(
 ) -> str:
     if "tool_authorization_failure" in failure_categories:
         return "agent_tool_authorization_failed"
-    if any(
-        category.startswith("evidence_manifest_")
-        for category in failure_categories
-    ):
+    if any(category.startswith("evidence_manifest_") for category in failure_categories):
         return "agent_evidence_contract_failed"
     if attempt_count >= 4:
         return "agent_model_retries_exhausted"
@@ -687,28 +713,13 @@ def _safe_blocked_failure_code(
 
 def _safe_blocked_failure_message(failure_categories: list[str]) -> str:
     if "tool_authorization_failure" in failure_categories:
-        return (
-            "后端授权状态与冻结任务上下文不一致，任务已安全暂停；"
-            "当前仅允许终止任务。"
-        )
+        return "后端授权状态与冻结任务上下文不一致，任务已安全暂停；当前仅允许终止任务。"
     if "tool_argument_rejected" in failure_categories:
-        return (
-            "AI 工具参数连续未通过本批证据清单校验，任务已安全暂停；"
-            "当前仅允许终止任务。"
-        )
-    if any(
-        category.startswith("evidence_manifest_")
-        for category in failure_categories
-    ):
-        return (
-            "冻结证据清单未通过服务端校验，任务已安全暂停；"
-            "当前仅允许终止任务。"
-        )
+        return "AI 工具参数连续未通过本批证据清单校验，任务已安全暂停；当前仅允许终止任务。"
+    if any(category.startswith("evidence_manifest_") for category in failure_categories):
+        return "冻结证据清单未通过服务端校验，任务已安全暂停；当前仅允许终止任务。"
     if "tool_execution_failure" in failure_categories:
-        return (
-            "受控数据工具连续执行失败，任务已安全暂停；"
-            "当前仅允许终止任务。"
-        )
+        return "受控数据工具连续执行失败，任务已安全暂停；当前仅允许终止任务。"
     return "AI 模型连续处理失败，任务已安全暂停；当前仅允许终止任务。"
 
 
@@ -720,10 +731,7 @@ def _is_non_retryable_database_error(error: DBAPIError) -> bool:
     )
     for candidate in candidates:
         sqlstate = getattr(candidate, "sqlstate", None)
-        if (
-            isinstance(sqlstate, str)
-            and sqlstate[:2] in _NON_RETRYABLE_DATABASE_ERROR_CLASSES
-        ):
+        if isinstance(sqlstate, str) and sqlstate[:2] in _NON_RETRYABLE_DATABASE_ERROR_CLASSES:
             return True
     return False
 

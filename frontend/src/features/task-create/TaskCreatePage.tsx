@@ -13,12 +13,11 @@ import {
 import { ingestionApi } from "../../api/ingestion";
 import { summarizeCsv, type CsvSummary } from "./csvSummary";
 
-type ConnectorKind = AgentConnectorSelection["kind"];
+type ManualConnectorKind = "csv" | "local";
 type ConnectorDraft = {
-  kind: ConnectorKind;
+  kind: ManualConnectorKind;
   file?: File;
   summary?: CsvSummary;
-  configurationId?: string;
   sourceRef?: string;
   error?: string;
 };
@@ -46,8 +45,7 @@ function sessionKey() {
 function readyConnector(connector?: ConnectorDraft) {
   if (!connector || connector.error) return false;
   if (connector.kind === "csv") return Boolean(connector.file && connector.summary);
-  if (connector.kind === "local") return Boolean(connector.sourceRef?.trim());
-  return Boolean(connector.configurationId?.trim());
+  return Boolean(connector.sourceRef?.trim());
 }
 
 function AttachmentPicker({
@@ -156,7 +154,7 @@ export function TaskCreatePage({
     }
   }
 
-  function setConnectorKind(role: "source" | "target", kind: ConnectorKind) {
+  function setConnectorKind(role: "source" | "target", kind: ManualConnectorKind) {
     setDraft((current) => ({ ...current, [role]: { kind } }));
   }
 
@@ -198,7 +196,6 @@ export function TaskCreatePage({
         source_ref: connector.sourceRef,
       } satisfies AgentConnectorSelection;
     }
-    if (connector.kind !== "csv") return { kind: connector.kind, configuration_id: connector.configurationId } satisfies AgentConnectorSelection;
     if (!connector.file) throw new Error("CSV 文件尚未选择");
     const upload = await ingestionApi.upload(connector.file, role);
     return { kind: "csv", upload_id: upload.id } satisfies AgentConnectorSelection;
@@ -236,19 +233,13 @@ export function TaskCreatePage({
               return (
                 <fieldset className="draft-fieldset" key={role}>
                   <legend>{label}连接方式</legend>
-                  <select aria-label={`${label}连接方式`} disabled={isSubmitting} value={connector?.kind ?? (role === "target" ? "local" : "csv")} onChange={(event) => setConnectorKind(role, event.target.value as ConnectorKind)}>
+                  <select aria-label={`${label}连接方式`} disabled={isSubmitting} value={connector?.kind ?? (role === "target" ? "local" : "csv")} onChange={(event) => setConnectorKind(role, event.target.value as ManualConnectorKind)}>
                     {role === "source" && <option value="csv">上传 CSV 副本</option>}
                     <option value="local">
                       {role === "target"
                         ? "本地授权 CSV（直接写回原文件）"
                         : "本地授权 CSV（只读）"}
                     </option>
-                    {role === "source" && (
-                      <>
-                        <option value="api">API 连接</option>
-                        <option value="database">数据库连接</option>
-                      </>
-                    )}
                   </select>
                   {connector?.kind === "csv" && <AttachmentPicker label={`${label} CSV`} inputLabel={`选择${label} CSV`} tone={role === "source" ? "source" : "target"} connector={connector} disabled={isSubmitting} onChange={(file) => void prepareFile(role, file)} />}
                   {connector?.kind === "local" && (
@@ -281,7 +272,6 @@ export function TaskCreatePage({
                       {localSourcesError && <small className="connector-error">{localSourcesError}</small>}
                     </>
                   )}
-                  {connector?.kind !== "csv" && connector?.kind !== "local" && <><input aria-label={`${label}配置 ID`} placeholder="输入后端配置 ID" disabled={isSubmitting} value={connector?.configurationId ?? ""} onChange={(event) => setDraft((current) => ({ ...current, [role]: { kind: connector?.kind ?? "api", configurationId: event.target.value } }))} /><small className="connector-capability-note">当前连接器仅支持配置占位，真实读取与写入暂不支持。</small></>}
                 </fieldset>
               );
             })}

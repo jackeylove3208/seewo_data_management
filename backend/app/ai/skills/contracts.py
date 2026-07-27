@@ -12,6 +12,21 @@ ConnectorKind = Literal["csv", "api", "database"]
 SourceRole = Literal["authoritative", "target"]
 RiskLevel = Literal["low", "medium", "high"]
 OperationKind = Literal["create", "update", "delete", "retain", "skip"]
+FixedContractField = Literal[
+    "category",
+    "name",
+    "number",
+    "class_name",
+    "phone",
+    "email",
+]
+FixedFieldNormalizer = Literal[
+    "normalize_category",
+    "trim_text",
+    "trim_identifier",
+    "normalize_phone",
+    "normalize_email",
+]
 
 
 class StrictContract(BaseModel):
@@ -99,6 +114,85 @@ class NormalizedRecord(StrictContract):
 
 class NormalizedOrganizationBatch(AgentSkillOutput):
     records: tuple[NormalizedRecord, ...] = Field(max_length=50)
+
+
+class CsvColumnProfile(StrictContract):
+    source_field_ref: str = Field(min_length=1, max_length=512)
+    header: str = Field(min_length=1, max_length=255)
+    inferred_type: Literal["text", "identifier", "phone", "email", "unknown"]
+    empty_ratio: float = Field(ge=0, le=1)
+    unique_ratio: float = Field(ge=0, le=1)
+    candidate_contract_fields: tuple[FixedContractField, ...] = ()
+
+
+class CsvSourceSchemaProfile(StrictContract):
+    source_role: SourceRole
+    columns: tuple[CsvColumnProfile, ...] = Field(min_length=1, max_length=256)
+
+
+class CsvSchemaMappingInput(AgentSkillInput):
+    sources: tuple[CsvSourceSchemaProfile, ...] = Field(min_length=2, max_length=2)
+
+
+class CsvFieldMapping(StrictContract):
+    source_field_ref: str = Field(min_length=1, max_length=512)
+    contract_field: FixedContractField
+    entity_kinds: tuple[EntityKind, ...] = Field(min_length=1, max_length=3)
+    normalizer_id: FixedFieldNormalizer
+
+
+class CsvSchemaMappingOutput(StrictContract):
+    schema_version: Literal["fixed-six-field-mapping-v2"]
+    authoritative_mappings: tuple[CsvFieldMapping, ...] = Field(max_length=6)
+    target_mappings: tuple[CsvFieldMapping, ...] = Field(max_length=6)
+    unresolved_required_fields: tuple[str, ...] = ()
+
+
+class DatabaseColumnProfile(StrictContract):
+    source_field_ref: str = Field(min_length=1, max_length=512)
+    column_name: str = Field(min_length=1, max_length=255)
+    inferred_type: Literal[
+        "text",
+        "identifier",
+        "phone",
+        "email",
+        "unknown",
+    ]
+    nullable: bool
+    candidate_contract_fields: tuple[FixedContractField, ...] = ()
+
+
+class DatabaseSourceSchemaProfile(StrictContract):
+    source_role: SourceRole
+    connector_id: str = Field(min_length=1, max_length=255)
+    dialect: Literal["mysql", "postgresql"]
+    relation_ref: str = Field(min_length=1, max_length=512)
+    stable_key_ref: str = Field(min_length=1, max_length=512)
+    columns: tuple[DatabaseColumnProfile, ...] = Field(
+        min_length=1,
+        max_length=256,
+    )
+
+
+class DatabaseSchemaMappingInput(AgentSkillInput):
+    sources: tuple[DatabaseSourceSchemaProfile, ...] = Field(
+        min_length=2,
+        max_length=2,
+    )
+
+
+class DatabaseFieldMapping(StrictContract):
+    source_field_ref: str = Field(min_length=1, max_length=512)
+    contract_field: FixedContractField
+    entity_kinds: tuple[EntityKind, ...] = Field(min_length=1, max_length=3)
+    normalizer_id: FixedFieldNormalizer
+
+
+class DatabaseSchemaMappingOutput(StrictContract):
+    schema_version: Literal["fixed-six-field-sql-mapping-v2"]
+    authoritative_mappings: tuple[DatabaseFieldMapping, ...] = Field(max_length=6)
+    target_mappings: tuple[DatabaseFieldMapping, ...] = Field(max_length=6)
+    unresolved_required_fields: tuple[str, ...] = ()
 
 
 class ReconcileEntityBatchInput(AgentSkillInput):
@@ -223,6 +317,8 @@ AGENT_SKILL_SCHEMAS: dict[str, type[BaseModel]] = {
         SupervisorPhaseInput,
         SourceInspectionInput,
         NormalizeOrganizationBatchInput,
+        CsvSchemaMappingInput,
+        DatabaseSchemaMappingInput,
         ReconcileEntityBatchInput,
         GovernanceSolutionBatchInput,
         ApprovalAggregationInput,
@@ -235,6 +331,8 @@ AGENT_SKILL_SCHEMAS: dict[str, type[BaseModel]] = {
         SupervisorPhaseDecision,
         SourceInspectionResult,
         NormalizedOrganizationBatch,
+        CsvSchemaMappingOutput,
+        DatabaseSchemaMappingOutput,
         AgentFindingBatch,
         GovernanceSolutionBatch,
         ApprovalGroupDraft,

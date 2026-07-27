@@ -91,6 +91,13 @@ describe("manual Agent data sync", () => {
     await user.click(screen.getByRole("button", { name: "手动同步" }));
 
     expect(screen.getByLabelText("选择三方系统 CSV")).toBeInTheDocument();
+    const sourceKind = screen.getByLabelText("三方系统连接方式");
+    expect(
+      within(sourceKind).queryByRole("option", { name: "API 连接" }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(sourceKind).queryByRole("option", { name: "数据库连接" }),
+    ).not.toBeInTheDocument();
     const targetKind = screen.getByLabelText("希沃魔方连接方式");
     expect(targetKind).toHaveValue("local");
     expect(
@@ -137,39 +144,6 @@ describe("manual Agent data sync", () => {
     expect(startManualTask).toHaveBeenCalledWith(expect.objectContaining({
       entity_types: ["department", "student", "teacher"],
       source: { kind: "csv", upload_id: "upload-1" },
-      target: { kind: "local", source_ref: "seewo/current.csv" },
-    }), expect.any(String));
-  });
-
-  it("keeps a configured authority connector while requiring a writable local target", async () => {
-    const user = userEvent.setup();
-    const startManualTask = vi.fn().mockResolvedValue({
-      id: "agent-task-2",
-      workflow_version: "new-agent-v1",
-      phase: "ingest_and_normalize",
-      status: "running",
-    });
-    const localSources = vi.fn().mockResolvedValue([
-      {
-        source_ref: "seewo/current.csv",
-        kind: "csv" as const,
-        writable_as_target: true,
-      },
-    ]);
-    renderPage({ startManualTask, localSources });
-    await user.click(screen.getByRole("button", { name: "手动同步" }));
-    await user.selectOptions(screen.getByLabelText("三方系统连接方式"), "api");
-    await user.type(screen.getByLabelText("三方系统配置 ID"), "third-party-api");
-    await user.selectOptions(
-      await screen.findByLabelText("希沃魔方本地 CSV"),
-      "seewo/current.csv",
-    );
-    await user.click(screen.getByRole("button", { name: "开始同步" }));
-
-    expect(await screen.findByText("/tasks/agent-task-2")).toBeInTheDocument();
-    expect(ingestionApi.upload).not.toHaveBeenCalled();
-    expect(startManualTask).toHaveBeenCalledWith(expect.objectContaining({
-      source: { kind: "api", configuration_id: "third-party-api" },
       target: { kind: "local", source_ref: "seewo/current.csv" },
     }), expect.any(String));
   });

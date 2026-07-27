@@ -13,6 +13,7 @@ from app.agent_runtime.worker import AgentWorker
 from app.ai.graph_supervisor import GraphSupervisorAgent
 from app.ai.providers.llm import HttpLLMProvider
 from app.ai.worker import WorkerRunner, run_worker_loop
+from app.connectors.database_runtime import ConfiguredDatabaseConnectorRuntime
 from app.core.config import get_settings
 from app.core.database import Database
 
@@ -33,6 +34,11 @@ async def run() -> None:
         loop.add_signal_handler(signal_name, stop.set)
     worker_id = f"agent-worker-{uuid4()}"
     provider = HttpLLMProvider(settings=settings)
+    database_connector_runtime = (
+        ConfiguredDatabaseConnectorRuntime(settings)
+        if settings.agent_graph_sql_execution_enabled
+        else None
+    )
     factory = CsvAnalysisHandlerFactory(
         database.session_factory,
         tokenization_secret=settings.tokenization_secret.get_secret_value(),
@@ -58,7 +64,8 @@ async def run() -> None:
                     max_retries=settings.model_retry_attempts,
                 ),
                 candidate_provider=ProductionGraphCandidateProvider(
-                    database.session_factory
+                    database.session_factory,
+                    database_connectors=database_connector_runtime,
                 ),
                 executor=ProductionGraphActionExecutor(
                     database.session_factory,
@@ -68,6 +75,7 @@ async def run() -> None:
                     output_root=settings.export_root / "agent-targets",
                     csv_execution_enabled=settings.agent_graph_csv_execution_enabled,
                     settings=settings,
+                    database_connectors=database_connector_runtime,
                 ),
             )
         )
@@ -90,6 +98,8 @@ async def run() -> None:
             )
         )
     finally:
+        if database_connector_runtime is not None:
+            await database_connector_runtime.close()
         await database.dispose()
         logger.info("Agent worker stopped id=%s", worker_id)
 

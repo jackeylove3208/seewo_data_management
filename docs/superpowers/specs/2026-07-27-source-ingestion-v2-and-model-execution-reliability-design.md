@@ -39,7 +39,8 @@
 - 第三方权威数据始终只读。
 - 希沃是唯一允许被修改的一方，同时必须具备读取权限，用于对账、写前版本检查、读后验证和
   回滚冲突判断。
-- SQL 第一版正式支持 MySQL，连接器接口为后续 PostgreSQL、SQL Server 保留扩展边界。
+- SQL 第一版正式支持只读 PostgreSQL/MySQL 权威源与可写 MySQL 希沃目标；SQL Server
+  保留扩展边界。
 - 模型不得生成或执行任意 SQL、Shell、路径、URL 或凭据。
 - 数据接入不再逐行或逐批调用模型。
 - 治理执行和回滚执行不再要求模型复述服务端执行事实。
@@ -49,7 +50,7 @@
 
 - 保留现有 CSV 对账能力，并显著缩短数据接入时间。
 - 让标准 CSV 数据接入阶段在正常情况下不调用模型。
-- 支持第三方 MySQL 与希沃 MySQL 的完整读取、对账、治理、验证、报告和回滚链路。
+- 支持第三方 PostgreSQL/MySQL 与希沃 MySQL 的完整读取、对账、治理、验证、报告和回滚链路。
 - 让模型只处理字段语义或表关系存在歧义的部分。
 - 继续输出当前固定三实体六字段合同，避免本次改动扩散为动态字段重构。
 - 消除治理和回滚中不必要的模型执行中转，避免确定性操作因模型 JSON 偏差而失败。
@@ -135,7 +136,7 @@
   "mode": "sql",
   "authoritative": {
     "kind": "database",
-    "connector_id": "education-authority-mysql"
+    "connector_id": "education-authority-postgresql"
   },
   "target": {
     "kind": "database",
@@ -252,6 +253,7 @@ dialect=mysql
 credential_ref
 allowed_database
 allowed_tables_or_views
+allowed_columns
 source_role
 access_mode
 version_strategy
@@ -266,7 +268,7 @@ version_strategy
 
 ### 确定性数据库探测
 
-后端通过 SQLAlchemy/MySQL metadata 和受控查询读取：
+后端通过 SQLAlchemy 的 PostgreSQL/MySQL metadata 和受控查询读取：
 
 - 数据库版本和字符集。
 - 白名单表、视图和字段。
@@ -397,7 +399,7 @@ source_intent_pending
 | `inspect-external-data-source` | 不再调用，仅保留旧任务兼容 | 文件、连接、权限和 Schema 探测应由确定性代码完成 |
 | `normalize-organization-data-batch` | 不再调用，仅保留旧任务兼容 | 固定六字段规范化可以由可测试的后端函数完成 |
 | `map-csv-organization-schema` | 条件式新增 | 只处理无法由别名规则确定的 CSV 表头 |
-| `understand-organization-database-schema` | 条件式新增 | 只处理新 MySQL Schema 的表、字段和关系映射 |
+| `understand-organization-database-schema` | 条件式新增 | 只处理新 PostgreSQL/MySQL Schema 的表、字段和关系映射 |
 | `validate_normalized_input` | 由 `validate_source_snapshots` 取代 | 扩展为真正检查映射、快照、稳定定位和数据质量的确定性节点 |
 
 旧 Skill 不能立即删除。历史 `agent-graph-v1` 任务仍按已冻结的 Skill 名称和版本恢复。新任务
@@ -734,7 +736,7 @@ SQL 执行开关关闭时允许完成连接诊断和映射预览，但不能创�
 
 ### SQL 数据接入
 
-- 第三方只读 MySQL 与希沃读写 MySQL 可以完成三实体固定字段抽取。
+- 第三方只读 PostgreSQL/MySQL 与希沃读写 MySQL 可以完成三实体固定字段抽取。
 - 第三方连接器检测到写权限时拒绝任务。
 - 希沃缺少读取、写入、事务或读后验证能力时拒绝正式任务。
 - 模型返回不存在的表、列或关系引用时被服务端拒绝。
