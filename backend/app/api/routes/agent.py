@@ -875,6 +875,12 @@ def _graph_human_gate_view(
     ):
         actionable = False
         unavailable_reason_zh = "审批明细不完整，任务不能继续治理，请终止任务后重新发起。"
+    elif gate.gate_kind == "rollback_approval" and not _rollback_approval_fact_is_complete(
+        gate,
+        items=items,
+    ):
+        actionable = False
+        unavailable_reason_zh = "回滚审批明细不完整，任务不能继续，请终止任务后重新发起。"
     return AgentGraphHumanGateView(
         id=gate.id,
         kind=gate.gate_kind,
@@ -948,6 +954,27 @@ def _approval_fact_is_complete(
     if _is_student_phone_approval_group(approval_group):
         return all(_student_phone_change_is_complete(item) for item in items)
     return True
+
+
+def _rollback_approval_fact_is_complete(
+    gate: AgentHumanGateRecord,
+    *,
+    items: tuple[AgentGraphApprovalItemView, ...],
+) -> bool:
+    if [str(item.finding_id) for item in items] != list(gate.member_ids):
+        return False
+    valid_operation_prefixes = (
+        "恢复同步修改的",
+        "删除同步新增的",
+        "恢复同步删除的",
+    )
+    return all(
+        item.source_locator
+        and not item.source_locator.startswith("operation:")
+        and item.operation_zh.startswith(valid_operation_prefixes)
+        and bool(item.changes)
+        for item in items
+    )
 
 
 def _is_student_phone_approval_group(
@@ -1121,7 +1148,8 @@ async def _graph_rollback_approval_items(
                 "before": operation_row.before,
                 "after": operation_row.actual_after or operation_row.after,
             }
-        mutation = mutation or {"id": str(operation_id)}
+        if mutation is None:
+            continue
         items.append(
             _graph_rollback_approval_item(
                 operation_id=operation_id,
@@ -1510,6 +1538,20 @@ async def decide_agent_graph_gate(
                 detail=_error(
                     "approval_fact_missing",
                     "Frozen approval group detail is incomplete",
+                ),
+            )
+    elif gate.gate_kind == "rollback_approval":
+        approval_items = await _graph_rollback_approval_items(
+            session,
+            task=task,
+            operation_ids=tuple(gate.member_ids),
+        )
+        if not _rollback_approval_fact_is_complete(gate, items=approval_items):
+            raise HTTPException(
+                409,
+                detail=_error(
+                    "approval_fact_missing",
+                    "Frozen rollback approval detail is incomplete",
                 ),
             )
     approved_member_ids: tuple[str, ...] = ()

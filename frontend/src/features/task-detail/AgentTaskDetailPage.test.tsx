@@ -233,9 +233,9 @@ describe("controlled Agent graph task detail", () => {
           id: "rollback-gate-1",
           kind: "rollback_approval",
           status: "pending",
-          item_count: 8,
+          item_count: 2,
           cursor: 3,
-          summary_zh: "确认执行 8 条回滚操作",
+          summary_zh: "确认执行 2 条回滚操作",
           risk_reason_zh: "执行前仍会重新读取并校验当前目标数据。",
           actionable: true,
           items: [
@@ -259,6 +259,26 @@ describe("controlled Agent graph task detail", () => {
                 },
               ],
             },
+            {
+              finding_id: "operation-2",
+              entity_kind: "student",
+              entity_name: "王芳",
+              entity_number: "S-003",
+              class_name: "三年级二班",
+              source_locator: "database:seewo-mysql:student-2",
+              operation_zh: "删除同步新增的学生记录",
+              issue_zh: "回滚同步新增",
+              analysis_zh: "该记录属于本次冻结回滚范围。",
+              solution_zh: "删除同步新增的学生记录。",
+              changes: [
+                {
+                  field: "email",
+                  field_zh: "邮箱",
+                  before: "w***@example.test",
+                  after: null,
+                },
+              ],
+            },
           ],
         },
       ],
@@ -266,16 +286,20 @@ describe("controlled Agent graph task detail", () => {
     const { client } = renderPage();
 
     expect(
-      await screen.findByRole("heading", { name: "确认执行 8 条回滚操作" }),
+      await screen.findByRole("heading", { name: "确认执行 2 条回滚操作" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByText("查看具体操作（1 条）"),
+      screen.getByText("查看具体操作（2 条）"),
     ).toBeInTheDocument();
     expect(
       screen.getByText("恢复同步修改的学生记录：李明（编号 S-002）"),
     ).toBeInTheDocument();
     expect(screen.getByText("139****5678")).toBeInTheDocument();
     expect(screen.getByText("138****1234")).toBeInTheDocument();
+    expect(
+      screen.getByText("删除同步新增的学生记录：王芳（编号 S-003）"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("w***@example.test")).toBeInTheDocument();
     client.clear();
   });
 
