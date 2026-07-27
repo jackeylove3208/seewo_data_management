@@ -1840,6 +1840,18 @@ class ProductionGraphActionExecutor:
     ) -> GraphActionOutcome:
         async with self._session_factory() as session:
             async with session.begin():
+                runtime = AgentRuntimeRepository(session)
+                for completed_key in (
+                    "agent-sql-rollback-execution-v2",
+                    "agent-csv-rollback-execution-v1",
+                ):
+                    completed = await runtime.get_checkpoint(
+                        context.run_id,
+                        phase=AgentPhase.EXECUTE_RESTORE,
+                        checkpoint_key=completed_key,
+                    )
+                    if completed is not None:
+                        return _outcome(action)
                 task = await session.get(ReconciliationTask, context.task_id)
                 if task is None or not task.agent_intent:
                     raise LookupError("rollback task facts are missing")
@@ -1863,6 +1875,11 @@ class ProductionGraphActionExecutor:
                 database_rollback = _task_uses_database(task)
                 if database_rollback and self._sql_rollback is None:
                     raise RuntimeError("SQL rollback connector runtime is unavailable")
+                checkpoint_key = (
+                    "agent-sql-rollback-execution-v2"
+                    if database_rollback
+                    else "agent-csv-rollback-execution-v1"
+                )
 
                 async def execute_operation(operation_id: UUID) -> OperationOutcome:
                     legacy_context = _legacy_context(
@@ -1937,11 +1954,7 @@ class ProductionGraphActionExecutor:
                     await AgentRuntimeRepository(session).save_checkpoint(
                         context.run_id,
                         phase=AgentPhase.EXECUTE_RESTORE,
-                        checkpoint_key=(
-                            "agent-sql-rollback-execution-v2"
-                            if database_rollback
-                            else "agent-csv-rollback-execution-v1"
-                        ),
+                        checkpoint_key=checkpoint_key,
                         input_hash=str(task.request_hash),
                         payload=facts,
                     )
@@ -2038,20 +2051,19 @@ class ProductionGraphActionExecutor:
     ) -> GraphActionOutcome:
         async with self._session_factory() as session:
             async with session.begin():
-                checkpoint = await AgentRuntimeRepository(session).get_checkpoint(
-                    context.run_id,
-                    phase=AgentPhase.EXECUTE_RESTORE,
-                    checkpoint_key=(
-                        "agent-sql-rollback-execution-v2"
-                        if _task_uses_database(
-                            await session.get(
-                                ReconciliationTask,
-                                context.task_id,
-                            )
-                        )
-                        else "agent-csv-rollback-execution-v1"
-                    ),
-                )
+                runtime = AgentRuntimeRepository(session)
+                checkpoint = None
+                for checkpoint_key in (
+                    "agent-sql-rollback-execution-v2",
+                    "agent-csv-rollback-execution-v1",
+                ):
+                    checkpoint = await runtime.get_checkpoint(
+                        context.run_id,
+                        phase=AgentPhase.EXECUTE_RESTORE,
+                        checkpoint_key=checkpoint_key,
+                    )
+                    if checkpoint is not None:
+                        break
                 facts = dict(checkpoint.payload) if checkpoint is not None else {"mutations": []}
                 task = await session.get(ReconciliationTask, context.task_id)
                 if self._settings is not None and not _task_uses_database(task):

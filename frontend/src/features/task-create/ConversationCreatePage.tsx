@@ -289,12 +289,14 @@ export function ConversationCreatePage({
         role: "assistant",
         text: "任务已开始，我会持续同步后端进度。普通输入已锁定。",
       }]);
-    } catch {
+    } catch (error) {
       setState("failed");
       setMessages((current) => [...current, {
         id: messageId(),
         role: "assistant",
-        text: "任务启动失败，现有需求仍然保留，可以重试。",
+        text: error instanceof ApiError && error.code === "school_lock_conflict"
+          ? "当前学校已有同步或回滚任务正在运行，请先在左侧任务记录中打开并完成或终止该任务。"
+          : "任务启动失败，现有需求仍然保留，可以重试。",
         kind: "error",
       }]);
     }

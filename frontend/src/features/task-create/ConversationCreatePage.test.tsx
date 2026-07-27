@@ -191,7 +191,11 @@ describe("backend Agent conversation", () => {
   });
 
   it("keeps the backend intent available after a lock conflict", async () => {
-    const backend = api({ startTask: vi.fn().mockRejectedValue(new Error("lock conflict")) });
+    const backend = api({
+      startTask: vi.fn().mockRejectedValue(
+        new ApiError("School already has an active Agent task", 409, "school_lock_conflict"),
+      ),
+    });
     const user = userEvent.setup();
     render(<ConversationCreatePage agentApi={backend} />);
 
@@ -200,7 +204,9 @@ describe("backend Agent conversation", () => {
     await user.click(screen.getByRole("button", { name: "发送" }));
     await user.click(await screen.findByRole("button", { name: "确认开始同步" }));
 
-    expect(await screen.findByText("任务启动失败，现有需求仍然保留，可以重试。")).toBeInTheDocument();
+    expect(await screen.findByText(
+      "当前学校已有同步或回滚任务正在运行，请先在左侧任务记录中打开并完成或终止该任务。",
+    )).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "确认开始同步" })).toBeInTheDocument();
   });
 
