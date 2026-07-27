@@ -254,7 +254,7 @@ class ScriptedSkillProvider:
                     "requires_confirmation": True,
                 }
             )
-        if "execute-approved-rollback@1.0.0" in system:
+        if "execute-approved-rollback@2.0.0" in system:
             bounded = json.loads(request.messages[1].content)[
                 "bounded_input_contract"
             ]

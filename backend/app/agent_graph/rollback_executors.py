@@ -204,7 +204,7 @@ class GraphRollbackExecutionExecutor:
             invocation.model_copy(
                 update={
                     "skill_name": "execute-approved-rollback",
-                    "skill_version": "1.0.0",
+                    "skill_version": "2.0.0",
                 }
             ),
             result_validator=validate,

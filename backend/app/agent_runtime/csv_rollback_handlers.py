@@ -180,7 +180,6 @@ class CsvRollbackHandlers:
         if selected_index is None:
             raise ValueError("rollback operation is outside the frozen plan")
 
-        parent = initial_parent
         if selected_index:
             previous_id = frozen_operations[selected_index - 1].id
             previous = await runtime.get_checkpoint(
@@ -190,7 +189,10 @@ class CsvRollbackHandlers:
             )
             if previous is None:
                 raise ValueError("rollback operation dependency is not ready")
-            if previous.payload.get("status") != "succeeded":
+            if previous.payload.get("status") not in {
+                "succeeded",
+                "already_restored",
+            }:
                 dependency_fact = {
                     "id": str(operation_id),
                     "status": "blocked",
@@ -208,19 +210,95 @@ class CsvRollbackHandlers:
                     payload=dependency_fact,
                 )
                 return dependency_fact
-            output_version_id = previous.payload.get("output_target_version_id")
-            if output_version_id is None:
-                raise LookupError("rollback dependency target version is missing")
-            dependency_parent = await session.get(
-                TargetVersionRecord,
-                UUID(str(output_version_id)),
+
+        parent = await ExecutionRepository(session).current_target_version(
+            initial_parent.task_id
+        )
+        selected_mutation = dict(mutation_facts[selected_index])
+        planned_comparison = next(
+            (
+                dict(item)
+                for item in task.agent_intent.get(
+                    "restore_comparisons",
+                    [],
+                )
+                if str(item.get("operation_id"))
+                == str(selected_mutation["id"])
+            ),
+            None,
+        )
+        current_comparison: dict[str, object] | None = None
+        if parent is not None:
+            try:
+                current_rows = read_target_rows(Path(parent.storage_path))
+                current_comparison = compare_csv_rollback_mutation(
+                    selected_mutation,
+                    current=current_rows.get(
+                        _mutation_target_identifier(selected_mutation)
+                    ),
+                )
+            except (CsvMutationError, OSError):
+                current_comparison = None
+        selected_template = frozen_operations[selected_index]
+        if (
+            planned_comparison is None
+            or current_comparison is None
+            or parent is None
+        ):
+            fact = _rollback_no_write_fact(
+                selected_template,
+                status="conflict_skipped",
+                comparison=current_comparison,
+                safe_error_code="rollback_comparison_fact_missing",
             )
-            if dependency_parent is None:
-                raise LookupError("rollback dependency target version is missing")
-            parent = dependency_parent
+            await runtime.save_checkpoint(
+                context.run_id,
+                phase=AgentPhase.EXECUTE_RESTORE,
+                checkpoint_key=checkpoint_key,
+                input_hash=str(task.request_hash),
+                payload=fact,
+            )
+            return fact
+
+        current_disposition = str(current_comparison["disposition"])
+        planned_disposition = str(planned_comparison["disposition"])
+        if current_disposition == "already_restored":
+            fact = _rollback_no_write_fact(
+                selected_template,
+                status="already_restored",
+                comparison=current_comparison,
+            )
+            await runtime.save_checkpoint(
+                context.run_id,
+                phase=AgentPhase.EXECUTE_RESTORE,
+                checkpoint_key=checkpoint_key,
+                input_hash=str(task.request_hash),
+                payload=fact,
+            )
+            return fact
+        if not (
+            planned_disposition == "safe_to_restore"
+            and current_disposition == "safe_to_restore"
+            and current_comparison["comparison_hash"]
+            == planned_comparison.get("comparison_hash")
+        ):
+            fact = _rollback_no_write_fact(
+                selected_template,
+                status="conflict_skipped",
+                comparison=current_comparison,
+                safe_error_code="rollback_current_data_conflict",
+            )
+            await runtime.save_checkpoint(
+                context.run_id,
+                phase=AgentPhase.EXECUTE_RESTORE,
+                checkpoint_key=checkpoint_key,
+                input_hash=str(task.request_hash),
+                payload=fact,
+            )
+            return fact
 
         selected = _rollback_operation(
-            mutation_facts[selected_index],
+            selected_mutation,
             target_version=f"sha256:{parent.file_sha256}",
         )
         versioner = CsvTargetVersioner(
@@ -324,6 +402,37 @@ _FULL_RECORD_FIELDS = frozenset(
         "email",
     }
 )
+
+
+def _rollback_no_write_fact(
+    operation: AgentGovernanceOperation,
+    *,
+    status: str,
+    comparison: dict[str, object] | None,
+    safe_error_code: str | None = None,
+) -> dict[str, object]:
+    fact: dict[str, object] = {
+        "id": str(operation.id),
+        "status": status,
+        "verification": {
+            "valid": status == "already_restored",
+            "no_write": True,
+            "comparison_hash": (
+                comparison.get("comparison_hash")
+                if comparison is not None
+                else None
+            ),
+            "disposition": (
+                comparison.get("disposition")
+                if comparison is not None
+                else "unavailable"
+            ),
+        },
+        "compensation_for": str(operation.finding_id),
+    }
+    if safe_error_code is not None:
+        fact["safe_error_code"] = safe_error_code
+    return fact
 
 
 def compare_csv_rollback_mutation(

@@ -65,7 +65,14 @@ class FindingReference(StrictContract):
 
 class OperationOutcome(StrictContract):
     operation_id: UUID
-    status: Literal["succeeded", "failed", "blocked", "skipped"]
+    status: Literal[
+        "succeeded",
+        "already_restored",
+        "conflict_skipped",
+        "failed",
+        "blocked",
+        "skipped",
+    ]
     verification_ref: str | None = None
     safe_error_code: str | None = None
 

@@ -1913,10 +1913,27 @@ class ProductionGraphActionExecutor:
                         operation_id=operation_id,
                         status=status,
                         verification_ref=(
-                            f"verification:{operation_id}" if status == "succeeded" else None
+                            f"verification:{operation_id}"
+                            if status
+                            in {
+                                "succeeded",
+                                "already_restored",
+                            }
+                            else None
                         ),
                         safe_error_code=(
-                            None if status == "succeeded" else "rollback_target_write_failed"
+                            None
+                            if status
+                            in {
+                                "succeeded",
+                                "already_restored",
+                            }
+                            else str(
+                                fact.get(
+                                    "safe_error_code",
+                                    "rollback_target_write_failed",
+                                )
+                            )
                         ),
                     )
 
@@ -2033,7 +2050,7 @@ class ProductionGraphActionExecutor:
                         action_id=action.action_id,
                         evidence_manifest_id=manifest_id,
                         skill_name="execute-approved-rollback",
-                        skill_version="1.0.0",
+                        skill_version="2.0.0",
                         input_payload=RollbackExecutionInput(
                             task_id=context.task_id,
                             run_id=context.run_id,
@@ -2825,12 +2842,14 @@ def _legacy_context(
 def _operation_status(
     status: str,
 ) -> str:
-    if status == "succeeded":
-        return "succeeded"
-    if status == "failed":
-        return "failed"
-    if status == "blocked":
-        return "blocked"
+    if status in {
+        "succeeded",
+        "already_restored",
+        "conflict_skipped",
+        "failed",
+        "blocked",
+    }:
+        return status
     return "skipped"
 
 

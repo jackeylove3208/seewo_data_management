@@ -1,6 +1,8 @@
+import pytest
+
 from app.ai.agent_prompting import COMMON_AGENT_SAFETY_CONTRACT
 from app.ai.prompting import build_messages
-from app.ai.skills.contracts import AgentRollbackAssessment
+from app.ai.skills.contracts import AgentRollbackAssessment, OperationOutcome
 from app.ai.skills.registry import SkillRegistry
 
 NEW_AGENT_SKILLS = {
@@ -122,8 +124,10 @@ NEW_AGENT_SKILLS = {
     "execute-approved-rollback": (
         "独立回滚任务",
         "补偿操作",
-        "版本冲突",
-        "幂等",
+        "写入前",
+        "comparison_hash",
+        "already_restored",
+        "conflict_skipped",
         "验证",
         "第三方",
     ),
@@ -131,6 +135,7 @@ NEW_AGENT_SKILLS = {
 
 NEW_AGENT_SKILL_VERSIONS = {
     "assess-agent-rollback-impact": "2.0.0",
+    "execute-approved-rollback": "2.0.0",
 }
 
 LEGACY_SKILLS = {
@@ -213,6 +218,46 @@ def test_rollback_assessment_contract_distinguishes_no_write_from_restore() -> N
     assert tuple(str(item) for item in assessment.already_restored_operation_ids) == (
         operation_ids[1],
     )
+
+
+def test_rollback_execution_skill_revalidates_only_affected_current_data() -> None:
+    skill = SkillRegistry().load("execute-approved-rollback", "2.0.0")
+
+    for term in (
+        "before",
+        "after",
+        "current",
+        "写入前",
+        "comparison_hash",
+        "只比较原操作影响的字段",
+        "保留无关字段",
+        "already_restored",
+        "conflict_skipped",
+        "版本 ID 不能作为",
+    ):
+        assert term in skill.instructions
+
+
+@pytest.mark.parametrize("status", ("already_restored", "conflict_skipped"))
+def test_rollback_operation_outcome_has_explicit_no_write_statuses(status) -> None:
+    outcome = OperationOutcome.model_validate(
+        {
+            "operation_id": "7f056be2-f193-4642-9385-9507583cd41e",
+            "status": status,
+            "verification_ref": (
+                "verification:already-restored"
+                if status == "already_restored"
+                else None
+            ),
+            "safe_error_code": (
+                "rollback_current_data_conflict"
+                if status == "conflict_skipped"
+                else None
+            ),
+        }
+    )
+
+    assert outcome.status == status
 
 
 def test_every_legacy_skill_is_detailed_and_cannot_enter_new_agent_workflow() -> None:
