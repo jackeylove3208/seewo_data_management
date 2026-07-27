@@ -666,6 +666,7 @@ async def build_agent_report_facts(
                 "target_source_identifier": item.target_source_identifier,
                 "before": item.before,
                 "after": item.actual_after,
+                "dependencies": sorted(str(value) for value in item.dependencies),
                 "verification": item.verification or {"valid": item.status == "succeeded"},
             }
             for item in operations

@@ -214,6 +214,7 @@ class SqlRollbackExecutionHandler:
             ),
             None,
         )
+        raw_version = (await connector.version()).value
         current_record = await connector.read_record(identifier)
         current_comparison = compare_csv_rollback_mutation(
             selected_mutation,
@@ -243,7 +244,6 @@ class SqlRollbackExecutionHandler:
             )
             return fact
 
-        raw_version = (await connector.version()).value
         if current_comparison["disposition"] == "already_restored":
             recovered = _rollback_no_write_fact(
                 selected,

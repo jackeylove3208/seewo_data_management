@@ -12,6 +12,7 @@ from app.agent_runtime.worker import AgentWorkContext
 from app.connectors.configured import (
     ConfiguredApiConnector,
     ConnectorCapabilities,
+    ConnectorConflictError,
     DatabaseConnectorConfiguration,
     InMemoryConnectorStore,
 )
@@ -42,6 +43,42 @@ class _Resolver:
         return self._connector
 
 
+class _ConcurrentReadConnector(ConfiguredApiConnector):
+    def __init__(self, connector: ConfiguredApiConnector) -> None:
+        self.configuration = connector.configuration
+        self._connector = connector
+        self.armed = False
+        self.drifted = False
+
+    async def version(self):
+        return await self._connector.version()
+
+    async def read_record(self, identifier: str):
+        snapshot = await self._connector.read_record(identifier)
+        if self.armed and not self.drifted:
+            self.drifted = True
+            version = (await self._connector.version()).value
+            await self._connector.apply(
+                [
+                    {
+                        "operation": "update",
+                        "id": identifier,
+                        "before": {"remark": ""},
+                        "after": {"remark": "operator changed this"},
+                    }
+                ],
+                idempotency_key="concurrent-custom-field-change",
+                expected_version=version,
+            )
+        return snapshot
+
+    async def apply(self, *args, **kwargs):
+        return await self._connector.apply(*args, **kwargs)
+
+    async def verify(self, expected):
+        return await self._connector.verify(expected)
+
+
 def _connector() -> ConfiguredApiConnector:
     configuration = DatabaseConnectorConfiguration(
         credential_reference="secret://connectors/seewo-mysql",
@@ -57,6 +94,17 @@ def _connector() -> ConfiguredApiConnector:
             "phone": "phone",
             "email": "email",
         },
+        allowed_columns=(
+            "id",
+            "row_version",
+            "category",
+            "name",
+            "number",
+            "class_name",
+            "phone",
+            "email",
+            "remark",
+        ),
         source_role="target",
         capabilities=ConnectorCapabilities(
             read=True,
@@ -80,6 +128,7 @@ def _connector() -> ConfiguredApiConnector:
                     "class_name": "一班",
                     "phone": "B",
                     "email": "student@example.test",
+                    "remark": "",
                 }
             ]
         ),
@@ -126,6 +175,26 @@ def _rollback_facts():
         phase="execute_restore",
         attempt_count=1,
         lease_token=uuid4(),
+    )
+    return mutation, parent, task, context
+
+
+def _create_rollback_facts():
+    mutation, parent, task, context = _rollback_facts()
+    mutation.update(
+        {
+            "operation": "create",
+            "before": None,
+            "after": {
+                "category": "student",
+                "name": "张三",
+                "number": "S001",
+                "class_name": "一班",
+                "phone": "B",
+                "email": "student@example.test",
+                "source_id": "student-1",
+            },
+        }
     )
     return mutation, parent, task, context
 
@@ -319,3 +388,46 @@ async def test_sql_rollback_replays_after_external_write_fact_persistence_fails(
 
     assert recovered["status"] == "already_restored"
     assert recovered["verification"]["idempotent_recovery"] is True
+
+
+@pytest.mark.asyncio
+async def test_sql_rollback_rejects_custom_field_drift_between_read_and_delete(
+    monkeypatch,
+) -> None:
+    connector = _ConcurrentReadConnector(_connector())
+    mutation, parent, task, context = _create_rollback_facts()
+    _checkpoints, created_versions = _install_runtime_fakes(
+        monkeypatch,
+        parent,
+    )
+    handler = SqlRollbackExecutionHandler(_Resolver(connector))
+    session = _Session(task, parent)
+
+    await handler.plan(session, context)  # type: ignore[arg-type]
+    operation = _rollback_operation(
+        mutation,
+        target_version=f"sha256:{parent.file_sha256}",
+    )
+    connector.armed = True
+
+    with pytest.raises(ConnectorConflictError):
+        await handler.execute_operation(
+            session,  # type: ignore[arg-type]
+            context,
+            operation.id,
+        )
+
+    current = await connector.read_record("student-1")
+    assert current is not None
+    assert current["remark"] == "operator changed this"
+    assert created_versions == []
+
+    retried = await handler.execute_operation(
+        session,  # type: ignore[arg-type]
+        context,
+        operation.id,
+    )
+    current_after_retry = await connector.read_record("student-1")
+    assert retried["status"] == "conflict_skipped"
+    assert current_after_retry is not None
+    assert current_after_retry["remark"] == "operator changed this"
