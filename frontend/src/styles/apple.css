@@ -546,7 +546,8 @@ select {
   background: #f2f7f4;
 }
 
-.task-status-stage-list li[data-status="blocked"] {
+.task-status-stage-list li[data-status="blocked"],
+.task-status-stage-list li[data-status="failed"] {
   border-color: #f0cbc6;
   background: var(--codex-danger-soft);
 }
@@ -573,7 +574,8 @@ select {
   border-color: #cce7d7;
 }
 
-.task-status-stage-list li[data-status="blocked"] .task-status-stage-icon {
+.task-status-stage-list li[data-status="blocked"] .task-status-stage-icon,
+.task-status-stage-list li[data-status="failed"] .task-status-stage-icon {
   color: var(--codex-danger);
   border-color: #efc6c1;
 }

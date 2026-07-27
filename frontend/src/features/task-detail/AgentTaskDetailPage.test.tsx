@@ -125,6 +125,86 @@ describe("controlled Agent graph task detail", () => {
     client.clear();
   });
 
+  it("renders rollback-specific stages and the exact rollback action", async () => {
+    vi.mocked(agentApi.task).mockResolvedValue({
+      id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      task_kind: "rollback",
+      parent_task_id: "source-task-1",
+      phase: "approve_restore",
+      status: "running",
+      title: "独立回滚任务",
+    });
+    vi.mocked(agentApi.graph).mockResolvedValue({
+      task_id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      graph_version: "agent-rollback-graph-v1",
+      graph_cursor: 7,
+      current_node: "preflight_restore",
+      business_stage: "report_and_rollback",
+      current_action_zh: "正在写入前重新校验当前目标数据",
+      sub_agent_zh: "回滚执行 Agent",
+      progress_completed: 2,
+      progress_total: 3,
+      status: "running",
+      can_terminate: true,
+      termination_requested: false,
+      human_gates: [],
+    });
+    const { client } = renderPage();
+
+    expect(
+      await screen.findByText("读取并比对当前数据"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("评估回滚影响")).toBeInTheDocument();
+    expect(screen.getByText("确认回滚范围")).toBeInTheDocument();
+    expect(screen.getByText("执行与验证")).toBeInTheDocument();
+    expect(screen.getByText("生成回滚报告")).toBeInTheDocument();
+    expect(screen.queryByText("数据接入")).not.toBeInTheDocument();
+    expect(
+      await screen.findAllByText("正在写入前重新校验当前目标数据"),
+    ).toHaveLength(2);
+    client.clear();
+  });
+
+  it("shows a persisted rollback failure instead of an endless running state", async () => {
+    vi.mocked(agentApi.task).mockResolvedValue({
+      id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      task_kind: "rollback",
+      phase: "plan_restore",
+      status: "failed",
+      title: "独立回滚任务",
+      error: {
+        code: "agent_action_contract_error",
+        message: "当前阶段的数据校验失败，系统已停止自动重试。",
+      },
+    });
+    vi.mocked(agentApi.graph).mockResolvedValue({
+      task_id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      graph_version: "agent-rollback-graph-v1",
+      graph_cursor: 2,
+      current_node: "load_verified_mutations",
+      business_stage: "report_and_rollback",
+      current_action_zh: "正在读取执行事实并比对当前目标数据",
+      status: "failed",
+      can_terminate: false,
+      termination_requested: false,
+      human_gates: [],
+    });
+    const { client } = renderPage();
+
+    expect(
+      await screen.findByText("回滚任务已停止自动重试"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("当前阶段的数据校验失败，系统已停止自动重试。"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/离开页面不会中断任务/)).not.toBeInTheDocument();
+    client.clear();
+  });
+
   it("renders legacy Agent events as a Chinese blocked-state timeline", async () => {
     vi.mocked(agentApi.task).mockResolvedValue({
       id: "task-graph-1",

@@ -105,6 +105,7 @@ class AgentTaskResponse(BaseModel):
     report_id: UUID | None = None
     rollback_eligible: bool = False
     deletion_eligible: bool = True
+    error: dict[str, object] | None = None
 
 
 class AgentConversationCurrentResponse(AgentConversationResponse):

@@ -153,6 +153,19 @@ class AgentGraphWorker:
                 return True
             await self._release_claim(context)
             raise
+        except (
+            GraphGuardRejected,
+            LookupError,
+            PermissionError,
+            ValueError,
+        ) as error:
+            heartbeat_stopped.set()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
+            if not processing_task.done():
+                processing_task.cancel()
+            await asyncio.gather(processing_task, return_exceptions=True)
+            await self._fail_action_contract(context, error)
+            return True
         except BaseException:
             heartbeat_stopped.set()
             await asyncio.gather(heartbeat_task, return_exceptions=True)
@@ -169,6 +182,8 @@ class AgentGraphWorker:
             await asyncio.gather(processing_task, return_exceptions=True)
 
     async def _process_claimed(self, context: GraphWorkContext) -> bool:
+        if await self._termination_request_is_pending(context):
+            return await self._process_termination_request(context)
         async with self._session_factory() as session:
             existing_candidate = await AgentGraphRepository(session).get_candidate_set(
                 graph_run_id=context.graph_run_id,
@@ -303,6 +318,61 @@ class AgentGraphWorker:
             raise GraphGuardRejected("executor returned another action")
         if not set(outcome.evidence_refs).issubset(selected.required_evidence):
             raise GraphGuardRejected("executor returned evidence outside action contract")
+        await self._commit(context, selected, outcome)
+        return True
+
+    async def _termination_request_is_pending(
+        self,
+        context: GraphWorkContext,
+    ) -> bool:
+        if context.current_node in {
+            "drain_current_atomic_unit",
+            "termination_report",
+            "terminal",
+        }:
+            return False
+        async with self._session_factory() as session:
+            state = await AgentGraphRepository(session).get_run_state(
+                context.graph_run_id
+            )
+        return bool(state and state.termination_requested)
+
+    async def _process_termination_request(
+        self,
+        context: GraphWorkContext,
+    ) -> bool:
+        plan = await self._candidate_provider(context)
+        action_set = build_allowed_action_set(
+            plan.candidate_evaluations,
+            single_action_reason_code=plan.single_action_reason_code,
+        )
+        if len(action_set.allowed_actions) != 1:
+            raise GraphGuardRejected(
+                "termination request must expose exactly one guarded action"
+            )
+        selected = action_set.allowed_actions[0]
+        if (
+            selected.kind != "terminate"
+            or (selected.graph_action_kind or selected.action_id)
+            != "terminate_requested"
+        ):
+            raise GraphGuardRejected(
+                "termination request did not produce the termination action"
+            )
+        self._guard.validate_action_path(
+            graph_version=context.graph_version,
+            current_node=context.current_node,
+            action=selected,
+        )
+        outcome = await self._executor(context, selected)
+        if outcome.action_id != selected.action_id:
+            raise GraphGuardRejected("executor returned another action")
+        if not set(outcome.evidence_refs).issubset(
+            selected.required_evidence
+        ):
+            raise GraphGuardRejected(
+                "executor returned evidence outside action contract"
+            )
         await self._commit(context, selected, outcome)
         return True
 
@@ -622,6 +692,81 @@ class AgentGraphWorker:
                     tenant_id=context.tenant_id,
                     run_id=context.run_id,
                     reason="persistence_error",
+                )
+                await runtime.release_run_claim(
+                    run.id,
+                    worker_id=context.worker_id,
+                    lease_token=context.lease_token,
+                )
+
+    async def _fail_action_contract(
+        self,
+        context: GraphWorkContext,
+        error: Exception,
+    ) -> None:
+        code = "agent_action_contract_error"
+        message = (
+            "当前阶段的服务端数据合同未通过校验，系统已停止自动重试。"
+            "任务数据未被继续修改，请查看失败记录后重新发起任务。"
+        )
+        async with self._session_factory() as session:
+            async with session.begin():
+                runtime = AgentRuntimeRepository(session)
+                run = await runtime.get_run(context.run_id, for_update=True)
+                state = await AgentGraphRepository(session).get_run_state(
+                    context.graph_run_id,
+                    for_update=True,
+                )
+                task = await session.get(ReconciliationTask, context.task_id)
+                if run is None or state is None or task is None:
+                    raise AgentGraphNotFound(
+                        "Agent graph state disappeared during action failure"
+                    )
+                if task.tenant_id != context.tenant_id:
+                    raise AgentGraphNotFound(
+                        "Agent graph task tenant changed during action failure"
+                    )
+                self._guard.validate_fencing(
+                    expected_worker_id=context.worker_id,
+                    expected_lease_token=context.lease_token,
+                    expected_attempt_count=context.attempt_count,
+                    persisted_worker_id=run.lease_owner,
+                    persisted_lease_token=run.lease_token,
+                    persisted_attempt_count=run.attempt_count,
+                )
+                self._validate_snapshot(
+                    context,
+                    state.current_node,
+                    state.cursor,
+                )
+                run.status = "failed"
+                state.status = "failed"
+                task.status = "failed"
+                task.error = {"code": code, "message": message}
+                await runtime.record_failure(
+                    run.id,
+                    phase=AgentPhase(run.phase),
+                    code=code,
+                    safe_message=message,
+                    attempt_count=context.attempt_count,
+                    details={
+                        "failed_node": context.current_node,
+                        "error_type": type(error).__name__,
+                    },
+                )
+                await runtime.append_event(
+                    run.id,
+                    "run.failed",
+                    {
+                        "code": code,
+                        "message": message,
+                        "failed_node": context.current_node,
+                    },
+                )
+                await runtime.release_school_lock(
+                    tenant_id=context.tenant_id,
+                    run_id=context.run_id,
+                    reason="action_contract_error",
                 )
                 await runtime.release_run_claim(
                     run.id,

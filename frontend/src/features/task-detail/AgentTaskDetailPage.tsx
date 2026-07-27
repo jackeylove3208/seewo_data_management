@@ -16,17 +16,46 @@ import { BackButton } from "../../components/BackButton";
 import { TaskStatusRail } from "../../components/TaskStatusRail";
 import { presentAgentEvent, presentAgentPhase } from "../agent-events/presentation";
 
-const phases: Array<{ id: AgentPhase; label: string; icon: typeof FileInput }> = [
+const syncPhases: Array<{ id: AgentPhase; label: string; icon: typeof FileInput }> = [
   { id: "ingest_and_normalize", label: "数据接入", icon: FileInput },
   { id: "analyze_batches", label: "Agent 分析与决策", icon: GitBranch },
   { id: "execute_and_verify", label: "治理执行", icon: ShieldCheck },
   { id: "generate_report", label: "报告生成", icon: Flag },
 ];
 
-function phaseIndex(phase: AgentPhase) {
-  if (phase === "terminal" || phase === "report_restore") return phases.length;
-  const index = phases.findIndex((item) => item.id === phase);
+const rollbackPhases: Array<{ id: AgentPhase; label: string; icon: typeof FileInput }> = [
+  { id: "plan_restore", label: "读取并比对当前数据", icon: FileInput },
+  { id: "clarify_restore_conflicts", label: "评估回滚影响", icon: GitBranch },
+  { id: "approve_restore", label: "确认回滚范围", icon: Check },
+  { id: "execute_restore", label: "执行与验证", icon: ShieldCheck },
+  { id: "report_restore", label: "生成回滚报告", icon: Flag },
+];
+
+function phaseIndex(
+  phase: AgentPhase,
+  taskPhases: Array<{ id: AgentPhase }>,
+) {
+  if (phase === "terminal") return taskPhases.length;
+  const index = taskPhases.findIndex((item) => item.id === phase);
   return index < 0 ? 0 : index;
+}
+
+function rollbackNodeIndex(node: string, fallbackPhase: AgentPhase) {
+  const indexByNode: Record<string, number> = {
+    rollback_intent_confirmed: 0,
+    acquire_school_lock: 0,
+    load_verified_mutations: 0,
+    assess_restore_impact: 1,
+    wait_restore_conflicts: 1,
+    wait_rollback_approval: 2,
+    compile_restore_plan: 2,
+    preflight_restore: 2,
+    execute_restore_operations: 3,
+    verify_restore_operations: 3,
+    generate_rollback_report: 4,
+    terminal: rollbackPhases.length,
+  };
+  return indexByNode[node] ?? phaseIndex(fallbackPhase, rollbackPhases);
 }
 
 const approvalEntityLabels: Record<string, string> = {
@@ -248,6 +277,7 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
 
   const current = task.data;
   const terminal = ["completed", "terminated", "failed"].includes(current.status);
+  const failed = current.status === "failed";
   const blocked = current.status === "blocked_model_error";
   const terminationRequested = current.status === "terminated"
     || Boolean(graph.data?.termination_requested)
@@ -259,14 +289,21 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
     : terminationRequested
       ? "终止报告已生成"
       : "任务报告已生成";
+  const activePhases = current.task_kind === "rollback"
+    ? rollbackPhases
+    : syncPhases;
   const graphStageIndex = {
     data_ingestion: 0,
     agent_analysis: 1,
     governance_execution: 2,
     report_and_rollback: 3,
-    terminal: phases.length,
+    terminal: syncPhases.length,
   } as const;
-  const completed = graph.data ? graphStageIndex[graph.data.business_stage] : phaseIndex(current.phase);
+  const completed = graph.data
+    ? current.task_kind === "rollback"
+      ? rollbackNodeIndex(graph.data.current_node, current.phase)
+      : graphStageIndex[graph.data.business_stage]
+    : phaseIndex(current.phase, activePhases);
   const persistedTerminationGate = graph.data?.human_gates.find(
     (gate) => gate.status === "pending" && gate.kind === "termination_confirmation",
   );
@@ -609,7 +646,15 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
   return (
     <main className="page-shell task-detail-page agent-task-detail-page apple-page">
       <BackButton fallback="/tasks" label="返回任务列表" />
-      <section className="detail-heading"><div><span className="heading-tags"><Tag color={terminal ? "success" : blocked ? "error" : terminationRequested ? "warning" : "processing"}>{terminationRequested ? "任务已终止" : terminal ? "任务结束" : blocked ? "分析已暂停" : "处理中"}</Tag>{current.task_kind === "rollback" && <Tag color="warning">回滚任务</Tag>}</span><h1>{current.title ?? "Agent 数据同步任务"}</h1><p>后端持久化工作流 · {current.workflow_version}</p></div><div className="detail-total"><span>当前阶段</span><strong>{graph.data?.current_action_zh ?? presentAgentPhase(current.phase)}</strong></div></section>
+      <section className="detail-heading"><div><span className="heading-tags"><Tag color={failed ? "error" : terminal ? "success" : blocked ? "error" : terminationRequested ? "warning" : "processing"}>{failed ? "任务失败" : terminationRequested ? "任务已终止" : terminal ? "任务结束" : blocked ? "分析已暂停" : "处理中"}</Tag>{current.task_kind === "rollback" && <Tag color="warning">回滚任务</Tag>}</span><h1>{current.title ?? "Agent 数据同步任务"}</h1><p>后端持久化工作流 · {current.workflow_version}</p></div><div className="detail-total"><span>当前阶段</span><strong>{graph.data?.current_action_zh ?? presentAgentPhase(current.phase)}</strong></div></section>
+      {failed && (
+        <section className="agent-blocked-notice" aria-live="assertive">
+          <div>
+            <h2>{current.task_kind === "rollback" ? "回滚任务已停止自动重试" : "任务已停止自动重试"}</h2>
+            <p>{current.error?.message ?? "当前阶段未能安全完成。系统已停止自动重试，任务数据未被继续修改。"}</p>
+          </div>
+        </section>
+      )}
       {terminationRequested && !current.report_id && (
         <section className="agent-termination-notice" aria-live="polite">
           <span className="agent-summary-icon" aria-hidden="true"><FileText size={20} /></span>
@@ -642,7 +687,7 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
         </div>
       )}
       <TaskStatusRail
-        stages={phases.map((phase) => {
+        stages={activePhases.map((phase) => {
           const Icon = phase.icon;
           return {
             id: phase.id,
@@ -652,6 +697,7 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
         })}
         currentIndex={completed}
         blocked={blocked}
+        failed={failed}
         terminationRequested={terminationRequested}
       />
       {blocked && (
@@ -882,7 +928,7 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
             })}
           </ol>
         </section>
-      ) : !graph.data && !blocked && <Progress percent={terminal ? 100 : Math.round((completed / phases.length) * 100)} showInfo={false} />}
+      ) : !graph.data && !blocked && <Progress percent={terminal ? 100 : Math.round((completed / activePhases.length) * 100)} showInfo={false} />}
       <Modal
         rootClassName="apple-agent-modal"
         title="确认创建独立回滚任务？"

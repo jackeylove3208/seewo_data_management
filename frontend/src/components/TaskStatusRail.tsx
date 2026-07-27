@@ -20,11 +20,13 @@ export function TaskStatusRail({
   stages,
   currentIndex,
   blocked = false,
+  failed = false,
   terminationRequested = false,
 }: {
   stages: TaskStatusStage[];
   currentIndex: number;
   blocked?: boolean;
+  failed?: boolean;
   terminationRequested?: boolean;
 }) {
   const [collapsed, setCollapsed] = useState(
@@ -65,9 +67,10 @@ export function TaskStatusRail({
           const status = index < currentIndex
             ? "completed"
             : index === currentIndex
-              ? blocked ? "blocked" : "active"
+              ? failed ? "failed" : blocked ? "blocked" : "active"
               : "waiting";
-          const label = terminationRequested && stage.id === "generate_report"
+          const label = terminationRequested
+            && ["generate_report", "report_restore"].includes(stage.id)
             ? "生成终止报告"
             : stage.label;
           const statusLabel = status === "completed"
@@ -76,10 +79,12 @@ export function TaskStatusRail({
               ? "正在处理"
               : status === "blocked"
                 ? "分析已暂停"
+                : status === "failed"
+                  ? "处理失败"
                 : "等待处理";
           const fallbackIcon = status === "completed"
             ? <Check size={14} />
-            : status === "blocked"
+            : status === "blocked" || status === "failed"
               ? <Pause size={14} />
               : status === "active"
                 ? <ChevronRight size={14} />

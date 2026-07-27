@@ -171,9 +171,14 @@ _GRAPH_ACTION_LABELS = {
     "compile_execution_plan": "正在编译治理执行计划",
     "execute_ready_operations": "正在执行并验证已批准操作",
     "generate_terminal_report": "正在生成任务报告",
-    "load_verified_mutations": "正在读取可回滚执行事实",
-    "wait_rollback_approval": "正在等待回滚确认",
+    "load_verified_mutations": "正在读取执行事实并比对当前目标数据",
+    "assess_restore_impact": "正在判定可恢复、已恢复与冲突操作",
+    "wait_restore_conflicts": "正在等待处理回滚数据冲突",
+    "wait_rollback_approval": "正在等待确认回滚范围",
+    "compile_restore_plan": "正在冻结回滚计划与数据比较哈希",
+    "preflight_restore": "正在写入前重新校验当前目标数据",
     "execute_restore_operations": "正在执行并验证回滚",
+    "verify_restore_operations": "正在汇总回滚验证结果",
     "generate_rollback_report": "正在生成回滚报告",
     "blocked_model_error": "Agent 处理已安全暂停，等待终止任务",
     "terminal": "任务已结束",
@@ -643,6 +648,7 @@ async def _task_response(
         report_id=report.id if report is not None else None,
         rollback_eligible=bool(report and report.rollback_eligible),
         deletion_eligible=report.deletion_eligible if report is not None else True,
+        error=dict(task.error) if isinstance(task.error, dict) else None,
     )
 
 
@@ -823,6 +829,18 @@ def _graph_human_gate_view(
                 if approval_group.risk == "medium"
                 else "该操作已被服务端风险策略判定为高风险。"
             )
+    elif gate.gate_kind == "rollback_conflict":
+        summary_zh = f"检测到 {len(gate.member_ids)} 条同步后数据已被修改"
+        risk_reason_zh = (
+            "这些操作涉及的当前数据已不再等于同步后的值。系统不会自动覆盖，"
+            "请确认冲突后再决定是否继续回滚。"
+        )
+    elif gate.gate_kind == "rollback_approval":
+        summary_zh = f"确认执行 {len(gate.member_ids)} 条回滚操作"
+        risk_reason_zh = (
+            "执行前仍会重新读取并校验当前目标数据；已经恢复的操作不会重复写入，"
+            "发生新冲突的操作会安全跳过。"
+        )
     actionable, unavailable_reason_zh = _graph_gate_actionability(
         gate,
         graph=graph,

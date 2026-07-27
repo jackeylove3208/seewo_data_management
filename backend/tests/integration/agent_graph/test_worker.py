@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError
 
+from app.agent_graph.actions import build_allowed_action_set
 from app.agent_graph.contracts import (
     AllowedActionV1,
     CandidateActionEvaluationV1,
@@ -360,6 +361,164 @@ async def test_non_retryable_database_error_fails_run_and_releases_lock(
     assert failure.code == "agent_persistence_contract_error"
     assert event.payload["failed_node"] == "inspect_sources"
     assert "value too long" not in str(event.payload)
+
+
+@pytest.mark.asyncio
+async def test_non_retryable_action_error_fails_once_instead_of_retrying_forever(
+    database,
+) -> None:
+    task_id, run_id = await _start_graph_run(database)
+    candidate = _candidate(
+        "inspect_authority:page-1",
+        graph_action_kind="inspect_authority",
+        resource_id="authority:page-1",
+        evidence="authority-inspection-v1",
+        successor="inspect_sources",
+    )
+
+    async def plan(_context: GraphWorkContext) -> GraphCandidatePlan:
+        return GraphCandidatePlan(
+            candidate_evaluations=(candidate,),
+            single_action_reason_code=SingleActionReasonCode.ONLY_GUARD_SATISFIED,
+        )
+
+    execution_calls = 0
+
+    async def execute(
+        _context: GraphWorkContext,
+        _action: AllowedActionV1,
+    ) -> GraphActionOutcome:
+        nonlocal execution_calls
+        execution_calls += 1
+        raise ValueError("unsafe raw target detail must not reach the UI")
+
+    worker = AgentGraphWorker(
+        database.session_factory,
+        worker_id="graph-worker-action-contract-error",
+        lease_seconds=60,
+        supervisor=Supervisor("inspect_authority:page-1"),
+        candidate_provider=plan,
+        executor=execute,
+    )
+
+    assert await worker.run_once() is True
+    assert await worker.run_once() is False
+    assert execution_calls == 1
+    async with database.session_factory() as session:
+        run = await session.get(AgentRunRecord, run_id)
+        task = await session.get(ReconciliationTask, task_id)
+        state = await AgentGraphRepository(session).get_run_state_for_agent_run(
+            run_id
+        )
+        failure = await session.scalar(
+            select(AgentFailureRecord).where(
+                AgentFailureRecord.run_id == run_id
+            )
+        )
+        active_lock = await session.scalar(
+            select(SchoolTaskLockRecord.id).where(
+                SchoolTaskLockRecord.owner_run_id == run_id,
+                SchoolTaskLockRecord.active.is_(True),
+            )
+        )
+
+    assert run is not None and run.status == "failed"
+    assert task is not None and task.status == "failed"
+    assert state is not None and state.status == "failed"
+    assert failure is not None
+    assert failure.code == "agent_action_contract_error"
+    assert "raw target detail" not in failure.safe_message
+    assert active_lock is None
+
+
+@pytest.mark.asyncio
+async def test_termination_request_supersedes_a_frozen_candidate_set(
+    database,
+) -> None:
+    _task_id, run_id = await _start_graph_run(database)
+    stale_candidate = _candidate(
+        "inspect_sources",
+        graph_action_kind="inspect_sources",
+        resource_id="source-pair",
+        evidence="sources:ready",
+        successor="inspect_sources",
+    )
+    async with database.session_factory() as session:
+        async with session.begin():
+            repository = AgentGraphRepository(session)
+            state = await repository.get_run_state_for_agent_run(
+                run_id,
+                for_update=True,
+            )
+            assert state is not None
+            await repository.record_candidate_set(
+                graph_run_id=state.id,
+                cursor=state.cursor,
+                candidate_evaluations=(stale_candidate,),
+                action_set=build_allowed_action_set(
+                    (stale_candidate,),
+                    single_action_reason_code=(
+                        SingleActionReasonCode.SAFETY_MANDATORY
+                    ),
+                ),
+            )
+            state.termination_requested = True
+
+    termination = CandidateActionEvaluationV1(
+        passed=True,
+        action=AllowedActionV1(
+            action_id="terminate_requested",
+            graph_action_kind="terminate_requested",
+            kind="terminate",
+            required_evidence=("termination-request:accepted",),
+            risk="low",
+            requires_human=False,
+            successor_node="drain_current_atomic_unit",
+        ),
+    )
+    plan_calls = 0
+
+    async def plan(_context: GraphWorkContext) -> GraphCandidatePlan:
+        nonlocal plan_calls
+        plan_calls += 1
+        return GraphCandidatePlan(
+            candidate_evaluations=(termination,),
+            single_action_reason_code=(
+                SingleActionReasonCode.TERMINATION_REQUESTED
+            ),
+        )
+
+    executed_actions: list[str] = []
+
+    async def execute(
+        _context: GraphWorkContext,
+        action: AllowedActionV1,
+    ) -> GraphActionOutcome:
+        executed_actions.append(action.action_id)
+        return GraphActionOutcome(
+            action_id=action.action_id,
+            evidence_refs=action.required_evidence,
+        )
+
+    worker = AgentGraphWorker(
+        database.session_factory,
+        worker_id="graph-worker-termination-priority",
+        lease_seconds=60,
+        supervisor=Supervisor("terminate_requested"),
+        candidate_provider=plan,
+        executor=execute,
+    )
+
+    assert await worker.run_once() is True
+    async with database.session_factory() as session:
+        state = await AgentGraphRepository(session).get_run_state_for_agent_run(
+            run_id
+        )
+
+    assert plan_calls == 1
+    assert executed_actions == ["terminate_requested"]
+    assert state is not None
+    assert state.current_node == "drain_current_atomic_unit"
 
 
 @pytest.mark.asyncio

@@ -76,6 +76,10 @@ export interface AgentTask {
   report_id?: string | null;
   rollback_eligible?: boolean;
   deletion_eligible?: boolean;
+  error?: {
+    code: string;
+    message: string;
+  } | null;
 }
 
 export interface AgentTaskEvent {
