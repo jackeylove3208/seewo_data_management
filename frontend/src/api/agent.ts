@@ -178,6 +178,7 @@ export interface AgentConversationApi {
   startTask(conversationId: string, intent: AgentIntent, idempotencyKey: string): Promise<AgentTask>;
   task?(taskId: string, signal?: AbortSignal): Promise<AgentTask>;
   events(taskId: string, cursor?: string, signal?: AbortSignal): Promise<AgentEventPage>;
+  graph?(taskId: string, signal?: AbortSignal): Promise<AgentGraphProgress>;
   terminate(taskId: string): Promise<{ status: string }>;
   previewTermination?(taskId: string): Promise<AgentGraphHumanGate>;
   decideGraphGate?(
@@ -237,6 +238,7 @@ export interface AgentGraphGateBatchDecision {
 export interface AgentHistoryItem extends AgentTask {
   created_at: string;
   completed_at: string | null;
+  termination_requested: boolean;
   issue_summary: { total: number; excluded: number };
   operation_summary: { succeeded: number; failed: number; blocked: number };
   rollback_eligible: boolean;

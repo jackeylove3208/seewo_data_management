@@ -23,7 +23,7 @@ export interface DifferencePerson {
   issues: DifferenceIssue[];
 }
 
-export type TaskStatus = "ready" | "processing" | "failed";
+export type TaskStatus = "ready" | "processing" | "terminated" | "failed";
 
 export interface TaskHistoryItem {
   id: string;

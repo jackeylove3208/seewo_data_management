@@ -207,6 +207,241 @@ describe("backend Agent conversation", () => {
     expect(backend.approveGroup).toHaveBeenCalledWith("task-2", "group-1");
   });
 
+  it("shows compact SQL high-risk changes in chat and approves the frozen gate", async () => {
+    const decideGraphGate = vi.fn().mockResolvedValue({
+      gate_id: "gate-high-1",
+      status: "approved",
+      graph_cursor: 9,
+    });
+    const backend = api({
+      currentConversation: vi.fn().mockResolvedValue({
+        id: "conversation-sql-risk",
+        status: "active",
+        messages: [
+          { id: "message-1", role: "user", kind: "normal", text: "同步 MySQL 数据", created_at: "" },
+        ],
+        task: {
+          id: "task-sql-risk",
+          workflow_version: "agent-graph-v1",
+          phase: "execute_and_verify",
+          status: "waiting_human",
+        },
+      }),
+      events: vi.fn().mockResolvedValue({
+        cursor: "approval-event",
+        events: [{
+          id: "approval-required",
+          cursor: "approval-event",
+          type: "approval_required",
+          payload: { group_id: "legacy-group" },
+          created_at: "",
+        }],
+      }),
+      graph: vi.fn().mockResolvedValue({
+        task_id: "task-sql-risk",
+        workflow_version: "agent-graph-v1",
+        graph_version: "agent-controlled-graph-v1",
+        graph_cursor: 9,
+        current_node: "wait_high_risk_approvals",
+        business_stage: "governance_execution",
+        current_action_zh: "等待高风险操作审批",
+        status: "waiting_human",
+        can_terminate: true,
+        termination_requested: false,
+        human_gates: [{
+          id: "gate-high-1",
+          kind: "high_risk_approval",
+          status: "pending",
+          item_count: 1,
+          risk: "high",
+          cursor: 8,
+          membership_hash: "membership-high-1",
+          entity_kind: "teacher",
+          operation: "delete",
+          actionable: true,
+          items: [{
+            finding_id: "finding-high-1",
+            entity_kind: "teacher",
+            entity_name: "王老师",
+            entity_number: "T-001",
+            source_locator: "database:seewo-mysql:T-001",
+            operation_zh: "删除教师记录",
+            issue_zh: "希沃多余",
+            analysis_zh: "这段分析不应出现在聊天记录。",
+            solution_zh: "这段方案也不应出现在聊天记录。",
+            changes: [{
+              field: "phone",
+              field_zh: "电话",
+              before: "13800000001",
+              after: null,
+            }],
+          }],
+        }],
+      }),
+      decideGraphGate,
+    });
+    const user = userEvent.setup();
+
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    expect(await screen.findByText("王老师（T-001）")).toBeInTheDocument();
+    expect(screen.getByText("删除教师记录")).toBeInTheDocument();
+    expect(screen.getByText("13800000001")).toBeInTheDocument();
+    expect(screen.getByText("空值")).toBeInTheDocument();
+    expect(screen.queryByText("这段分析不应出现在聊天记录。")).not.toBeInTheDocument();
+    expect(screen.queryByText("这段方案也不应出现在聊天记录。")).not.toBeInTheDocument();
+    expect(screen.queryByText("等待高风险操作审批")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "同意高风险操作" }));
+
+    expect(decideGraphGate).toHaveBeenCalledWith(
+      "task-sql-risk",
+      "gate-high-1",
+      "approve",
+      "操作人通过聊天窗口同意高风险治理操作",
+      {
+        approved_finding_ids: ["finding-high-1"],
+        rejected_finding_ids: [],
+        graph_cursor: 9,
+        membership_hash: "membership-high-1",
+      },
+    );
+    expect(await screen.findByText("已同意")).toBeInTheDocument();
+  });
+
+  it("keeps a SQL high-risk gate visible after rejection", async () => {
+    const decideGraphGate = vi.fn().mockResolvedValue({
+      gate_id: "gate-high-2",
+      status: "rejected",
+      graph_cursor: 4,
+    });
+    const backend = api({
+      currentConversation: vi.fn().mockResolvedValue({
+        id: "conversation-sql-reject",
+        status: "active",
+        messages: [],
+        task: {
+          id: "task-sql-reject",
+          workflow_version: "agent-graph-v1",
+          phase: "execute_and_verify",
+          status: "waiting_human",
+        },
+      }),
+      graph: vi.fn().mockResolvedValue({
+        task_id: "task-sql-reject",
+        workflow_version: "agent-graph-v1",
+        graph_version: "agent-controlled-graph-v1",
+        graph_cursor: 4,
+        current_node: "wait_high_risk_approvals",
+        business_stage: "governance_execution",
+        current_action_zh: "等待高风险操作审批",
+        status: "waiting_human",
+        can_terminate: true,
+        termination_requested: false,
+        human_gates: [{
+          id: "gate-high-2",
+          kind: "high_risk_approval",
+          status: "pending",
+          item_count: 1,
+          risk: "high",
+          cursor: 3,
+          membership_hash: "membership-high-2",
+          entity_kind: "student",
+          operation: "update",
+          actionable: true,
+          items: [{
+            finding_id: "finding-high-2",
+            entity_kind: "student",
+            entity_name: "李同学",
+            entity_number: "S-002",
+            source_locator: "database:seewo-mysql:S-002",
+            operation_zh: "修改学生手机号",
+            issue_zh: "手机号错误",
+            analysis_zh: "隐藏分析",
+            solution_zh: "隐藏方案",
+            changes: [{
+              field: "phone",
+              field_zh: "电话",
+              before: "13800000002",
+              after: "13900000002",
+            }],
+          }],
+        }],
+      }),
+      decideGraphGate,
+    });
+    const user = userEvent.setup();
+
+    render(<ConversationCreatePage agentApi={backend} />);
+    await user.click(await screen.findByRole("button", { name: "拒绝高风险操作" }));
+
+    expect(await screen.findByText("已拒绝")).toBeInTheDocument();
+    expect(screen.getByText("李同学（S-002）")).toBeInTheDocument();
+  });
+
+  it("restores a previously approved SQL high-risk gate as read-only", async () => {
+    const backend = api({
+      currentConversation: vi.fn().mockResolvedValue({
+        id: "conversation-sql-approved",
+        status: "active",
+        messages: [],
+        task: {
+          id: "task-sql-approved",
+          workflow_version: "agent-graph-v1",
+          phase: "execute_and_verify",
+          status: "waiting_human",
+        },
+      }),
+      graph: vi.fn().mockResolvedValue({
+        task_id: "task-sql-approved",
+        workflow_version: "agent-graph-v1",
+        graph_version: "agent-controlled-graph-v1",
+        graph_cursor: 6,
+        current_node: "wait_high_risk_approvals",
+        business_stage: "governance_execution",
+        current_action_zh: "等待高风险操作审批",
+        status: "waiting_human",
+        can_terminate: true,
+        termination_requested: false,
+        human_gates: [{
+          id: "gate-high-approved",
+          kind: "high_risk_approval",
+          status: "approved",
+          item_count: 1,
+          risk: "high",
+          cursor: 6,
+          membership_hash: "membership-high-approved",
+          entity_kind: "teacher",
+          operation: "delete",
+          actionable: false,
+          items: [{
+            finding_id: "finding-high-approved",
+            entity_kind: "teacher",
+            entity_name: "周老师",
+            entity_number: "T-003",
+            source_locator: "database:seewo-mysql:T-003",
+            operation_zh: "删除教师记录",
+            issue_zh: "希沃多余",
+            analysis_zh: "隐藏分析",
+            solution_zh: "隐藏方案",
+            changes: [{
+              field: "phone",
+              field_zh: "电话",
+              before: "13800000003",
+              after: null,
+            }],
+          }],
+        }],
+      }),
+    });
+
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    expect(await screen.findByText("周老师（T-003）")).toBeInTheDocument();
+    expect(screen.getByText("已同意")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "同意高风险操作" })).not.toBeInTheDocument();
+  });
+
   it("keeps the backend intent available after a lock conflict", async () => {
     const backend = api({
       startTask: vi.fn().mockRejectedValue(
