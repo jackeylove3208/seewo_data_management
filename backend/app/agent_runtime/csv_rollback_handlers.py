@@ -245,7 +245,7 @@ class CsvRollbackHandlers:
             or current_comparison is None
             or parent is None
         ):
-            fact = _rollback_no_write_fact(
+            no_write_fact = _rollback_no_write_fact(
                 selected_template,
                 status="conflict_skipped",
                 comparison=current_comparison,
@@ -256,14 +256,14 @@ class CsvRollbackHandlers:
                 phase=AgentPhase.EXECUTE_RESTORE,
                 checkpoint_key=checkpoint_key,
                 input_hash=str(task.request_hash),
-                payload=fact,
+                payload=no_write_fact,
             )
-            return fact
+            return no_write_fact
 
         current_disposition = str(current_comparison["disposition"])
         planned_disposition = str(planned_comparison["disposition"])
         if current_disposition == "already_restored":
-            fact = _rollback_no_write_fact(
+            no_write_fact = _rollback_no_write_fact(
                 selected_template,
                 status="already_restored",
                 comparison=current_comparison,
@@ -273,16 +273,16 @@ class CsvRollbackHandlers:
                 phase=AgentPhase.EXECUTE_RESTORE,
                 checkpoint_key=checkpoint_key,
                 input_hash=str(task.request_hash),
-                payload=fact,
+                payload=no_write_fact,
             )
-            return fact
+            return no_write_fact
         if not (
             planned_disposition == "safe_to_restore"
             and current_disposition == "safe_to_restore"
             and current_comparison["comparison_hash"]
             == planned_comparison.get("comparison_hash")
         ):
-            fact = _rollback_no_write_fact(
+            no_write_fact = _rollback_no_write_fact(
                 selected_template,
                 status="conflict_skipped",
                 comparison=current_comparison,
@@ -293,9 +293,9 @@ class CsvRollbackHandlers:
                 phase=AgentPhase.EXECUTE_RESTORE,
                 checkpoint_key=checkpoint_key,
                 input_hash=str(task.request_hash),
-                payload=fact,
+                payload=no_write_fact,
             )
-            return fact
+            return no_write_fact
 
         selected = _rollback_operation(
             selected_mutation,
@@ -577,7 +577,7 @@ def _complete_record(
     identifier: str,
     fields: list[str],
 ) -> dict[str, object]:
-    completed = {field: "" for field in fields}
+    completed: dict[str, object] = {field: "" for field in fields}
     completed.update(values)
     completed["source_id"] = identifier
     return completed
