@@ -96,6 +96,27 @@ async function seedGovernanceWorkbench(page, mode: "ai" | "manual", configuredTa
 }
 
 test("opens history, returns, and selects one issue independently", async ({ page }, testInfo) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem("mofa-reconciliation-tasks", JSON.stringify([{
+      id: "demo-001",
+      title: "三方全校数据核对",
+      createdAt: "2026-07-16T10:32:00+08:00",
+      sourceFile: "third_party_data.csv",
+      targetFile: "mofa_data.csv",
+      sourceAccepted: 515,
+      targetAccepted: 518,
+      issueCount: 9,
+      status: "ready",
+      selectedEntityTypes: ["organization_unit", "class", "teacher", "student"],
+      isDemo: true,
+    }]));
+  });
+  await page.route("**/api/agent/history*", (route) =>
+    route.fulfill({
+      status: 503,
+      json: { detail: { code: "offline_fixture", message: "使用本地演示历史" } },
+    }),
+  );
   await page.goto("/tasks");
   await page.getByRole("button", { name: /三方全校数据核对/ }).click();
   await expect(page).toHaveURL(/\/tasks\/demo-001$/);
@@ -125,6 +146,17 @@ test("opens history, returns, and selects one issue independently", async ({ pag
 });
 
 test("reveals only manual external data sync after explicit selection", async ({ page }) => {
+  await page.route("**/api/agent/local-sources", (route) =>
+    route.fulfill({
+      json: [
+        {
+          source_ref: "seewo/current.csv",
+          kind: "csv",
+          writable_as_target: true,
+        },
+      ],
+    }),
+  );
   await page.goto("/tasks/new");
 
   await expect(page.getByRole("heading", { name: "外部数据同步" })).toBeVisible();
@@ -132,11 +164,18 @@ test("reveals only manual external data sync after explicit selection", async ({
   await expect(page.getByLabel("选择三方系统 CSV")).toHaveCount(0);
   await page.getByRole("button", { name: "手动同步" }).click();
   await expect(page.getByLabel("选择三方系统 CSV")).toBeVisible();
-  await expect(page.getByLabel("选择希沃魔方 CSV")).toBeVisible();
+  const target = page.getByLabel("希沃魔方本地 CSV");
+  await expect(target).toBeVisible();
+  await expect(
+    target.getByRole("option", { name: "seewo/current.csv" }),
+  ).toBeAttached();
 });
 
 test("keeps new conversation focused on agent chat", async ({ page }) => {
   await page.route("**/api/agent/history*", (route) => route.fulfill({ json: { items: [], next_cursor: null } }));
+  await page.route("**/api/agent/conversations/current", (route) =>
+    route.fulfill({ json: null }),
+  );
   await page.route("**/api/agent/conversations", (route) => route.fulfill({ status: 201, json: { id: "conversation-focus", status: "active" } }));
   await page.route("**/api/agent/conversations/conversation-focus/messages", (route) => route.fulfill({ json: {
     message: "已记录七年级教师、学生同步需求。",
@@ -154,6 +193,15 @@ test("keeps new conversation focused on agent chat", async ({ page }) => {
 });
 
 test("conversation workspace fills the viewport and keeps its composer visible", async ({ page }, testInfo) => {
+  await page.route("**/api/agent/conversations/current", (route) =>
+    route.fulfill({ json: null }),
+  );
+  await page.route("**/api/agent/conversations", (route) =>
+    route.fulfill({
+      status: 201,
+      json: { id: "conversation-layout", status: "active" },
+    }),
+  );
   await page.goto("/conversations/new");
 
   const surface = await page.locator(".conversation-surface").boundingBox();
@@ -175,6 +223,7 @@ test("creates a task from independent manual external data sync", async ({ page 
   let uploadCount = 0;
   let taskCreateCount = 0;
   let taskCreated = false;
+  let taskRequest: Record<string, unknown> | undefined;
   let releaseTaskCreation!: () => void;
   const taskCreationGate = new Promise<void>((resolve) => {
     releaseTaskCreation = resolve;
@@ -184,16 +233,28 @@ test("creates a task from independent manual external data sync", async ({ page 
     await route.fulfill({
       status: 201,
       json: {
-        id: uploadCount === 1 ? "source-upload" : "target-upload",
-        source_role: uploadCount === 1 ? "authoritative" : "target",
-        original_name: uploadCount === 1 ? "third-party.csv" : "mofa.csv",
+        id: "source-upload",
+        source_role: "authoritative",
+        original_name: "third-party.csv",
         size_bytes: csv.length,
         detected_encoding: "utf-8",
       },
     });
   });
+  await page.route("**/api/agent/local-sources", (route) =>
+    route.fulfill({
+      json: [
+        {
+          source_ref: "seewo/current.csv",
+          kind: "csv",
+          writable_as_target: true,
+        },
+      ],
+    }),
+  );
   await page.route("**/api/agent/tasks", async (route) => {
     taskCreateCount += 1;
+    taskRequest = route.request().postDataJSON();
     await taskCreationGate;
     taskCreated = true;
     await route.fulfill({
@@ -241,7 +302,7 @@ test("creates a task from independent manual external data sync", async ({ page 
   await expect(page.getByLabel("同步任务名称")).toHaveValue("全校组织数据同步");
 
   await page.getByLabel("选择三方系统 CSV").setInputFiles({ name: "third-party.csv", mimeType: "text/csv", buffer: csv });
-  await page.getByLabel("选择希沃魔方 CSV").setInputFiles({ name: "mofa.csv", mimeType: "text/csv", buffer: csv });
+  await page.getByLabel("希沃魔方本地 CSV").selectOption("seewo/current.csv");
   await expect(page.getByRole("button", { name: "开始同步" })).toBeEnabled();
 
   const viewportWidth = page.viewportSize()!.width;
@@ -268,6 +329,11 @@ test("creates a task from independent manual external data sync", async ({ page 
   await startSync.click();
   await expect(startSync).toBeDisabled();
   await expect.poll(() => taskCreateCount).toBe(1);
+  expect(uploadCount).toBe(1);
+  expect(taskRequest).toMatchObject({
+    source: { kind: "csv", upload_id: "source-upload" },
+    target: { kind: "local", source_ref: "seewo/current.csv" },
+  });
   await startSync.dispatchEvent("click");
   expect(taskCreateCount).toBe(1);
   releaseTaskCreation();
@@ -292,20 +358,31 @@ test("collapses the desktop workspace without hiding the main task", async ({ pa
 test("uses a drawer for workspace navigation on mobile", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile");
   await page.addInitScript(() => localStorage.setItem("mofa-workspace-collapsed", "true"));
+  await page.route("**/api/agent/history*", (route) =>
+    route.fulfill({ json: { items: [], next_cursor: null } }),
+  );
+  await page.route("**/api/agent/conversations/current", (route) =>
+    route.fulfill({ json: null }),
+  );
+  await page.route("**/api/agent/conversations", (route) =>
+    route.fulfill({
+      status: 201,
+      json: { id: "conversation-mobile", status: "active" },
+    }),
+  );
   await page.goto("/tasks");
 
+  await expect(page.getByRole("button", { name: "外部数据同步" })).toBeVisible();
   const sidebar = page.locator(".workspace-sidebar");
   await expect(sidebar).toHaveAttribute("aria-hidden", "true");
   await page.getByRole("button", { name: "打开导航" }).click();
   await expect(sidebar).not.toHaveAttribute("aria-hidden", "true");
   await expect(sidebar).toHaveClass(/is-mobile-open/);
-  for (const command of [page.locator(".workspace-agent-entry"), page.locator(".workspace-new-task")]) {
-    const commandBox = await command.boundingBox();
-    expect(commandBox).not.toBeNull();
-    expect(commandBox!.width).toBeGreaterThan(180);
-  }
+  const commandBox = await page.locator(".workspace-agent-entry").boundingBox();
+  expect(commandBox).not.toBeNull();
+  expect(commandBox!.width).toBeGreaterThan(180);
   await expect(page.getByRole("link", { name: "新建对话" })).toHaveAttribute("href", "/conversations/new");
-  await expect(page.getByRole("link", { name: "外部数据同步" })).toHaveAttribute("href", "/tasks/new");
+  await expect(page.getByRole("link", { name: "外部数据同步" })).toHaveCount(0);
   await page.getByRole("link", { name: "新建对话" }).click();
 
   await expect(page).toHaveURL(/\/conversations\/new$/);

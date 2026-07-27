@@ -28,7 +28,7 @@ npm run typecheck
 npm run build
 npm run test:e2e
 cd ..
-openspec validate basic-development
+openspec validate --all --strict --no-interactive
 ```
 
 The API is served at `http://127.0.0.1:8000`; interactive OpenAPI documentation is at `/docs`. Run the API and `app.ai.worker` in separate terminals so durable AI jobs continue when the browser disconnects.

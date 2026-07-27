@@ -4,6 +4,51 @@ const now = "2026-07-23T10:00:00Z";
 
 test("controlled graph progress and grouped approval recover after navigation", async ({ page }) => {
   let approved = false;
+  let submittedDecision: Record<string, unknown> | undefined;
+  const approvalItems = [
+    {
+      finding_id: "finding-1",
+      entity_kind: "student",
+      entity_name: "李明",
+      entity_number: "S-001",
+      class_name: "三年级一班",
+      source_locator: "csv:12",
+      source_row_number: 12,
+      operation_zh: "修改希沃中的学生记录",
+      issue_zh: "手机号不一致",
+      analysis_zh: "第三方权威手机号与希沃手机号不一致。",
+      solution_zh: "将希沃手机号修改为第三方权威值。",
+      changes: [
+        {
+          field: "phone",
+          field_zh: "手机号",
+          before: "138****1234",
+          after: "139****5678",
+        },
+      ],
+    },
+    {
+      finding_id: "finding-2",
+      entity_kind: "student",
+      entity_name: "王芳",
+      entity_number: "S-002",
+      class_name: "三年级二班",
+      source_locator: "csv:18",
+      source_row_number: 18,
+      operation_zh: "修改希沃中的学生记录",
+      issue_zh: "手机号不一致",
+      analysis_zh: "第三方权威手机号与希沃手机号不一致。",
+      solution_zh: "将希沃手机号修改为第三方权威值。",
+      changes: [
+        {
+          field: "phone",
+          field_zh: "手机号",
+          before: "137****4321",
+          after: "136****8765",
+        },
+      ],
+    },
+  ];
   const task = {
     id: "graph-task-1",
     workflow_version: "agent-graph-v1",
@@ -17,7 +62,7 @@ test("controlled graph progress and grouped approval recover after navigation", 
     deletion_eligible: false,
     created_at: now,
     completed_at: null,
-    issue_summary: { total: 50, excluded: 0 },
+    issue_summary: { total: 2, excluded: 0 },
     operation_summary: { succeeded: 0, failed: 0, blocked: 0 },
     entity_types: ["student"],
   };
@@ -50,12 +95,24 @@ test("controlled graph progress and grouped approval recover after navigation", 
           : "正在等待高风险操作审批",
         status: approved ? "running" : "waiting_human",
         can_terminate: true,
+        termination_requested: false,
         human_gates: [
           {
             id: "gate-1",
             kind: "high_risk_approval",
             status: approved ? "approved" : "pending",
-            item_count: 50,
+            risk: "high",
+            cursor: 8,
+            membership_hash: "a".repeat(64),
+            item_count: approvalItems.length,
+            entity_kind: "student",
+            operation: "update",
+            issue_kind: "field_difference",
+            summary_zh: "修改 2 条学生手机号",
+            risk_reason_zh: "学生手机号属于高危隐私字段。",
+            actionable: true,
+            unavailable_reason_zh: null,
+            items: approvalItems,
           },
         ],
       },
@@ -64,6 +121,7 @@ test("controlled graph progress and grouped approval recover after navigation", 
   await page.route(
     /\/api\/agent\/tasks\/graph-task-1\/graph\/gates\/gate-1\/decision$/,
     (route) => {
+      submittedDecision = route.request().postDataJSON();
       approved = true;
       return route.fulfill({
         json: { gate_id: "gate-1", status: "approved", graph_cursor: 8 },
@@ -72,7 +130,7 @@ test("controlled graph progress and grouped approval recover after navigation", 
   );
 
   await page.goto("/tasks/graph-task-1");
-  await expect(page.getByText(/共 50 条记录/)).toBeVisible();
+  await expect(page.getByText(/共 2 条记录/)).toBeVisible();
   await expect(page.getByText("wait_high_risk_approvals")).toHaveCount(0);
 
   await page.getByRole("button", { name: "返回任务列表" }).click();
@@ -82,9 +140,17 @@ test("controlled graph progress and grouped approval recover after navigation", 
     .getByRole("region", { name: "最近任务" })
     .getByRole("link", { name: /全校学生数据同步/ })
     .click();
-  await expect(page.getByText(/共 50 条记录/)).toBeVisible();
+  await expect(page.getByText(/共 2 条记录/)).toBeVisible();
 
   await page.getByRole("button", { name: "同意" }).click();
+  await expect.poll(() => submittedDecision).toEqual({
+    decision: "approve",
+    reason: "操作人确认高风险治理操作",
+    approved_finding_ids: ["finding-1", "finding-2"],
+    rejected_finding_ids: [],
+    graph_cursor: 8,
+    membership_hash: "a".repeat(64),
+  });
   await expect(
     page.locator(".graph-live-progress").getByText("正在编译治理执行计划"),
   ).toBeVisible();

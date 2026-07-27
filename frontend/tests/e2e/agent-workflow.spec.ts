@@ -29,6 +29,9 @@ test("conversation Agent handles grouped approval, conflict dialogue, second con
   let approved = false;
   let confirmed = false;
   await page.route("**/api/agent/history*", (route) => route.fulfill({ json: { items: [], next_cursor: null } }));
+  await page.route("**/api/agent/conversations/current", (route) =>
+    route.fulfill({ json: null }),
+  );
   await page.route("**/api/agent/conversations", (route) => route.fulfill({ status: 201, json: { id: "conversation-1", status: "active" } }));
   await page.route("**/api/agent/conversations/conversation-1/messages", (route) => route.fulfill({ json: {
     message: "已生成全校学生同步计划。",
@@ -50,6 +53,22 @@ test("conversation Agent handles grouped approval, conflict dialogue, second con
           ];
     return route.fulfill({ json: { cursor: events.at(-1)?.cursor ?? "0", events } });
   });
+  await page.route(/\/api\/agent\/tasks\/task-1$/, (route) =>
+    route.fulfill({
+      json: {
+        id: "task-1",
+        workflow_version: "new-agent-v1",
+        task_kind: "sync",
+        phase: terminated
+          ? "terminal"
+          : clarified
+            ? "clarify_identity_conflicts"
+            : "aggregate_risk_and_approvals",
+        status: terminated ? "terminated" : "waiting_human",
+        title: "全校学生同步",
+      },
+    }),
+  );
   await page.route("**/api/agent/tasks/task-1/approval-groups/group-1/approve", (route) => {
     approved = true;
     return route.fulfill({ json: { status: "approved" } });
@@ -86,6 +105,9 @@ test("conversation Agent handles grouped approval, conflict dialogue, second con
 
 test("exclusive lock conflict remains visible and keeps the conversation retryable", async ({ page }) => {
   await page.route("**/api/agent/history*", (route) => route.fulfill({ json: { items: [], next_cursor: null } }));
+  await page.route("**/api/agent/conversations/current", (route) =>
+    route.fulfill({ json: null }),
+  );
   await page.route("**/api/agent/conversations", (route) => route.fulfill({ status: 201, json: { id: "conversation-lock", status: "active" } }));
   await page.route("**/api/agent/conversations/conversation-lock/messages", (route) => route.fulfill({ json: {
     message: "同步计划已准备。",
@@ -114,14 +136,15 @@ test("history exposes abnormal and partial outcomes, protects mutations, and con
     historyItem({ id: "rollback-old", title: "历史回滚任务", task_kind: "rollback", parent_task_id: "partial-1", deletion_eligible: false }),
   ];
   await page.route("**/api/agent/history*", (route) => route.fulfill({ json: { items, next_cursor: null } }));
-  await page.route("**/api/agent/tasks/abnormal-1", (route) => route.fulfill({ json: items[0] }));
   await page.route("**/api/agent/tasks/partial-1", (route) => route.fulfill({ json: items[1] }));
   await page.route("**/api/agent/tasks/rollback-new", (route) => route.fulfill({ json: {
     ...historyItem({ id: "rollback-new", title: "独立回滚任务", task_kind: "rollback", parent_task_id: "partial-1", phase: "plan_restore", status: "running" }),
   } }));
   await page.route("**/api/agent/tasks/*/events*", (route) => route.fulfill({ json: { cursor: "0", events: [] } }));
-  await page.route("**/api/agent/tasks/abnormal-1", async (route) => {
-    if (route.request().method() === "DELETE") return route.fulfill({ status: 204, body: "" });
+  await page.route(/\/api\/agent\/tasks\/abnormal-1$/, async (route) => {
+    if (route.request().method() === "DELETE") {
+      return route.fulfill({ status: 204, body: "" });
+    }
     return route.fulfill({ json: items[0] });
   });
   await page.route("**/api/agent/tasks/partial-1/rollback-preview", (route) => {
@@ -172,7 +195,7 @@ test("partial and abnormal facts are readable from the backend-owned report", as
 
   await page.goto("/tasks/partial-report");
   await page.getByRole("button", { name: "查看任务报告" }).click();
-  await expect(page.getByRole("heading", { name: "数据同步报告" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "数据同步分析报告" })).toBeVisible();
   await expect(page.getByText("希沃多余")).toBeVisible();
   await expect(page.getByText("第三方数据缺少编号")).toBeVisible();
   await expect(page.getByText("partial", { exact: true })).toBeVisible();
