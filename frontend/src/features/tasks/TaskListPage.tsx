@@ -11,6 +11,7 @@ import { useTaskDeletion } from "./useTaskDeletion";
 const statusCopy = {
   ready: { label: "已完成", color: "success" },
   processing: { label: "处理中", color: "processing" },
+  terminated: { label: "已终止", color: "default" },
   failed: { label: "失败", color: "error" },
 } as const;
 
@@ -37,14 +38,14 @@ export function TaskListPage() {
     return () => controller.abort();
   }, []);
   const tasks = backendTasks ?? allTasks();
-  const issueCount = tasks.reduce((sum, task) => sum + task.issueCount, 0);
-  const operationTotals = tasks.reduce((totals, task) => ({
-    succeeded: totals.succeeded + (task.operationSummary?.succeeded ?? 0),
-    failed: totals.failed + (task.operationSummary?.failed ?? 0),
-    blocked: totals.blocked + (task.operationSummary?.blocked ?? 0),
-  }), { succeeded: 0, failed: 0, blocked: 0 });
-  const operationCount = operationTotals.succeeded + operationTotals.failed + operationTotals.blocked;
-  const operationSuccessRate = operationCount ? `${Math.round((operationTotals.succeeded / operationCount) * 100)}%` : "暂无数据";
+  const issueCount = tasks
+    .filter((task) => task.status !== "ready")
+    .reduce((sum, task) => sum + task.issueCount, 0);
+  const syncTasks = tasks.filter((task) => task.taskKind !== "rollback");
+  const completedSyncTasks = syncTasks.filter((task) => task.status === "ready").length;
+  const operationSuccessRate = syncTasks.length
+    ? `${Math.round((completedSyncTasks / syncTasks.length) * 100)}%`
+    : "暂无数据";
 
   return (
     <main className="page-shell task-list-page apple-page">

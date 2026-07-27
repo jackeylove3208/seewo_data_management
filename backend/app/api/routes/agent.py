@@ -1629,12 +1629,34 @@ async def get_agent_history(
 ) -> AgentHistoryPage:
     _require_enabled(request)
     del cursor
+    finding_counts = (
+        select(
+            AgentFindingRecord.task_id.label("task_id"),
+            func.count(AgentFindingRecord.id).label("finding_count"),
+        )
+        .group_by(AgentFindingRecord.task_id)
+        .subquery()
+    )
     rows = tuple(
         (
             await session.execute(
-                select(ReconciliationTask, AgentRunRecord, AgentReportRecord)
+                select(
+                    ReconciliationTask,
+                    AgentRunRecord,
+                    AgentReportRecord,
+                    AgentGraphRunRecord.termination_requested,
+                    finding_counts.c.finding_count,
+                )
                 .join(AgentRunRecord, AgentRunRecord.task_id == ReconciliationTask.id)
                 .outerjoin(AgentReportRecord, AgentReportRecord.task_id == ReconciliationTask.id)
+                .outerjoin(
+                    AgentGraphRunRecord,
+                    AgentGraphRunRecord.run_id == AgentRunRecord.id,
+                )
+                .outerjoin(
+                    finding_counts,
+                    finding_counts.c.task_id == ReconciliationTask.id,
+                )
                 .where(
                     ReconciliationTask.tenant_id == operator.tenant_id,
                     ReconciliationTask.workflow_version.in_(("new-agent-v1", "agent-graph-v1")),
@@ -1644,7 +1666,7 @@ async def get_agent_history(
         ).all()
     )
     items: list[AgentHistoryItem] = []
-    for task, run, report in rows:
+    for task, run, report, termination_requested, live_finding_count in rows:
         summary = report.facts.get("mutation_summary", {}) if report is not None else {}
         items.append(
             AgentHistoryItem(
@@ -1658,8 +1680,13 @@ async def get_agent_history(
                 report_id=report.id if report is not None else None,
                 created_at=task.created_at,
                 completed_at=report.created_at if report is not None else None,
+                termination_requested=bool(termination_requested),
                 issue_summary={
-                    "total": len(report.facts.get("findings", [])) if report is not None else 0,
+                    "total": (
+                        len(report.facts.get("findings", []))
+                        if report is not None
+                        else int(live_finding_count or 0)
+                    ),
                     "excluded": (
                         len(report.facts.get("excluded_findings", [])) if report is not None else 0
                     ),

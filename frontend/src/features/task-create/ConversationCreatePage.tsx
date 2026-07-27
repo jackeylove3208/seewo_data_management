@@ -13,6 +13,7 @@ import { ApiError } from "../../api/client";
 import { TASK_HISTORY_UPDATED_EVENT } from "../../data/taskHistory";
 import { TaskStatusRail } from "../../components/TaskStatusRail";
 import { presentAgentEvent, presentAgentPhase } from "../agent-events/presentation";
+import { ConversationRiskApprovalCard } from "./ConversationRiskApprovalCard";
 
 type ConversationState = "idle" | "collecting" | "needs-input" | "draft-ready" | "submitting" | "failed" | "created";
 interface ConversationMessage {
@@ -80,6 +81,8 @@ export function ConversationCreatePage({
   const [handledApprovalGroups, setHandledApprovalGroups] = useState<string[]>([]);
   const [confirmedClarifications, setConfirmedClarifications] = useState<string[]>([]);
   const [terminationGate, setTerminationGate] = useState<AgentGraphHumanGate>();
+  const [highRiskGates, setHighRiskGates] = useState<AgentGraphHumanGate[]>([]);
+  const [graphCursor, setGraphCursor] = useState<number>();
   const [terminationLoading, setTerminationLoading] = useState(false);
   const [terminationError, setTerminationError] = useState<string>();
   const [hydrating, setHydrating] = useState(true);
@@ -140,9 +143,12 @@ export function ConversationCreatePage({
     let cancelled = false;
     const poll = async () => {
       try {
-        const [page, refreshedTask] = await Promise.all([
+        const [page, refreshedTask, graphProgress] = await Promise.all([
           backendApi.events(task.id, eventCursor),
           backendApi.task?.(task.id),
+          task.workflow_version === "agent-graph-v1" && backendApi.graph
+            ? backendApi.graph(task.id)
+            : Promise.resolve(undefined),
         ]);
         if (cancelled) return;
         if (refreshedTask) {
@@ -151,6 +157,17 @@ export function ConversationCreatePage({
             && current.status === refreshedTask.status
             ? current
             : refreshedTask);
+        }
+        if (graphProgress) {
+          setGraphCursor(graphProgress.graph_cursor);
+          const refreshedGates = graphProgress.human_gates.filter(
+            (gate) => gate.kind === "high_risk_approval" && gate.risk === "high",
+          );
+          setHighRiskGates((current) => {
+            const merged = new Map(current.map((gate) => [gate.id, gate]));
+            for (const gate of refreshedGates) merged.set(gate.id, gate);
+            return [...merged.values()];
+          });
         }
         setEventCursor(page.cursor);
         setEvents((current) => {
@@ -182,6 +199,11 @@ export function ConversationCreatePage({
       window.clearInterval(timer);
     };
   }, [backendApi, eventCursor, task]);
+
+  useEffect(() => {
+    setHighRiskGates([]);
+    setGraphCursor(undefined);
+  }, [task?.id]);
 
   async function sendMessage(event: FormEvent) {
     event.preventDefault();
@@ -252,6 +274,8 @@ export function ConversationCreatePage({
       setHandledApprovalGroups([]);
       setConfirmedClarifications([]);
       setTerminationGate(undefined);
+      setHighRiskGates([]);
+      setGraphCursor(undefined);
       setTerminationError(undefined);
       setContextLimitReached(false);
       setNewConversationOpen(false);
@@ -372,6 +396,42 @@ export function ConversationCreatePage({
     setClarificationOpen(false);
   }
 
+  async function decideHighRiskGate(
+    gate: AgentGraphHumanGate,
+    decision: "approve" | "reject",
+  ) {
+    if (
+      !task
+      || !backendApi.decideGraphGate
+      || typeof graphCursor !== "number"
+      || !gate.membership_hash
+      || !gate.items?.length
+    ) {
+      throw new Error("审批证据不完整，请等待任务刷新后重试");
+    }
+    const findingIds = gate.items.map((item) => item.finding_id);
+    const result = await backendApi.decideGraphGate(
+      task.id,
+      gate.id,
+      decision,
+      decision === "approve"
+        ? "操作人通过聊天窗口同意高风险治理操作"
+        : "操作人通过聊天窗口拒绝高风险治理操作",
+      {
+        approved_finding_ids: decision === "approve" ? findingIds : [],
+        rejected_finding_ids: decision === "reject" ? findingIds : [],
+        graph_cursor: graphCursor,
+        membership_hash: gate.membership_hash,
+      },
+    );
+    setHighRiskGates((current) => current.map((item) => (
+      item.id === gate.id
+        ? { ...item, status: result.status, actionable: false }
+        : item
+    )));
+    return result.status;
+  }
+
   const isCollecting = state === "collecting";
   const taskActive = Boolean(task && !terminalTaskStatuses.has(task.status));
   const composerLocked = Boolean(task && !clarificationOpen);
@@ -443,8 +503,20 @@ export function ConversationCreatePage({
             <article className={`conversation-card agent-progress${taskBlocked || taskFailed ? " blocked" : ""}`} aria-label="Agent 任务进度">
               <strong>{taskTitle}</strong>
               <p>当前阶段：{presentAgentPhase(task.phase)}</p>
+              {highRiskGates.map((gate) => (
+                <ConversationRiskApprovalCard
+                  gate={gate}
+                  key={gate.id}
+                  onDecide={decideHighRiskGate}
+                />
+              ))}
               <div className="agent-event-list">
-                {events.slice(-6).map((event) => {
+                {events
+                  .filter((event) => !(
+                    highRiskGates.length > 0 && event.type === "approval_required"
+                  ))
+                  .slice(-6)
+                  .map((event) => {
                   const groupId = payloadText(event, "group_id");
                   const decisionId = payloadText(event, "decision_id");
                   const approvalEvent = event.type === "approval_required" && groupId;

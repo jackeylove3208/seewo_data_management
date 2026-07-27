@@ -6,6 +6,7 @@ import {
   removeStoredTask,
   saveStoredTask,
   TASK_HISTORY_UPDATED_EVENT,
+  toTaskHistoryItem,
 } from "./taskHistory";
 
 const baseTask = {
@@ -38,5 +39,28 @@ describe("task history removal", () => {
     expect(getStoredTasks().map((task) => task.id)).toEqual(["task-2"]);
     expect(listener).toHaveBeenCalledTimes(1);
     window.removeEventListener(TASK_HISTORY_UPDATED_EVENT, listener);
+  });
+
+  it("maps an approved termination request to a terminated history state", () => {
+    const task = toTaskHistoryItem({
+      id: "rollback-task",
+      workflow_version: "agent-graph-v1",
+      task_kind: "rollback",
+      parent_task_id: "source-task",
+      phase: "plan_restore",
+      status: "running",
+      title: "回滚任务",
+      report_id: null,
+      rollback_eligible: false,
+      deletion_eligible: true,
+      created_at: "2026-07-27T08:00:00Z",
+      completed_at: null,
+      termination_requested: true,
+      issue_summary: { total: 0, excluded: 0 },
+      operation_summary: { succeeded: 0, failed: 0, blocked: 0 },
+      entity_types: ["student"],
+    });
+
+    expect(task.status).toBe("terminated");
   });
 });
