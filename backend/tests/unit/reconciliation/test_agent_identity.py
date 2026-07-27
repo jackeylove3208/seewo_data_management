@@ -47,3 +47,19 @@ def test_identity_fields_remain_governed_differences_after_correspondence() -> N
         "phone",
         "email",
     )
+
+
+def test_category_aliases_do_not_create_a_false_field_difference() -> None:
+    authority = _record(
+        source_role=AgentSourceRole.AUTHORITATIVE,
+        entity_kind=AgentEntityKind.TEACHER,
+        category="教师",
+        class_name=None,
+    )
+    target = _record(
+        entity_kind=AgentEntityKind.TEACHER,
+        category="老师",
+        class_name=None,
+    )
+
+    assert ordinary_field_differences(authority, target) == ()

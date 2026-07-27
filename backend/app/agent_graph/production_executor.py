@@ -668,6 +668,7 @@ class ProductionGraphActionExecutor:
         context: GraphWorkContext,
         action: AllowedActionV1,
     ) -> GraphActionOutcome:
+        model_failure: GraphSubAgentFailure | None = None
         async with self._session_factory() as session:
             async with session.begin():
                 plan = await session.scalar(
@@ -774,30 +775,35 @@ class ProductionGraphActionExecutor:
                     operator=operator,
                     max_retries=self._max_retries,
                 )
-                await GraphGovernanceExecutionExecutor(
-                    runner=runner,
-                    tools=tools,
-                ).run(
-                    GraphSkillInvocation(
-                        task_id=context.task_id,
-                        run_id=context.run_id,
-                        graph_run_id=context.graph_run_id,
-                        graph_node=context.current_node,
-                        graph_cursor=context.graph_cursor,
-                        action_id=action.action_id,
-                        evidence_manifest_id=manifest_id,
-                        skill_name="execute-approved-governance-plan",
-                        skill_version="1.0.0",
-                        input_payload=GovernanceExecutionInput(
+                try:
+                    await GraphGovernanceExecutionExecutor(
+                        runner=runner,
+                        tools=tools,
+                    ).run(
+                        GraphSkillInvocation(
                             task_id=context.task_id,
                             run_id=context.run_id,
-                            phase=AgentPhase.EXECUTE_AND_VERIFY,
-                            evidence_refs=bound_action.required_evidence,
-                            plan_id=plan.id,
-                            operation_ids=operation_ids,
-                        ).model_dump(mode="json"),
+                            graph_run_id=context.graph_run_id,
+                            graph_node=context.current_node,
+                            graph_cursor=context.graph_cursor,
+                            action_id=action.action_id,
+                            evidence_manifest_id=manifest_id,
+                            skill_name="execute-approved-governance-plan",
+                            skill_version="1.0.0",
+                            input_payload=GovernanceExecutionInput(
+                                task_id=context.task_id,
+                                run_id=context.run_id,
+                                phase=AgentPhase.EXECUTE_AND_VERIFY,
+                                evidence_refs=bound_action.required_evidence,
+                                plan_id=plan.id,
+                                operation_ids=operation_ids,
+                            ).model_dump(mode="json"),
+                        )
                     )
-                )
+                except GraphSubAgentFailure as error:
+                    model_failure = error
+        if model_failure is not None:
+            raise model_failure
         return _outcome(action)
 
     async def _generate_report(

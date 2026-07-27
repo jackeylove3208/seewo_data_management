@@ -294,6 +294,18 @@ def _read_csv(path: Path) -> tuple[tuple[str, ...], list[dict[str, str]]]:
         raise CsvMutationError("target CSV must use UTF-8 for execution") from error
 
 
+def read_target_rows(path: Path) -> dict[str, dict[str, object]]:
+    """Return physical CSV values projected onto canonical fields by stable row ID."""
+    _fieldnames, rows = _read_csv(path)
+    indexed: dict[str, dict[str, object]] = {}
+    for row in rows:
+        identifier = row.get("id")
+        if not identifier or identifier in indexed:
+            raise CsvMutationError("target CSV requires unique stable row identifiers")
+        indexed[identifier] = _canonical_row(row)
+    return indexed
+
+
 def _matching_indexes(rows: Sequence[Mapping[str, str]], identifier: str) -> list[int]:
     return [index for index, row in enumerate(rows) if row.get("id") == identifier]
 

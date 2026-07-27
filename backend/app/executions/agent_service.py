@@ -12,7 +12,11 @@ from app.connectors.configured import (
     ConnectorCapabilityError,
     ConnectorConflictError,
 )
-from app.executions.csv_versioning import CsvTargetVersioner, TargetVersionLike
+from app.executions.csv_versioning import (
+    CsvMutationError,
+    CsvTargetVersioner,
+    TargetVersionLike,
+)
 from app.governance.agent_governance import AgentGovernanceOperation, AgentOperation
 from app.schemas.canonical_entities import EntityType
 from app.schemas.executions import (
@@ -203,7 +207,29 @@ class CsvAgentTargetAdapter:
         expected = f"sha256:{self.parent.file_sha256}"
         if target_version != expected:
             raise ValueError("target version is stale")
-        return await self.versioner.begin(self.parent, batch_id=plan_id)
+        return _CsvAgentTargetSession(
+            await self.versioner.begin(self.parent, batch_id=plan_id)
+        )
+
+
+class _CsvAgentTargetSession:
+    def __init__(self, session: AgentTargetSession) -> None:
+        self._session = session
+
+    async def apply_operation(self, operation: GovernanceOperation) -> None:
+        try:
+            await self._session.apply_operation(operation)
+        except CsvMutationError as error:
+            raise AgentTargetError("CSV operation failed a frozen target guard") from error
+
+    async def read_entity(self, identifier: str) -> dict[str, object] | None:
+        return await self._session.read_entity(identifier)
+
+    async def finalize(self) -> object:
+        return await self._session.finalize()
+
+    async def abort(self) -> None:
+        await self._session.abort()
 
 
 class ConfiguredConnectorAgentTarget:

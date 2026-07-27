@@ -6,7 +6,16 @@ from uuid import uuid4
 
 import pytest
 
-from app.executions.csv_versioning import CsvMutationError, CsvTargetVersioner
+from app.executions import csv_versioning
+from app.executions.agent_service import AgentExecutionService, CsvAgentTargetAdapter
+from app.executions.csv_versioning import (
+    CsvMutationError,
+    CsvTargetVersioner,
+)
+from app.governance.agent_governance import (
+    AgentGovernanceOperation,
+    AgentOperation,
+)
 from app.schemas.canonical_entities import EntityType
 from app.schemas.executions import (
     GovernanceOperation,
@@ -68,6 +77,21 @@ def parent_version(path: Path) -> TargetVersion:
 def read_rows(path: Path) -> list[dict[str, str]]:
     with path.open(encoding="utf-8-sig", newline="") as handle:
         return list(csv.DictReader(handle))
+
+
+def test_read_target_rows_preserves_raw_values_under_stable_locators(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "target.csv"
+    target.write_text(
+        "类别,姓名,电话\n教师,测试教师,+86 13800138000\n",
+        encoding="utf-8",
+    )
+
+    rows = csv_versioning.read_target_rows(target)
+
+    assert rows["csv:2"]["category"] == "教师"
+    assert rows["csv:2"]["phone"] == "+86 13800138000"
 
 
 @pytest.mark.asyncio
@@ -157,6 +181,46 @@ async def test_derive_rejects_missing_target_without_writing_child(tmp_path: Pat
         )
 
     assert not output_root.exists() or not tuple(output_root.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_agent_csv_precondition_failure_becomes_a_safe_operation_outcome(
+    tmp_path: Path,
+) -> None:
+    original = tmp_path / "uploaded-target.csv"
+    original.write_text(
+        "类别,姓名\n教师,测试教师\n",
+        encoding="utf-8",
+    )
+    parent = parent_version(original)
+    governance_operation = AgentGovernanceOperation(
+        id=uuid4(),
+        finding_id=uuid4(),
+        operation=AgentOperation.UPDATE,
+        entity_kind="teacher",
+        target_source_identifier="csv:2",
+        before={"category": "老师"},
+        after={"category": "教师"},
+        dependencies=frozenset(),
+        risk="medium",
+        target_version=f"sha256:{parent.file_sha256}",
+    )
+
+    result = await AgentExecutionService().execute(
+        plan_id=uuid4(),
+        target_version=governance_operation.target_version,
+        operations=(governance_operation,),
+        target=CsvAgentTargetAdapter(
+            versioner=CsvTargetVersioner(
+                repository=VersionRepositorySpy(),
+                output_root=tmp_path / "derived",
+            ),
+            parent=parent,
+        ),
+    )
+
+    assert result.status == "failed"
+    assert result.by_operation[governance_operation.id].error_code == "AgentTargetError"
 
 
 @pytest.mark.asyncio

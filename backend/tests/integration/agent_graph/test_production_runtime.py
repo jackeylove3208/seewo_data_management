@@ -70,6 +70,33 @@ class InvalidManifestResourceProvider:
         )
 
 
+class InvalidExecutionPlanResourceProvider:
+    def __init__(self) -> None:
+        self.requests = []
+
+    async def complete_json_once(self, request):
+        self.requests.append(request)
+        return LLMResponse(
+            output={
+                "result": {
+                    "tool_call": {
+                        "name": "request_execution_batch",
+                        "arguments": {
+                            "resource_id": (
+                                "execution-plan:"
+                                "00000000-0000-0000-0000-000000000000"
+                            )
+                        },
+                    }
+                }
+            },
+            provider="scripted",
+            model="scripted-long-context",
+            request_id=f"request-{len(self.requests)}",
+            usage=ModelUsage(input_tokens=10, output_tokens=5),
+        )
+
+
 async def _preflight_context(database, tmp_path: Path) -> GraphWorkContext:
     async with database.session_factory() as session:
         async with session.begin():
@@ -604,3 +631,172 @@ async def test_failed_analysis_preserves_model_and_tool_audit_across_batch_reset
     assert saved_batch.lease_owner is None
     assert saved_batch.lease_token is None
     assert manifest is not None
+
+
+@pytest.mark.asyncio
+async def test_failed_governance_execution_preserves_model_and_tool_audit(
+    database,
+    tmp_path: Path,
+) -> None:
+    provider = InvalidExecutionPlanResourceProvider()
+    operation_id = uuid4()
+    async with database.session_factory() as session:
+        async with session.begin():
+            task = ReconciliationTask(
+                tenant_id="school-governance-audit",
+                scope_id="all",
+                snapshot_mode="full",
+                entity_types=["teacher"],
+                status="running",
+                stage="governance",
+                workflow_version="agent-graph-v1",
+                idempotency_key=str(uuid4()),
+                request_hash=uuid4().hex * 2,
+            )
+            session.add(task)
+            await session.flush()
+            snapshots: dict[str, Snapshot] = {}
+            for role in ("authoritative", "target"):
+                path = tmp_path / f"{role}.csv"
+                path.write_text(
+                    "类别,姓名,编号\n教师,测试教师,T-001\n",
+                    encoding="utf-8",
+                )
+                digest = uuid4().hex * 2
+                source = SourceFile(
+                    task_id=task.id,
+                    source_role=role,
+                    original_name=path.name,
+                    storage_name=f"{uuid4()}.csv",
+                    storage_path=str(path),
+                    sha256=digest,
+                    size_bytes=path.stat().st_size,
+                    detected_encoding="utf-8",
+                )
+                session.add(source)
+                await session.flush()
+                snapshot = Snapshot(
+                    id=uuid4(),
+                    task_id=task.id,
+                    source_file_id=source.id,
+                    source_role=role,
+                    schema_version="agent-contract-v1",
+                    mapping_version="agent-contract-v1",
+                    file_hash=digest,
+                    content_hash=uuid4().hex * 2,
+                    state="published",
+                    summary={},
+                )
+                session.add(snapshot)
+                snapshots[role] = snapshot
+            run = await AgentRuntimeRepository(session).create_run(
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                conversation_id=None,
+                kind=AgentRunKind.SYNC,
+                workflow_version="agent-graph-v1",
+            )
+            graph = await AgentGraphRepository(session).create_run_state(
+                run_id=run.id,
+                graph_version="agent-sync-graph-v1",
+                initial_node="execute_ready_operations",
+            )
+            target_version_hash = "b" * 64
+            session.add(
+                TargetVersionRecord(
+                    id=uuid4(),
+                    parent_version_id=None,
+                    task_id=task.id,
+                    tenant_id=task.tenant_id,
+                    source_snapshot_id=snapshots["target"].id,
+                    batch_id=None,
+                    file_sha256=target_version_hash,
+                    content_hash="c" * 64,
+                    storage_path=str(tmp_path / "target.csv"),
+                )
+            )
+            session.add(
+                AgentGovernancePlanRecord(
+                    id=uuid4(),
+                    run_id=run.id,
+                    task_id=task.id,
+                    tenant_id=task.tenant_id,
+                    source_snapshot_id=snapshots["authoritative"].id,
+                    target_snapshot_id=snapshots["target"].id,
+                    target_version=f"sha256:{target_version_hash}",
+                    finding_ids=[],
+                    operations=[{"id": str(operation_id)}],
+                    content_hash="d" * 64,
+                    status="compiled",
+                    compiled_by="test",
+                )
+            )
+            await session.flush()
+            context = GraphWorkContext(
+                worker_id="governance-audit-worker",
+                run_id=run.id,
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                graph_run_id=graph.id,
+                graph_version=graph.graph_version,
+                current_node=graph.current_node,
+                graph_cursor=graph.cursor,
+                attempt_count=run.attempt_count,
+                lease_token=uuid4(),
+            )
+            action = AllowedActionV1(
+                action_id="execute_ready_operations",
+                graph_action_kind="execute_ready_operations",
+                kind="dispatch_sub_agent",
+                sub_agent="governance-execution",
+                resource_ids=(f"operation:{operation_id}",),
+                required_evidence=(f"execution-outcome:{operation_id}",),
+                risk="low",
+                requires_human=False,
+                successor_node="generate_terminal_report",
+            )
+
+    with pytest.raises(GraphSubAgentFailure) as captured:
+        await ProductionGraphActionExecutor(
+            database.session_factory,
+            provider=provider,
+            tokenization_secret="test-tokenization-secret",
+            csv_execution_enabled=True,
+        )._execute_governance(context, action)
+
+    assert captured.value.failure_categories == ("tool_argument_rejected",)
+    assert captured.value.attempt_count == 4
+    async with database.session_factory() as session:
+        invocations = tuple(
+            await session.scalars(
+                select(AgentSubAgentInvocationRecord)
+                .where(
+                    AgentSubAgentInvocationRecord.graph_run_id
+                    == context.graph_run_id
+                )
+                .order_by(AgentSubAgentInvocationRecord.attempt)
+            )
+        )
+        tool_calls = tuple(
+            await session.scalars(
+                select(AgentToolCallRecord)
+                .join(
+                    AgentSubAgentInvocationRecord,
+                    AgentSubAgentInvocationRecord.id
+                    == AgentToolCallRecord.invocation_id,
+                )
+                .where(
+                    AgentSubAgentInvocationRecord.graph_run_id
+                    == context.graph_run_id
+                )
+                .order_by(AgentToolCallRecord.created_at)
+            )
+        )
+
+    assert len(provider.requests) == 4
+    assert [item.status for item in invocations] == ["failed"] * 4
+    assert {
+        item.model_provenance["safe_error_code"] for item in invocations
+    } == {"tool_argument_rejected"}
+    assert len(tool_calls) == 4
+    assert all(not item.authorized and item.status == "denied" for item in tool_calls)

@@ -592,6 +592,23 @@ def _tool_arguments_schema(
     *,
     manifest: EvidenceManifestV1 | None = None,
 ) -> dict[str, Any]:
+    if name in {
+        "read_execution_plan",
+        "read_ready_operations",
+        "request_execution_batch",
+    }:
+        return _resource_tool_arguments_schema(
+            manifest=manifest,
+            resource_prefix="execution-plan:",
+        )
+    if name in {
+        "request_operation_execution",
+        "read_operation_verification",
+    }:
+        return _resource_tool_arguments_schema(
+            manifest=manifest,
+            resource_prefix="operation:",
+        )
     if name == "submit_conflict_interpretation":
         from app.ai.skills.contracts import ConflictDecisionDraft
 
@@ -670,6 +687,30 @@ def _tool_arguments_schema(
             ),
         },
         "minProperties": 1,
+    }
+
+
+def _resource_tool_arguments_schema(
+    *,
+    manifest: EvidenceManifestV1 | None,
+    resource_prefix: str,
+) -> dict[str, Any]:
+    members = (
+        tuple(
+            item
+            for item in manifest.resource_ids
+            if item.startswith(resource_prefix)
+        )
+        if manifest is not None
+        else None
+    )
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "resource_id": _manifest_member_schema(members),
+        },
+        "required": ["resource_id"],
     }
 
 

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,7 @@ from app.executions.agent_service import (
     AgentExecutionService,
     CsvAgentTargetAdapter,
 )
-from app.executions.csv_versioning import CsvTargetVersioner
+from app.executions.csv_versioning import CsvTargetVersioner, read_target_rows
 from app.governance.agent_governance import (
     AgentFindingInput,
     AgentGovernanceOperation,
@@ -48,6 +49,7 @@ from app.models.agent_runtime import AgentRunRecord
 from app.models.executions import TargetVersionRecord
 from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import Snapshot, SourceFile
+from app.reconciliation.agent_identity import ordinary_field_differences
 from app.repositories.agent_governance import AgentGovernanceRepository
 from app.repositories.executions import ExecutionRepository
 
@@ -809,6 +811,7 @@ async def _finding_inputs(
             content_hash=target.content_hash,
             storage_path=storage_path,
         )
+    raw_target_rows = read_target_rows(Path(version.storage_path))
     rows = tuple(
         await session.execute(
             select(
@@ -845,13 +848,23 @@ async def _finding_inputs(
             target_input = await session.get(AgentInputRecord, claim.target_input_id)
             if authority is None or target_input is None:
                 raise ValueError("identity claim inputs are missing")
-            before, after = _changed_values(target_input, authority)
+            raw_target_values = raw_target_rows.get(target_input.stable_locator)
+            if raw_target_values is None:
+                raise ValueError("field difference target row is missing")
+            before, after = _changed_values(
+                target_input,
+                authority,
+                raw_target_values=raw_target_values,
+            )
             target_identifier = target_input.stable_locator
         elif work.kind == "target_missing":
             after = _record_values(subject)
             after["source_id"] = subject.number or subject.email or str(subject.id)
         elif work.kind in {"target_extra", "target_duplicate"}:
-            before = _record_values(subject)
+            before = raw_target_rows.get(
+                subject.stable_locator,
+                _record_values(subject),
+            )
             target_identifier = subject.stable_locator
         dependencies = frozenset(
             await session.scalars(
@@ -893,15 +906,17 @@ def _record_values(record: AgentInputRecord) -> dict[str, object]:
 
 
 def _changed_values(
-    target: AgentInputRecord, authority: AgentInputRecord
+    target: AgentInputRecord,
+    authority: AgentInputRecord,
+    *,
+    raw_target_values: Mapping[str, object] | None = None,
 ) -> tuple[dict[str, object], dict[str, object]]:
     target_values = _record_values(target)
     authority_values = _record_values(authority)
-    fields = tuple(
-        key for key in authority_values if authority_values.get(key) != target_values.get(key)
-    )
+    fields = ordinary_field_differences(authority, target)
+    raw_values = raw_target_values or target_values
     return (
-        {key: target_values[key] for key in fields},
+        {key: raw_values.get(key, target_values[key]) for key in fields},
         {key: authority_values[key] for key in fields},
     )
 
