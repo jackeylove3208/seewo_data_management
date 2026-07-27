@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentRunKind
-from app.models.agent_runtime import SchoolTaskLockRecord
+from app.models.agent_runtime import AgentRunRecord, SchoolTaskLockRecord
 from app.models.reconciliation import ReconciliationTask
 from app.models.reporting import AgentReportRecord
 
@@ -31,12 +31,18 @@ class RollbackTaskPreview:
         report_id: UUID | None,
         target_version_id: UUID,
         operations: tuple[dict[str, Any], ...],
+        state: str,
+        message_zh: str,
+        requires_confirmation: bool,
     ) -> None:
         self.task_id = task_id
         self.task_kind = task_kind
         self.report_id = report_id
         self.target_version_id = target_version_id
         self.operations = operations
+        self.state = state
+        self.message_zh = message_zh
+        self.requires_confirmation = requires_confirmation
 
 
 class AgentReportingService:
@@ -140,6 +146,30 @@ class AgentReportingService:
         )
         if report is None or not report.rollback_eligible:
             raise ValueError("rollback is not eligible from verified execution facts")
+        idempotency_key = f"rollback:{source_task_id}:{target_version_id}"
+        existing_task = await self.session.scalar(
+            select(ReconciliationTask).where(
+                ReconciliationTask.idempotency_key == idempotency_key,
+                ReconciliationTask.tenant_id == tenant_id,
+            )
+        )
+        if existing_task is not None:
+            existing_run = await AgentRuntimeRepository(self.session).get_run_for_task(
+                existing_task.id
+            )
+            if existing_run is None:
+                raise LookupError("rollback Agent run not found")
+            state, message_zh, requires_confirmation = _rollback_preview_state(existing_run)
+            return RollbackTaskPreview(
+                task_id=existing_task.id,
+                task_kind=existing_task.task_kind,
+                report_id=None,
+                target_version_id=target_version_id,
+                operations=tuple((existing_task.agent_intent or {}).get("operations", [])),
+                state=state,
+                message_zh=message_zh,
+                requires_confirmation=requires_confirmation,
+            )
         active = await self.session.scalar(
             select(SchoolTaskLockRecord).where(
                 SchoolTaskLockRecord.tenant_id == tenant_id,
@@ -148,18 +178,6 @@ class AgentReportingService:
         )
         if active is not None:
             raise ValueError(f"school lock is owned by task {active.owner_task_id}")
-        idempotency_key = f"rollback:{source_task_id}:{target_version_id}"
-        existing_task = await self.session.scalar(
-            select(ReconciliationTask).where(ReconciliationTask.idempotency_key == idempotency_key)
-        )
-        if existing_task is not None:
-            return RollbackTaskPreview(
-                task_id=existing_task.id,
-                task_kind=existing_task.task_kind,
-                report_id=None,
-                target_version_id=target_version_id,
-                operations=tuple((existing_task.agent_intent or {}).get("operations", [])),
-            )
         source = await self.session.get(ReconciliationTask, source_task_id)
         if source is None:
             raise LookupError("source Agent task not found")
@@ -266,7 +284,20 @@ class AgentReportingService:
             report_id=None,
             target_version_id=target_version_id,
             operations=operations,
+            state="awaiting_confirmation",
+            message_zh="请确认是否创建独立回滚任务。",
+            requires_confirmation=True,
         )
+
+
+def _rollback_preview_state(run: AgentRunRecord) -> tuple[str, str, bool]:
+    if run.status == "pending" and run.phase == "intent_confirmed":
+        return "awaiting_confirmation", "请确认是否创建独立回滚任务。", True
+    if run.status == "completed":
+        return "completed", "该任务已完成回滚。", False
+    if run.status in {"pending", "running", "waiting_human", "terminating"}:
+        return "in_progress", "回滚任务正在进行，请查看任务进度。", False
+    return "ended", "该回滚任务已经结束，不能再次执行。", False
 
 
 def _facts(facts: Mapping[str, Any], terminal_state: str) -> dict[str, Any]:

@@ -1,4 +1,5 @@
 import re
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Annotated, Any
@@ -775,6 +776,12 @@ async def get_agent_graph_progress(
                 session,
                 finding_ids=tuple(gate.member_ids),
             )
+        elif gate.gate_kind == "rollback_approval":
+            approval_items_by_gate[gate.id] = await _graph_rollback_approval_items(
+                session,
+                task=task,
+                operation_ids=tuple(gate.member_ids),
+            )
     progress_completed, progress_total = await _graph_progress_counts(
         session,
         run_id=run.id,
@@ -1061,6 +1068,184 @@ async def _graph_approval_items(
             changes=changes,
         )
     return tuple(by_finding[finding_id] for finding_id in parsed_ids if finding_id in by_finding)
+
+
+async def _graph_rollback_approval_items(
+    session: AsyncSession,
+    *,
+    task: ReconciliationTask,
+    operation_ids: tuple[str, ...],
+) -> tuple[AgentGraphApprovalItemView, ...]:
+    parsed_ids = tuple(UUID(item) for item in operation_ids)
+    if not parsed_ids:
+        return ()
+    operation_rows = tuple(
+        await session.scalars(
+            select(AgentGovernanceOperationRecord).where(
+                AgentGovernanceOperationRecord.id.in_(parsed_ids)
+            )
+        )
+    )
+    operation_rows_by_id = {row.id: row for row in operation_rows}
+    finding_ids = tuple(dict.fromkeys(row.finding_id for row in operation_rows))
+    source_items = (
+        await _graph_approval_items(
+            session,
+            finding_ids=tuple(str(finding_id) for finding_id in finding_ids),
+        )
+        if finding_ids
+        else ()
+    )
+    source_items_by_finding = {item.finding_id: item for item in source_items}
+    intent = task.agent_intent if isinstance(task.agent_intent, dict) else {}
+    mutations_by_id = {
+        UUID(str(item["id"])): dict(item)
+        for item in intent.get("operations", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    items: list[AgentGraphApprovalItemView] = []
+    for operation_id in parsed_ids:
+        operation_row = operation_rows_by_id.get(operation_id)
+        source_item = (
+            source_items_by_finding.get(operation_row.finding_id)
+            if operation_row is not None
+            else None
+        )
+        mutation = mutations_by_id.get(operation_id)
+        if mutation is None and operation_row is not None:
+            mutation = {
+                "id": str(operation_row.id),
+                "operation": operation_row.operation_type,
+                "entity_kind": operation_row.entity_kind,
+                "target_source_identifier": operation_row.target_source_identifier,
+                "before": operation_row.before,
+                "after": operation_row.actual_after or operation_row.after,
+            }
+        mutation = mutation or {"id": str(operation_id)}
+        items.append(
+            _graph_rollback_approval_item(
+                operation_id=operation_id,
+                mutation=mutation,
+                source_item=source_item,
+            )
+        )
+    return tuple(items)
+
+
+def _graph_rollback_approval_item(
+    *,
+    operation_id: UUID,
+    mutation: Mapping[str, Any],
+    source_item: AgentGraphApprovalItemView | None,
+) -> AgentGraphApprovalItemView:
+    original_operation = str(mutation.get("operation", "update"))
+    entity_kind = str(
+        mutation.get("entity_kind")
+        or (source_item.entity_kind if source_item is not None else "record")
+    )
+    before = _graph_fact_mapping(mutation.get("before"))
+    after = _graph_fact_mapping(mutation.get("actual_after") or mutation.get("after"))
+    current, restored = _graph_rollback_values(
+        operation=original_operation,
+        before=before,
+        after=after,
+    )
+    source_locator = str(
+        mutation.get("target_source_identifier")
+        or (source_item.source_locator if source_item is not None else f"operation:{operation_id}")
+    )
+    entity_name = _graph_fact_text(after, before, field="name")
+    entity_number = _graph_fact_text(after, before, field="number")
+    class_name = _graph_fact_text(after, before, field="class_name")
+    source_row_number = source_item.source_row_number if source_item is not None else None
+    if source_row_number is None:
+        match = re.fullmatch(r"csv:(\d+)", source_locator)
+        source_row_number = int(match.group(1)) if match is not None else None
+    entity_label = {
+        "student": "学生",
+        "teacher": "教师",
+        "department": "部门",
+    }.get(entity_kind, "组织")
+    operation_label = {
+        "update": f"恢复同步修改的{entity_label}记录",
+        "create": f"删除同步新增的{entity_label}记录",
+        "delete": f"恢复同步删除的{entity_label}记录",
+    }.get(original_operation, f"恢复同步处理的{entity_label}记录")
+    return AgentGraphApprovalItemView(
+        finding_id=operation_id,
+        entity_kind=entity_kind,
+        entity_name=entity_name or (source_item.entity_name if source_item is not None else None),
+        entity_number=(
+            entity_number or (source_item.entity_number if source_item is not None else None)
+        ),
+        class_name=class_name or (source_item.class_name if source_item is not None else None),
+        source_locator=source_locator,
+        source_row_number=source_row_number,
+        operation_zh=operation_label,
+        issue_zh="已验证同步操作",
+        analysis_zh="该记录属于本次冻结的回滚范围。",
+        solution_zh=f"将按同步前事实{operation_label}。",
+        changes=_graph_rollback_changes(current=current, restored=restored),
+    )
+
+
+def _graph_fact_mapping(value: object) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _graph_fact_text(
+    primary: Mapping[str, Any],
+    fallback: Mapping[str, Any],
+    *,
+    field: str,
+) -> str | None:
+    value = primary.get(field)
+    if value is None:
+        value = fallback.get(field)
+    return str(value) if value is not None else None
+
+
+def _graph_rollback_values(
+    *,
+    operation: str,
+    before: Mapping[str, Any],
+    after: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+    if operation == "create":
+        return after, {}
+    if operation == "delete":
+        return {}, before
+    return after, before
+
+
+def _graph_rollback_changes(
+    *,
+    current: Mapping[str, Any],
+    restored: Mapping[str, Any],
+) -> tuple[AgentGraphApprovalChangeView, ...]:
+    field_labels = {
+        "category": "类别",
+        "name": "姓名",
+        "number": "编号",
+        "class_name": "班级",
+        "phone": "手机号",
+        "email": "邮箱",
+    }
+    fields = tuple(
+        field
+        for field in dict.fromkeys((*field_labels, *current, *restored))
+        if field not in {"source_id", "entity_type"}
+    )
+    return tuple(
+        AgentGraphApprovalChangeView(
+            field=field,
+            field_zh=field_labels.get(field, field),
+            before=_graph_public_value(current.get(field), field=field),
+            after=_graph_public_value(restored.get(field), field=field),
+        )
+        for field in fields
+        if current.get(field) != restored.get(field)
+    )
 
 
 def _graph_approval_changes(
@@ -1781,6 +1966,9 @@ async def preview_agent_rollback(
         source_task_id=task_id,
         target_version_id=preview.target_version_id,
         operation_count=len(preview.operations),
+        state=preview.state,
+        message_zh=preview.message_zh,
+        requires_confirmation=preview.requires_confirmation,
     )
 
 

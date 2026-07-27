@@ -187,7 +187,9 @@ class AgentRollbackPreviewResponse(BaseModel):
     source_task_id: UUID
     target_version_id: UUID
     operation_count: int
-    requires_confirmation: bool = True
+    state: Literal["awaiting_confirmation", "in_progress", "completed", "ended"]
+    message_zh: str
+    requires_confirmation: bool
 
 
 class AgentApprovalGroupView(BaseModel):

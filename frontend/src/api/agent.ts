@@ -430,6 +430,8 @@ export interface AgentRollbackPreview {
   source_task_id: string;
   target_version_id: string;
   operation_count: number;
+  state: "awaiting_confirmation" | "in_progress" | "completed" | "ended";
+  message_zh: string;
   requires_confirmation: boolean;
 }
 

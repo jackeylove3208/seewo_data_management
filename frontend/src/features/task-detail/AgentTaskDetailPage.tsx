@@ -89,6 +89,9 @@ function ApprovalItemRow({
 }) {
   const operationLabel = approvalOperationLabels[gate.operation ?? ""] ?? "处理";
   const entityLabel = approvalEntityLabels[item.entity_kind] ?? "记录";
+  const itemActionLabel = gate.kind.startsWith("rollback_")
+    ? item.operation_zh
+    : `${operationLabel}${entityLabel}`;
   const entityName = item.entity_name || "未填写姓名";
   const number = item.entity_number ? `（编号 ${item.entity_number}）` : "";
   const sourceContext = item.source_row_number
@@ -98,7 +101,7 @@ function ApprovalItemRow({
 
   return (
     <li>
-      <strong>{operationLabel}{entityLabel}：{entityName}{number}</strong>
+      <strong>{itemActionLabel}：{entityName}{number}</strong>
       <small>
         {sourceContext}
         {item.class_name ? ` · ${item.class_name}` : ""}
@@ -431,17 +434,16 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
     }
   }
 
-  async function rejectRollback() {
-    if (!rollbackPreview || rollbackLoading) return;
-    setRollbackLoading(true);
-    try {
-      await agentApi.rejectRollback(rollbackPreview.task_id);
-      setRollbackPreview(undefined);
-    } catch (error) {
-      setTerminateError(error instanceof Error ? error.message : "取消回滚任务失败");
-    } finally {
-      setRollbackLoading(false);
-    }
+  function dismissRollbackPreview() {
+    if (rollbackLoading) return;
+    setRollbackPreview(undefined);
+  }
+
+  function openExistingRollback() {
+    if (!rollbackPreview) return;
+    const rollbackTaskId = rollbackPreview.task_id;
+    setRollbackPreview(undefined);
+    navigate(`/tasks/${rollbackTaskId}`);
   }
 
   async function decideGate(
@@ -931,18 +933,34 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
       ) : !graph.data && !blocked && <Progress percent={terminal ? 100 : Math.round((completed / activePhases.length) * 100)} showInfo={false} />}
       <Modal
         rootClassName="apple-agent-modal"
-        title="确认创建独立回滚任务？"
+        title={
+          rollbackPreview?.state === "completed"
+            ? "该任务已完成回滚"
+            : rollbackPreview?.requires_confirmation
+              ? "确认创建独立回滚任务？"
+              : "已有回滚任务"
+        }
         open={Boolean(rollbackPreview)}
-        okText="确认回滚"
-        cancelText="暂不回滚"
-        okButtonProps={{ danger: true }}
-        confirmLoading={rollbackLoading}
+        okText={rollbackPreview?.requires_confirmation ? "确认回滚" : "查看回滚任务"}
+        cancelText={rollbackPreview?.requires_confirmation ? "暂不回滚" : "关闭"}
+        okButtonProps={{ danger: rollbackPreview?.requires_confirmation }}
+        confirmLoading={rollbackPreview?.requires_confirmation && rollbackLoading}
         closable={!rollbackLoading}
         maskClosable={!rollbackLoading}
-        onOk={() => void confirmRollback()}
-        onCancel={() => void rejectRollback()}
+        onOk={() => {
+          if (rollbackPreview?.requires_confirmation) {
+            void confirmRollback();
+          } else {
+            openExistingRollback();
+          }
+        }}
+        onCancel={dismissRollbackPreview}
       >
-        <p>将根据 {rollbackPreview?.operation_count ?? 0} 条已验证变更生成补偿操作。回滚会重新锁定全校数据，并生成独立报告。</p>
+        {rollbackPreview?.requires_confirmation ? (
+          <p>将根据 {rollbackPreview.operation_count} 条已验证变更生成补偿操作。回滚会重新锁定全校数据，并生成独立报告。</p>
+        ) : (
+          <p>{rollbackPreview?.message_zh}</p>
+        )}
       </Modal>
       <Modal
         rootClassName="apple-agent-modal"

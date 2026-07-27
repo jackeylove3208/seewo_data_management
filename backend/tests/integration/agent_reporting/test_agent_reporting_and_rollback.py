@@ -153,6 +153,9 @@ async def test_rollback_is_a_new_task_and_is_blocked_by_another_active_school_lo
     assert preview.task_id != original.id
     assert preview.task_kind == "rollback"
     assert preview.report_id is None
+    assert preview.state == "awaiting_confirmation"
+    assert preview.requires_confirmation is True
+    assert preview.message_zh == "请确认是否创建独立回滚任务。"
     assert [operation["compensation_for"] for operation in preview.operations] == ["op-1"]
 
     replay = await service.create_rollback_task(
@@ -162,6 +165,28 @@ async def test_rollback_is_a_new_task_and_is_blocked_by_another_active_school_lo
         target_version_id=preview.target_version_id,
     )
     assert replay.task_id == preview.task_id
+    assert replay.state == "awaiting_confirmation"
+    assert replay.requires_confirmation is True
+
+    rollback_run = await AgentRuntimeRepository(session).get_run_for_task(
+        preview.task_id
+    )
+    assert rollback_run is not None
+    rollback_run.phase = "terminal"
+    rollback_run.status = "completed"
+    await session.flush()
+
+    completed = await service.create_rollback_task(
+        source_task_id=original.id,
+        tenant_id=original.tenant_id,
+        requested_by="operator-1",
+        target_version_id=preview.target_version_id,
+    )
+
+    assert completed.task_id == preview.task_id
+    assert completed.state == "completed"
+    assert completed.requires_confirmation is False
+    assert completed.message_zh == "该任务已完成回滚。"
 
 
 @pytest.mark.asyncio

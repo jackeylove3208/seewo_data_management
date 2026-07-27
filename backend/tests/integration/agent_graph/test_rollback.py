@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -6,6 +7,8 @@ from sqlalchemy import select
 from app.agent_graph.repository import AgentGraphRepository
 from app.agent_reporting.service import AgentReportingService
 from app.agent_runtime.service import AgentSupervisorService
+from app.agent_runtime.state_machine import AgentPhase
+from app.api.routes.agent import get_agent_graph_progress
 from app.core.security import OperatorContext
 from app.models.agent_runtime import SchoolTaskLockRecord
 from app.models.reconciliation import ReconciliationTask
@@ -78,3 +81,47 @@ async def test_graph_rollback_is_an_independent_locked_graph_run(session) -> Non
         )
     )
     assert lock is not None
+
+    graph.cursor = 3
+    await session.flush()
+    await AgentGraphRepository(session).record_human_gate(
+        graph_run_id=graph.id,
+        cursor=3,
+        gate_kind="rollback_approval",
+        member_ids=(str(mutation_id),),
+        content_hash=f"sha256:{'a' * 64}",
+        status="pending",
+    )
+    graph.current_node = "wait_rollback_approval"
+    graph.cursor = 4
+    run.phase = AgentPhase.APPROVE_RESTORE.value
+    run.status = "waiting_human"
+    await session.flush()
+    progress = await get_agent_graph_progress(
+        rollback.id,
+        SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    settings=SimpleNamespace(new_agent_enabled=True)
+                )
+            )
+        ),
+        session,
+        OperatorContext(
+            operator_id="demo-operator",
+            tenant_id=source.tenant_id,
+        ),
+    )
+
+    approval = next(
+        gate for gate in progress.human_gates if gate.kind == "rollback_approval"
+    )
+    assert approval.item_count == 1
+    assert len(approval.items) == 1
+    assert approval.items[0].finding_id == mutation_id
+    assert approval.items[0].operation_zh == "恢复同步修改的学生记录"
+    assert approval.items[0].source_locator == "csv:2"
+    assert [
+        (change.field_zh, change.before, change.after)
+        for change in approval.items[0].changes
+    ] == [("姓名", "新姓名", "旧姓名")]

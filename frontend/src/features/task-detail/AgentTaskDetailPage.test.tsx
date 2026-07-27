@@ -205,6 +205,187 @@ describe("controlled Agent graph task detail", () => {
     client.clear();
   });
 
+  it("shows each frozen rollback operation in the final approval", async () => {
+    vi.mocked(agentApi.task).mockResolvedValue({
+      id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      task_kind: "rollback",
+      parent_task_id: "source-task-1",
+      phase: "approve_restore",
+      status: "waiting_human",
+      title: "独立回滚任务",
+    });
+    vi.mocked(agentApi.graph).mockResolvedValue({
+      task_id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      graph_version: "agent-rollback-graph-v1",
+      graph_cursor: 4,
+      current_node: "wait_rollback_approval",
+      business_stage: "report_and_rollback",
+      current_action_zh: "正在等待确认回滚范围",
+      progress_completed: 0,
+      progress_total: 1,
+      status: "waiting_human",
+      can_terminate: true,
+      termination_requested: false,
+      human_gates: [
+        {
+          id: "rollback-gate-1",
+          kind: "rollback_approval",
+          status: "pending",
+          item_count: 8,
+          cursor: 3,
+          summary_zh: "确认执行 8 条回滚操作",
+          risk_reason_zh: "执行前仍会重新读取并校验当前目标数据。",
+          actionable: true,
+          items: [
+            {
+              finding_id: "operation-1",
+              entity_kind: "student",
+              entity_name: "李明",
+              entity_number: "S-002",
+              class_name: "三年级一班",
+              source_locator: "database:seewo-mysql:student-1",
+              operation_zh: "恢复同步修改的学生记录",
+              issue_zh: "回滚同步修改",
+              analysis_zh: "该记录属于本次冻结回滚范围。",
+              solution_zh: "将手机号恢复为同步前的值。",
+              changes: [
+                {
+                  field: "phone",
+                  field_zh: "手机号",
+                  before: "139****5678",
+                  after: "138****1234",
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    const { client } = renderPage();
+
+    expect(
+      await screen.findByRole("heading", { name: "确认执行 8 条回滚操作" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("查看具体操作（1 条）"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("恢复同步修改的学生记录：李明（编号 S-002）"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("139****5678")).toBeInTheDocument();
+    expect(screen.getByText("138****1234")).toBeInTheDocument();
+    client.clear();
+  });
+
+  it("dismisses a new rollback preview without rejecting its durable task", async () => {
+    const user = userEvent.setup();
+    vi.mocked(agentApi.task).mockResolvedValue({
+      id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      task_kind: "sync",
+      phase: "terminal",
+      status: "completed",
+      title: "已完成同步",
+      rollback_eligible: true,
+    });
+    vi.mocked(agentApi.graph).mockResolvedValue({
+      task_id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      graph_version: "agent-sync-graph-v1",
+      graph_cursor: 20,
+      current_node: "terminal",
+      business_stage: "terminal",
+      current_action_zh: "任务已结束",
+      status: "completed",
+      can_terminate: false,
+      termination_requested: false,
+      human_gates: [],
+    });
+    vi.spyOn(agentApi, "previewRollback").mockResolvedValue({
+      task_id: "rollback-task-1",
+      source_task_id: "task-graph-1",
+      target_version_id: "version-1",
+      operation_count: 8,
+      state: "awaiting_confirmation",
+      message_zh: "请确认是否创建独立回滚任务。",
+      requires_confirmation: true,
+    });
+    const reject = vi.spyOn(agentApi, "rejectRollback");
+    const confirm = vi.spyOn(agentApi, "confirmRollback");
+    const { client } = renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "创建回滚任务" }));
+    expect(
+      await screen.findByRole("dialog", { name: "确认创建独立回滚任务？" }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "暂不回滚" }));
+
+    expect(
+      screen.queryByRole("dialog", { name: "确认创建独立回滚任务？" }),
+    ).not.toBeInTheDocument();
+    expect(reject).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+    client.clear();
+  });
+
+  it("explains that an existing rollback already completed without replaying it", async () => {
+    const user = userEvent.setup();
+    vi.mocked(agentApi.task).mockResolvedValue({
+      id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      task_kind: "sync",
+      phase: "terminal",
+      status: "completed",
+      title: "已完成同步",
+      rollback_eligible: true,
+    });
+    vi.mocked(agentApi.graph).mockResolvedValue({
+      task_id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      graph_version: "agent-sync-graph-v1",
+      graph_cursor: 20,
+      current_node: "terminal",
+      business_stage: "terminal",
+      current_action_zh: "任务已结束",
+      status: "completed",
+      can_terminate: false,
+      termination_requested: false,
+      human_gates: [],
+    });
+    vi.spyOn(agentApi, "previewRollback").mockResolvedValue({
+      task_id: "rollback-task-1",
+      source_task_id: "task-graph-1",
+      target_version_id: "version-1",
+      operation_count: 8,
+      state: "completed",
+      message_zh: "该任务已完成回滚。",
+      requires_confirmation: false,
+    });
+    const reject = vi.spyOn(agentApi, "rejectRollback");
+    const confirm = vi.spyOn(agentApi, "confirmRollback");
+    const { client } = renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "创建回滚任务" }));
+
+    expect(
+      await screen.findByRole("dialog", { name: "该任务已完成回滚" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("该任务已完成回滚。")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "查看回滚任务" }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /关\s*闭/ }));
+
+    expect(
+      screen.queryByRole("dialog", { name: "该任务已完成回滚" }),
+    ).not.toBeInTheDocument();
+    expect(reject).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+    client.clear();
+  });
+
   it("renders legacy Agent events as a Chinese blocked-state timeline", async () => {
     vi.mocked(agentApi.task).mockResolvedValue({
       id: "task-graph-1",
