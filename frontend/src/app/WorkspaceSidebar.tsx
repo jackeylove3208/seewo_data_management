@@ -24,6 +24,7 @@ const RECENT_TASK_LIMIT = 8;
 const statusLabels: Record<TaskStatus, string> = {
   ready: "已完成",
   processing: "处理中",
+  terminated: "已终止",
   failed: "失败",
 };
 

@@ -12,10 +12,18 @@ from app.api.dependencies import get_operator_context
 from app.core.config import Settings
 from app.core.security import OperatorContext
 from app.main import create_app
+from app.models.agent_analysis import (
+    AgentFindingRecord,
+    AgentInputRecord,
+    AgentModelBatchRecord,
+    AgentWorkItemRecord,
+)
+from app.models.agent_graph import AgentGraphRunRecord
 from app.models.agent_runtime import (
     AgentConversationMessageRecord,
     AgentConversationRecord,
     AgentRunRecord,
+    SchoolTaskLockRecord,
 )
 from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import Snapshot, SourceFile
@@ -210,6 +218,125 @@ def test_manual_csv_task_uses_agent_runtime_and_exposes_persisted_events(
         "school_lock.acquired",
         "phase.started",
     ]
+
+
+def test_history_projects_live_findings_and_termination_request(
+    graph_agent_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    source_id = _upload(
+        graph_agent_client,
+        tmp_path,
+        "authoritative",
+        "history-authority.csv",
+    )
+    target_id = _upload(
+        graph_agent_client,
+        tmp_path,
+        "target",
+        "history-target.csv",
+    )
+    created = graph_agent_client.post(
+        "/api/agent/tasks",
+        headers={"Idempotency-Key": "history-live-facts"},
+        json={
+            "title": "实时历史事实",
+            "entity_types": ["student"],
+            "source": {"kind": "csv", "upload_id": source_id},
+            "target": {"kind": "csv", "upload_id": target_id},
+        },
+    )
+    assert created.status_code == 202, created.text
+    task_id = UUID(created.json()["id"])
+
+    async def seed_live_facts() -> None:
+        async with graph_agent_client.app.state.database.session_factory() as session:
+            run = await session.scalar(
+                select(AgentRunRecord).where(AgentRunRecord.task_id == task_id)
+            )
+            graph = await session.scalar(
+                select(AgentGraphRunRecord).where(AgentGraphRunRecord.run_id == run.id)
+            )
+            snapshots = {
+                snapshot.source_role: snapshot
+                for snapshot in await session.scalars(
+                    select(Snapshot).where(Snapshot.task_id == task_id)
+                )
+            }
+            assert run is not None
+            assert graph is not None
+            graph.termination_requested = True
+            batch = AgentModelBatchRecord(
+                run_id=run.id,
+                task_id=task_id,
+                tenant_id="school-1",
+                entity_kind="student",
+                input_hash=uuid4().hex * 2,
+                item_count=2,
+                status="completed",
+                output_hash=uuid4().hex * 2,
+            )
+            session.add(batch)
+            await session.flush()
+            for ordinal in (1, 2):
+                target_input = AgentInputRecord(
+                    run_id=run.id,
+                    task_id=task_id,
+                    snapshot_id=snapshots["target"].id,
+                    tenant_id="school-1",
+                    source_role="target",
+                    stable_locator=f"csv:{ordinal + 1}",
+                    stable_order=ordinal,
+                    entity_kind="student",
+                    category="学生",
+                    name=f"测试学生{ordinal}",
+                    number=f"S-{ordinal}",
+                    class_name="一班",
+                    phone=f"1380000000{ordinal}",
+                    email=f"student{ordinal}@example.test",
+                    raw_row_number=ordinal + 1,
+                    input_hash=uuid4().hex * 2,
+                )
+                session.add(target_input)
+                await session.flush()
+                work_item = AgentWorkItemRecord(
+                    run_id=run.id,
+                    task_id=task_id,
+                    tenant_id="school-1",
+                    source_snapshot_id=snapshots["authoritative"].id,
+                    target_snapshot_id=snapshots["target"].id,
+                    subject_input_id=target_input.id,
+                    entity_kind="student",
+                    kind="field_difference",
+                    state="analyzed",
+                    idempotency_hash=uuid4().hex * 2,
+                    evidence_hash=uuid4().hex * 2,
+                )
+                session.add(work_item)
+                await session.flush()
+                session.add(
+                    AgentFindingRecord(
+                        run_id=run.id,
+                        task_id=task_id,
+                        work_item_id=work_item.id,
+                        batch_id=batch.id,
+                        kind="field_difference",
+                        category_zh="字段不一致",
+                        analysis_zh="字段需要治理。",
+                        evidence_refs=[f"target:{ordinal}"],
+                        content_hash=uuid4().hex * 2,
+                    )
+                )
+            await session.commit()
+
+    graph_agent_client.portal.call(seed_live_facts)
+
+    history = graph_agent_client.get("/api/agent/history")
+
+    assert history.status_code == 200, history.text
+    item = next(row for row in history.json()["items"] if row["id"] == str(task_id))
+    assert item["termination_requested"] is True
+    assert item["issue_summary"]["total"] == 2
 
 
 def test_graph_flag_routes_only_new_tasks_to_agent_graph_version(
@@ -564,6 +691,18 @@ def test_conversation_uses_model_discovered_local_sources(
     assert created.status_code == 202, created.text
     assert created.json()["title"] == "本地学生同步"
     assert agent_client.get("/api/agent/history").json()["items"][0]["id"] == created.json()["id"]
+    replay = agent_client.post(
+        f"/api/agent/conversations/{conversation.json()['id']}/tasks",
+        headers={"Idempotency-Key": "agent-local-conversation-1"},
+        json={
+            "title": "浏览器重放仍不应成为事实",
+            "entity_types": ["department"],
+            "source": {"kind": "local", "source_ref": "third-party/replayed.csv"},
+            "target": {"kind": "local", "source_ref": "seewo/replayed.csv"},
+        },
+    )
+    assert replay.status_code == 202, replay.text
+    assert replay.json()["id"] == created.json()["id"]
 
 
 def test_local_source_api_returns_only_safe_server_capabilities(
@@ -769,6 +908,75 @@ def test_current_conversation_restores_persisted_messages_and_active_task(
     assert body["intent"]["title"] == "本地学生同步"
     assert body["task"]["id"] == created.json()["id"]
     assert body["start_confirmation"] is None
+
+
+def test_started_conversation_does_not_restore_confirmation_after_task_failure(
+    agent_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "failed-conversation-sources"
+    for relative in ("third-party/roster.csv", "seewo/roster.csv"):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "类别,姓名,编号,班级,电话,邮箱\n学生,张三,S001,一班,13800000001,a@example.test\n",
+            encoding="utf-8",
+        )
+    agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
+    agent_client.app.state.settings.agent_local_write_roots = ((root / "seewo").resolve(),)
+    agent_client.app.state.conversation_provider = ConversationProvider()
+    conversation = agent_client.post("/api/agent/conversations").json()
+    sent = agent_client.post(
+        f"/api/agent/conversations/{conversation['id']}/messages",
+        json={"message": "同步本地学生数据"},
+    )
+    assert sent.status_code == 200, sent.text
+    created = agent_client.post(
+        f"/api/agent/conversations/{conversation['id']}/tasks",
+        headers={"Idempotency-Key": "failed-conversation-task"},
+        json={
+            "title": "客户端不会成为事实",
+            "entity_types": ["teacher"],
+            "source": {"kind": "local", "source_ref": "third-party/other.csv"},
+            "target": {"kind": "local", "source_ref": "seewo/other.csv"},
+        },
+    )
+    assert created.status_code == 202, created.text
+
+    async def fail_task() -> str:
+        async with agent_client.app.state.database.session_factory() as session:
+            task = await session.get(ReconciliationTask, UUID(created.json()["id"]))
+            run = await session.scalar(
+                select(AgentRunRecord).where(AgentRunRecord.task_id == task.id)
+            )
+            lock = await session.scalar(
+                select(SchoolTaskLockRecord).where(
+                    SchoolTaskLockRecord.owner_task_id == task.id,
+                    SchoolTaskLockRecord.active.is_(True),
+                )
+            )
+            assert task is not None
+            assert run is not None
+            assert lock is not None
+            task.status = "failed"
+            run.status = "failed"
+            lock.active = False
+            conversation_record = await session.get(
+                AgentConversationRecord,
+                UUID(conversation["id"]),
+            )
+            assert conversation_record is not None
+            decision_kind = str(conversation_record.context.get("decision_kind"))
+            await session.commit()
+            return decision_kind
+
+    decision_kind = agent_client.portal.call(fail_task)
+    current = agent_client.get("/api/agent/conversations/current")
+
+    assert decision_kind == "task_started"
+    assert current.status_code == 200
+    assert current.json()["task"]["status"] == "failed"
+    assert current.json()["start_confirmation"] is None
 
 
 def test_current_conversation_restores_an_unstarted_confirmation(

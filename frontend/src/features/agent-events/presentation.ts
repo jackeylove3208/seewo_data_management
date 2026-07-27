@@ -250,6 +250,15 @@ export function presentAgentEvent(event: AgentTaskEvent): PresentedAgentEvent {
     };
   }
 
+  if (event.type === "run.failed") {
+    return {
+      title: "任务处理失败",
+      description: payloadString(event, "message") || "后端已停止处理并保存失败审计。",
+      tone: "danger",
+      time,
+    };
+  }
+
   return {
     title: "任务状态已更新",
     description: "系统已记录一条内部审计事件。",

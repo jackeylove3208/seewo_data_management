@@ -742,7 +742,9 @@ class ProductionGraphActionExecutor:
                     executions = ExecutionRepository(session)
                     current = await executions.current_target_version(context.task_id)
                     if current is None:
-                        version_hash = _hash(source_version)
+                        version_hash = SqlGovernanceExecutionHandler.hash_version(
+                            source_version
+                        )
                         await executions.create_target_version(
                             task_id=context.task_id,
                             tenant_id=context.tenant_id,
@@ -750,7 +752,7 @@ class ProductionGraphActionExecutor:
                             parent_version_id=None,
                             batch_id=None,
                             file_sha256=version_hash,
-                            content_hash=_hash(
+                            content_hash=_raw_hash(
                                 {
                                     "connector_id": connector_id,
                                     "source_version": source_version,
@@ -2889,6 +2891,10 @@ def _only(values: tuple[str, ...]) -> str:
 
 
 def _hash(value: object) -> str:
+    return f"sha256:{_raw_hash(value)}"
+
+
+def _raw_hash(value: object) -> str:
     encoded = json.dumps(
         value,
         ensure_ascii=True,
@@ -2896,4 +2902,4 @@ def _hash(value: object) -> str:
         separators=(",", ":"),
         default=str,
     ).encode()
-    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+    return hashlib.sha256(encoded).hexdigest()

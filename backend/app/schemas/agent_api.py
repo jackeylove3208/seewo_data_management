@@ -151,6 +151,7 @@ class AgentActiveLockResponse(BaseModel):
 class AgentHistoryItem(AgentTaskResponse):
     created_at: datetime
     completed_at: datetime | None = None
+    termination_requested: bool = False
     issue_summary: dict[str, int]
     operation_summary: dict[str, int]
     rollback_eligible: bool

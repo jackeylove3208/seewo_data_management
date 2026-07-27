@@ -10,8 +10,10 @@ import { useEffect, useState, type FormEvent } from "react";
 
 import { agentApi as defaultAgentApi, type AgentConversationApi, type AgentGraphHumanGate, type AgentIntent, type AgentStartConfirmation, type AgentTask, type AgentTaskEvent } from "../../api/agent";
 import { ApiError } from "../../api/client";
+import { TASK_HISTORY_UPDATED_EVENT } from "../../data/taskHistory";
 import { TaskStatusRail } from "../../components/TaskStatusRail";
 import { presentAgentEvent, presentAgentPhase } from "../agent-events/presentation";
+import { ConversationRiskApprovalCard } from "./ConversationRiskApprovalCard";
 
 type ConversationState = "idle" | "collecting" | "needs-input" | "draft-ready" | "submitting" | "failed" | "created";
 interface ConversationMessage {
@@ -33,6 +35,7 @@ const agentTaskStages = [
   { id: "execute_and_verify", label: "治理执行" },
   { id: "generate_report", label: "报告生成" },
 ];
+const terminalTaskStatuses = new Set(["completed", "terminated", "failed"]);
 
 function taskStageIndex(phase: AgentTask["phase"]) {
   if (phase === "terminal" || phase === "report_restore") return agentTaskStages.length;
@@ -78,6 +81,8 @@ export function ConversationCreatePage({
   const [handledApprovalGroups, setHandledApprovalGroups] = useState<string[]>([]);
   const [confirmedClarifications, setConfirmedClarifications] = useState<string[]>([]);
   const [terminationGate, setTerminationGate] = useState<AgentGraphHumanGate>();
+  const [highRiskGates, setHighRiskGates] = useState<AgentGraphHumanGate[]>([]);
+  const [graphCursor, setGraphCursor] = useState<number>();
   const [terminationLoading, setTerminationLoading] = useState(false);
   const [terminationError, setTerminationError] = useState<string>();
   const [hydrating, setHydrating] = useState(true);
@@ -98,13 +103,18 @@ export function ConversationCreatePage({
           setConversationId(current.id);
           setMessages(current.messages.length ? current.messages : initialMessages);
           setAgentIntent(current.intent ?? undefined);
-          setConfirmation(current.start_confirmation ?? undefined);
-          const activeTask = current.task
-            && !["completed", "terminated", "failed"].includes(current.task.status)
-            ? current.task
-            : undefined;
-          setTask(activeTask);
-          setState(activeTask ? "created" : current.start_confirmation ? "draft-ready" : "idle");
+          const restoredTask = current.task ?? undefined;
+          setConfirmation(restoredTask ? undefined : current.start_confirmation ?? undefined);
+          setTask(restoredTask);
+          setState(
+            restoredTask?.status === "failed"
+              ? "failed"
+              : restoredTask
+                ? "created"
+                : current.start_confirmation
+                  ? "draft-ready"
+                  : "idle",
+          );
           return;
         }
         const conversation = await backendApi.createConversation();
@@ -129,31 +139,35 @@ export function ConversationCreatePage({
   }, [agentApi, backendApi]);
 
   useEffect(() => {
-    if (!task || !backendApi.events) return;
+    if (!task || terminalTaskStatuses.has(task.status) || !backendApi.events) return;
     let cancelled = false;
     const poll = async () => {
       try {
-        const [page, refreshedTask] = await Promise.all([
+        const [page, refreshedTask, graphProgress] = await Promise.all([
           backendApi.events(task.id, eventCursor),
           backendApi.task?.(task.id),
+          task.workflow_version === "agent-graph-v1" && backendApi.graph
+            ? backendApi.graph(task.id)
+            : Promise.resolve(undefined),
         ]);
         if (cancelled) return;
-        if (
-          refreshedTask
-          && ["completed", "terminated", "failed"].includes(refreshedTask.status)
-        ) {
-          setTask(undefined);
-          setEvents([]);
-          setEventCursor(undefined);
-          setState("idle");
-          return;
-        }
         if (refreshedTask) {
           setTask((current) => current
             && current.phase === refreshedTask.phase
             && current.status === refreshedTask.status
             ? current
             : refreshedTask);
+        }
+        if (graphProgress) {
+          setGraphCursor(graphProgress.graph_cursor);
+          const refreshedGates = graphProgress.human_gates.filter(
+            (gate) => gate.kind === "high_risk_approval" && gate.risk === "high",
+          );
+          setHighRiskGates((current) => {
+            const merged = new Map(current.map((gate) => [gate.id, gate]));
+            for (const gate of refreshedGates) merged.set(gate.id, gate);
+            return [...merged.values()];
+          });
         }
         setEventCursor(page.cursor);
         setEvents((current) => {
@@ -169,7 +183,11 @@ export function ConversationCreatePage({
           } : current);
         }
         if (latest?.type === "clarification_required") setClarificationOpen(true);
-        if (["completed", "terminated", "failed"].includes(latest?.status ?? "")) setState("created");
+        const terminalStatus = refreshedTask?.status
+          ?? (terminalTaskStatuses.has(latest?.status ?? "") ? latest?.status : undefined);
+        if (terminalStatus) {
+          setState(terminalStatus === "failed" ? "failed" : "created");
+        }
       } catch {
         // The persisted task remains visible; the next poll retries safely.
       }
@@ -181,6 +199,11 @@ export function ConversationCreatePage({
       window.clearInterval(timer);
     };
   }, [backendApi, eventCursor, task]);
+
+  useEffect(() => {
+    setHighRiskGates([]);
+    setGraphCursor(undefined);
+  }, [task?.id]);
 
   async function sendMessage(event: FormEvent) {
     event.preventDefault();
@@ -251,6 +274,8 @@ export function ConversationCreatePage({
       setHandledApprovalGroups([]);
       setConfirmedClarifications([]);
       setTerminationGate(undefined);
+      setHighRiskGates([]);
+      setGraphCursor(undefined);
       setTerminationError(undefined);
       setContextLimitReached(false);
       setNewConversationOpen(false);
@@ -284,6 +309,7 @@ export function ConversationCreatePage({
       setTask(created);
       setConfirmation(undefined);
       setState("created");
+      window.dispatchEvent(new Event(TASK_HISTORY_UPDATED_EVENT));
       setMessages((current) => [...current, {
         id: messageId(),
         role: "assistant",
@@ -370,9 +396,56 @@ export function ConversationCreatePage({
     setClarificationOpen(false);
   }
 
+  async function decideHighRiskGate(
+    gate: AgentGraphHumanGate,
+    decision: "approve" | "reject",
+  ) {
+    if (
+      !task
+      || !backendApi.decideGraphGate
+      || typeof graphCursor !== "number"
+      || !gate.membership_hash
+      || !gate.items?.length
+    ) {
+      throw new Error("审批证据不完整，请等待任务刷新后重试");
+    }
+    const findingIds = gate.items.map((item) => item.finding_id);
+    const result = await backendApi.decideGraphGate(
+      task.id,
+      gate.id,
+      decision,
+      decision === "approve"
+        ? "操作人通过聊天窗口同意高风险治理操作"
+        : "操作人通过聊天窗口拒绝高风险治理操作",
+      {
+        approved_finding_ids: decision === "approve" ? findingIds : [],
+        rejected_finding_ids: decision === "reject" ? findingIds : [],
+        graph_cursor: graphCursor,
+        membership_hash: gate.membership_hash,
+      },
+    );
+    setHighRiskGates((current) => current.map((item) => (
+      item.id === gate.id
+        ? { ...item, status: result.status, actionable: false }
+        : item
+    )));
+    return result.status;
+  }
+
   const isCollecting = state === "collecting";
-  const taskActive = Boolean(task && !["completed", "terminated", "failed"].includes(task.status));
+  const taskActive = Boolean(task && !terminalTaskStatuses.has(task.status));
+  const composerLocked = Boolean(task && !clarificationOpen);
   const taskBlocked = task?.status === "blocked_model_error";
+  const taskFailed = task?.status === "failed";
+  const taskTitle = taskFailed
+    ? "任务处理失败"
+    : task?.status === "completed"
+      ? "任务已完成"
+      : task?.status === "terminated"
+        ? "任务已终止"
+        : taskBlocked
+          ? "Agent 任务已暂停"
+          : "任务进行中";
 
   return (
     <main className="page-shell conversation-create-page apple-page">
@@ -418,7 +491,7 @@ export function ConversationCreatePage({
               </div>
             </article>
           ))}
-          {confirmation && (
+          {confirmation && !task && (
             <article className="conversation-card start-confirmation" aria-label="开始确认">
               <strong>开始同步前确认</strong>
               <p>{confirmation.summary}</p>
@@ -427,11 +500,23 @@ export function ConversationCreatePage({
             </article>
           )}
           {task && (
-            <article className={`conversation-card agent-progress${taskBlocked ? " blocked" : ""}`} aria-label="Agent 任务进度">
-              <strong>{taskBlocked ? "Agent 任务已暂停" : "任务进行中"}</strong>
+            <article className={`conversation-card agent-progress${taskBlocked || taskFailed ? " blocked" : ""}`} aria-label="Agent 任务进度">
+              <strong>{taskTitle}</strong>
               <p>当前阶段：{presentAgentPhase(task.phase)}</p>
+              {highRiskGates.map((gate) => (
+                <ConversationRiskApprovalCard
+                  gate={gate}
+                  key={gate.id}
+                  onDecide={decideHighRiskGate}
+                />
+              ))}
               <div className="agent-event-list">
-                {events.slice(-6).map((event) => {
+                {events
+                  .filter((event) => !(
+                    highRiskGates.length > 0 && event.type === "approval_required"
+                  ))
+                  .slice(-6)
+                  .map((event) => {
                   const groupId = payloadText(event, "group_id");
                   const decisionId = payloadText(event, "decision_id");
                   const approvalEvent = event.type === "approval_required" && groupId;
@@ -477,11 +562,11 @@ export function ConversationCreatePage({
             aria-label="对账目标"
             placeholder="例如：只核对七年级的老师和学生"
             rows={2}
-            disabled={hydrating || isCollecting || Boolean(taskActive && !clarificationOpen)}
+            disabled={hydrating || isCollecting || composerLocked}
             value={input}
             onChange={(event) => setInput(event.target.value)}
           />
-          <button type="submit" aria-label="发送" title="发送" disabled={hydrating || !input.trim() || state === "collecting" || Boolean(taskActive && !clarificationOpen)}>
+          <button type="submit" aria-label="发送" title="发送" disabled={hydrating || !input.trim() || state === "collecting" || composerLocked}>
             <ArrowUp size={18} />
           </button>
         </form>
@@ -490,7 +575,7 @@ export function ConversationCreatePage({
           <TaskStatusRail
             stages={agentTaskStages}
             currentIndex={taskStageIndex(task.phase)}
-            blocked={taskBlocked}
+            blocked={taskBlocked || taskFailed}
             terminationRequested={task.status === "terminated"}
           />
         )}

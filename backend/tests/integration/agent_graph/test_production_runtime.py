@@ -18,6 +18,7 @@ from app.agent_graph.repository import AgentGraphRepository
 from app.agent_graph.runtime import ProductionGraphCandidateProvider
 from app.agent_graph.worker import AgentGraphWorker, GraphActionOutcome, GraphWorkContext
 from app.agent_runtime.repository import AgentRuntimeRepository
+from app.agent_runtime.sql_governance_handlers import SqlGovernanceExecutionHandler
 from app.agent_runtime.state_machine import AgentPhase, AgentRunKind
 from app.ai.graph_subagents import GraphSubAgentFailure
 from app.ai.providers.base import LLMResponse, ModelUsage
@@ -749,6 +750,73 @@ async def test_sql_v2_inspection_mapping_and_extraction_are_deterministic(
     assert mapping.payload["schema_version"] == "fixed-six-field-sql-mapping-v2"
     assert len(records) == 1
     assert records[0].stable_locator == ("database:authority-postgres:authoritative-1")
+
+
+@pytest.mark.asyncio
+async def test_sql_v2_target_normalization_stores_raw_target_version_hash(
+    database,
+) -> None:
+    context = await _sql_ingestion_v2_context(database)
+    target_connector = _sql_test_connector(
+        connector_id="seewo-mysql",
+        role="target",
+    )
+    resolver = StaticDatabaseConnectorRuntime(
+        {
+            "authority-postgres": _sql_test_connector(
+                connector_id="authority-postgres",
+                role="authoritative",
+            ),
+            "seewo-mysql": target_connector,
+        }
+    )
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=ModelMustNotRun(),
+        tokenization_secret="test-tokenization-secret",
+        database_connectors=resolver,
+    )
+    normalized_context = replace(context, current_node="normalize_input_batches")
+    await executor(
+        normalized_context,
+        AllowedActionV1(
+            action_id="resolve_database_fixed_field_mapping",
+            graph_action_kind="normalize_next_batch",
+            kind="run_deterministic",
+            resource_ids=("source-pair:current",),
+            required_evidence=("mapping:fixed-six-field-v2",),
+            risk="low",
+            requires_human=False,
+            successor_node="normalize_input_batches",
+        ),
+    )
+
+    await executor(
+        normalized_context,
+        AllowedActionV1(
+            action_id="normalize_target_full",
+            graph_action_kind="normalize_next_batch",
+            kind="run_deterministic",
+            resource_ids=("source:target:full",),
+            required_evidence=("normalized:target:full",),
+            risk="low",
+            requires_human=False,
+            successor_node="normalize_input_batches",
+        ),
+    )
+
+    async with database.session_factory() as session:
+        version = await ExecutionRepository(session).current_target_version(context.task_id)
+
+    assert version is not None
+    assert version.file_sha256 == SqlGovernanceExecutionHandler.hash_version(
+        (await target_connector.version()).value
+    )
+    assert len(version.file_sha256) == 64
+    assert len(version.content_hash) == 64
+    assert version.storage_path == (
+        f"database://seewo-mysql/version/{version.file_sha256}"
+    )
 
 
 @pytest.mark.asyncio

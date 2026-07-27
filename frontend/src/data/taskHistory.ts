@@ -14,7 +14,13 @@ export function toTaskHistoryItem(item: AgentHistoryItem): TaskHistoryItem {
     sourceAccepted: 0,
     targetAccepted: 0,
     issueCount: item.issue_summary.total,
-    status: ["completed", "terminated"].includes(item.status) ? "ready" : item.status === "failed" ? "failed" : "processing",
+    status: item.termination_requested || item.status === "terminated"
+      ? "terminated"
+      : item.status === "completed"
+        ? "ready"
+        : item.status === "failed"
+          ? "failed"
+          : "processing",
     selectedEntityTypes: (item.entity_types ?? []).map((type) => type === "department" ? "organization_unit" : type),
     workflowVersion: item.workflow_version,
     taskKind: item.task_kind,
