@@ -10,6 +10,7 @@ import { useEffect, useState, type FormEvent } from "react";
 
 import { agentApi as defaultAgentApi, type AgentConversationApi, type AgentGraphHumanGate, type AgentIntent, type AgentStartConfirmation, type AgentTask, type AgentTaskEvent } from "../../api/agent";
 import { ApiError } from "../../api/client";
+import { TASK_HISTORY_UPDATED_EVENT } from "../../data/taskHistory";
 import { TaskStatusRail } from "../../components/TaskStatusRail";
 import { presentAgentEvent, presentAgentPhase } from "../agent-events/presentation";
 
@@ -33,6 +34,7 @@ const agentTaskStages = [
   { id: "execute_and_verify", label: "治理执行" },
   { id: "generate_report", label: "报告生成" },
 ];
+const terminalTaskStatuses = new Set(["completed", "terminated", "failed"]);
 
 function taskStageIndex(phase: AgentTask["phase"]) {
   if (phase === "terminal" || phase === "report_restore") return agentTaskStages.length;
@@ -98,13 +100,18 @@ export function ConversationCreatePage({
           setConversationId(current.id);
           setMessages(current.messages.length ? current.messages : initialMessages);
           setAgentIntent(current.intent ?? undefined);
-          setConfirmation(current.start_confirmation ?? undefined);
-          const activeTask = current.task
-            && !["completed", "terminated", "failed"].includes(current.task.status)
-            ? current.task
-            : undefined;
-          setTask(activeTask);
-          setState(activeTask ? "created" : current.start_confirmation ? "draft-ready" : "idle");
+          const restoredTask = current.task ?? undefined;
+          setConfirmation(restoredTask ? undefined : current.start_confirmation ?? undefined);
+          setTask(restoredTask);
+          setState(
+            restoredTask?.status === "failed"
+              ? "failed"
+              : restoredTask
+                ? "created"
+                : current.start_confirmation
+                  ? "draft-ready"
+                  : "idle",
+          );
           return;
         }
         const conversation = await backendApi.createConversation();
@@ -129,7 +136,7 @@ export function ConversationCreatePage({
   }, [agentApi, backendApi]);
 
   useEffect(() => {
-    if (!task || !backendApi.events) return;
+    if (!task || terminalTaskStatuses.has(task.status) || !backendApi.events) return;
     let cancelled = false;
     const poll = async () => {
       try {
@@ -138,16 +145,6 @@ export function ConversationCreatePage({
           backendApi.task?.(task.id),
         ]);
         if (cancelled) return;
-        if (
-          refreshedTask
-          && ["completed", "terminated", "failed"].includes(refreshedTask.status)
-        ) {
-          setTask(undefined);
-          setEvents([]);
-          setEventCursor(undefined);
-          setState("idle");
-          return;
-        }
         if (refreshedTask) {
           setTask((current) => current
             && current.phase === refreshedTask.phase
@@ -169,7 +166,11 @@ export function ConversationCreatePage({
           } : current);
         }
         if (latest?.type === "clarification_required") setClarificationOpen(true);
-        if (["completed", "terminated", "failed"].includes(latest?.status ?? "")) setState("created");
+        const terminalStatus = refreshedTask?.status
+          ?? (terminalTaskStatuses.has(latest?.status ?? "") ? latest?.status : undefined);
+        if (terminalStatus) {
+          setState(terminalStatus === "failed" ? "failed" : "created");
+        }
       } catch {
         // The persisted task remains visible; the next poll retries safely.
       }
@@ -284,6 +285,7 @@ export function ConversationCreatePage({
       setTask(created);
       setConfirmation(undefined);
       setState("created");
+      window.dispatchEvent(new Event(TASK_HISTORY_UPDATED_EVENT));
       setMessages((current) => [...current, {
         id: messageId(),
         role: "assistant",
@@ -371,8 +373,19 @@ export function ConversationCreatePage({
   }
 
   const isCollecting = state === "collecting";
-  const taskActive = Boolean(task && !["completed", "terminated", "failed"].includes(task.status));
+  const taskActive = Boolean(task && !terminalTaskStatuses.has(task.status));
+  const composerLocked = Boolean(task && !clarificationOpen);
   const taskBlocked = task?.status === "blocked_model_error";
+  const taskFailed = task?.status === "failed";
+  const taskTitle = taskFailed
+    ? "任务处理失败"
+    : task?.status === "completed"
+      ? "任务已完成"
+      : task?.status === "terminated"
+        ? "任务已终止"
+        : taskBlocked
+          ? "Agent 任务已暂停"
+          : "任务进行中";
 
   return (
     <main className="page-shell conversation-create-page apple-page">
@@ -418,7 +431,7 @@ export function ConversationCreatePage({
               </div>
             </article>
           ))}
-          {confirmation && (
+          {confirmation && !task && (
             <article className="conversation-card start-confirmation" aria-label="开始确认">
               <strong>开始同步前确认</strong>
               <p>{confirmation.summary}</p>
@@ -427,8 +440,8 @@ export function ConversationCreatePage({
             </article>
           )}
           {task && (
-            <article className={`conversation-card agent-progress${taskBlocked ? " blocked" : ""}`} aria-label="Agent 任务进度">
-              <strong>{taskBlocked ? "Agent 任务已暂停" : "任务进行中"}</strong>
+            <article className={`conversation-card agent-progress${taskBlocked || taskFailed ? " blocked" : ""}`} aria-label="Agent 任务进度">
+              <strong>{taskTitle}</strong>
               <p>当前阶段：{presentAgentPhase(task.phase)}</p>
               <div className="agent-event-list">
                 {events.slice(-6).map((event) => {
@@ -477,11 +490,11 @@ export function ConversationCreatePage({
             aria-label="对账目标"
             placeholder="例如：只核对七年级的老师和学生"
             rows={2}
-            disabled={hydrating || isCollecting || Boolean(taskActive && !clarificationOpen)}
+            disabled={hydrating || isCollecting || composerLocked}
             value={input}
             onChange={(event) => setInput(event.target.value)}
           />
-          <button type="submit" aria-label="发送" title="发送" disabled={hydrating || !input.trim() || state === "collecting" || Boolean(taskActive && !clarificationOpen)}>
+          <button type="submit" aria-label="发送" title="发送" disabled={hydrating || !input.trim() || state === "collecting" || composerLocked}>
             <ArrowUp size={18} />
           </button>
         </form>
@@ -490,7 +503,7 @@ export function ConversationCreatePage({
           <TaskStatusRail
             stages={agentTaskStages}
             currentIndex={taskStageIndex(task.phase)}
-            blocked={taskBlocked}
+            blocked={taskBlocked || taskFailed}
             terminationRequested={task.status === "terminated"}
           />
         )}
