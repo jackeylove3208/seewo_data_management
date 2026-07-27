@@ -20,6 +20,7 @@ from app.agent_graph.worker import (
     GraphCandidatePlan,
     GraphWorkContext,
 )
+from app.agent_runtime.errors import ExternalWriteRecoveryRequired
 from app.agent_runtime.service import AgentSupervisorService
 from app.core.security import OperatorContext
 from app.models.agent_graph import AgentSupervisorDecisionRecord
@@ -432,7 +433,7 @@ async def test_non_retryable_action_error_fails_once_instead_of_retrying_forever
 
 
 @pytest.mark.asyncio
-async def test_action_error_after_possible_external_write_remains_replayable(
+async def test_ambiguous_external_write_error_remains_replayable(
     database,
 ) -> None:
     task_id, run_id = await _start_graph_run(database)
@@ -471,7 +472,9 @@ async def test_action_error_after_possible_external_write_remains_replayable(
         _context: GraphWorkContext,
         _action: AllowedActionV1,
     ) -> GraphActionOutcome:
-        raise ValueError("later operation failed after an external commit")
+        raise ExternalWriteRecoveryRequired(
+            "external commit needs recovery"
+        )
 
     worker = AgentGraphWorker(
         database.session_factory,
@@ -483,8 +486,8 @@ async def test_action_error_after_possible_external_write_remains_replayable(
     )
 
     with pytest.raises(
-        ValueError,
-        match="later operation failed after an external commit",
+        ExternalWriteRecoveryRequired,
+        match="external commit needs recovery",
     ):
         await worker.run_once()
 

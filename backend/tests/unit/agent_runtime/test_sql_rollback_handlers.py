@@ -5,6 +5,7 @@ from uuid import uuid4
 import pytest
 
 from app.agent_runtime.csv_rollback_handlers import _rollback_operation
+from app.agent_runtime.errors import ExternalWriteRecoveryRequired
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.sql_rollback_handlers import SqlRollbackExecutionHandler
 from app.agent_runtime.worker import AgentWorkContext
@@ -262,3 +263,59 @@ async def test_sql_rollback_skips_related_drift_without_writing(
     assert fact["safe_error_code"] == "rollback_current_data_conflict"
     assert current is not None and current["phone"] == "C"
     assert created_versions == []
+
+
+@pytest.mark.asyncio
+async def test_sql_rollback_replays_after_external_write_fact_persistence_fails(
+    monkeypatch,
+) -> None:
+    connector = _connector()
+    mutation, parent, task, context = _rollback_facts()
+    _checkpoints, _created_versions = _install_runtime_fakes(
+        monkeypatch,
+        parent,
+    )
+    handler = SqlRollbackExecutionHandler(_Resolver(connector))
+    session = _Session(task, parent)
+    await handler.plan(session, context)  # type: ignore[arg-type]
+    operation = _rollback_operation(
+        mutation,
+        target_version=f"sha256:{parent.file_sha256}",
+    )
+
+    async def fail_target_version(_repository, **_kwargs):
+        raise ValueError("local target version persistence failed")
+
+    monkeypatch.setattr(
+        ExecutionRepository,
+        "create_target_version",
+        fail_target_version,
+    )
+    with pytest.raises(ExternalWriteRecoveryRequired):
+        await handler.execute_operation(
+            session,  # type: ignore[arg-type]
+            context,
+            operation.id,
+        )
+    applied = await connector.read_record("student-1")
+    assert applied is not None and applied["phone"] == "A"
+
+    async def recover_target_version(_repository, **kwargs):
+        return SimpleNamespace(
+            id=uuid4(),
+            storage_path=str(kwargs["storage_path"]),
+        )
+
+    monkeypatch.setattr(
+        ExecutionRepository,
+        "create_target_version",
+        recover_target_version,
+    )
+    recovered = await handler.execute_operation(
+        session,  # type: ignore[arg-type]
+        context,
+        operation.id,
+    )
+
+    assert recovered["status"] == "already_restored"
+    assert recovered["verification"]["idempotent_recovery"] is True

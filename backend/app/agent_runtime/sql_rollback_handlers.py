@@ -12,6 +12,7 @@ from app.agent_runtime.csv_rollback_handlers import (
     _rollback_operations,
     compare_csv_rollback_mutation,
 )
+from app.agent_runtime.errors import ExternalWriteRecoveryRequired
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentPhase
 from app.agent_runtime.worker import AgentWorkContext, AgentWorkResult
@@ -251,28 +252,33 @@ class SqlRollbackExecutionHandler:
             )
             if _hash_version(raw_version) != parent.file_sha256:
                 output_hash = _hash_version(raw_version)
-                output = await ExecutionRepository(
-                    session
-                ).create_target_version(
-                    task_id=parent.task_id,
-                    tenant_id=parent.tenant_id,
-                    source_snapshot_id=parent.source_snapshot_id,
-                    parent_version_id=parent.id,
-                    batch_id=None,
-                    file_sha256=output_hash,
-                    content_hash=_hash(
-                        {
-                            "rollback_task_id": str(task.id),
-                            "operation_id": str(selected.id),
-                            "recovered_external_version": raw_version,
-                        }
-                    ),
-                    storage_path=(
-                        "database://"
-                        f"{connector_id}/rollback/{output_hash}/"
-                        f"{selected.id}/recovered"
-                    ),
-                )
+                try:
+                    output = await ExecutionRepository(
+                        session
+                    ).create_target_version(
+                        task_id=parent.task_id,
+                        tenant_id=parent.tenant_id,
+                        source_snapshot_id=parent.source_snapshot_id,
+                        parent_version_id=parent.id,
+                        batch_id=None,
+                        file_sha256=output_hash,
+                        content_hash=_hash(
+                            {
+                                "rollback_task_id": str(task.id),
+                                "operation_id": str(selected.id),
+                                "recovered_external_version": raw_version,
+                            }
+                        ),
+                        storage_path=(
+                            "database://"
+                            f"{connector_id}/rollback/{output_hash}/"
+                            f"{selected.id}/recovered"
+                        ),
+                    )
+                except Exception as error:
+                    raise ExternalWriteRecoveryRequired(
+                        "SQL rollback recovery fact must be replayed"
+                    ) from error
                 recovered.update(
                     {
                         "output_target_version_id": str(output.id),
@@ -339,26 +345,33 @@ class SqlRollbackExecutionHandler:
                 )
             ) == [True]
         output_hash = _hash_version(output_version.value)
-        output = await ExecutionRepository(session).create_target_version(
-            task_id=parent.task_id,
-            tenant_id=parent.tenant_id,
-            source_snapshot_id=parent.source_snapshot_id,
-            parent_version_id=parent.id,
-            batch_id=None,
-            file_sha256=output_hash,
-            content_hash=_hash(
-                {
-                    "rollback_task_id": str(task.id),
-                    "operation_id": str(selected.id),
-                    "before_version": raw_version,
-                    "after_version": output_version.value,
-                }
-            ),
-            storage_path=(
-                f"database://{connector_id}/rollback/"
-                f"{output_hash}/{selected.id}"
-            ),
-        )
+        try:
+            output = await ExecutionRepository(
+                session
+            ).create_target_version(
+                task_id=parent.task_id,
+                tenant_id=parent.tenant_id,
+                source_snapshot_id=parent.source_snapshot_id,
+                parent_version_id=parent.id,
+                batch_id=None,
+                file_sha256=output_hash,
+                content_hash=_hash(
+                    {
+                        "rollback_task_id": str(task.id),
+                        "operation_id": str(selected.id),
+                        "before_version": raw_version,
+                        "after_version": output_version.value,
+                    }
+                ),
+                storage_path=(
+                    f"database://{connector_id}/rollback/"
+                    f"{output_hash}/{selected.id}"
+                ),
+            )
+        except Exception as error:
+            raise ExternalWriteRecoveryRequired(
+                "SQL rollback external write must be replayed"
+            ) from error
         final_fact: dict[str, object] = {
             "id": str(selected.id),
             "status": "succeeded" if verified else "verification_failed",
