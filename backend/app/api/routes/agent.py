@@ -344,7 +344,7 @@ async def get_current_agent_conversation(
     intent = AgentIntentView.model_validate(conversation.context) if conversation.context else None
     confirmation = None
     can_confirm = (
-        (run is None or run.status in {"completed", "terminated", "failed"})
+        run is None
         and conversation.context.get("decision_kind") == "start_confirmation"
         and intent is not None
         and intent.source is not None
@@ -592,6 +592,18 @@ async def start_conversation_agent_task(
                 "start_confirmation_missing", "Conversation has no confirmed Agent intent"
             ),
         ) from error
+    service = AgentTaskService(session, operator=operator, settings=request.app.state.settings)
+    replayed_task = await session.scalar(
+        select(ReconciliationTask)
+        .join(AgentRunRecord, AgentRunRecord.task_id == ReconciliationTask.id)
+        .where(
+            ReconciliationTask.tenant_id == operator.tenant_id,
+            ReconciliationTask.idempotency_key == idempotency_key,
+            AgentRunRecord.conversation_id == conversation_id,
+        )
+    )
+    if replayed_task is not None:
+        return await _task_response(service, replayed_task.id)
     if conversation.context.get("decision_kind") != "start_confirmation":
         raise HTTPException(
             409,
@@ -599,11 +611,14 @@ async def start_conversation_agent_task(
                 "start_confirmation_missing", "Conversation has no confirmed Agent intent"
             ),
         )
-    service = AgentTaskService(session, operator=operator, settings=request.app.state.settings)
     try:
         task, _run = await service.create(
             intent, idempotency_key=idempotency_key, conversation_id=conversation_id
         )
+        conversation.context = {
+            **conversation.context,
+            "decision_kind": "task_started",
+        }
         return await _task_response(service, task.id)
     except SchoolLockConflict as error:
         raise HTTPException(

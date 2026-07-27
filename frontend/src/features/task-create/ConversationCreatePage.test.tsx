@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentConversationApi } from "../../api/agent";
 import { ApiError } from "../../api/client";
+import { TASK_HISTORY_UPDATED_EVENT } from "../../data/taskHistory";
 import { ConversationCreatePage } from "./ConversationCreatePage";
 
 function api(overrides: Partial<AgentConversationApi> = {}): AgentConversationApi {
@@ -160,6 +161,22 @@ describe("backend Agent conversation", () => {
     );
   });
 
+  it("refreshes task history immediately after the conversation starts a task", async () => {
+    const backend = api();
+    const historyUpdated = vi.fn();
+    window.addEventListener(TASK_HISTORY_UPDATED_EVENT, historyUpdated);
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    await waitForComposer();
+    await user.type(screen.getByLabelText("对账目标"), "同步全校教师");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await user.click(await screen.findByRole("button", { name: "确认开始同步" }));
+
+    await waitFor(() => expect(historyUpdated).toHaveBeenCalledTimes(1));
+    window.removeEventListener(TASK_HISTORY_UPDATED_EVENT, historyUpdated);
+  });
+
   it("renders grouped approval and masked conflict evidence from persisted events", async () => {
     const backend = api({
       startTask: vi.fn().mockResolvedValue({
@@ -264,6 +281,39 @@ describe("backend Agent conversation", () => {
 
     expect(await screen.findByRole("button", { name: "确认开始同步" })).toBeInTheDocument();
     expect(screen.getAllByText("已确认同步需求。")).toHaveLength(2);
+  });
+
+  it("keeps a failed task visible and ignores a stale restored confirmation", async () => {
+    const backend = api({
+      currentConversation: vi.fn().mockResolvedValue({
+        id: "conversation-failed",
+        status: "active",
+        messages: [
+          { id: "message-1", role: "user", kind: "normal", text: "同步 MySQL 数据", created_at: "" },
+          { id: "message-2", role: "assistant", kind: "normal", text: "任务已经开始。", created_at: "" },
+        ],
+        intent: { title: "MySQL 数据同步", entity_types: ["student"] },
+        start_confirmation: {
+          title: "MySQL 数据同步",
+          summary: "这是已经消费过的旧确认。",
+          entity_types: ["student"],
+        },
+        task: {
+          id: "task-failed",
+          workflow_version: "agent-graph-v1",
+          phase: "ingest_and_normalize",
+          status: "failed",
+        },
+      }),
+    } as Partial<AgentConversationApi>);
+
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    expect((await screen.findAllByText("任务处理失败")).length).toBeGreaterThan(0);
+    expect(screen.getByRole("complementary", { name: "任务处理状态" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "确认开始同步" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("对账目标")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "开启新对话" })).toBeEnabled();
   });
 
   it("renders exhausted model retries as a blocked Chinese timeline", async () => {
@@ -388,8 +438,54 @@ describe("backend Agent conversation", () => {
     render(<ConversationCreatePage agentApi={backend} />);
 
     await waitFor(() => expect(task).toHaveBeenCalledWith("task-terminated"));
-    await waitFor(() => expect(screen.getByLabelText("对账目标")).toBeEnabled());
+    await waitFor(() => expect(screen.getByLabelText("对账目标")).toBeDisabled());
+    expect(screen.getByRole("button", { name: "开启新对话" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "终止任务" })).not.toBeInTheDocument();
+  });
+
+  it("retains the task progress card when polling reports a failure", async () => {
+    const task = vi.fn().mockResolvedValue({
+      id: "task-failed",
+      workflow_version: "agent-graph-v1",
+      phase: "ingest_and_normalize",
+      status: "failed",
+    });
+    const backend = api({
+      currentConversation: vi.fn().mockResolvedValue({
+        id: "conversation-running",
+        status: "active",
+        messages: [
+          { id: "message-1", role: "user", kind: "normal", text: "同步 MySQL 数据", created_at: "" },
+        ],
+        task: {
+          id: "task-failed",
+          workflow_version: "agent-graph-v1",
+          phase: "ingest_and_normalize",
+          status: "running",
+        },
+      }),
+      task,
+      events: vi.fn().mockResolvedValue({
+        cursor: "2",
+        events: [{
+          id: "event-failed",
+          cursor: "2",
+          type: "run.failed",
+          phase: "ingest_and_normalize",
+          status: "failed",
+          payload: { message: "任务状态保存失败。" },
+          created_at: "",
+        }],
+      }),
+    });
+
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    expect((await screen.findAllByText("任务处理失败")).length).toBeGreaterThan(0);
+    expect(screen.getByText("任务状态保存失败。")).toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "任务处理状态" })).toBeInTheDocument();
+    expect(screen.getByLabelText("对账目标")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "开启新对话" })).toBeEnabled();
   });
 
   it("keeps direct termination for legacy Agent tasks", async () => {
