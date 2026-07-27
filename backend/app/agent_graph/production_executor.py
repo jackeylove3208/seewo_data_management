@@ -41,7 +41,7 @@ from app.agent_runtime.csv_governance_handlers import (
 )
 from app.agent_runtime.csv_rollback_handlers import (
     CsvRollbackHandlers,
-    _rollback_operation,
+    _rollback_operations,
 )
 from app.agent_runtime.local_publication import publish_local_target
 from app.agent_runtime.repository import AgentRuntimeRepository
@@ -1651,10 +1651,30 @@ class ProductionGraphActionExecutor:
     ) -> GraphActionOutcome:
         async with self._session_factory() as session:
             async with session.begin():
-                await self._rollback.plan(
-                    session,
-                    _legacy_context(context, AgentPhase.PLAN_RESTORE),
+                task = await session.get(
+                    ReconciliationTask,
+                    context.task_id,
                 )
+                if _task_uses_database(task):
+                    if self._sql_rollback is None:
+                        raise RuntimeError(
+                            "SQL rollback connector runtime is unavailable"
+                        )
+                    await self._sql_rollback.plan(
+                        session,
+                        _legacy_context(
+                            context,
+                            AgentPhase.PLAN_RESTORE,
+                        ),
+                    )
+                else:
+                    await self._rollback.plan(
+                        session,
+                        _legacy_context(
+                            context,
+                            AgentPhase.PLAN_RESTORE,
+                        ),
+                    )
                 await self._record_deterministic_invocation(
                     session,
                     context=context,
@@ -1731,7 +1751,7 @@ class ProductionGraphActionExecutor:
                         action_id=action.action_id,
                         evidence_manifest_id=manifest_id,
                         skill_name="assess-agent-rollback-impact",
-                        skill_version="2.0.0",
+                        skill_version="2.1.0",
                         input_payload=RollbackAssessmentInput(
                             task_id=context.task_id,
                             run_id=context.run_id,
@@ -1844,11 +1864,144 @@ class ProductionGraphActionExecutor:
                 )
         return _outcome(action)
 
+    async def _execute_deterministic_rollback(
+        self,
+        context: GraphWorkContext,
+        action: AllowedActionV1,
+    ) -> GraphActionOutcome:
+        async with self._session_factory() as session:
+            async with session.begin():
+                runtime = AgentRuntimeRepository(session)
+                for completed_key in (
+                    "agent-sql-rollback-execution-v2",
+                    "agent-csv-rollback-execution-v1",
+                ):
+                    completed = await runtime.get_checkpoint(
+                        context.run_id,
+                        phase=AgentPhase.EXECUTE_RESTORE,
+                        checkpoint_key=completed_key,
+                    )
+                    if completed is not None:
+                        return _outcome(action)
+                task = await session.get(
+                    ReconciliationTask,
+                    context.task_id,
+                )
+                if task is None or not task.agent_intent:
+                    raise LookupError("rollback task facts are missing")
+                parent = await session.get(
+                    TargetVersionRecord,
+                    UUID(str(task.agent_intent["target_version_id"])),
+                )
+                if parent is None:
+                    raise LookupError("rollback target version is missing")
+                operations = _rollback_operations(
+                    tuple(task.agent_intent.get("operations", [])),
+                    target_version=f"sha256:{parent.file_sha256}",
+                )
+                if not operations:
+                    raise ValueError("rollback has no verified operations")
+                operation_ids = tuple(item.id for item in operations)
+                source_task_id = str(task.parent_task_id)
+                request_hash = str(task.request_hash)
+                plan_id = uuid5(
+                    NAMESPACE_URL,
+                    f"agent-rollback:{task.id}",
+                )
+                database_rollback = _task_uses_database(task)
+                if database_rollback and self._sql_rollback is None:
+                    raise RuntimeError(
+                        "SQL rollback connector runtime is unavailable"
+                    )
+                checkpoint_key = (
+                    "agent-sql-rollback-execution-v2"
+                    if database_rollback
+                    else "agent-csv-rollback-execution-v1"
+                )
+
+        mutation_facts: list[dict[str, object]] = []
+        for operation_id in operation_ids:
+            async with self._session_factory() as session:
+                async with session.begin():
+                    legacy_context = _legacy_context(
+                        context,
+                        AgentPhase.EXECUTE_RESTORE,
+                    )
+                    if database_rollback:
+                        assert self._sql_rollback is not None
+                        fact = await self._sql_rollback.execute_operation(
+                            session,
+                            legacy_context,
+                            operation_id,
+                        )
+                    else:
+                        fact = await self._rollback.execute_operation(
+                            session,
+                            legacy_context,
+                            operation_id,
+                        )
+                    mutation_facts.append(fact)
+
+        facts: dict[str, object] = {
+            "source_task_id": source_task_id,
+            "mutations": mutation_facts,
+        }
+        output_fact = next(
+            (
+                item
+                for item in reversed(mutation_facts)
+                if item.get("output_target_version_id")
+            ),
+            None,
+        )
+        if output_fact is not None:
+            facts.update(
+                {
+                    "output_target_version_id": output_fact[
+                        "output_target_version_id"
+                    ],
+                    "output_target_path": output_fact[
+                        "output_target_path"
+                    ],
+                }
+            )
+        async with self._session_factory() as session:
+            async with session.begin():
+                await AgentRuntimeRepository(session).save_checkpoint(
+                    context.run_id,
+                    phase=AgentPhase.EXECUTE_RESTORE,
+                    checkpoint_key=checkpoint_key,
+                    input_hash=request_hash,
+                    payload=facts,
+                )
+                await self._record_deterministic_invocation(
+                    session,
+                    context=context,
+                    action=action,
+                    output={
+                        "restore_plan_id": str(plan_id),
+                        "operation_count": len(operation_ids),
+                        "outcome_statuses": [
+                            str(item.get("status", "skipped"))
+                            for item in mutation_facts
+                        ],
+                    },
+                )
+        return _outcome(action)
+
     async def _execute_rollback(
         self,
         context: GraphWorkContext,
         action: AllowedActionV1,
     ) -> GraphActionOutcome:
+        if (
+            context.execution_contract_version
+            == "deterministic-execution-v2"
+        ):
+            return await self._execute_deterministic_rollback(
+                context,
+                action,
+            )
         async with self._session_factory() as session:
             async with session.begin():
                 runtime = AgentRuntimeRepository(session)
@@ -1872,12 +2025,9 @@ class ProductionGraphActionExecutor:
                 )
                 if parent is None:
                     raise LookupError("rollback target version is missing")
-                operations = tuple(
-                    _rollback_operation(
-                        item,
-                        target_version=f"sha256:{parent.file_sha256}",
-                    )
-                    for item in task.agent_intent.get("operations", [])
+                operations = _rollback_operations(
+                    tuple(task.agent_intent.get("operations", [])),
+                    target_version=f"sha256:{parent.file_sha256}",
                 )
                 if not operations:
                     raise ValueError("rollback has no verified operations")
@@ -1886,11 +2036,6 @@ class ProductionGraphActionExecutor:
                 database_rollback = _task_uses_database(task)
                 if database_rollback and self._sql_rollback is None:
                     raise RuntimeError("SQL rollback connector runtime is unavailable")
-                checkpoint_key = (
-                    "agent-sql-rollback-execution-v2"
-                    if database_rollback
-                    else "agent-csv-rollback-execution-v1"
-                )
 
                 async def execute_operation(operation_id: UUID) -> OperationOutcome:
                     legacy_context = _legacy_context(
@@ -1938,67 +2083,6 @@ class ProductionGraphActionExecutor:
                             )
                         ),
                     )
-
-                if context.execution_contract_version == "deterministic-execution-v2":
-                    mutation_facts = []
-                    for operation_id in operation_ids:
-                        legacy_context = _legacy_context(
-                            context,
-                            AgentPhase.EXECUTE_RESTORE,
-                        )
-                        if database_rollback:
-                            assert self._sql_rollback is not None
-                            fact = await self._sql_rollback.execute_operation(
-                                session,
-                                legacy_context,
-                                operation_id,
-                            )
-                        else:
-                            fact = await self._rollback.execute_operation(
-                                session,
-                                legacy_context,
-                                operation_id,
-                            )
-                        mutation_facts.append(fact)
-                    facts: dict[str, object] = {
-                        "source_task_id": str(task.parent_task_id),
-                        "mutations": mutation_facts,
-                    }
-                    output_fact = next(
-                        (
-                            item
-                            for item in reversed(mutation_facts)
-                            if item.get("output_target_version_id")
-                        ),
-                        None,
-                    )
-                    if output_fact is not None:
-                        facts.update(
-                            {
-                                "output_target_version_id": output_fact["output_target_version_id"],
-                                "output_target_path": output_fact["output_target_path"],
-                            }
-                        )
-                    await AgentRuntimeRepository(session).save_checkpoint(
-                        context.run_id,
-                        phase=AgentPhase.EXECUTE_RESTORE,
-                        checkpoint_key=checkpoint_key,
-                        input_hash=str(task.request_hash),
-                        payload=facts,
-                    )
-                    await self._record_deterministic_invocation(
-                        session,
-                        context=context,
-                        action=action,
-                        output={
-                            "restore_plan_id": str(plan_id),
-                            "operation_count": len(operation_ids),
-                            "outcome_statuses": [
-                                str(item.get("status", "skipped")) for item in mutation_facts
-                            ],
-                        },
-                    )
-                    return _outcome(action)
 
                 resources = (
                     f"execution-plan:{plan_id}",
@@ -2052,7 +2136,7 @@ class ProductionGraphActionExecutor:
                         action_id=action.action_id,
                         evidence_manifest_id=manifest_id,
                         skill_name="execute-approved-rollback",
-                        skill_version="2.0.0",
+                        skill_version="2.1.0",
                         input_payload=RollbackExecutionInput(
                             task_id=context.task_id,
                             run_id=context.run_id,

@@ -13,8 +13,11 @@ from app.api.routes.agent import _graph_action_label, _graph_human_gate_view
         ("assess_restore_impact", "正在判定可恢复、已恢复与冲突操作"),
         ("wait_restore_conflicts", "正在等待处理回滚数据冲突"),
         ("compile_restore_plan", "正在冻结回滚计划与数据比较哈希"),
-        ("preflight_restore", "正在写入前重新校验当前目标数据"),
-        ("verify_restore_operations", "正在汇总回滚验证结果"),
+        (
+            "preflight_restore",
+            "正在准备逐项回滚，每项写入前都会重新校验",
+        ),
+        ("verify_restore_operations", "正在进入回滚结果汇总"),
     ],
 )
 def test_every_rollback_graph_step_has_a_specific_operator_label(

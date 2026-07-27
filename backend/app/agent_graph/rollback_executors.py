@@ -129,6 +129,8 @@ class GraphRollbackAssessmentExecutor:
                 raise ValueError("rollback comparison has an invalid disposition")
             expected_by_disposition[disposition].add(operation_id)
         if (
+            len(restore_comparisons) != len(expected)
+            or
             set().union(*expected_by_disposition.values()) != expected
             or sum(len(items) for items in expected_by_disposition.values())
             != len(expected)
@@ -158,7 +160,7 @@ class GraphRollbackAssessmentExecutor:
             invocation.model_copy(
                 update={
                     "skill_name": "assess-agent-rollback-impact",
-                    "skill_version": "2.0.0",
+                    "skill_version": "2.1.0",
                 }
             ),
             result_validator=validate,
@@ -204,7 +206,7 @@ class GraphRollbackExecutionExecutor:
             invocation.model_copy(
                 update={
                     "skill_name": "execute-approved-rollback",
-                    "skill_version": "2.0.0",
+                    "skill_version": "2.1.0",
                 }
             ),
             result_validator=validate,

@@ -226,7 +226,7 @@ class ScriptedSkillProvider:
                     "outcomes": outcomes,
                 }
             )
-        if "assess-agent-rollback-impact@2.0.0" in system:
+        if "assess-agent-rollback-impact@2.1.0" in system:
             if "authorized_tool_result" not in latest:
                 bounded = json.loads(request.messages[1].content)[
                     "bounded_input_contract"
@@ -254,7 +254,7 @@ class ScriptedSkillProvider:
                     "requires_confirmation": True,
                 }
             )
-        if "execute-approved-rollback@2.0.0" in system:
+        if "execute-approved-rollback@2.1.0" in system:
             bounded = json.loads(request.messages[1].content)[
                 "bounded_input_contract"
             ]

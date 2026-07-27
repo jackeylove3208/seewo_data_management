@@ -134,8 +134,8 @@ NEW_AGENT_SKILLS = {
 }
 
 NEW_AGENT_SKILL_VERSIONS = {
-    "assess-agent-rollback-impact": "2.0.0",
-    "execute-approved-rollback": "2.0.0",
+    "assess-agent-rollback-impact": "2.1.0",
+    "execute-approved-rollback": "2.1.0",
 }
 
 LEGACY_SKILLS = {
@@ -175,7 +175,7 @@ def test_every_new_agent_skill_is_a_complete_operating_procedure() -> None:
 
 
 def test_rollback_assessment_skill_uses_current_data_not_version_as_the_gate() -> None:
-    skill = SkillRegistry().load("assess-agent-rollback-impact", "2.0.0")
+    skill = SkillRegistry().load("assess-agent-rollback-impact", "2.1.0")
 
     assert set(skill.allowed_tools) == {
         "read_verified_mutations",
@@ -221,7 +221,7 @@ def test_rollback_assessment_contract_distinguishes_no_write_from_restore() -> N
 
 
 def test_rollback_execution_skill_revalidates_only_affected_current_data() -> None:
-    skill = SkillRegistry().load("execute-approved-rollback", "2.0.0")
+    skill = SkillRegistry().load("execute-approved-rollback", "2.1.0")
 
     for term in (
         "before",
@@ -236,6 +236,26 @@ def test_rollback_execution_skill_revalidates_only_affected_current_data() -> No
         "版本 ID 不能作为",
     ):
         assert term in skill.instructions
+
+
+def test_rollback_skills_cover_whole_record_and_late_conflict_boundaries() -> None:
+    assessment = SkillRegistry().load(
+        "assess-agent-rollback-impact",
+        "2.1.0",
+    ).instructions
+    execution = SkillRegistry().load(
+        "execute-approved-rollback",
+        "2.1.0",
+    ).instructions
+
+    for instructions in (assessment, execution):
+        assert "自定义列" in instructions
+        assert "完整物理" in instructions
+        assert "版本派生顺序" in instructions
+        assert "业务依赖" in instructions
+        assert "评估和审批" in instructions
+        assert "不存在的" in instructions
+        assert "二次确认入口" in instructions
 
 
 @pytest.mark.parametrize("status", ("already_restored", "conflict_skipped"))

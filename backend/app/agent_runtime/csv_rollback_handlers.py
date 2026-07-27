@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -18,8 +19,11 @@ from app.agent_runtime.worker import AgentWorkContext, AgentWorkResult
 from app.core.config import Settings
 from app.executions.agent_service import AgentExecutionService, CsvAgentTargetAdapter
 from app.executions.csv_versioning import (
+    _AGENT_COLUMN_ALIASES,
+    _COLUMN_NAMES,
     CsvMutationError,
     CsvTargetVersioner,
+    read_target_fieldnames,
     read_target_rows,
 )
 from app.governance.agent_governance import AgentGovernanceOperation, AgentOperation
@@ -50,13 +54,18 @@ class CsvRollbackHandlers:
         if current is None:
             raise LookupError("current rollback target version is missing")
         try:
-            current_rows = read_target_rows(Path(current.storage_path))
+            current_path = Path(current.storage_path)
+            current_rows = read_target_rows(current_path)
+            complete_record_fields = set(
+                read_target_fieldnames(current_path)
+            )
             restore_comparisons = [
                 compare_csv_rollback_mutation(
                     mutation,
                     current=current_rows.get(
                         _mutation_target_identifier(mutation)
                     ),
+                    complete_record_fields=complete_record_fields,
                 )
                 for mutation in operations
             ]
@@ -100,9 +109,9 @@ class CsvRollbackHandlers:
         )
         if parent is None:
             raise LookupError("rollback target version is missing")
-        operations = tuple(
-            _rollback_operation(item, target_version=f"sha256:{parent.file_sha256}")
-            for item in task.agent_intent.get("operations", [])
+        operations = _rollback_operations(
+            tuple(task.agent_intent.get("operations", [])),
+            target_version=f"sha256:{parent.file_sha256}",
         )
         if not operations:
             raise ValueError("rollback has no verified operations")
@@ -166,30 +175,34 @@ class CsvRollbackHandlers:
         if initial_parent is None:
             raise LookupError("rollback target version is missing")
         mutation_facts = tuple(task.agent_intent.get("operations", []))
-        frozen_operations = tuple(
-            _rollback_operation(
-                item,
-                target_version=f"sha256:{initial_parent.file_sha256}",
-            )
-            for item in mutation_facts
+        frozen_operations = _rollback_operations(
+            mutation_facts,
+            target_version=f"sha256:{initial_parent.file_sha256}",
         )
-        index_by_id = {
-            operation.id: index for index, operation in enumerate(frozen_operations)
+        operation_by_id = {
+            operation.id: operation for operation in frozen_operations
         }
-        selected_index = index_by_id.get(operation_id)
-        if selected_index is None:
+        selected_template = operation_by_id.get(operation_id)
+        if selected_template is None:
             raise ValueError("rollback operation is outside the frozen plan")
-
-        if selected_index:
-            previous_id = frozen_operations[selected_index - 1].id
-            previous = await runtime.get_checkpoint(
+        mutation_by_operation_id = {
+            _rollback_operation(
+                mutation,
+                target_version=f"sha256:{initial_parent.file_sha256}",
+            ).id: dict(mutation)
+            for mutation in mutation_facts
+        }
+        for dependency_id in selected_template.dependencies:
+            dependency = await runtime.get_checkpoint(
                 context.run_id,
                 phase=AgentPhase.EXECUTE_RESTORE,
-                checkpoint_key=f"agent-csv-rollback-operation:{previous_id}",
+                checkpoint_key=(
+                    f"agent-csv-rollback-operation:{dependency_id}"
+                ),
             )
-            if previous is None:
+            if dependency is None:
                 raise ValueError("rollback operation dependency is not ready")
-            if previous.payload.get("status") not in {
+            if dependency.payload.get("status") not in {
                 "succeeded",
                 "already_restored",
             }:
@@ -198,7 +211,7 @@ class CsvRollbackHandlers:
                     "status": "blocked",
                     "verification": {"valid": False},
                     "compensation_for": str(
-                        frozen_operations[selected_index].finding_id
+                        selected_template.finding_id
                     ),
                     "safe_error_code": "rollback_dependency_failed",
                 }
@@ -214,7 +227,7 @@ class CsvRollbackHandlers:
         parent = await ExecutionRepository(session).current_target_version(
             initial_parent.task_id
         )
-        selected_mutation = dict(mutation_facts[selected_index])
+        selected_mutation = mutation_by_operation_id[operation_id]
         planned_comparison = next(
             (
                 dict(item)
@@ -230,16 +243,19 @@ class CsvRollbackHandlers:
         current_comparison: dict[str, object] | None = None
         if parent is not None:
             try:
-                current_rows = read_target_rows(Path(parent.storage_path))
+                current_path = Path(parent.storage_path)
+                current_rows = read_target_rows(current_path)
                 current_comparison = compare_csv_rollback_mutation(
                     selected_mutation,
                     current=current_rows.get(
                         _mutation_target_identifier(selected_mutation)
                     ),
+                    complete_record_fields=set(
+                        read_target_fieldnames(current_path)
+                    ),
                 )
             except (CsvMutationError, OSError):
                 current_comparison = None
-        selected_template = frozen_operations[selected_index]
         if (
             planned_comparison is None
             or current_comparison is None
@@ -402,6 +418,18 @@ _FULL_RECORD_FIELDS = frozenset(
         "email",
     }
 )
+_PROJECTED_CSV_RECORD_FIELDS = frozenset(
+    {
+        *_FULL_RECORD_FIELDS,
+        *_COLUMN_NAMES,
+        *_COLUMN_NAMES.values(),
+        *(
+            alias
+            for aliases in _AGENT_COLUMN_ALIASES.values()
+            for alias in aliases
+        ),
+    }
+)
 
 
 def _rollback_no_write_fact(
@@ -439,6 +467,7 @@ def compare_csv_rollback_mutation(
     mutation: dict[str, Any],
     *,
     current: dict[str, object] | None,
+    complete_record_fields: set[str] | None = None,
 ) -> dict[str, object]:
     """Classify one verified mutation from its affected current target values."""
     operation_id = str(mutation["id"])
@@ -472,7 +501,21 @@ def compare_csv_rollback_mutation(
             disposition = "conflict"
             reason_code = "affected_fields_changed"
     elif operation == AgentOperation.CREATE:
-        fields = sorted(_FULL_RECORD_FIELDS | set(after))
+        custom_current_fields = (
+            set(current) - _PROJECTED_CSV_RECORD_FIELDS
+            if current is not None
+            else set()
+        )
+        custom_schema_fields = (
+            (complete_record_fields or set())
+            - _PROJECTED_CSV_RECORD_FIELDS
+        )
+        fields = sorted(
+            _FULL_RECORD_FIELDS
+            | set(after)
+            | custom_current_fields
+            | custom_schema_fields
+        )
         if current is None:
             disposition = "already_restored"
             reason_code = "created_record_absent"
@@ -494,10 +537,21 @@ def compare_csv_rollback_mutation(
             disposition = "conflict"
             reason_code = "created_record_changed"
     else:
-        fields = sorted(_FULL_RECORD_FIELDS | set(before))
+        fields = sorted(
+            _FULL_RECORD_FIELDS
+            | set(before)
+            | (complete_record_fields or set())
+        )
         if current is None:
-            disposition = "safe_to_restore"
-            reason_code = "deleted_record_still_absent"
+            missing_complete_fields = (
+                (complete_record_fields or set()) - set(before)
+            )
+            if missing_complete_fields:
+                disposition = "conflict"
+                reason_code = "complete_record_fact_missing"
+            else:
+                disposition = "safe_to_restore"
+                reason_code = "deleted_record_still_absent"
         elif not before:
             disposition = "conflict"
             reason_code = "mutation_values_missing"
@@ -634,3 +688,53 @@ def _rollback_operation(
         risk="high",
         target_version=target_version,
     )
+
+
+def _rollback_operations(
+    mutations: tuple[dict[str, Any], ...],
+    *,
+    target_version: str,
+) -> tuple[AgentGovernanceOperation, ...]:
+    base_by_original_id = {
+        UUID(str(mutation["id"])): _rollback_operation(
+            mutation,
+            target_version=target_version,
+        )
+        for mutation in mutations
+    }
+    reverse_dependencies: dict[UUID, set[UUID]] = {
+        operation_id: set() for operation_id in base_by_original_id
+    }
+    for mutation in mutations:
+        dependent_id = UUID(str(mutation["id"]))
+        for dependency in mutation.get("dependencies", []):
+            dependency_id = UUID(str(dependency))
+            if dependency_id in reverse_dependencies:
+                reverse_dependencies[dependency_id].add(dependent_id)
+
+    operations = {
+        original_id: replace(
+            operation,
+            dependencies=frozenset(
+                base_by_original_id[dependent_id].id
+                for dependent_id in reverse_dependencies[original_id]
+            ),
+        )
+        for original_id, operation in base_by_original_id.items()
+    }
+    ordered: list[AgentGovernanceOperation] = []
+    completed: set[UUID] = set()
+    remaining = list(operations.values())
+    while remaining:
+        ready = [
+            operation
+            for operation in remaining
+            if operation.dependencies.issubset(completed)
+        ]
+        if not ready:
+            raise ValueError("rollback operation dependencies contain a cycle")
+        for operation in ready:
+            ordered.append(operation)
+            completed.add(operation.id)
+            remaining.remove(operation)
+    return tuple(ordered)

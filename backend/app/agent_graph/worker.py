@@ -86,6 +86,13 @@ _LOW_RISK_REPLAN_ACTIONS = frozenset(
     }
 )
 _NON_RETRYABLE_DATABASE_ERROR_CLASSES = frozenset({"0A", "22", "23", "42"})
+_EXTERNAL_WRITE_NODES = frozenset(
+    {
+        "execute_ready_operations",
+        "execute_remaining_independent",
+        "execute_restore_operations",
+    }
+)
 
 
 class AgentGraphWorker:
@@ -164,6 +171,9 @@ class AgentGraphWorker:
             if not processing_task.done():
                 processing_task.cancel()
             await asyncio.gather(processing_task, return_exceptions=True)
+            if context.current_node in _EXTERNAL_WRITE_NODES:
+                await self._release_claim(context)
+                raise
             await self._fail_action_contract(context, error)
             return True
         except BaseException:
@@ -707,7 +717,7 @@ class AgentGraphWorker:
         code = "agent_action_contract_error"
         message = (
             "当前阶段的服务端数据合同未通过校验，系统已停止自动重试。"
-            "任务数据未被继续修改，请查看失败记录后重新发起任务。"
+            "系统已停止继续处理，请查看失败记录后重新发起任务。"
         )
         async with self._session_factory() as session:
             async with session.begin():

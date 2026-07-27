@@ -306,6 +306,12 @@ def read_target_rows(path: Path) -> dict[str, dict[str, object]]:
     return indexed
 
 
+def read_target_fieldnames(path: Path) -> tuple[str, ...]:
+    """Return the physical CSV field set used by whole-record compensation."""
+    fieldnames, _rows = _read_csv(path)
+    return fieldnames
+
+
 def _matching_indexes(rows: Sequence[Mapping[str, str]], identifier: str) -> list[int]:
     return [index for index, row in enumerate(rows) if row.get("id") == identifier]
 

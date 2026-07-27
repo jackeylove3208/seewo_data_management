@@ -1,6 +1,6 @@
 ---
 name: execute-approved-rollback
-version: 2.0.0
+version: 2.1.0
 phase: execute_restore
 allowed_tools: [read_execution_plan, read_ready_operations, request_operation_execution, read_operation_verification]
 input_schema: RollbackExecutionInput
@@ -41,7 +41,8 @@ output_schema: AgentRollbackOutcome
 5. 若写入前已经达到回滚目标（update 相关字段等于 before、原 create 记录已不存在、原 delete
    记录已按 before 恢复），工具返回 `already_restored`，不得调用目标写入。
 6. 若相关 current 不等于批准时的状态，或 comparison_hash 改变，工具返回
-   `conflict_skipped`，不得写入；旧批准失效，相关操作回到冲突提示和二次确认。
+   `conflict_skipped`，不得写入；旧批准对该操作失效，任务结果和报告必须明确提示。若用户
+   仍要求回滚，必须用最新数据重新评估和审批，不能声称当前任务提供不存在的二次确认入口。
 7. 对真正写入项使用服务端持久化参数和稳定幂等键；不得生成 SQL、API 请求、文件命令或新的
    after-value。执行后调用 `read_operation_verification`，只有写入及读后验证都通过才是
    `succeeded`。
@@ -59,7 +60,10 @@ output_schema: AgentRollbackOutcome
 - `failed`：连接器写入或读后验证失败；`blocked`：依赖项没有达到 succeeded 或
   already_restored；`skipped` 只用于终止等与数据状态无关的明确跳过。
 - update 只比较原操作影响的字段并保留无关字段。原 create 必须确认完整创建记录未变化后才能
-  删除；原 delete 只有目标仍缺失时才恢复，若已按 before 存在则为 already_restored。
+  删除，比较范围必须包含会随整行删除的 CSV 自定义列等完整物理字段；原 delete 只有目标仍
+  缺失且具备完整物理 `before` 时才恢复，若已按 before 存在则为 already_restored。
+- 目标版本派生必须串行，但串行顺序不是业务依赖。只有服务端冻结的真实依赖 DAG 才能产生
+  `blocked`；一项 `conflict_skipped` 或失败不得阻断没有业务依赖的其他记录。
 - CSV 回滚从执行时最新目标文件派生新版本，不能从原同步旧版本派生后覆盖中间变化。API/数据库
   必须使用适配器幂等与字段级并发保护，不能用任意网络或 SQL 绕过。
 - 所有回滚一律高风险，不存在自动批准或模型降低风险。
@@ -76,6 +80,8 @@ output_schema: AgentRollbackOutcome
 
 - 禁止修改第三方数据，禁止执行计划外操作或为没有验证成功事实的记录创建补偿。
 - 禁止因版本 ID 变化判冲突，禁止使用整行哈希阻断字段级 update，禁止整行恢复并覆盖无关字段。
+- 禁止在 create/delete 的整行补偿中忽略自定义列或不完整物理行事实；禁止把版本派生顺序
+  或操作列表顺序伪装成业务依赖。
 - 禁止在写入前省略 actual current 重读，禁止忽略 comparison_hash 变化或覆盖后续相关数据。
 - 禁止把 already_restored 再次写入或伪装成 succeeded；禁止把 conflict_skipped 强制执行。
 - 禁止复用原同步任务、原审批、原报告或原学校锁作为当前回滚记录。
@@ -85,6 +91,6 @@ output_schema: AgentRollbackOutcome
 ## 停止条件
 
 计划、审批、来源事实或比较事实不完整时失败关闭。相关 current 漂移时以 conflict_skipped
-停止该项并等待新的冲突决定；already_restored 以验证无写入终态停止。用户终止时停止新操作
-并保留已验证结果。所有输入补偿操作都达到不可变终态且执行或无写入验证事实已持久化后停止，
-交由回滚报告阶段生成独立报告和历史。
+停止该项、在结果中提示，并要求后续新评估/新审批；already_restored 以验证无写入终态停止。
+用户终止时停止新操作并保留已验证结果。所有输入补偿操作都达到不可变终态且执行或无写入
+验证事实已持久化后停止，交由回滚报告阶段生成独立报告和历史。

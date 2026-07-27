@@ -1456,6 +1456,115 @@ async def test_deterministic_execution_v2_runs_restore_without_model(
 
 
 @pytest.mark.asyncio
+async def test_deterministic_rollback_commits_each_operation_before_next_failure(
+    database,
+    tmp_path: Path,
+) -> None:
+    context = replace(
+        await _preflight_context(database, tmp_path),
+        current_node="execute_restore_operations",
+        execution_contract_version="deterministic-execution-v2",
+    )
+    mutation_ids = (uuid4(), uuid4())
+    async with database.session_factory() as session:
+        async with session.begin():
+            task = await session.get(ReconciliationTask, context.task_id)
+            target = await ExecutionRepository(
+                session
+            ).current_target_version(context.task_id)
+            assert task is not None and target is not None
+            task.task_kind = "rollback"
+            task.agent_intent = {
+                "target_version_id": str(target.id),
+                "source_task_id": str(uuid4()),
+                "operations": [
+                    {
+                        "id": str(mutation_id),
+                        "operation": "update",
+                        "entity_kind": "teacher",
+                        "target_source_identifier": f"csv:{index + 2}",
+                        "before": {"name": f"旧姓名{index}"},
+                        "after": {"name": f"新姓名{index}"},
+                    }
+                    for index, mutation_id in enumerate(mutation_ids)
+                ],
+            }
+
+    operation_ids = [
+        uuid5(
+            NAMESPACE_URL,
+            f"agent-rollback-operation:{mutation_id}",
+        )
+        for mutation_id in mutation_ids
+    ]
+
+    class PartiallyFailingRollback:
+        async def execute_operation(
+            self,
+            session,
+            _context,
+            operation_id,
+        ):
+            if operation_id == operation_ids[1]:
+                raise ValueError("second rollback contract failed")
+            fact = {
+                "id": str(operation_id),
+                "status": "succeeded",
+                "verification": {"valid": True},
+            }
+            await AgentRuntimeRepository(session).save_checkpoint(
+                context.run_id,
+                phase=AgentPhase.EXECUTE_RESTORE,
+                checkpoint_key=(
+                    f"agent-csv-rollback-operation:{operation_id}"
+                ),
+                input_hash="first-operation",
+                payload=fact,
+            )
+            return fact
+
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=ModelMustNotRun(),
+        tokenization_secret="test-tokenization-secret",
+        csv_execution_enabled=True,
+    )
+    executor._rollback = PartiallyFailingRollback()
+    action = AllowedActionV1(
+        action_id="execute_restore_operations",
+        kind="run_deterministic",
+        resource_ids=("restore-plan:current",),
+        required_evidence=("rollback-outcomes:v1",),
+        risk="high",
+        requires_human=False,
+        successor_node="verify_restore_operations",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="second rollback contract failed",
+    ):
+        await executor._execute_rollback(context, action)
+
+    async with database.session_factory() as session:
+        first = await AgentRuntimeRepository(session).get_checkpoint(
+            context.run_id,
+            phase=AgentPhase.EXECUTE_RESTORE,
+            checkpoint_key=(
+                f"agent-csv-rollback-operation:{operation_ids[0]}"
+            ),
+        )
+        aggregate = await AgentRuntimeRepository(session).get_checkpoint(
+            context.run_id,
+            phase=AgentPhase.EXECUTE_RESTORE,
+            checkpoint_key="agent-csv-rollback-execution-v1",
+        )
+
+    assert first is not None
+    assert aggregate is None
+
+
+@pytest.mark.asyncio
 async def test_model_execution_resumes_from_completed_rollback_checkpoint_without_model(
     database,
     tmp_path: Path,

@@ -6,11 +6,19 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent_runtime.csv_rollback_handlers import _rollback_operation
+from app.agent_runtime.csv_rollback_handlers import (
+    _rollback_no_write_fact,
+    _rollback_operation,
+    _rollback_operations,
+    compare_csv_rollback_mutation,
+)
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentPhase
-from app.agent_runtime.worker import AgentWorkContext
-from app.connectors.configured import DatabaseConnectorConfiguration
+from app.agent_runtime.worker import AgentWorkContext, AgentWorkResult
+from app.connectors.configured import (
+    ConfiguredApiConnector,
+    DatabaseConnectorConfiguration,
+)
 from app.connectors.database_runtime import DatabaseConnectorResolver
 from app.models.executions import TargetVersionRecord
 from app.models.reconciliation import ReconciliationTask
@@ -20,6 +28,90 @@ from app.repositories.executions import ExecutionRepository
 class SqlRollbackExecutionHandler:
     def __init__(self, connectors: DatabaseConnectorResolver) -> None:
         self._connectors = connectors
+
+    async def plan(
+        self,
+        session: AsyncSession,
+        context: AgentWorkContext,
+    ) -> AgentWorkResult:
+        task = await session.get(ReconciliationTask, context.task_id)
+        if task is None or not isinstance(task.agent_intent, dict):
+            raise LookupError("SQL rollback task facts are missing")
+        connector_id, connector, configuration = await self._connector_for_task(
+            task
+        )
+        initial_parent = await session.get(
+            TargetVersionRecord,
+            UUID(str(task.agent_intent["target_version_id"])),
+        )
+        if initial_parent is None:
+            raise LookupError("SQL rollback target version is missing")
+        current_parent = await ExecutionRepository(
+            session
+        ).current_target_version(initial_parent.task_id)
+        if current_parent is None:
+            raise LookupError("current SQL rollback target version is missing")
+
+        operations = tuple(
+            dict(item) for item in task.agent_intent.get("operations", [])
+        )
+        restore_comparisons: list[dict[str, object]] = []
+        for mutation in operations:
+            operation = _rollback_operation(
+                mutation,
+                target_version=f"sha256:{initial_parent.file_sha256}",
+            )
+            identifier = _rollback_identifier(
+                connector_id=connector_id,
+                operation=str(operation.operation),
+                locator=operation.target_source_identifier,
+                after=operation.after,
+            )
+            current = _database_comparison_record(
+                configuration,
+                mutation=mutation,
+                identifier=identifier,
+                record=await connector.read_record(identifier),
+            )
+            restore_comparisons.append(
+                compare_csv_rollback_mutation(
+                    mutation,
+                    current=current,
+                    complete_record_fields=_database_complete_record_fields(
+                        configuration
+                    ),
+                )
+            )
+
+        external_version = (await connector.version()).value
+        updated_intent = dict(task.agent_intent)
+        updated_intent["restore_comparisons"] = restore_comparisons
+        updated_intent["comparison_target_version_id"] = str(
+            current_parent.id
+        )
+        updated_intent["comparison_external_version_hash"] = _hash_version(
+            external_version
+        )
+        task.agent_intent = updated_intent
+        await AgentRuntimeRepository(session).save_checkpoint(
+            context.run_id,
+            phase=AgentPhase.PLAN_RESTORE,
+            checkpoint_key="agent-sql-rollback-plan-v2",
+            input_hash=str(task.request_hash),
+            payload={
+                "source_task_id": str(task.parent_task_id),
+                "target_version_id": str(initial_parent.id),
+                "comparison_target_version_id": str(current_parent.id),
+                "comparison_external_version_hash": _hash_version(
+                    external_version
+                ),
+                "operations": list(operations),
+                "restore_comparisons": restore_comparisons,
+            },
+        )
+        return AgentWorkResult(
+            next_phase=AgentPhase.CLARIFY_RESTORE_CONFLICTS
+        )
 
     async def execute_operation(
         self,
@@ -40,16 +132,9 @@ class SqlRollbackExecutionHandler:
         task = await session.get(ReconciliationTask, context.task_id)
         if task is None or not isinstance(task.agent_intent, dict):
             raise LookupError("SQL rollback task facts are missing")
-        target = task.agent_intent.get("target")
-        if not isinstance(target, dict) or target.get("kind") != "database":
-            raise ValueError("SQL rollback target selection is missing")
-        connector_id = target.get("configuration_id")
-        if not isinstance(connector_id, str) or not connector_id:
-            raise ValueError("SQL rollback target connector ID is missing")
-        connector = await self._connectors.connector(connector_id)
-        configuration = connector.configuration
-        if not isinstance(configuration, DatabaseConnectorConfiguration):
-            raise TypeError("SQL rollback resolved a non-database connector")
+        connector_id, connector, configuration = await self._connector_for_task(
+            task
+        )
 
         initial_parent = await session.get(
             TargetVersionRecord,
@@ -58,34 +143,40 @@ class SqlRollbackExecutionHandler:
         if initial_parent is None:
             raise LookupError("SQL rollback target version is missing")
         mutation_facts = tuple(dict(item) for item in task.agent_intent.get("operations", []))
-        frozen = tuple(
-            _rollback_operation(
-                item,
-                target_version=f"sha256:{initial_parent.file_sha256}",
-            )
-            for item in mutation_facts
+        frozen = _rollback_operations(
+            mutation_facts,
+            target_version=f"sha256:{initial_parent.file_sha256}",
         )
-        index_by_id = {item.id: index for index, item in enumerate(frozen)}
-        selected_index = index_by_id.get(operation_id)
-        if selected_index is None:
+        operation_by_id = {item.id: item for item in frozen}
+        selected = operation_by_id.get(operation_id)
+        if selected is None:
             raise ValueError("SQL rollback operation is outside the frozen plan")
-
-        parent = initial_parent
-        if selected_index:
-            previous_id = frozen[selected_index - 1].id
-            previous = await runtime.get_checkpoint(
+        mutation_by_operation_id = {
+            _rollback_operation(
+                mutation,
+                target_version=f"sha256:{initial_parent.file_sha256}",
+            ).id: mutation
+            for mutation in mutation_facts
+        }
+        for dependency_id in selected.dependencies:
+            dependency = await runtime.get_checkpoint(
                 context.run_id,
                 phase=AgentPhase.EXECUTE_RESTORE,
-                checkpoint_key=f"agent-sql-rollback-operation:{previous_id}",
+                checkpoint_key=(
+                    f"agent-sql-rollback-operation:{dependency_id}"
+                ),
             )
-            if previous is None:
+            if dependency is None:
                 raise ValueError("SQL rollback dependency is not ready")
-            if previous.payload.get("status") != "succeeded":
-                blocked_fact: dict[str, object] = {
+            if dependency.payload.get("status") not in {
+                "succeeded",
+                "already_restored",
+            }:
+                blocked: dict[str, object] = {
                     "id": str(operation_id),
                     "status": "blocked",
                     "verification": {"valid": False},
-                    "compensation_for": str(frozen[selected_index].finding_id),
+                    "compensation_for": str(selected.finding_id),
                     "safe_error_code": "rollback_dependency_failed",
                 }
                 await runtime.save_checkpoint(
@@ -93,21 +184,11 @@ class SqlRollbackExecutionHandler:
                     phase=AgentPhase.EXECUTE_RESTORE,
                     checkpoint_key=checkpoint_key,
                     input_hash=str(task.request_hash),
-                    payload=blocked_fact,
+                    payload=blocked,
                 )
-                return blocked_fact
-            output_version_id = previous.payload.get("output_target_version_id")
-            if output_version_id is None:
-                raise LookupError("SQL rollback dependency version is missing")
-            dependency_parent = await session.get(
-                TargetVersionRecord,
-                UUID(str(output_version_id)),
-            )
-            if dependency_parent is None:
-                raise LookupError("SQL rollback dependency version is missing")
-            parent = dependency_parent
+                return blocked
 
-        selected = frozen[selected_index]
+        selected_mutation = mutation_by_operation_id[operation_id]
         before = _fixed_values(selected.before)
         after = _fixed_values(selected.after)
         operation_name = str(selected.operation)
@@ -117,61 +198,126 @@ class SqlRollbackExecutionHandler:
             locator=selected.target_source_identifier,
             after=selected.after,
         )
-        raw_version = (await connector.version()).value
-        if _hash_version(raw_version) != parent.file_sha256:
-            if operation_name == "delete":
-                already_applied = await connector.read_record(identifier) is None
-            else:
-                already_applied = (
-                    await connector.verify([{"id": identifier, "after": after}])
-                ) == [True]
-            if not already_applied:
-                raise ValueError("SQL rollback target has an intervening change")
-            output_hash = _hash_version(raw_version)
-            output = await ExecutionRepository(session).create_target_version(
-                task_id=parent.task_id,
-                tenant_id=parent.tenant_id,
-                source_snapshot_id=parent.source_snapshot_id,
-                parent_version_id=parent.id,
-                batch_id=None,
-                file_sha256=output_hash,
-                content_hash=_hash(
-                    {
-                        "rollback_task_id": str(task.id),
-                        "operation_id": str(selected.id),
-                        "recovered_external_version": raw_version,
-                    }
-                ),
-                storage_path=(
-                    f"database://{connector_id}/rollback/{output_hash}/{selected.id}/recovered"
-                ),
+        parent = await ExecutionRepository(session).current_target_version(
+            initial_parent.task_id
+        )
+        planned_comparison = next(
+            (
+                dict(item)
+                for item in task.agent_intent.get(
+                    "restore_comparisons",
+                    [],
+                )
+                if str(item.get("operation_id"))
+                == str(selected_mutation["id"])
+            ),
+            None,
+        )
+        current_record = await connector.read_record(identifier)
+        current_comparison = compare_csv_rollback_mutation(
+            selected_mutation,
+            current=_database_comparison_record(
+                configuration,
+                mutation=selected_mutation,
+                identifier=identifier,
+                record=current_record,
+            ),
+            complete_record_fields=_database_complete_record_fields(
+                configuration
+            ),
+        )
+        if planned_comparison is None or parent is None:
+            fact = _rollback_no_write_fact(
+                selected,
+                status="conflict_skipped",
+                comparison=current_comparison,
+                safe_error_code="rollback_comparison_fact_missing",
             )
-            recovered_fact: dict[str, object] = {
-                "id": str(selected.id),
-                "status": "succeeded",
-                "operation": operation_name,
-                "entity_kind": selected.entity_kind,
-                "target_source_identifier": f"database:{connector_id}:{identifier}",
-                "before": before or None,
-                "after": after or None,
-                "verification": {
-                    "valid": True,
-                    "idempotent_recovery": True,
-                    "connector_id": connector_id,
-                    "output_target_version_id": str(output.id),
-                },
-                "compensation_for": str(selected.finding_id),
-                "output_target_version_id": str(output.id),
-                "output_target_path": output.storage_path,
-            }
             await runtime.save_checkpoint(
                 context.run_id,
                 phase=AgentPhase.EXECUTE_RESTORE,
                 checkpoint_key=checkpoint_key,
                 input_hash=str(task.request_hash),
-                payload=recovered_fact,
+                payload=fact,
             )
-            return recovered_fact
+            return fact
+
+        raw_version = (await connector.version()).value
+        if current_comparison["disposition"] == "already_restored":
+            recovered = _rollback_no_write_fact(
+                selected,
+                status="already_restored",
+                comparison=current_comparison,
+            )
+            if _hash_version(raw_version) != parent.file_sha256:
+                output_hash = _hash_version(raw_version)
+                output = await ExecutionRepository(
+                    session
+                ).create_target_version(
+                    task_id=parent.task_id,
+                    tenant_id=parent.tenant_id,
+                    source_snapshot_id=parent.source_snapshot_id,
+                    parent_version_id=parent.id,
+                    batch_id=None,
+                    file_sha256=output_hash,
+                    content_hash=_hash(
+                        {
+                            "rollback_task_id": str(task.id),
+                            "operation_id": str(selected.id),
+                            "recovered_external_version": raw_version,
+                        }
+                    ),
+                    storage_path=(
+                        "database://"
+                        f"{connector_id}/rollback/{output_hash}/"
+                        f"{selected.id}/recovered"
+                    ),
+                )
+                recovered.update(
+                    {
+                        "output_target_version_id": str(output.id),
+                        "output_target_path": output.storage_path,
+                    }
+                )
+                verification_value = recovered.get("verification")
+                verification = (
+                    dict(verification_value)
+                    if isinstance(verification_value, dict)
+                    else {}
+                )
+                verification["idempotent_recovery"] = True
+                verification["output_target_version_id"] = str(output.id)
+                recovered["verification"] = verification
+            await runtime.save_checkpoint(
+                context.run_id,
+                phase=AgentPhase.EXECUTE_RESTORE,
+                checkpoint_key=checkpoint_key,
+                input_hash=str(task.request_hash),
+                payload=recovered,
+            )
+            return recovered
+
+        if not (
+            planned_comparison.get("disposition") == "safe_to_restore"
+            and current_comparison["disposition"] == "safe_to_restore"
+            and current_comparison["comparison_hash"]
+            == planned_comparison.get("comparison_hash")
+        ):
+            fact = _rollback_no_write_fact(
+                selected,
+                status="conflict_skipped",
+                comparison=current_comparison,
+                safe_error_code="rollback_current_data_conflict",
+            )
+            await runtime.save_checkpoint(
+                context.run_id,
+                phase=AgentPhase.EXECUTE_RESTORE,
+                checkpoint_key=checkpoint_key,
+                input_hash=str(task.request_hash),
+                payload=fact,
+            )
+            return fact
+
         output_version = await connector.apply(
             [
                 {
@@ -187,7 +333,11 @@ class SqlRollbackExecutionHandler:
         if operation_name == "delete":
             verified = await connector.read_record(identifier) is None
         else:
-            verified = (await connector.verify([{"id": identifier, "after": after}])) == [True]
+            verified = (
+                await connector.verify(
+                    [{"id": identifier, "after": after}]
+                )
+            ) == [True]
         output_hash = _hash_version(output_version.value)
         output = await ExecutionRepository(session).create_target_version(
             task_id=parent.task_id,
@@ -204,14 +354,19 @@ class SqlRollbackExecutionHandler:
                     "after_version": output_version.value,
                 }
             ),
-            storage_path=(f"database://{connector_id}/rollback/{output_hash}/{selected.id}"),
+            storage_path=(
+                f"database://{connector_id}/rollback/"
+                f"{output_hash}/{selected.id}"
+            ),
         )
         final_fact: dict[str, object] = {
             "id": str(selected.id),
             "status": "succeeded" if verified else "verification_failed",
             "operation": operation_name,
             "entity_kind": selected.entity_kind,
-            "target_source_identifier": (f"database:{connector_id}:{identifier}"),
+            "target_source_identifier": (
+                f"database:{connector_id}:{identifier}"
+            ),
             "before": before or None,
             "after": after or None,
             "verification": {
@@ -231,6 +386,73 @@ class SqlRollbackExecutionHandler:
             payload=final_fact,
         )
         return final_fact
+
+    async def _connector_for_task(
+        self,
+        task: ReconciliationTask,
+    ) -> tuple[
+        str,
+        ConfiguredApiConnector,
+        DatabaseConnectorConfiguration,
+    ]:
+        intent = task.agent_intent
+        if not isinstance(intent, dict):
+            raise LookupError("SQL rollback task facts are missing")
+        target = intent.get("target")
+        if not isinstance(target, dict) or target.get("kind") != "database":
+            raise ValueError("SQL rollback target selection is missing")
+        connector_id = target.get("configuration_id")
+        if not isinstance(connector_id, str) or not connector_id:
+            raise ValueError("SQL rollback target connector ID is missing")
+        connector = await self._connectors.connector(connector_id)
+        configuration = connector.configuration
+        if not isinstance(configuration, DatabaseConnectorConfiguration):
+            raise TypeError("SQL rollback resolved a non-database connector")
+        return connector_id, connector, configuration
+
+
+def _database_comparison_record(
+    configuration: DatabaseConnectorConfiguration,
+    *,
+    mutation: dict[str, object],
+    identifier: str,
+    record: dict[str, object] | None,
+) -> dict[str, object] | None:
+    if record is None:
+        return None
+    current = {
+        canonical: record.get(column)
+        for canonical, column in configuration.field_columns.items()
+    }
+    mapped_columns = set(configuration.field_columns.values())
+    for column in configuration.allowed_columns:
+        if column not in {
+            configuration.primary_key,
+            configuration.version_column,
+            *mapped_columns,
+        }:
+            current[column] = record.get(column)
+    locator = mutation.get("target_source_identifier")
+    after = mutation.get("after")
+    after_values = after if isinstance(after, dict) else {}
+    current["source_id"] = str(
+        locator
+        or after_values.get("source_id")
+        or identifier
+    )
+    return current
+
+
+def _database_complete_record_fields(
+    configuration: DatabaseConnectorConfiguration,
+) -> set[str]:
+    mapped_columns = set(configuration.field_columns.values())
+    custom_columns = set(configuration.allowed_columns) - {
+        configuration.primary_key,
+        configuration.version_column,
+        *mapped_columns,
+    }
+    return set(configuration.field_columns) | custom_columns
 
 
 def _rollback_identifier(

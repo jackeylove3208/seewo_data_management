@@ -324,10 +324,15 @@ async def test_sql_governance_updates_mysql_target_and_verifies_result(
                 target_version="ignored",
             )
 
+        rollback_handler = SqlRollbackExecutionHandler(
+            StaticResolver(connector)
+        )
         async with session.begin():
-            rollback_fact = await SqlRollbackExecutionHandler(
-                StaticResolver(connector)
-            ).execute_operation(
+            await rollback_handler.plan(
+                session,
+                rollback_context,
+            )
+            rollback_fact = await rollback_handler.execute_operation(
                 session,
                 rollback_context,
                 rollback_operation.id,
@@ -448,6 +453,15 @@ async def test_sql_governance_updates_mysql_target_and_verifies_result(
                 target_version="ignored",
             )
 
+        recovered_rollback_handler = SqlRollbackExecutionHandler(
+            StaticResolver(connector)
+        )
+        async with session.begin():
+            await recovered_rollback_handler.plan(
+                session,
+                recovered_rollback_context,
+            )
+
         pre_rollback_version = (await connector.version()).value
         await connector.apply(
             [
@@ -463,14 +477,12 @@ async def test_sql_governance_updates_mysql_target_and_verifies_result(
         )
 
         async with session.begin():
-            recovered_rollback = await SqlRollbackExecutionHandler(
-                StaticResolver(connector)
-            ).execute_operation(
+            recovered_rollback = await recovered_rollback_handler.execute_operation(
                 session,
                 recovered_rollback_context,
                 recovered_rollback_operation.id,
             )
 
-        assert recovered_rollback["status"] == "succeeded"
+        assert recovered_rollback["status"] == "already_restored"
         assert recovered_rollback["verification"]["idempotent_recovery"] is True
         assert (await connector.read_record("student-1"))["phone"] == "13800000000"

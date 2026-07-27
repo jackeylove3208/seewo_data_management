@@ -142,7 +142,7 @@ describe("controlled Agent graph task detail", () => {
       graph_cursor: 7,
       current_node: "preflight_restore",
       business_stage: "report_and_rollback",
-      current_action_zh: "正在写入前重新校验当前目标数据",
+      current_action_zh: "正在准备逐项回滚，每项写入前都会重新校验",
       sub_agent_zh: "回滚执行 Agent",
       progress_completed: 2,
       progress_total: 3,
@@ -162,7 +162,7 @@ describe("controlled Agent graph task detail", () => {
     expect(screen.getByText("生成回滚报告")).toBeInTheDocument();
     expect(screen.queryByText("数据接入")).not.toBeInTheDocument();
     expect(
-      await screen.findAllByText("正在写入前重新校验当前目标数据"),
+      await screen.findAllByText("正在准备逐项回滚，每项写入前都会重新校验"),
     ).toHaveLength(2);
     client.clear();
   });

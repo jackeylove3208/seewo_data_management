@@ -6,6 +6,7 @@ import pytest
 from app.agent_runtime.csv_rollback_handlers import (
     CsvRollbackHandlers,
     _rollback_operation,
+    _rollback_operations,
     compare_csv_rollback_mutation,
 )
 from app.agent_runtime.repository import AgentRuntimeRepository
@@ -197,6 +198,113 @@ def test_create_and_delete_comparison_handle_record_absence(
     result = compare_csv_rollback_mutation(mutation, current=current)
 
     assert result["disposition"] == expected_disposition
+
+
+def test_create_comparison_detects_later_custom_column_data() -> None:
+    mutation = {
+        "id": str(uuid4()),
+        "operation": "create",
+        "entity_kind": "student",
+        "target_source_identifier": "student-created",
+        "before": None,
+        "after": {"name": "新学生", "phone": "13800000000"},
+    }
+    unchanged = compare_csv_rollback_mutation(
+        mutation,
+        current={
+            "id": "student-created",
+            "source_id": "student-created",
+            "姓名": "新学生",
+            "name": "新学生",
+            "手机号": "13800000000",
+            "phone": "13800000000",
+            "备注": "",
+        },
+    )
+    changed = compare_csv_rollback_mutation(
+        mutation,
+        current={
+            "id": "student-created",
+            "source_id": "student-created",
+            "姓名": "新学生",
+            "name": "新学生",
+            "手机号": "13800000000",
+            "phone": "13800000000",
+            "备注": "同步后新增的说明",
+        },
+    )
+
+    assert unchanged["disposition"] == "safe_to_restore"
+    assert changed["disposition"] == "conflict"
+    assert changed["reason_code"] == "created_record_changed"
+    assert unchanged["comparison_hash"] != changed["comparison_hash"]
+    assert "备注" in changed["affected_fields"]
+
+
+def test_delete_comparison_requires_complete_physical_before_fact() -> None:
+    mutation = {
+        "id": str(uuid4()),
+        "operation": "delete",
+        "entity_kind": "student",
+        "target_source_identifier": "student-deleted",
+        "before": {
+            "source_id": "student-deleted",
+            "name": "被删学生",
+        },
+        "after": None,
+    }
+
+    result = compare_csv_rollback_mutation(
+        mutation,
+        current=None,
+        complete_record_fields={"id", "姓名", "备注"},
+    )
+
+    assert result["disposition"] == "conflict"
+    assert result["reason_code"] == "complete_record_fact_missing"
+
+
+def test_rollback_operations_reverse_only_real_business_dependencies() -> None:
+    parent_id = uuid4()
+    child_id = uuid4()
+    mutations = (
+        {
+            "id": str(parent_id),
+            "operation": "create",
+            "entity_kind": "department",
+            "target_source_identifier": "department-1",
+            "before": None,
+            "after": {"name": "部门"},
+            "dependencies": [],
+        },
+        {
+            "id": str(child_id),
+            "operation": "create",
+            "entity_kind": "teacher",
+            "target_source_identifier": "teacher-1",
+            "before": None,
+            "after": {"name": "教师"},
+            "dependencies": [str(parent_id)],
+        },
+    )
+
+    operations = _rollback_operations(
+        mutations,
+        target_version="sha256:" + "a" * 64,
+    )
+    child_rollback_id = _rollback_operation(
+        mutations[1],
+        target_version="ignored",
+    ).id
+
+    assert [operation.finding_id for operation in operations] == [
+        child_id,
+        parent_id,
+    ]
+    assert operations[0].dependencies == frozenset()
+    assert operations[1].dependencies == frozenset(
+        {child_rollback_id}
+    )
 
 
 @pytest.mark.asyncio
@@ -465,6 +573,116 @@ async def test_execute_operation_rejects_related_drift_before_writing(
 
     assert fact["status"] == "conflict_skipped"
     assert fact["safe_error_code"] == "rollback_current_data_conflict"
+
+
+@pytest.mark.asyncio
+async def test_independent_operation_continues_after_prior_conflict(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    task_id = uuid4()
+    first_mutation = {
+        "id": str(uuid4()),
+        "operation": "update",
+        "entity_kind": "student",
+        "target_source_identifier": "student-1",
+        "before": {"phone": "A"},
+        "after": {"phone": "B"},
+    }
+    second_mutation = {
+        "id": str(uuid4()),
+        "operation": "update",
+        "entity_kind": "student",
+        "target_source_identifier": "student-2",
+        "before": {"phone": "C"},
+        "after": {"phone": "D"},
+    }
+    current_path = tmp_path / "independent.csv"
+    current_path.write_text(
+        "id,手机号\nstudent-1,changed\nstudent-2,D\n",
+        encoding="utf-8",
+    )
+    parent = SimpleNamespace(
+        id=uuid4(),
+        file_sha256="a" * 64,
+        task_id=uuid4(),
+        storage_path=str(current_path),
+    )
+    task = SimpleNamespace(
+        id=task_id,
+        request_hash="request-hash",
+        parent_task_id=uuid4(),
+        agent_intent={
+            "target_version_id": str(parent.id),
+            "operations": [first_mutation, second_mutation],
+            "restore_comparisons": [
+                compare_csv_rollback_mutation(
+                    first_mutation,
+                    current={"source_id": "student-1", "phone": "B"},
+                ),
+                compare_csv_rollback_mutation(
+                    second_mutation,
+                    current={"source_id": "student-2", "phone": "D"},
+                ),
+            ],
+        },
+    )
+    first_operation = _rollback_operation(
+        first_mutation,
+        target_version=f"sha256:{parent.file_sha256}",
+    )
+    second_operation = _rollback_operation(
+        second_mutation,
+        target_version=f"sha256:{parent.file_sha256}",
+    )
+    executed: list[object] = []
+
+    async def get_checkpoint(_repository, *_args, **kwargs):
+        checkpoint_key = kwargs["checkpoint_key"]
+        if checkpoint_key.endswith(str(first_operation.id)):
+            return SimpleNamespace(
+                payload={
+                    "id": str(first_operation.id),
+                    "status": "conflict_skipped",
+                }
+            )
+        return None
+
+    async def save_checkpoint(_repository, *_args, **kwargs):
+        return SimpleNamespace(payload=kwargs["payload"])
+
+    async def current_target_version(_repository, _task_id):
+        return parent
+
+    async def execute(_service, **kwargs):
+        operation = kwargs["operations"][0]
+        executed.append(operation.id)
+        result = SimpleNamespace(
+            operation_id=operation.id,
+            status="succeeded",
+        )
+        return SimpleNamespace(
+            output_target_version=None,
+            by_operation={operation.id: result},
+        )
+
+    monkeypatch.setattr(AgentRuntimeRepository, "get_checkpoint", get_checkpoint)
+    monkeypatch.setattr(AgentRuntimeRepository, "save_checkpoint", save_checkpoint)
+    monkeypatch.setattr(
+        ExecutionRepository,
+        "current_target_version",
+        current_target_version,
+    )
+    monkeypatch.setattr(AgentExecutionService, "execute", execute)
+
+    fact = await CsvRollbackHandlers(output_root=tmp_path).execute_operation(
+        _Session(task, parent),  # type: ignore[arg-type]
+        _context(task_id),
+        second_operation.id,
+    )
+
+    assert fact["status"] == "succeeded"
+    assert executed == [second_operation.id]
 
 
 @pytest.mark.asyncio
