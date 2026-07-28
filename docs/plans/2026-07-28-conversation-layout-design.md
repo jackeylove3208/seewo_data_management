@@ -10,6 +10,9 @@ other business behavior.
 
 - The workspace must occupy the visible application area without making the outer page
   scroll.
+- On the conversation route, the application shell and workspace use the same dynamic
+  viewport height so mobile browser chrome cannot make the document taller than the
+  visible area.
 - The message stream remains vertically scrollable inside the conversation surface.
 - The task status rail stays top-aligned and never exceeds half of the viewport height;
   it scrolls internally when its content is longer.
@@ -30,6 +33,7 @@ other business behavior.
 
 - Desktop and mobile application shells remain viewport-contained.
 - On narrow screens, the task rail follows the existing stacked behavior.
+- The collapsed narrow-screen rail remains at least as tall as its header.
 - Composer and setting cards must remain within their containers without horizontal
   overflow.
 

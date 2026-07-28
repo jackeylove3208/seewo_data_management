@@ -51,6 +51,9 @@ describe("responsive analysis styles", () => {
       /\.workspace-main:has\(>\s*\.conversation-create-page\)\s*\{[^}]*height:\s*100dvh[^}]*overflow:\s*hidden/s,
     );
     expect(globalCss).toMatch(
+      /\.app-shell:has\(\.workspace-main\s*>\s*\.conversation-create-page\)\s*\{[^}]*height:\s*100dvh[^}]*min-height:\s*0[^}]*overflow:\s*hidden/s,
+    );
+    expect(globalCss).toMatch(
       /\.conversation-create-page\s*\{[^}]*height:\s*100%[^}]*min-height:\s*0[^}]*overflow:\s*hidden/s,
     );
     expect(globalCss).toMatch(
@@ -66,6 +69,9 @@ describe("responsive analysis styles", () => {
     expect(globalCss).toMatch(/\.conversation-messages\s*\{[^}]*overflow-y:\s*auto/s);
     expect(appleCss).toMatch(
       /\.conversation-workspace\s*>\s*\.task-status-rail\s*\{[^}]*align-self:\s*start[^}]*height:\s*auto[^}]*max-height:\s*min\(50dvh,\s*440px\)/s,
+    );
+    expect(appleCss).toMatch(
+      /\.conversation-workspace\s*>\s*\.task-status-rail\.is-collapsed\s*\{[^}]*max-height:\s*58px/s,
     );
   });
 

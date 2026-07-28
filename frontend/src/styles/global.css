@@ -184,6 +184,12 @@ button {
   min-height: 100vh;
 }
 
+.app-shell:has(.workspace-main > .conversation-create-page) {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .workspace-main {
   min-width: 0;
 }

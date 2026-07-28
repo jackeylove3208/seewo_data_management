@@ -13,6 +13,7 @@
 - Modify frontend presentation only; do not change API calls, state transitions, message sending, form values, or task behavior.
 - The visible conversation title is exactly `数据同步助手`.
 - The outer conversation page does not scroll; messages and an overlong task rail scroll internally.
+- The conversation route constrains the application shell and workspace to the same `100dvh`.
 - The desktop task rail is top-aligned and no taller than `min(50dvh, 440px)`.
 - External-sync fieldsets retain accessible names.
 
