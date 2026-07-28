@@ -173,7 +173,12 @@ _SYNC_TEMPLATES: dict[str, tuple[AllowedActionV1, ...]] = {
             sub_agent="reconciliation-analysis",
         ),
     ),
-    "resolve_identity_conflicts": (_action("enter_aggregate_risk", successor="aggregate_risk"),),
+    "resolve_identity_conflicts": (
+        _action(
+            "resume_analysis_after_identity_conflicts",
+            successor="analyze_actionable_batches",
+        ),
+    ),
     "aggregate_risk": (_action("aggregate_risk", successor="wait_high_risk_approvals"),),
     "wait_high_risk_approvals": (
         _action("compile_execution_plan", successor="compile_execution_plan"),
@@ -797,6 +802,15 @@ class ProductionGraphCandidateProvider:
         *,
         repair: bool = False,
     ) -> tuple[AllowedActionV1, ...]:
+        if not repair:
+            unresolved = await session.scalar(
+                select(AgentClarificationRecord.id).where(
+                    AgentClarificationRecord.run_id == context.run_id,
+                    AgentClarificationRecord.status.in_(("pending", "interpreted")),
+                )
+            )
+            if unresolved is not None:
+                return (_template(context, "resolve_identity_conflicts"),)
         batches = tuple(
             await session.scalars(
                 select(AgentModelBatchRecord)
@@ -841,18 +855,7 @@ class ProductionGraphCandidateProvider:
             return (actions[0],)
         if repair:
             raise RuntimeError("analysis repair node has no pending batch")
-        unresolved = await session.scalar(
-            select(AgentClarificationRecord.id).where(
-                AgentClarificationRecord.run_id == context.run_id,
-                AgentClarificationRecord.status.in_(("pending", "interpreted")),
-            )
-        )
-        return (
-            _template(
-                context,
-                "resolve_identity_conflicts" if unresolved is not None else "enter_aggregate_risk",
-            ),
-        )
+        return (_template(context, "enter_aggregate_risk"),)
 
 
 def _template(context: GraphWorkContext, action_id: str) -> AllowedActionV1:
@@ -981,6 +984,11 @@ def _rejected_guard_code(
             else "input_contract_invalid"
         )
     if node == "analyze_actionable_batches":
+        if (
+            "resolve_identity_conflicts" in passed_kinds
+            and action_kind != "resolve_identity_conflicts"
+        ):
+            return "identity_conflict_pending"
         return {
             "analyze_next_batch": "no_pending_analysis_batch",
             "repair_analysis_batch": "no_repairable_analysis_batch",

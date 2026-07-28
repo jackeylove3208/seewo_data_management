@@ -136,7 +136,10 @@ SYNC_GRAPH_V1 = GraphDefinitionV1(
         _node(
             "resolve_identity_conflicts",
             GraphNodeKind.SUB_AGENT,
-            ("enter_aggregate_risk", "aggregate_risk"),
+            (
+                "resume_analysis_after_identity_conflicts",
+                "analyze_actionable_batches",
+            ),
         ),
         _node(
             "aggregate_risk",
