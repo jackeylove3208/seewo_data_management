@@ -124,6 +124,7 @@ describe("manual Agent data sync", () => {
     await user.click(screen.getByRole("button", { name: "手动同步" }));
 
     expect(container.querySelectorAll(".sync-setting-card")).toHaveLength(4);
+    expect(container.querySelectorAll(".sync-setting-title")).toHaveLength(3);
     expect(screen.getByLabelText("同步任务名称")).toBeInTheDocument();
     expect(screen.getByLabelText("三方系统连接方式")).toBeInTheDocument();
     expect(screen.getByLabelText("希沃魔方连接方式")).toBeInTheDocument();
