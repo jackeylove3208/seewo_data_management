@@ -169,6 +169,11 @@ test("reveals only manual external data sync after explicit selection", async ({
   await expect(
     target.getByRole("option", { name: "seewo/current.csv" }),
   ).toBeAttached();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    ),
+  ).toBe(false);
 });
 
 test("keeps new conversation focused on agent chat", async ({ page }) => {
@@ -183,7 +188,8 @@ test("keeps new conversation focused on agent chat", async ({ page }) => {
   } }));
   await page.goto("/conversations/new");
 
-  await expect(page.getByRole("heading", { name: "新建对话" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "新建对话" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "开启新对话" })).toBeVisible();
   await page.getByLabel("对账目标").fill("只核对七年级的老师和学生");
   await page.getByRole("button", { name: "发送" }).click();
   await expect(page.getByText(/已记录.*同步需求/)).toBeVisible();

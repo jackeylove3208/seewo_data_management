@@ -3265,6 +3265,14 @@ body {
   min-height: calc(100dvh - 56px);
 }
 
+.conversation-page-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-height: 36px;
+  margin-bottom: 10px;
+}
+
 .conversation-page-heading,
 .sync-page-heading {
   display: grid;
@@ -3339,8 +3347,8 @@ body {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   min-height: 520px;
-  height: calc(100dvh - 170px);
-  max-height: 820px;
+  height: calc(100dvh - 116px);
+  max-height: 874px;
   margin-bottom: 24px;
 }
 
@@ -4012,6 +4020,57 @@ body {
   gap: 14px 18px;
 }
 
+.sync-settings-grid {
+  align-items: stretch;
+}
+
+.draft-field.sync-setting-card,
+.draft-fieldset.sync-setting-card {
+  display: flex;
+  min-width: 0;
+  min-height: 164px;
+  margin: 0;
+  padding: 16px;
+  flex-direction: column;
+  gap: 9px;
+  border: 1px solid var(--v2-line);
+  border-radius: 10px;
+  background: var(--v2-surface-muted);
+}
+
+.draft-fieldset.sync-setting-card legend {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+.draft-field.sync-setting-card > input,
+.draft-fieldset.sync-setting-card > select,
+.sync-setting-card .sync-attachment {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.sync-setting-card select {
+  height: 40px;
+  padding: 0 32px 0 11px;
+  overflow: hidden;
+  border: 1px solid var(--v2-line-strong);
+  border-radius: 5px;
+  color: var(--v2-ink);
+  background: #fff;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sync-setting-card .connector-capability-note,
+.sync-setting-card .connector-error {
+  overflow-wrap: anywhere;
+}
+
 .sync-attachment {
   min-height: 88px;
   padding: 14px;
@@ -4186,8 +4245,12 @@ body {
 
   .conversation-surface {
     min-height: 400px;
-    height: calc(100dvh - 130px);
+    height: calc(100dvh - 88px);
     max-height: none;
+  }
+
+  .conversation-page-actions {
+    margin-bottom: 8px;
   }
 
   .conversation-page-heading,
@@ -4250,6 +4313,11 @@ body {
   .sync-settings-grid,
   .draft-data-summary {
     grid-template-columns: 1fr;
+  }
+
+  .draft-field.sync-setting-card,
+  .draft-fieldset.sync-setting-card {
+    min-height: 0;
   }
 
   .sync-method {

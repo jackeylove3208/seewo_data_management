@@ -52,8 +52,9 @@ describe("backend Agent conversation", () => {
       createConversation: vi.fn().mockReturnValue(new Promise(() => undefined)),
     })} />);
 
-    expect(screen.getByRole("heading", { name: "新建对话" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "新建对话" })).not.toBeInTheDocument();
     expect(screen.getByRole("region", { name: "新建对话" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "开启新对话" })).toBeInTheDocument();
     expect(screen.getByRole("complementary", { name: "任务处理状态" })).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "任务草案" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("任务名称")).not.toBeInTheDocument();
@@ -868,6 +869,7 @@ describe("backend Agent conversation", () => {
     await user.type(screen.getByLabelText("对账目标"), "再同步一次教师数据");
     await user.click(screen.getByRole("button", { name: "发送" }));
     expect(await screen.findByRole("button", { name: "确认开始同步" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Agent 任务进度")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "确认开始同步" }));
 
     expect(sendMessage).toHaveBeenCalledWith(

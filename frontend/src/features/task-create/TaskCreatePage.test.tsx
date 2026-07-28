@@ -114,6 +114,22 @@ describe("manual Agent data sync", () => {
     expect(screen.getByRole("checkbox", { name: "教师" })).toBeChecked();
   });
 
+  it("renders the four manual settings as aligned setting cards", async () => {
+    const user = userEvent.setup();
+    const { container } = renderPage({
+      startManualTask: vi.fn(),
+      localSources: vi.fn().mockResolvedValue([]),
+    });
+
+    await user.click(screen.getByRole("button", { name: "手动同步" }));
+
+    expect(container.querySelectorAll(".sync-setting-card")).toHaveLength(4);
+    expect(screen.getByLabelText("同步任务名称")).toBeInTheDocument();
+    expect(screen.getByLabelText("三方系统连接方式")).toBeInTheDocument();
+    expect(screen.getByLabelText("希沃魔方连接方式")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "同步对象" })).toBeInTheDocument();
+  });
+
   it("uploads authority evidence but sends the writable original target to the Agent task API", async () => {
     const user = userEvent.setup();
     const startManualTask = vi.fn().mockResolvedValue({

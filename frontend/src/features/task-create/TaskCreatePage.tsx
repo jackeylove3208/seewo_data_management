@@ -226,12 +226,12 @@ export function TaskCreatePage({
       {syncMethod === "manual" && (
         <section className="manual-sync-form" aria-label="手动同步配置">
           <div className="sync-settings-grid">
-            <label className="draft-field"><span>任务名称</span><input aria-label="同步任务名称" disabled={isSubmitting} value={draft.title} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} /></label>
+            <label className="draft-field sync-setting-card"><span>任务名称</span><input aria-label="同步任务名称" disabled={isSubmitting} value={draft.title} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} /></label>
             {(["source", "target"] as const).map((role) => {
               const connector = draft[role];
               const label = role === "source" ? "三方系统" : "希沃魔方";
               return (
-                <fieldset className="draft-fieldset" key={role}>
+                <fieldset className="draft-fieldset sync-setting-card" key={role}>
                   <legend>{label}连接方式</legend>
                   <select aria-label={`${label}连接方式`} disabled={isSubmitting} value={connector?.kind ?? (role === "target" ? "local" : "csv")} onChange={(event) => setConnectorKind(role, event.target.value as ManualConnectorKind)}>
                     {role === "source" && <option value="csv">上传 CSV 副本</option>}
@@ -275,7 +275,7 @@ export function TaskCreatePage({
                 </fieldset>
               );
             })}
-            <fieldset className="draft-fieldset entity-checks"><legend>同步对象</legend><div className="draft-entity-grid">{entityTypes.map((entityType) => <Checkbox key={entityType} aria-label={entityLabels[entityType]} checked={draft.entityTypes.includes(entityType)} disabled={isSubmitting} onChange={(event) => toggleType(entityType, event.target.checked)}>{entityLabels[entityType]}</Checkbox>)}</div><button className="text-button" type="button" disabled={isSubmitting} onClick={() => setDraft((current) => ({ ...current, entityTypes: [] }))}>清空选择</button></fieldset>
+            <fieldset className="draft-fieldset entity-checks sync-setting-card"><legend>同步对象</legend><div className="draft-entity-grid">{entityTypes.map((entityType) => <Checkbox key={entityType} aria-label={entityLabels[entityType]} checked={draft.entityTypes.includes(entityType)} disabled={isSubmitting} onChange={(event) => toggleType(entityType, event.target.checked)}>{entityLabels[entityType]}</Checkbox>)}</div><button className="text-button" type="button" disabled={isSubmitting} onClick={() => setDraft((current) => ({ ...current, entityTypes: [] }))}>清空选择</button></fieldset>
           </div>
           {submitError && <Alert className="draft-error" type="error" showIcon message={submitError} />}
           <Button className="sync-start-button" type="primary" size="large" loading={isSubmitting} disabled={!ready || isSubmitting} onClick={() => void createTask()}>开始同步</Button>

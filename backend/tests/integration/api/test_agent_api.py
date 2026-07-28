@@ -1011,7 +1011,7 @@ def test_started_conversation_does_not_restore_confirmation_after_task_failure(
     assert current.json()["start_confirmation"] is None
 
 
-def test_terminal_conversation_restores_the_next_start_confirmation(
+def test_terminal_conversation_hides_the_old_task_and_restores_the_next_confirmation(
     agent_client: TestClient,
     tmp_path: Path,
 ) -> None:
@@ -1061,6 +1061,7 @@ def test_terminal_conversation_restores_the_next_start_confirmation(
             assert lock is not None
             task.status = "completed"
             run.status = "completed"
+            run.updated_at = datetime.now(UTC)
             lock.active = False
             await session.commit()
 
@@ -1074,7 +1075,7 @@ def test_terminal_conversation_restores_the_next_start_confirmation(
     current = agent_client.get("/api/agent/conversations/current")
 
     assert current.status_code == 200, current.text
-    assert current.json()["task"]["status"] == "completed"
+    assert current.json()["task"] is None
     assert current.json()["start_confirmation"] == {
         "title": "本地学生同步",
         "summary": "已确认两份本地数据。",
