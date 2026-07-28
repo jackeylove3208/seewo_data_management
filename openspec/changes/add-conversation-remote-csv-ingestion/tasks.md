@@ -22,20 +22,20 @@
 
 ## 4. MCP and remote source-understanding Skill
 
-- [ ] 4.1 Add bounded materialized-source profile/page resources to the CSV mapping evidence manifest and retain forbidden URL argument checks
-- [ ] 4.2 Add and validate `understand-remote-organization-source@1.0.0` with fixed CSV mapping contracts and allowed read-only MCP tools
-- [ ] 4.3 Route ambiguous remote CSV mappings to the new Skill, keep known headers deterministic, and validate all returned references and normalizers
-- [ ] 4.4 Add Skill, tool-authorization, prompt-injection, tokenization, and invalid-output tests
+- [x] 4.1 Add bounded materialized-source profile/page resources to the CSV mapping evidence manifest and retain forbidden URL argument checks
+- [x] 4.2 Add and validate `understand-remote-organization-source@1.0.0` with fixed CSV mapping contracts and allowed read-only MCP tools
+- [x] 4.3 Route ambiguous remote CSV mappings to the new Skill, keep known headers deterministic, and validate all returned references and normalizers
+- [x] 4.4 Add Skill, tool-authorization, prompt-injection, tokenization, and invalid-output tests
 
 ## 5. API and UI behavior
 
 - [x] 5.1 Add conversation API tests for one link, no link, multiple/invalid links, sanitization, source confirmation, and task creation
 - [x] 5.2 Add manual API regression tests proving forged URL and `remote_csv` requests fail before task/run/lock creation
-- [ ] 5.3 Update conversation API types and presentation to display only the cleaned remote origin; leave manual-sync UI and API types unchanged
-- [ ] 5.4 Add frontend unit and Playwright coverage for link-triggered conversation confirmation and absence of manual link controls
+- [x] 5.3 Update conversation API types and presentation to display only the cleaned remote origin; leave manual-sync UI and API types unchanged
+- [x] 5.4 Add frontend unit and Playwright coverage for link-triggered conversation confirmation and absence of manual link controls
 
 ## 6. Verification and documentation
 
-- [ ] 6.1 Run focused backend and frontend tests after each TDD cycle and update this checklist with completed work
-- [ ] 6.2 Run backend pytest, Ruff, mypy, frontend tests, lint, typecheck, build, migration smoke test, and strict OpenSpec validation
-- [ ] 6.3 Update connector/runtime documentation with the conversation-only remote CSV contract, safe limits, operator errors, and deployment flag
+- [x] 6.1 Run focused backend and frontend tests after each TDD cycle and update this checklist with completed work
+- [x] 6.2 Run backend pytest, Ruff, mypy, frontend tests, lint, typecheck, build, migration smoke test, and strict OpenSpec validation
+- [x] 6.3 Update connector/runtime documentation with the conversation-only remote CSV contract, safe limits, operator errors, and deployment flag
