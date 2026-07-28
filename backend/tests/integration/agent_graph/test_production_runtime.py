@@ -1,9 +1,11 @@
+import hashlib
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+import anyio
 import pytest
 from sqlalchemy import select
 
@@ -30,6 +32,7 @@ from app.connectors.configured import (
     DatabaseConnectorConfiguration,
     InMemoryConnectorStore,
 )
+from app.core.config import Settings
 from app.models.agent_analysis import (
     AgentGovernancePlanRecord,
     AgentInputRecord,
@@ -44,8 +47,11 @@ from app.models.agent_graph import (
 from app.models.agent_runtime import SchoolTaskLockRecord
 from app.models.executions import TargetVersionRecord
 from app.models.reconciliation import ReconciliationTask
+from app.models.remote_sources import RemoteSourceRecord
 from app.models.reporting import AgentReportRecord
 from app.models.snapshots import Snapshot, SourceFile
+from app.remote_sources.materializer import RemoteSourceMaterializer
+from app.remote_sources.network import DownloadedRemoteCsv, RemoteSourceFailure
 from app.repositories.agent_analysis import AgentAnalysisRepository
 from app.repositories.executions import ExecutionRepository
 from app.schemas.agent_ingestion import (
@@ -78,6 +84,34 @@ class VersionDriftingConnector(ConfiguredApiConnector):
 
     async def version(self) -> ConnectorVersion:
         return ConnectorVersion(value=next(self._versions, "v2"))
+
+
+class RemoteCsvDownloadStub:
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+        self.calls = 0
+
+    async def download(self, url: str, destination: Path) -> DownloadedRemoteCsv:
+        del url
+        self.calls += 1
+        await anyio.Path(destination.parent).mkdir(parents=True, exist_ok=True)
+        await anyio.Path(destination).write_bytes(self.body)
+        return DownloadedRemoteCsv(
+            path=destination,
+            content_sha256=hashlib.sha256(self.body).hexdigest(),
+            size_bytes=len(self.body),
+            media_type="text/csv",
+            detected_encoding="utf-8",
+        )
+
+
+class FailingRemoteCsvDownloadStub:
+    async def download(self, url: str, destination: Path) -> DownloadedRemoteCsv:
+        del url, destination
+        raise RemoteSourceFailure(
+            "remote_source_timeout",
+            "第三方数据请求超时，请稍后重试。",
+        )
 
 
 class InvalidManifestResourceProvider:
@@ -519,6 +553,222 @@ async def _sql_ingestion_v2_context(database) -> GraphWorkContext:
                 ingestion_contract_version=run.ingestion_contract_version,
                 execution_contract_version=run.execution_contract_version,
             )
+
+
+async def _remote_materialization_context(
+    database,
+) -> tuple[GraphWorkContext, UUID]:
+    async with database.session_factory() as session:
+        async with session.begin():
+            conversation = await AgentRuntimeRepository(session).create_conversation(
+                tenant_id="school-remote-materialization",
+                created_by="operator-1",
+            )
+            task = ReconciliationTask(
+                tenant_id="school-remote-materialization",
+                scope_id="all",
+                snapshot_mode="full",
+                entity_types=["student"],
+                status="running",
+                stage="ingestion",
+                workflow_version="agent-graph-v1",
+                agent_intent={
+                    "source": {"kind": "remote_csv"},
+                    "target": {"kind": "local", "source_ref": "seewo/roster.csv"},
+                },
+                idempotency_key=str(uuid4()),
+                request_hash=uuid4().hex * 2,
+            )
+            session.add(task)
+            await session.flush()
+            remote = RemoteSourceRecord(
+                tenant_id=task.tenant_id,
+                created_by="operator-1",
+                conversation_id=conversation.id,
+                task_id=task.id,
+                original_url="https://data.example.test/roster.csv?secret=value",
+                display_origin="data.example.test",
+                state="registered",
+            )
+            session.add(remote)
+            run = await AgentRuntimeRepository(session).create_run(
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                conversation_id=conversation.id,
+                kind=AgentRunKind.SYNC,
+                workflow_version="agent-graph-v1",
+                ingestion_contract_version="source-ingestion-v2",
+                execution_contract_version="deterministic-execution-v2",
+            )
+            graph = await AgentGraphRepository(session).create_run_state(
+                run_id=run.id,
+                graph_version="agent-sync-graph-v2",
+                initial_node="materialize_sources",
+            )
+            await session.flush()
+            return (
+                GraphWorkContext(
+                    worker_id="remote-materialization-worker",
+                    run_id=run.id,
+                    task_id=task.id,
+                    tenant_id=task.tenant_id,
+                    graph_run_id=graph.id,
+                    graph_version=graph.graph_version,
+                    current_node=graph.current_node,
+                    graph_cursor=graph.cursor,
+                    attempt_count=run.attempt_count,
+                    lease_token=uuid4(),
+                    ingestion_contract_version=run.ingestion_contract_version,
+                    execution_contract_version=run.execution_contract_version,
+                ),
+                remote.id,
+            )
+
+
+@pytest.mark.asyncio
+async def test_remote_materialization_action_publishes_only_task_bound_authority(
+    database,
+    tmp_path: Path,
+) -> None:
+    context, remote_source_id = await _remote_materialization_context(database)
+    plan = await ProductionGraphCandidateProvider(database.session_factory)(context)
+    actions = [
+        item.action
+        for item in plan.candidate_evaluations
+        if item.passed
+    ]
+    assert len(actions) == 1
+    action = actions[0]
+    assert action.action_id == "materialize_remote_authority"
+    assert action.resource_ids == (f"remote-source:{remote_source_id}",)
+
+    downloader = RemoteCsvDownloadStub(b"id,name\nS001,Student\n")
+    settings = Settings(upload_root=tmp_path / "uploads")
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=ModelMustNotRun(),
+        tokenization_secret="test-tokenization-secret",
+        settings=settings,
+        remote_materializer=RemoteSourceMaterializer(
+            settings,
+            downloader=downloader,
+        ),
+    )
+    outcome = await executor(context, action)
+
+    assert outcome.action_id == "materialize_remote_authority"
+    assert outcome.evidence_refs == (
+        f"remote-source:{remote_source_id}:materialized",
+    )
+    assert downloader.calls == 1
+    async with database.session_factory() as session:
+        remote = await session.get(RemoteSourceRecord, remote_source_id)
+        source = await session.scalar(
+            select(SourceFile).where(
+                SourceFile.task_id == context.task_id,
+                SourceFile.source_role == "authoritative",
+            )
+        )
+        assert remote is not None and remote.state == "ready"
+        assert source is not None
+        assert "secret=value" not in str(source.__dict__)
+
+    # Simulate a crash after materialization committed but before the graph transition.
+    async with database.session_factory() as session:
+        async with session.begin():
+            runtime = AgentRuntimeRepository(session)
+            run = await runtime.get_run(context.run_id, for_update=True)
+            assert run is not None
+            run.phase = AgentPhase.INGEST_AND_NORMALIZE.value
+            run.status = "running"
+            await runtime.acquire_school_lock(
+                tenant_id=context.tenant_id,
+                task_id=context.task_id,
+                run_id=context.run_id,
+            )
+    worker = AgentGraphWorker(
+        database.session_factory,
+        worker_id="remote-materialization-worker-retry",
+        lease_seconds=60,
+        supervisor=ModelMustNotRun(),
+        candidate_provider=ProductionGraphCandidateProvider(
+            database.session_factory
+        ),
+        executor=executor,
+    )
+
+    assert await worker.run_once() is True
+    assert downloader.calls == 1
+    async with database.session_factory() as session:
+        graph = await AgentGraphRepository(session).get_run_state(
+            context.graph_run_id
+        )
+        assert graph is not None
+        assert graph.current_node == "inspect_sources"
+        assert graph.cursor == 1
+
+
+@pytest.mark.asyncio
+async def test_remote_materialization_failure_stops_before_source_inspection(
+    database,
+    tmp_path: Path,
+) -> None:
+    context, remote_source_id = await _remote_materialization_context(database)
+    async with database.session_factory() as session:
+        async with session.begin():
+            runtime = AgentRuntimeRepository(session)
+            run = await runtime.get_run(context.run_id, for_update=True)
+            assert run is not None
+            run.phase = AgentPhase.INGEST_AND_NORMALIZE.value
+            run.status = "running"
+            await runtime.acquire_school_lock(
+                tenant_id=context.tenant_id,
+                task_id=context.task_id,
+                run_id=context.run_id,
+            )
+    settings = Settings(upload_root=tmp_path / "uploads")
+    worker = AgentGraphWorker(
+        database.session_factory,
+        worker_id="remote-materialization-failure-worker",
+        lease_seconds=60,
+        supervisor=ModelMustNotRun(),
+        candidate_provider=ProductionGraphCandidateProvider(
+            database.session_factory
+        ),
+        executor=ProductionGraphActionExecutor(
+            database.session_factory,
+            provider=ModelMustNotRun(),
+            tokenization_secret="test-tokenization-secret",
+            settings=settings,
+            remote_materializer=RemoteSourceMaterializer(
+                settings,
+                downloader=FailingRemoteCsvDownloadStub(),
+            ),
+        ),
+    )
+
+    assert await worker.run_once() is True
+    async with database.session_factory() as session:
+        graph = await AgentGraphRepository(session).get_run_state(
+            context.graph_run_id
+        )
+        task = await session.get(ReconciliationTask, context.task_id)
+        remote = await session.get(RemoteSourceRecord, remote_source_id)
+        authority = await session.scalar(
+            select(SourceFile).where(
+                SourceFile.task_id == context.task_id,
+                SourceFile.source_role == "authoritative",
+            )
+        )
+        assert graph is not None and graph.current_node == "materialize_sources"
+        assert graph.status == "failed"
+        assert task is not None
+        assert task.error is not None
+        assert task.error["code"] == "remote_source_timeout"
+        assert remote is not None and remote.state == "failed"
+        assert authority is None
+        assert "https://" not in str(task.error)
+        assert "secret=value" not in str(task.error)
 
 
 def _sql_test_connector(

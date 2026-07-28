@@ -165,6 +165,14 @@ class AgentTaskService:
                 raise AgentConnectorCapabilityFailure(
                     "Remote CSV sources require a conversation"
                 )
+            if (
+                self.settings is None
+                or not self.settings.agent_graph_enabled
+                or not self.settings.source_ingestion_v2_enabled
+            ):
+                raise AgentConnectorCapabilityFailure(
+                    "Remote CSV graph ingestion is disabled"
+                )
             return
         if source_kind == "database" and target_kind == "database":
             self._validate_database_pair(intent)

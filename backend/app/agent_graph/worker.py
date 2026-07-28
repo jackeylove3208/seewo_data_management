@@ -36,6 +36,7 @@ from app.ai.graph_subagents import GraphSubAgentFailure
 from app.ai.graph_supervisor import GraphSupervisorAgent, GraphSupervisorFailure
 from app.models.agent_runtime import SchoolTaskLockRecord
 from app.models.reconciliation import ReconciliationTask
+from app.remote_sources.network import RemoteSourceFailure
 
 
 class AgentGraphLeaseLost(RuntimeError):
@@ -704,11 +705,17 @@ class AgentGraphWorker:
         context: GraphWorkContext,
         error: Exception,
     ) -> None:
-        code = "agent_action_contract_error"
-        message = (
-            "当前阶段的服务端数据合同未通过校验，系统已停止自动重试。"
-            "系统已停止继续处理，请查看失败记录后重新发起任务。"
-        )
+        if isinstance(error, RemoteSourceFailure):
+            code = error.code
+            message = error.safe_message
+            release_reason = "remote_source_failure"
+        else:
+            code = "agent_action_contract_error"
+            message = (
+                "当前阶段的服务端数据合同未通过校验，系统已停止自动重试。"
+                "系统已停止继续处理，请查看失败记录后重新发起任务。"
+            )
+            release_reason = "action_contract_error"
         async with self._session_factory() as session:
             async with session.begin():
                 runtime = AgentRuntimeRepository(session)
@@ -766,7 +773,7 @@ class AgentGraphWorker:
                 await runtime.release_school_lock(
                     tenant_id=context.tenant_id,
                     run_id=context.run_id,
-                    reason="action_contract_error",
+                    reason=release_reason,
                 )
                 await runtime.release_run_claim(
                     run.id,
@@ -883,6 +890,7 @@ def _is_non_retryable_database_error(error: DBAPIError) -> bool:
 
 def _coarse_phase(node: str) -> AgentPhase:
     if node in {
+        "materialize_sources",
         "inspect_sources",
         "normalize_input_batches",
         "validate_input_contract",

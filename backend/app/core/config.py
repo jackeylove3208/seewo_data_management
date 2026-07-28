@@ -227,6 +227,10 @@ class Settings(BaseSettings):
             )
         if self.source_ingestion_v2_enabled and not self.agent_graph_enabled:
             raise ValueError("agent_graph_enabled is required for source_ingestion_v2_enabled")
+        if self.conversation_remote_csv_enabled and not self.source_ingestion_v2_enabled:
+            raise ValueError(
+                "source_ingestion_v2_enabled is required for conversation remote CSV"
+            )
         if self.agent_graph_sql_execution_enabled and not self.agent_graph_enabled:
             raise ValueError(
                 "agent_graph_enabled is required for agent_graph_sql_execution_enabled"

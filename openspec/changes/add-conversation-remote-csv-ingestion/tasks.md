@@ -15,10 +15,10 @@
 
 ## 3. Versioned graph integration
 
-- [ ] 3.1 Add `agent-sync-graph-v2` with `materialize_sources` while preserving sync v1 and rollback graph definitions
-- [ ] 3.2 Route only conversation remote-source tasks to graph v2 and record the initial materialization transition after school-lock acquisition
-- [ ] 3.3 Add candidate selection and deterministic `materialize_remote_authority` execution with checkpoint/idempotency evidence
-- [ ] 3.4 Add graph worker recovery tests for success, safe failure, interrupted publication, and unchanged historical graph behavior
+- [x] 3.1 Add `agent-sync-graph-v2` with `materialize_sources` while preserving sync v1 and rollback graph definitions
+- [x] 3.2 Route only conversation remote-source tasks to graph v2 and record the initial materialization transition after school-lock acquisition
+- [x] 3.3 Add candidate selection and deterministic `materialize_remote_authority` execution with checkpoint/idempotency evidence
+- [x] 3.4 Add graph worker recovery tests for success, safe failure, interrupted publication, and unchanged historical graph behavior
 
 ## 4. MCP and remote source-understanding Skill
 
