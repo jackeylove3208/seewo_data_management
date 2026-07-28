@@ -17,10 +17,11 @@ class AgentEntityType(StrEnum):
 class AgentConnectorSelection(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["csv", "api", "database", "local"]
+    kind: Literal["csv", "api", "database", "local", "remote_csv"]
     upload_id: UUID | None = None
     configuration_id: str | None = Field(default=None, min_length=1, max_length=128)
     source_ref: str | None = Field(default=None, min_length=1, max_length=512)
+    remote_source_id: UUID | None = None
 
     @model_validator(mode="after")
     def validate_reference(self) -> "AgentConnectorSelection":
@@ -29,6 +30,7 @@ class AgentConnectorSelection(BaseModel):
                 self.upload_id is None
                 or self.configuration_id is not None
                 or self.source_ref is not None
+                or self.remote_source_id is not None
             ):
                 raise ValueError("CSV connector requires only upload_id")
         elif self.kind == "local":
@@ -36,12 +38,22 @@ class AgentConnectorSelection(BaseModel):
                 self.source_ref is None
                 or self.upload_id is not None
                 or self.configuration_id is not None
+                or self.remote_source_id is not None
             ):
                 raise ValueError("local connector requires only source_ref")
+        elif self.kind == "remote_csv":
+            if (
+                self.remote_source_id is None
+                or self.upload_id is not None
+                or self.configuration_id is not None
+                or self.source_ref is not None
+            ):
+                raise ValueError("remote CSV connector requires only remote_source_id")
         elif (
             self.configuration_id is None
             or self.upload_id is not None
             or self.source_ref is not None
+            or self.remote_source_id is not None
         ):
             raise ValueError("configured connector requires only configuration_id")
         return self
@@ -75,11 +87,22 @@ class AgentMessageRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
 
 
+class AgentConnectorView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["csv", "api", "database", "local", "remote_csv"]
+    upload_id: UUID | None = None
+    configuration_id: str | None = None
+    source_ref: str | None = None
+    remote_source_id: UUID | None = None
+    display_origin: str | None = None
+
+
 class AgentIntentView(BaseModel):
     title: str
     entity_types: tuple[AgentEntityType, ...]
-    source: AgentConnectorSelection | None = None
-    target: AgentConnectorSelection | None = None
+    source: AgentConnectorView | None = None
+    target: AgentConnectorView | None = None
 
 
 class AgentStartConfirmation(BaseModel):
@@ -89,6 +112,7 @@ class AgentStartConfirmation(BaseModel):
 
 
 class AgentMessageResponse(BaseModel):
+    accepted_message: str
     message: str
     intent: AgentIntentView
     start_confirmation: AgentStartConfirmation | None = None

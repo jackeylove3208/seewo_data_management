@@ -42,6 +42,17 @@ NEW_AGENT_SKILLS = {
         "希沃",
         "不得生成第七个字段",
     ),
+    "understand-remote-organization-source": (
+        "固定六字段",
+        "已物化",
+        "source_field_ref",
+        "normalizer_id",
+        "五十",
+        "URL",
+        "网络",
+        "提示注入",
+        "不得生成第七个字段",
+    ),
     "understand-organization-database-schema": (
         "PostgreSQL",
         "MySQL",
@@ -179,6 +190,20 @@ def test_rollback_assessment_skill_uses_current_data_not_version_as_the_gate() -
         "保留无关字段",
     ):
         assert term in skill.instructions
+
+
+def test_remote_source_understanding_skill_has_only_bounded_read_tools() -> None:
+    skill = SkillRegistry().load(
+        "understand-remote-organization-source",
+        "1.0.0",
+    )
+
+    assert set(skill.allowed_tools) == {
+        "inspect_configured_source",
+        "read_connector_page",
+    }
+    assert skill.input_schema == "CsvSchemaMappingInput"
+    assert skill.output_schema == "CsvSchemaMappingOutput"
 
 
 def test_rollback_assessment_contract_distinguishes_no_write_from_restore() -> None:

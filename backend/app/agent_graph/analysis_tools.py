@@ -1,5 +1,6 @@
 """Server-owned evidence tools for graph CSV ingestion and reconciliation."""
 
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,13 @@ _ALLOWED_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
     "authority_invalid": ("skip",),
     "identity_conflict": ("delete", "retain", "update"),
 }
+_SOURCE_PAGE_SIZE = 50
+_PHONE_VALUE_PATTERN = re.compile(r"(?<!\d)1\d{10}(?!\d)")
+_EMAIL_VALUE_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9._%+-])"
+    r"([A-Za-z0-9._%+-])([A-Za-z0-9._%+-]*)@([A-Za-z0-9.-]+\.[A-Za-z]{2,})"
+    r"(?![A-Za-z0-9.-])"
+)
 
 
 class _InputMarkSubmission(BaseModel):
@@ -109,8 +117,11 @@ class GraphAnalysisEvidenceTools:
                 _snapshot, source = await self._source(role)
                 inspection = inspect_csv(source_path(source))
                 frame = read_csv_frame(source_path(source), inspection)
-                for raw in frame.slice((page - 1) * 50, 50).to_dicts():
-                    self._tokenize_student_phone(raw)
+                for raw in frame.slice(
+                    (page - 1) * _SOURCE_PAGE_SIZE,
+                    _SOURCE_PAGE_SIZE,
+                ).to_dicts():
+                    self._preissue_protected_value_tokens(raw)
                 continue
             if resource_id.startswith("work-item:"):
                 work = await self._work_item(resource_id)
@@ -161,13 +172,14 @@ class GraphAnalysisEvidenceTools:
         limit = arguments.get("limit", 50)
         if not isinstance(limit, int) or not 1 <= limit <= 50:
             raise ValueError("connector page limit must be between one and fifty")
+        expected_offset = (page - 1) * _SOURCE_PAGE_SIZE
         page_locator = arguments.get("page_locator")
         if page_locator is not None:
             if not isinstance(page_locator, str) or not page_locator.isdecimal():
                 raise ValueError("connector page locator is invalid")
-            offset = int(page_locator)
-        else:
-            offset = (page - 1) * limit
+            if int(page_locator) != expected_offset:
+                raise ValueError("connector page locator is outside its manifest resource")
+        offset = expected_offset
         rows = frame.slice(offset, limit).to_dicts()
         safe_records: list[dict[str, Any]] = []
         for raw in rows:
@@ -175,7 +187,11 @@ class GraphAnalysisEvidenceTools:
             safe_records.append(
                 {
                     "locator": f"csv:{row_number}",
-                    "fields": self._tokenize_student_phone(raw),
+                    "fields": (
+                        self._protect_remote_mapping_evidence(raw)
+                        if context.action_id == "resolve_csv_fixed_field_mapping"
+                        else self._tokenize_student_phone(raw)
+                    ),
                 }
             )
         next_offset = offset + len(rows)
@@ -527,6 +543,41 @@ class GraphAnalysisEvidenceTools:
                 )
             else:
                 safe[key] = value
+        return safe
+
+    def _preissue_protected_value_tokens(self, raw: Mapping[str, object]) -> None:
+        for value in raw.values():
+            if value in {None, ""}:
+                continue
+            for phone in _PHONE_VALUE_PATTERN.findall(str(value)):
+                self._tokenizer.tokenize(phone, entity_kind="student")
+
+    def _protect_remote_mapping_evidence(
+        self,
+        raw: Mapping[str, object],
+    ) -> dict[str, object]:
+        safe: dict[str, object] = {}
+        phone_aliases = {"phone", "电话", "手机号"}
+        for key, value in raw.items():
+            text = str(value) if value not in {None, ""} else None
+            if key.strip().casefold() in {item.casefold() for item in phone_aliases}:
+                safe[key] = self._tokenizer.tokenize(text, entity_kind="student")
+                continue
+            if text is None:
+                safe[key] = value
+                continue
+            protected = _PHONE_VALUE_PATTERN.sub(
+                lambda match: self._tokenizer.tokenize(
+                    match.group(0),
+                    entity_kind="student",
+                )
+                or "",
+                text,
+            )
+            safe[key] = _EMAIL_VALUE_PATTERN.sub(
+                lambda match: f"{match.group(1)}***@{match.group(3)}",
+                protected,
+            )
         return safe
 
     def _require_context(self, context: GraphToolContext) -> None:

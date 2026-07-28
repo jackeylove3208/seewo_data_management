@@ -32,10 +32,12 @@ export interface AgentIntent {
 }
 
 export interface AgentConnectorSelection {
-  kind: "csv" | "api" | "database" | "local";
+  kind: "csv" | "api" | "database" | "local" | "remote_csv";
   upload_id?: string;
   configuration_id?: string;
   source_ref?: string;
+  remote_source_id?: string;
+  display_origin?: string;
 }
 
 export interface AgentStartConfirmation {
@@ -45,6 +47,7 @@ export interface AgentStartConfirmation {
 }
 
 export interface AgentMessageResponse {
+  accepted_message: string;
   message: string;
   intent: AgentIntent;
   start_confirmation?: AgentStartConfirmation;
@@ -344,11 +347,23 @@ async function sendMessage(conversationId: string, message: string) {
 }
 
 async function startTask(conversationId: string, intent: AgentIntent, idempotencyKey: string) {
+  const requestIntent = {
+    ...intent,
+    source: requestConnector(intent.source),
+    target: requestConnector(intent.target),
+  };
   return requestJson<AgentTask>(`/api/agent/conversations/${conversationId}/tasks`, {
     method: "POST",
     headers: { ...jsonHeaders, "Idempotency-Key": idempotencyKey },
-    body: JSON.stringify(intent),
+    body: JSON.stringify(requestIntent),
   });
+}
+
+function requestConnector(connector?: AgentConnectorSelection) {
+  if (!connector) return undefined;
+  const { display_origin: displayOrigin, ...requestSelection } = connector;
+  void displayOrigin;
+  return requestSelection;
 }
 
 async function startManualTask(intent: AgentIntent, idempotencyKey: string) {

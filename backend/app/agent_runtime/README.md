@@ -19,10 +19,17 @@ For complete CSV governance in the demo, use these flags in `backend/.env`:
 RECONCILIATION_NEW_AGENT_ENABLED=true
 RECONCILIATION_AGENT_GRAPH_ENABLED=true
 RECONCILIATION_AGENT_GRAPH_CSV_EXECUTION_ENABLED=true
+RECONCILIATION_SOURCE_INGESTION_V2_ENABLED=true
+RECONCILIATION_CONVERSATION_REMOTE_CSV_ENABLED=true
 RECONCILIATION_NEW_AGENT_ANALYSIS_ONLY=false
 RECONCILIATION_NEW_AGENT_CSV_EXECUTION_ENABLED=true
 RECONCILIATION_TOKENIZATION_SECRET=replace-with-at-least-16-characters
 ```
+
+`RECONCILIATION_CONVERSATION_REMOTE_CSV_ENABLED` activates only the Agent conversation trigger:
+one user message may contain one public HTTPS CSV link. It does not add a remote source to manual
+sync. Configuration fails closed if this flag is enabled without
+`RECONCILIATION_SOURCE_INGESTION_V2_ENABLED`.
 
 Start PostgreSQL, migrate, then run the API and Agent worker in separate terminals:
 
@@ -43,6 +50,9 @@ docker compose -f ../infra/docker-compose.yml up -d
 - Controlled graph tasks are persisted as `agent-graph-v1`. Their Supervisor can choose only
   server-issued `allowed_actions`; Skills see only evidence-manifest members through
   phase-scoped tools. Normal graph invocations never use `legacy_delegate`.
+- Local and uploaded sync runs keep their persisted `agent-sync-graph-v1` definition. A confirmed
+  conversation remote-source run is the only path that selects `agent-sync-graph-v2`, whose
+  `materialize_sources` node runs after school-lock acquisition and before source inspection.
 - `AgentWorker` claims only `new-agent-v1`; `AgentGraphWorker` claims only `agent-graph-v1`.
   The existing legacy AI worker continues to claim only `analysis_work_items`, so no worker can
   consume another workflow version's jobs.
@@ -76,6 +86,9 @@ outside this change.
 - Skills are pinned by name/version/phase and bind resolvable, strict Pydantic input/output
   envelopes. Agent tool calls must pass both the context capability allowlist and the
   server-owned phase allowlist.
+- Remote retrieval is a deterministic graph action, not a model tool. The full URL remains in its
+  private conversation-bound record; the remote-source understanding Skill can read only frozen
+  materialized profile/page resource IDs, up to fifty protected rows per listed page.
 
 ## Lock and failure diagnostics
 
@@ -99,6 +112,12 @@ releases the lock. A worker crash is recovered through its lease/checkpoint; res
 worker and let it reclaim the incomplete phase. If the report phase itself repeatedly fails,
 inspect sanitized events and database availability, restore the dependency, restart the worker,
 and terminate only when the operator explicitly chooses to abandon the task.
+
+Remote materialization failures are exposed only through stable `remote_source_*` codes covering
+DNS/policy, redirect, timeout/transport, HTTP status, size, content, and CSV parsing. Do not add the
+raw URL or response body while diagnosing these errors. A completed remote snapshot is immutable
+and reused after worker recovery; creating another conversation task is required to read a later
+version from the same link.
 
 ## Connector rollout boundary
 

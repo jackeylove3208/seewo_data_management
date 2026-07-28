@@ -109,6 +109,9 @@ from app.models.executions import TargetVersionRecord
 from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import Snapshot, SourceFile
 from app.reconciliation.agent_identity import AgentIdentityIndexBuilder
+from app.remote_sources.materializer import RemoteSourceMaterializer
+from app.remote_sources.network import RemoteSourceFailure
+from app.remote_sources.repository import RemoteSourceRepository
 from app.repositories.agent_analysis import AgentAnalysisRepository
 from app.repositories.executions import ExecutionRepository
 from app.schemas.agent_ingestion import AgentEntityKind, AgentInputMark, AgentSourceRole
@@ -128,6 +131,7 @@ class ProductionGraphActionExecutor:
         csv_execution_enabled: bool = False,
         settings: Settings | None = None,
         database_connectors: DatabaseConnectorResolver | None = None,
+        remote_materializer: RemoteSourceMaterializer | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._provider = provider
@@ -143,6 +147,9 @@ class ProductionGraphActionExecutor:
         )
         self._csv_execution_enabled = csv_execution_enabled
         self._settings = settings
+        self._remote_materializer = remote_materializer or (
+            RemoteSourceMaterializer(settings) if settings is not None else None
+        )
         self._database_connectors = database_connectors or (
             ConfiguredDatabaseConnectorRuntime(settings)
             if settings is not None and settings.agent_graph_sql_execution_enabled
@@ -165,6 +172,8 @@ class ProductionGraphActionExecutor:
         action: AllowedActionV1,
     ) -> GraphActionOutcome:
         action_kind = action.graph_action_kind or action.action_id
+        if action_kind == "materialize_remote_authority":
+            return await self._materialize_remote_authority(context, action)
         if action_kind in {"inspect_authority", "inspect_target"}:
             return await self._inspect_source(context, action)
         if action_kind == "normalize_next_batch":
@@ -217,6 +226,96 @@ class ProductionGraphActionExecutor:
         if context.current_node == "generate_rollback_report":
             return await self._generate_rollback_report(context, action)
         return await self._record_guarded_noop(context, action)
+
+    async def _materialize_remote_authority(
+        self,
+        context: GraphWorkContext,
+        action: AllowedActionV1,
+    ) -> GraphActionOutcome:
+        if context.graph_version != "agent-sync-graph-v2":
+            raise GraphGuardRejected("remote_materialization_requires_sync_graph_v2")
+        if context.current_node != "materialize_sources":
+            raise GraphGuardRejected("remote_materialization_outside_materialize_node")
+        if self._remote_materializer is None:
+            raise RuntimeError("Remote source materializer is not configured")
+        resource_id = _only(action.resource_ids)
+        prefix = "remote-source:"
+        if not resource_id.startswith(prefix):
+            raise GraphGuardRejected("remote_materialization_resource_invalid")
+        try:
+            remote_source_id = UUID(resource_id.removeprefix(prefix))
+        except ValueError as error:
+            raise GraphGuardRejected(
+                "remote_materialization_resource_invalid"
+            ) from error
+        expected_evidence = f"{resource_id}:materialized"
+        if action.required_evidence != (expected_evidence,):
+            raise GraphGuardRejected("remote_materialization_evidence_invalid")
+        try:
+            async with self._session_factory() as session:
+                async with session.begin():
+                    source = await self._remote_materializer.materialize(
+                        session,
+                        task_id=context.task_id,
+                        remote_source_id=remote_source_id,
+                    )
+                    record = await RemoteSourceRepository(session).get_for_task(
+                        tenant_id=context.tenant_id,
+                        task_id=context.task_id,
+                    )
+                    if (
+                        record is None
+                        or record.id != remote_source_id
+                        or record.source_file_id != source.id
+                    ):
+                        raise GraphGuardRejected(
+                            "remote_materialization_binding_changed"
+                        )
+                    payload = {
+                        "resource_id": resource_id,
+                        "display_origin": record.display_origin,
+                        "source_file_id": str(source.id),
+                        "content_sha256": source.sha256,
+                        "size_bytes": source.size_bytes,
+                        "media_type": record.media_type,
+                        "safe_problem_code": record.safe_problem_code,
+                    }
+                    await AgentRuntimeRepository(session).save_checkpoint(
+                        context.run_id,
+                        phase=AgentPhase.INGEST_AND_NORMALIZE,
+                        checkpoint_key="graph-remote-materialization-v1",
+                        input_hash=_hash(
+                            {
+                                "action": action.action_id,
+                                "resource_id": resource_id,
+                            }
+                        ),
+                        payload=payload,
+                    )
+                    await self._record_deterministic_invocation(
+                        session,
+                        context=context,
+                        action=action,
+                        output=payload,
+                    )
+        except RemoteSourceFailure as error:
+            async with self._session_factory() as session:
+                async with session.begin():
+                    failed = await RemoteSourceRepository(session).get_for_task(
+                        tenant_id=context.tenant_id,
+                        task_id=context.task_id,
+                        for_update=True,
+                    )
+                    if failed is not None and failed.id == remote_source_id:
+                        RemoteSourceRepository.mark_failed(
+                            failed,
+                            safe_problem_code=error.code,
+                        )
+            raise
+        return GraphActionOutcome(
+            action_id=action.action_id,
+            evidence_refs=(expected_evidence,),
+        )
 
     async def _inspect_source(
         self,
@@ -426,7 +525,10 @@ class ProductionGraphActionExecutor:
         action: AllowedActionV1,
     ) -> GraphActionOutcome:
         if context.ingestion_contract_version == "source-ingestion-v2":
-            if action.resource_ids == ("source-pair:current",):
+            if (
+                action.resource_ids
+                and action.resource_ids[0] == "source-pair:current"
+            ):
                 if await self._task_source_mode(context.task_id) == "database":
                     return await self._resolve_database_mapping_v2(context, action)
                 return await self._resolve_csv_mapping_v2(context, action)
@@ -871,6 +973,12 @@ class ProductionGraphActionExecutor:
                     context=context,
                     action=action,
                 )
+                task = await session.get(ReconciliationTask, context.task_id)
+                skill_name = (
+                    "understand-remote-organization-source"
+                    if _task_uses_remote_csv(task)
+                    else "map-csv-organization-schema"
+                )
                 result = await runner.run(
                     GraphSkillInvocation(
                         task_id=context.task_id,
@@ -880,7 +988,7 @@ class ProductionGraphActionExecutor:
                         graph_cursor=context.graph_cursor,
                         action_id=action.action_id,
                         evidence_manifest_id=manifest_id,
-                        skill_name="map-csv-organization-schema",
+                        skill_name=skill_name,
                         skill_version="1.0.0",
                         input_payload=CsvSchemaMappingInput(
                             task_id=context.task_id,
@@ -2670,8 +2778,27 @@ def _validate_csv_mapping_output(
         for role in ("authoritative", "target")
         for field in ("category", "name", "number", "class_name", "phone", "email")
     }
-    if not set(output.unresolved_required_fields) <= allowed_unresolved:
+    unresolved = set(output.unresolved_required_fields)
+    if len(unresolved) != len(output.unresolved_required_fields):
+        raise ValueError("CSV mapping repeats an unresolved field")
+    if not unresolved <= allowed_unresolved:
         raise ValueError("CSV mapping returned an unknown unresolved field")
+    for role, mappings in (
+        ("authoritative", output.authoritative_mappings),
+        ("target", output.target_mappings),
+    ):
+        mapped_fields = {mapping.contract_field for mapping in mappings}
+        unresolved_fields = {
+            item.removeprefix(f"{role}.")
+            for item in unresolved
+            if item.startswith(f"{role}.")
+        }
+        if mapped_fields & unresolved_fields:
+            raise ValueError(f"{role} CSV mapping marks mapped fields unresolved")
+        if mapped_fields | unresolved_fields != _fixed_contract_fields():
+            raise ValueError(
+                f"{role} CSV mapping omitted fields without marking unresolved"
+            )
     return output
 
 
@@ -2910,6 +3037,13 @@ def _task_uses_database(task: ReconciliationTask | None) -> bool:
         if isinstance(selection, dict) and selection.get("kind") == "database":
             return True
     return task.agent_intent.get("source_mode") == "database"
+
+
+def _task_uses_remote_csv(task: ReconciliationTask | None) -> bool:
+    if task is None or not isinstance(task.agent_intent, dict):
+        return False
+    source = task.agent_intent.get("source")
+    return isinstance(source, dict) and source.get("kind") == "remote_csv"
 
 
 def _legacy_context(

@@ -1354,8 +1354,9 @@ async def test_connector_page_tokenizes_phone_before_model_boundary(
     )
     csv_path = tmp_path / "authority.csv"
     csv_path.write_text(
-        "类别,姓名,编号,班级,电话,邮箱\n"
-        "学生,测试学生,S001,一年级一班,13800138000,student@example.test\n",
+        "类别,姓名,编号,班级,联络凭据,备注\n"
+        "学生,测试学生,S001,一年级一班,13800138000,"
+        "请联系13900139000或student@example.test\n",
         encoding="utf-8",
     )
     source = SourceFile(
@@ -1399,7 +1400,7 @@ async def test_connector_page_tokenizes_phone_before_model_boundary(
         graph_run_id=uuid4(),
         graph_node="normalize_input_batches",
         graph_cursor=0,
-        action_id="normalize:authority:1",
+        action_id="resolve_csv_fixed_field_mapping",
         evidence_manifest_id=uuid4(),
         invocation_id=uuid4(),
         allowed_tools=frozenset({"read_connector_page"}),
@@ -1414,6 +1415,24 @@ async def test_connector_page_tokenizes_phone_before_model_boundary(
     )
 
     assert "13800138000" not in str(payload)
-    phone = payload["records"][0]["fields"]["电话"]
+    assert "13900139000" not in str(payload)
+    assert "student@example.test" not in str(payload)
+    phone = payload["records"][0]["fields"]["联络凭据"]
     assert str(phone).startswith("STUDENT_PHONE_")
-    assert manifest_tokens == (phone,)
+    assert "STUDENT_PHONE_" in payload["records"][0]["fields"]["备注"]
+    assert "s***@example.test" in payload["records"][0]["fields"]["备注"]
+    assert phone in manifest_tokens
+    assert len(manifest_tokens) == 2
+
+    with pytest.raises(
+        ValueError,
+        match="outside its manifest resource",
+    ):
+        await tools.read_connector_page(
+            context,
+            {
+                "resource_id": "source:authoritative:page:1",
+                "page_locator": "50",
+                "limit": 50,
+            },
+        )

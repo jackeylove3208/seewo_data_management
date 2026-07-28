@@ -91,6 +91,8 @@ describe("manual Agent data sync", () => {
     await user.click(screen.getByRole("button", { name: "手动同步" }));
 
     expect(screen.getByLabelText("选择三方系统 CSV")).toBeInTheDocument();
+    expect(screen.queryByLabelText(/网页链接|远程链接/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /远程|网页/ })).not.toBeInTheDocument();
     const sourceKind = screen.getByLabelText("三方系统连接方式");
     expect(
       within(sourceKind).queryByRole("option", { name: "API 连接" }),

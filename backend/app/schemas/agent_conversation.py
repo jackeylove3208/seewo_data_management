@@ -16,6 +16,7 @@ class ConversationAgentContext(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
     history: tuple["ConversationHistoryMessage", ...] = ()
     available_source_refs: tuple[str, ...] = ()
+    available_remote_sources: tuple["ConversationRemoteSource", ...] = ()
     available_database_connectors: tuple["ConversationDatabaseConnector", ...] = ()
     current_intent: dict[str, Any] = Field(default_factory=dict)
     active_task_id: UUID | None = None
@@ -37,6 +38,13 @@ class ConversationDatabaseConnector(BaseModel):
     source_role: Literal["authoritative", "target"]
 
 
+class ConversationRemoteSource(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    remote_source_id: UUID
+    display_origin: str = Field(min_length=1, max_length=255)
+
+
 class ConversationAgentDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -54,3 +62,4 @@ class ConversationAgentDecision(BaseModel):
     target_ref: str | None = Field(default=None, min_length=1)
     source_configuration_id: str | None = Field(default=None, min_length=1)
     target_configuration_id: str | None = Field(default=None, min_length=1)
+    remote_source_id: UUID | None = None

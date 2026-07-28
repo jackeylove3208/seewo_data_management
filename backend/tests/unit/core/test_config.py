@@ -43,6 +43,7 @@ def test_new_agent_rollout_is_safe_by_default() -> None:
     assert settings.agent_graph_csv_execution_enabled is False
     assert settings.source_ingestion_v2_enabled is False
     assert settings.agent_graph_sql_execution_enabled is False
+    assert settings.conversation_remote_csv_enabled is False
     assert settings.new_agent_analysis_only is True
     assert settings.new_agent_csv_execution_enabled is False
     assert settings.new_agent_api_connector_enabled is False
@@ -94,6 +95,25 @@ def test_source_ingestion_v2_requires_agent_graph_runtime() -> None:
             source_ingestion_v2_enabled=True,
             _env_file=None,
         )
+
+
+def test_conversation_remote_csv_requires_versioned_graph_ingestion() -> None:
+    with pytest.raises(ValueError, match="source_ingestion_v2_enabled"):
+        Settings(
+            new_agent_enabled=True,
+            agent_graph_enabled=True,
+            conversation_remote_csv_enabled=True,
+            _env_file=None,
+        )
+
+    settings = Settings(
+        new_agent_enabled=True,
+        agent_graph_enabled=True,
+        source_ingestion_v2_enabled=True,
+        conversation_remote_csv_enabled=True,
+        _env_file=None,
+    )
+    assert settings.conversation_remote_csv_enabled is True
 
 
 def test_agent_execution_flags_fail_closed_without_runtime() -> None:

@@ -60,6 +60,7 @@ from app.models.rematching import (
     EntityRematchJobRecord,
     EntityRematchWorkItemRecord,
 )
+from app.models.remote_sources import RemoteSourceRecord
 from app.models.reporting import (
     AgentReportRecord,
     AgentRollbackCycleRecord,
@@ -135,6 +136,7 @@ __all__ = [
     "IngestionIssueRecord",
     "RawSnapshotRow",
     "ReportJobRecord",
+    "RemoteSourceRecord",
     "ReconciliationTask",
     "RestoreExecutionLinkRecord",
     "RestoreExecutionResultRecord",

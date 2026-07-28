@@ -1,9 +1,11 @@
 import pytest
 from sqlalchemy import select
 
+from app.agent_graph.repository import AgentGraphRepository
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.service import AgentSupervisorService, _termination_mutations
 from app.agent_runtime.state_machine import AgentPhase, AgentRunStatus
+from app.core.config import Settings
 from app.core.security import OperatorContext
 from app.models.agent_runtime import AgentFailureRecord, SchoolTaskLockRecord
 from app.models.reconciliation import ReconciliationTask
@@ -53,6 +55,48 @@ async def test_start_is_idempotent_and_holds_school_lock_before_ingestion(sessio
     )
     assert lock is not None
     assert lock.owner_run_id == started.id
+
+
+@pytest.mark.asyncio
+async def test_remote_task_starts_at_the_versioned_materialization_node(session) -> None:
+    conversation = await AgentRuntimeRepository(session).create_conversation(
+        tenant_id="school-1",
+        created_by="operator-1",
+    )
+    task = ReconciliationTask(
+        tenant_id="school-1",
+        scope_id="all",
+        snapshot_mode="full",
+        entity_types=["student"],
+        workflow_version="agent-graph-v1",
+        agent_intent={
+            "source": {
+                "kind": "remote_csv",
+                "remote_source_id": "00000000-0000-0000-0000-000000000001",
+            },
+            "target": {"kind": "local", "source_ref": "seewo/roster.csv"},
+        },
+        idempotency_key="remote-supervisor-v2",
+        request_hash="remote-supervisor-v2",
+    )
+    session.add(task)
+    await session.flush()
+
+    run = await AgentSupervisorService(
+        session,
+        operator=OperatorContext(operator_id="operator-1", tenant_id="school-1"),
+        settings=Settings(
+            new_agent_enabled=True,
+            agent_graph_enabled=True,
+            source_ingestion_v2_enabled=True,
+        ),
+    ).start(task_id=task.id, conversation_id=conversation.id)
+    graph = await AgentGraphRepository(session).get_run_state_for_agent_run(run.id)
+
+    assert graph is not None
+    assert graph.graph_version == "agent-sync-graph-v2"
+    assert graph.current_node == "materialize_sources"
+    assert graph.cursor == 2
 
 
 @pytest.mark.asyncio

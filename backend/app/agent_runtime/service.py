@@ -110,10 +110,15 @@ class AgentSupervisorService:
             if task.workflow_version == "agent-graph-v1"
             else None
         )
+        graph_version = (
+            "agent-sync-graph-v2"
+            if _uses_remote_csv(task)
+            else "agent-sync-graph-v1"
+        )
         graph_state = (
             await graph_repository.create_run_state(
                 run_id=run.id,
-                graph_version="agent-sync-graph-v1",
+                graph_version=graph_version,
                 initial_node="intent_confirmed",
             )
             if graph_repository is not None
@@ -146,12 +151,17 @@ class AgentSupervisorService:
             run.id, requested_phase=AgentPhase.INGEST_AND_NORMALIZE
         )
         if graph_repository is not None and graph_state is not None:
+            after_lock_node = (
+                "materialize_sources"
+                if graph_version == "agent-sync-graph-v2"
+                else "inspect_sources"
+            )
             await graph_repository.record_transition(
                 graph_state.id,
                 expected_cursor=1,
                 from_node="acquire_school_lock",
-                to_node="inspect_sources",
-                action_id="inspect_sources",
+                to_node=after_lock_node,
+                action_id=after_lock_node,
                 guard_results={"school_lock": "passed"},
                 fencing_token=run.attempt_count,
             )
@@ -406,3 +416,10 @@ def _termination_mutations(
         }
         for operation in operations
     ]
+
+
+def _uses_remote_csv(task: ReconciliationTask) -> bool:
+    if not isinstance(task.agent_intent, dict):
+        return False
+    source = task.agent_intent.get("source")
+    return isinstance(source, dict) and source.get("kind") == "remote_csv"

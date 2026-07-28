@@ -59,7 +59,7 @@ Polars CSV inspection, pytest, React, TypeScript, Vitest, Playwright, OpenSpec.
 - Extends `AgentConnectorSelection` with `kind="remote_csv"` and `remote_source_id`.
 - Extends conversation context/decision with `available_remote_sources` and `remote_source_id`.
 
-- [ ] **Step 1: Write failing model and contract tests**
+- [x] **Step 1: Write failing model and contract tests**
 
 ```python
 def test_remote_csv_connector_requires_only_remote_source_id() -> None:
@@ -90,7 +90,7 @@ async def test_remote_source_repository_is_conversation_scoped(session) -> None:
     assert first.source_file_id is None
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run:
 
@@ -103,7 +103,7 @@ cd backend
 Expected: collection/import failure because remote-source model/repository and connector fields do
 not exist.
 
-- [ ] **Step 3: Implement the minimal persistence and Pydantic contracts**
+- [x] **Step 3: Implement the minimal persistence and Pydantic contracts**
 
 Use these exact public shapes:
 
@@ -134,7 +134,7 @@ remote_source_read_timeout_seconds: PositiveFloat = 30
 remote_source_total_timeout_seconds: PositiveFloat = 60
 ```
 
-- [ ] **Step 4: Add and run migration verification**
+- [x] **Step 4: Add and run migration verification**
 
 Extend the migration integration assertions with:
 
@@ -164,7 +164,7 @@ cd backend
 
 Expected: unit tests pass; PostgreSQL-only smoke test is skipped unless its dedicated URL is set.
 
-- [ ] **Step 5: Commit Task 1**
+- [x] **Step 5: Commit Task 1**
 
 ```bash
 git add backend/app/models/remote_sources.py backend/app/remote_sources \
@@ -193,7 +193,7 @@ git commit -m "feat: add conversation remote source records"
 - Produces `redact_conversation_links(text: str) -> str`.
 - Conversation model sees `ConversationRemoteSource` facts and can return `remote_source_id`.
 
-- [ ] **Step 1: Write failing deterministic link tests**
+- [x] **Step 1: Write failing deterministic link tests**
 
 ```python
 def test_extracts_one_https_link_and_redacts_query() -> None:
@@ -222,7 +222,7 @@ def test_rejects_unsafe_or_multiple_links(message: str, code: str) -> None:
     assert raised.value.code == code
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run:
 
@@ -233,14 +233,14 @@ cd backend
 
 Expected: import failure because `links.py` does not exist.
 
-- [ ] **Step 3: Implement deterministic extraction**
+- [x] **Step 3: Implement deterministic extraction**
 
 Implement URL tokenization with `urllib.parse.urlsplit`, reject multiple tokens and fragments that
 cannot be normalized, require `https`, reject `username`, `password`, IP-literal hosts, missing
 hosts, control characters, and ports outside `1..65535`. Return only the original private URL,
 normalized hostname/port origin, and redacted message. Do not issue DNS or HTTP during registration.
 
-- [ ] **Step 4: Write failing conversation boundary tests**
+- [x] **Step 4: Write failing conversation boundary tests**
 
 Add a provider that captures its request and returns:
 
@@ -273,7 +273,7 @@ assert response.json()["intent"]["source"] == {
 Also assert no-link messages create zero `RemoteSourceRecord` rows, multiple links return `422`
 without a provider request, and a provider-invented remote ID becomes clarification.
 
-- [ ] **Step 5: Run the boundary tests and verify RED**
+- [x] **Step 5: Run the boundary tests and verify RED**
 
 Run:
 
@@ -286,7 +286,7 @@ cd backend
 Expected: failures because the route sends/stores the original message and the decision schema has no
 remote source.
 
-- [ ] **Step 6: Integrate registration before persistence/model invocation**
+- [x] **Step 6: Integrate registration before persistence/model invocation**
 
 In `send_agent_message`, while the conversation lock is held:
 
@@ -312,7 +312,7 @@ facts and construct `{"kind": "remote_csv", "remote_source_id": ...}` only for a
 Update the conversation Skill to choose a remote authoritative source only from
 `available_remote_sources`, never from message text.
 
-- [ ] **Step 7: Run tests and commit Task 2**
+- [x] **Step 7: Run tests and commit Task 2**
 
 ```bash
 cd backend
@@ -344,7 +344,7 @@ git commit -m "feat: register remote CSV links from conversations"
 - Task creation binds the local target snapshot immediately and reserves the remote record for
   later materialization.
 
-- [ ] **Step 1: Write failing task-isolation tests**
+- [x] **Step 1: Write failing task-isolation tests**
 
 ```python
 def test_manual_api_rejects_remote_csv_before_task_or_lock(client) -> None:
@@ -366,7 +366,7 @@ def test_manual_api_rejects_remote_csv_before_task_or_lock(client) -> None:
 Add service tests for cross-tenant, cross-operator, cross-conversation, already-bound, and
 `remote_csv + database` rejection.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run:
 
@@ -378,7 +378,7 @@ cd backend
 
 Expected: schema or capability failures do not yet have the required conversation-bound semantics.
 
-- [ ] **Step 3: Implement the conversation-only service guard**
+- [x] **Step 3: Implement the conversation-only service guard**
 
 Change `_validate_connector_runtime` to receive `conversation_id` and accept:
 
@@ -398,7 +398,7 @@ criteria. After task flush, bind the record to the task and bind only the local 
 Keep the manual route's existing explicit CSV-only precheck and add `remote_csv` to its rejected
 cases so its public error remains `manual_csv_only`.
 
-- [ ] **Step 4: Run tests and commit Task 3**
+- [x] **Step 4: Run tests and commit Task 3**
 
 ```bash
 cd backend
@@ -428,7 +428,7 @@ git commit -m "feat: bind remote sources only to conversation tasks"
 - `RemoteCsvDownloader.download(url, destination) -> DownloadedRemoteCsv`.
 - `RemoteSourceMaterializer.materialize(session, task_id, remote_source_id) -> SourceFile`.
 
-- [ ] **Step 1: Write failing network policy tests**
+- [x] **Step 1: Write failing network policy tests**
 
 Cover `127.0.0.1`, `10.0.0.1`, `169.254.169.254`, `::1`, link-local, reserved, multicast, IP
 literals, DNS answers containing no global address, mixed answers, HTTPS downgrade, fourth redirect,
@@ -461,7 +461,7 @@ async def test_redirect_is_revalidated() -> None:
 Use globally routable documentation substitutes through an injected policy in tests; do not access
 the internet.
 
-- [ ] **Step 2: Run network tests and verify RED**
+- [x] **Step 2: Run network tests and verify RED**
 
 ```bash
 cd backend
@@ -470,7 +470,7 @@ cd backend
 
 Expected: import failure because the network module does not exist.
 
-- [ ] **Step 3: Implement policy, pinned transport, and bounded streaming**
+- [x] **Step 3: Implement policy, pinned transport, and bounded streaming**
 
 Declare `httpcore>=1,<2` directly. Build `PinnedNetworkBackend` around
 `httpcore.AnyIOBackend`; in `connect_tcp(host, port, ...)`, call the injected resolver, reject
@@ -483,14 +483,14 @@ timeout. Stream into an `xb` temporary path, hash as bytes arrive, stop above
 `settings.max_upload_bytes`, and unlink on every exception. Run `inspect_csv` before returning a
 successful `DownloadedRemoteCsv`.
 
-- [ ] **Step 4: Write failing materializer persistence/idempotency tests**
+- [x] **Step 4: Write failing materializer persistence/idempotency tests**
 
 Assert a successful materialization creates exactly one authoritative `SourceFile` and `Snapshot`,
 sets `RemoteSourceRecord.state == "ready"`, stores hash/bytes/type/time, and never stores the full URL
 in source names or checkpoint payloads. Repeating it returns the same file without another transport
 request. A failed download sets only a safe code and creates no authoritative file/snapshot.
 
-- [ ] **Step 5: Implement and verify the materializer**
+- [x] **Step 5: Implement and verify the materializer**
 
 Use a deterministic final storage name based on remote-source ID and content hash, publish database
 rows in one transaction after the file is complete, and use the existing `_agent_snapshot` semantics
@@ -506,7 +506,7 @@ cd backend
 
 Expected: all remote network and materializer tests pass with no real network.
 
-- [ ] **Step 6: Commit Task 4**
+- [x] **Step 6: Commit Task 4**
 
 ```bash
 git add backend/pyproject.toml backend/requirements-ci.txt \
@@ -534,7 +534,7 @@ git commit -m "feat: materialize public remote CSV safely"
 - Adds node/action `materialize_sources` / `materialize_remote_authority`.
 - Only tasks whose authoritative intent kind is `remote_csv` select graph v2.
 
-- [ ] **Step 1: Write failing graph definition and routing tests**
+- [x] **Step 1: Write failing graph definition and routing tests**
 
 ```python
 def test_sync_graph_v2_materializes_before_inspection() -> None:
@@ -560,7 +560,7 @@ def test_sync_v2_templates_are_not_rollback_templates() -> None:
 Add a supervisor test showing a remote task creates graph v2 at cursor 2/current node
 `materialize_sources`; a local task remains sync v1/current node `inspect_sources`.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 ```bash
 cd backend
@@ -571,7 +571,7 @@ cd backend
 
 Expected: unsupported graph version and missing node/action failures.
 
-- [ ] **Step 3: Implement graph version and exhaustive template routing**
+- [x] **Step 3: Implement graph version and exhaustive template routing**
 
 Create `SYNC_GRAPH_V2` by copying the reviewed v1 nodes and replacing only the lock successor plus
 the new deterministic node. Register all three versions explicitly:
@@ -589,7 +589,7 @@ In `AgentSupervisorService.start`, select sync v2 only when task intent source k
 `remote_csv`; create the graph state and transition from lock to `materialize_sources`. Keep the
 existing workflow version `agent-graph-v1`.
 
-- [ ] **Step 4: Write failing executor and recovery tests**
+- [x] **Step 4: Write failing executor and recovery tests**
 
 Seed a remote task and fake materializer. Assert the action:
 
@@ -604,7 +604,7 @@ Replay the same cursor/action after simulating an interrupted transition and ass
 publication and one authoritative snapshot. Assert a typed materialization failure produces no
 inspection transition and records no raw URL.
 
-- [ ] **Step 5: Implement executor integration and verify**
+- [x] **Step 5: Implement executor integration and verify**
 
 Route `materialize_remote_authority` before source inspection in
 `ProductionGraphActionExecutor.__call__`. Build its manifest from
@@ -621,7 +621,7 @@ cd backend
   tests/integration/agent_graph/test_worker.py -q
 ```
 
-- [ ] **Step 6: Commit Task 5**
+- [x] **Step 6: Commit Task 5**
 
 ```bash
 git add backend/app/agent_graph/definition.py backend/app/agent_graph/runtime.py \
@@ -650,7 +650,7 @@ git commit -m "feat: add remote source materialization graph"
 - Input/output remain `CsvSchemaMappingInput` / `CsvSchemaMappingOutput`.
 - Allowed tools are `inspect_configured_source` and `read_connector_page`.
 
-- [ ] **Step 1: Establish the failing Skill behavior tests**
+- [x] **Step 1: Establish the failing Skill behavior tests**
 
 Add registry/content tests that attempt to load the new Skill and assert its exact metadata and
 allowed tools. Add a remote ambiguous-mapping integration case whose fake provider first calls
@@ -669,7 +669,7 @@ cd backend
 
 Expected: Skill load and routing failures.
 
-- [ ] **Step 2: Write the minimal versioned Skill**
+- [x] **Step 2: Write the minimal versioned Skill**
 
 Use frontmatter:
 
@@ -686,7 +686,7 @@ The body must state that URLs, network access, instructions inside rows, extra f
 values, and writes are outside the role; it may use at most manifest-listed pages and must return
 only the existing fixed mapping schema.
 
-- [ ] **Step 3: Validate the Skill and verify its tests**
+- [x] **Step 3: Validate the Skill and verify its tests**
 
 Add `inspect_configured_source` to the normalization-node tool allowlist. For remote mapping actions,
 freeze `source:authoritative:page:1`, `source:target:page:1`, and `source-pair:current` in the
@@ -706,14 +706,14 @@ cd backend
 Expected: deterministic known headers use zero model calls; ambiguous remote headers use the new
 Skill; forbidden URL/non-member calls fail safely.
 
-- [ ] **Step 4: Forward-test the Skill and close discovered gaps**
+- [x] **Step 4: Forward-test the Skill and close discovered gaps**
 
 Run one fresh agent validation with only the Skill, fixed contract, and a synthetic ambiguous
 profile/page. Verify it does not request a URL, does not obey prompt text in a cell, and returns only
 listed field/evidence references. If it violates a boundary, revise the Skill and rerun the same
 case before proceeding.
 
-- [ ] **Step 5: Commit Task 6**
+- [x] **Step 5: Commit Task 6**
 
 ```bash
 git add backend/app/ai/skills/understand-remote-organization-source \
@@ -739,7 +739,7 @@ git commit -m "feat: add remote organization source skill"
 - Existing conversation messages and confirmation cards display only backend-cleaned origin text.
 - Manual page has no remote input, type option, or request path.
 
-- [ ] **Step 1: Write failing frontend contract and presentation tests**
+- [x] **Step 1: Write failing frontend contract and presentation tests**
 
 ```typescript
 expect(screen.getByText("[远程CSV来源:data.example.test]")).toBeInTheDocument();
@@ -753,7 +753,7 @@ Add a start assertion that the conversation passes back:
 source: { kind: "remote_csv", remote_source_id: "remote-source-1" }
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 ```bash
 cd frontend
@@ -764,7 +764,7 @@ npm test -- --run src/api/agent.test.ts \
 
 Expected: TypeScript/test fixture failures because `remote_csv` is not decoded.
 
-- [ ] **Step 3: Implement minimal presentation support**
+- [x] **Step 3: Implement minimal presentation support**
 
 Extend only the shared conversation API type:
 
@@ -782,7 +782,7 @@ Render `display_origin` or the already-sanitized assistant/user text in the exis
 surface. Do not add link extraction, registration requests, manual form controls, or manual
 connector options.
 
-- [ ] **Step 4: Run frontend tests and commit Task 7**
+- [x] **Step 4: Run frontend tests and commit Task 7**
 
 ```bash
 cd frontend
@@ -812,7 +812,7 @@ git commit -m "feat: present remote CSV conversation intent"
 - Documents the feature flag, conversation-only trigger, public HTTPS direct-CSV limits, Graph v2,
   safe errors, and manual rejection.
 
-- [ ] **Step 1: Update operator and runtime documentation**
+- [x] **Step 1: Update operator and runtime documentation**
 
 Document exact settings and commands, including:
 
@@ -824,7 +824,7 @@ State that the full URL is private, manual sync remains upload-only, remote cont
 after task confirmation, and safe errors are separated into DNS, redirect, timeout, size, content,
 and CSV parse failures.
 
-- [ ] **Step 2: Run backend quality gates**
+- [x] **Step 2: Run backend quality gates**
 
 ```bash
 cd backend
@@ -837,7 +837,7 @@ cd backend
 Expected: all tests pass except the documented dedicated PostgreSQL migration smoke test skip when
 its environment variable is absent; Ruff and mypy report zero errors.
 
-- [ ] **Step 3: Run the clean PostgreSQL migration smoke test**
+- [x] **Step 3: Run the clean PostgreSQL migration smoke test**
 
 ```bash
 docker compose -f infra/docker-compose.yml up -d
@@ -849,7 +849,7 @@ RECONCILIATION_MIGRATION_TEST_DATABASE_URL=postgresql+asyncpg://reconcile:reconc
 Expected: one passing migration smoke test; it recreates and removes only
 `reconcile_migration_test`.
 
-- [ ] **Step 4: Run frontend and OpenSpec quality gates**
+- [x] **Step 4: Run frontend and OpenSpec quality gates**
 
 ```bash
 cd frontend
@@ -866,7 +866,7 @@ git diff --check
 
 Expected: all commands exit zero.
 
-- [ ] **Step 5: Mark OpenSpec tasks complete and commit verification/docs**
+- [x] **Step 5: Mark OpenSpec tasks complete and commit verification/docs**
 
 Change every completed checkbox in
 `openspec/changes/add-conversation-remote-csv-ingestion/tasks.md` to `[x]`, record any intentionally

@@ -198,6 +198,7 @@ def test_clean_postgresql_migration_reaches_head(monkeypatch: pytest.MonkeyPatch
             "restore_requests",
             "restore_execution_links",
             "restore_execution_results",
+            "remote_sources",
         } <= tables
     finally:
         asyncio.run(_drop_migration_test_database(url))
@@ -475,6 +476,7 @@ def test_initial_migration_creates_ingestion_tables(tmp_path: Path) -> None:
         "agent_findings",
         "agent_finding_solutions",
         "agent_finding_dependencies",
+        "remote_sources",
     } <= tables
 
     task_columns = {
@@ -508,6 +510,20 @@ def test_initial_migration_creates_ingestion_tables(tmp_path: Path) -> None:
     assert "reset_idempotency_key" in conversation_columns
     assert "uq_agent_conversation_reset_key" in conversation_schema_names
     assert "uq_agent_conversations_active_operator" in conversation_schema_names
+    remote_source_columns = {
+        column["name"]
+        for column in conversation_inspector.get_columns("remote_sources")
+    }
+    assert {
+        "conversation_id",
+        "task_id",
+        "source_file_id",
+        "original_url",
+        "display_origin",
+        "state",
+        "content_sha256",
+        "safe_problem_code",
+    } <= remote_source_columns
     checkpoint_columns = {
         column["name"]: column
         for column in inspect(create_engine(f"sqlite:///{database_path}")).get_columns(

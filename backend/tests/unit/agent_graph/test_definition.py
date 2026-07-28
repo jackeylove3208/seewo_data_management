@@ -15,6 +15,20 @@ def test_sync_graph_contains_the_controlled_design_nodes() -> None:
     assert graph.node("terminal").kind is GraphNodeKind.TERMINAL
 
 
+def test_sync_graph_v2_materializes_before_inspection() -> None:
+    graph = get_graph_definition("agent-sync-graph-v2")
+
+    assert {
+        (item.action_kind, item.successor_node)
+        for item in graph.node("acquire_school_lock").action_templates
+    } == {("materialize_sources", "materialize_sources")}
+    assert graph.node("materialize_sources").kind is GraphNodeKind.DETERMINISTIC
+    assert {
+        (item.action_kind, item.successor_node)
+        for item in graph.node("materialize_sources").action_templates
+    } == {("materialize_remote_authority", "inspect_sources")}
+
+
 def test_preflight_has_two_real_paths_instead_of_a_wrapped_next_phase() -> None:
     graph = get_graph_definition("agent-sync-graph-v1")
     templates = graph.node("preflight_execution").action_templates
@@ -61,7 +75,11 @@ def test_rollback_graph_is_versioned_separately() -> None:
 
 
 def test_every_non_terminal_graph_node_declares_at_least_one_legal_action() -> None:
-    for graph_version in ("agent-sync-graph-v1", "agent-rollback-graph-v1"):
+    for graph_version in (
+        "agent-sync-graph-v1",
+        "agent-sync-graph-v2",
+        "agent-rollback-graph-v1",
+    ):
         graph = get_graph_definition(graph_version)
         missing = {
             node.node_id

@@ -1,5 +1,7 @@
 from uuid import uuid4
 
+import pytest
+
 import app.agent_graph.runtime as graph_runtime
 from app.agent_graph.contracts import SingleActionReasonCode
 from app.agent_graph.runtime import (
@@ -23,6 +25,26 @@ def test_production_runtime_exposes_real_source_inspection_choices() -> None:
         "inspect_target",
         "normalize_ready_sources",
     }
+
+
+def test_sync_v2_exposes_only_the_materialization_action_at_its_new_node() -> None:
+    templates = production_candidate_templates(
+        "materialize_sources",
+        graph_version="agent-sync-graph-v2",
+    )
+
+    assert [item.action_id for item in templates] == [
+        "materialize_remote_authority"
+    ]
+    assert templates[0].successor_node == "inspect_sources"
+
+
+def test_unknown_graph_version_is_rejected_instead_of_using_rollback_actions() -> None:
+    with pytest.raises(ValueError, match="unsupported Agent graph version"):
+        production_candidate_templates(
+            "load_verified_mutations",
+            graph_version="unknown-graph-v9",
+        )
 
 
 def test_production_runtime_has_a_guarded_action_for_every_non_terminal_node() -> None:

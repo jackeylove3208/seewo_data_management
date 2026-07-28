@@ -30,6 +30,7 @@ from app.models.agent_analysis import (
     AgentModelBatchRecord,
 )
 from app.models.reconciliation import ReconciliationTask
+from app.models.remote_sources import RemoteSourceRecord
 from app.models.snapshots import Snapshot, SourceFile
 from app.repositories.executions import ExecutionRepository
 
@@ -252,6 +253,22 @@ _SYNC_TEMPLATES: dict[str, tuple[AllowedActionV1, ...]] = {
 }
 
 
+_SYNC_TEMPLATES_V2: dict[str, tuple[AllowedActionV1, ...]] = {
+    **_SYNC_TEMPLATES,
+    "acquire_school_lock": (
+        _action("materialize_sources", successor="materialize_sources"),
+    ),
+    "materialize_sources": (
+        _action(
+            "materialize_remote_authority",
+            successor="inspect_sources",
+            resource_ids=("remote-source:current",),
+            required_evidence=("remote-source:materialized",),
+        ),
+    ),
+}
+
+
 _ROLLBACK_TEMPLATES: dict[str, tuple[AllowedActionV1, ...]] = {
     "rollback_intent_confirmed": (_action("acquire_school_lock", successor="acquire_school_lock"),),
     "acquire_school_lock": (
@@ -332,7 +349,14 @@ def production_candidate_templates(
     *,
     graph_version: str = "agent-sync-graph-v1",
 ) -> tuple[AllowedActionV1, ...]:
-    templates = _SYNC_TEMPLATES if graph_version == "agent-sync-graph-v1" else _ROLLBACK_TEMPLATES
+    if graph_version == "agent-sync-graph-v1":
+        templates = _SYNC_TEMPLATES
+    elif graph_version == "agent-sync-graph-v2":
+        templates = _SYNC_TEMPLATES_V2
+    elif graph_version == "agent-rollback-graph-v1":
+        templates = _ROLLBACK_TEMPLATES
+    else:
+        raise ValueError(f"unsupported Agent graph version: {graph_version}")
     return templates.get(node, ())
 
 
@@ -412,6 +436,29 @@ class ProductionGraphCandidateProvider:
             )
         if context.current_node == "inspect_sources":
             return await self._inspection_actions(session, context)
+        if context.current_node == "materialize_sources":
+            remote_source_id = await session.scalar(
+                select(RemoteSourceRecord.id).where(
+                    RemoteSourceRecord.task_id == context.task_id,
+                    RemoteSourceRecord.tenant_id == context.tenant_id,
+                    RemoteSourceRecord.state.in_(
+                        ("registered", "materializing", "ready", "failed")
+                    ),
+                )
+            )
+            if remote_source_id is None:
+                raise LookupError("Task-bound remote source is missing")
+            template = _template(context, "materialize_remote_authority")
+            return (
+                template.model_copy(
+                    update={
+                        "resource_ids": (f"remote-source:{remote_source_id}",),
+                        "required_evidence": (
+                            f"remote-source:{remote_source_id}:materialized",
+                        ),
+                    }
+                ),
+            )
         if context.current_node == "normalize_input_batches":
             return await self._normalization_actions(session, context)
         if context.current_node == "validate_input_contract":
@@ -647,10 +694,14 @@ class ProductionGraphCandidateProvider:
                     )
                 mapping_required = any(
                     checkpoint.payload.get("mapping_required", False)
-                    or (source_mode == "csv" and not checkpoint.payload.get("recognized", False))
+                    or (
+                        source_mode in {"csv", "remote_csv"}
+                        and not checkpoint.payload.get("recognized", False)
+                    )
                     for checkpoint in inspections
                     if checkpoint is not None
                 )
+                remote_csv = source_mode == "remote_csv"
                 return (
                     _action(
                         (
@@ -665,12 +716,24 @@ class ProductionGraphCandidateProvider:
                             (
                                 "database-schema-mapping"
                                 if source_mode == "database"
-                                else "csv-schema-mapping"
+                                else (
+                                    "remote-csv-schema-mapping"
+                                    if remote_csv
+                                    else "csv-schema-mapping"
+                                )
                             )
                             if mapping_required
                             else None
                         ),
-                        resource_ids=("source-pair:current",),
+                        resource_ids=(
+                            (
+                                "source-pair:current",
+                                "source:authoritative:page:1",
+                                "source:target:page:1",
+                            )
+                            if remote_csv
+                            else ("source-pair:current",)
+                        ),
                         required_evidence=("mapping:fixed-six-field-v2",),
                     ),
                 )
@@ -908,6 +971,13 @@ async def _source_pair_mode(session: AsyncSession, task_id: UUID) -> str:
         and target.get("kind") == "database"
     ):
         return "database"
+    if (
+        isinstance(source, dict)
+        and isinstance(target, dict)
+        and source.get("kind") == "remote_csv"
+        and target.get("kind") == "local"
+    ):
+        return "remote_csv"
     return "csv"
 
 

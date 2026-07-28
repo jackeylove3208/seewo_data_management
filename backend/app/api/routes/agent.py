@@ -74,6 +74,12 @@ from app.models.agent_runtime import (
 )
 from app.models.reconciliation import ReconciliationTask
 from app.models.reporting import AgentReportRecord
+from app.remote_sources.links import (
+    RemoteSourceRegistrationError,
+    extract_conversation_link,
+    redact_conversation_links,
+)
+from app.remote_sources.repository import RemoteSourceRepository
 from app.repositories.agent_governance import (
     AgentGovernanceRepository,
     GovernanceReplayConflict,
@@ -109,6 +115,7 @@ from app.schemas.agent_conversation import (
     ConversationAgentContext,
     ConversationDatabaseConnector,
     ConversationHistoryMessage,
+    ConversationRemoteSource,
 )
 from app.schemas.agent_graph_api import (
     AgentGraphApprovalChangeView,
@@ -401,6 +408,11 @@ async def get_current_agent_conversation(
         conversation_id=conversation.id,
         tenant_id=operator.tenant_id,
     )
+    remote_sources = await RemoteSourceRepository(session).list_for_conversation(
+        tenant_id=operator.tenant_id,
+        created_by=operator.operator_id,
+        conversation_id=conversation.id,
+    )
     run = await session.scalar(
         select(AgentRunRecord)
         .where(
@@ -410,7 +422,17 @@ async def get_current_agent_conversation(
         .order_by(AgentRunRecord.created_at.desc(), AgentRunRecord.id.desc())
         .limit(1)
     )
-    intent = AgentIntentView.model_validate(conversation.context) if conversation.context else None
+    intent = (
+        _intent_view(
+            conversation.context,
+            remote_origins={
+                str(remote_source.id): remote_source.display_origin
+                for remote_source in remote_sources
+            },
+        )
+        if conversation.context
+        else None
+    )
     confirmation = None
     latest_run_is_active = (
         run is not None and run.status in _ACTIVE_CONVERSATION_RUN_STATUSES
@@ -515,6 +537,35 @@ async def send_agent_message(
                 "Conversation is already processing another message",
             ),
         )
+    try:
+        extracted_link = extract_conversation_link(body.message)
+    except RemoteSourceRegistrationError as error:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=_error(error.code, error.safe_message),
+        ) from error
+    safe_message = (
+        extracted_link.redacted_message
+        if extracted_link is not None
+        else redact_conversation_links(body.message)
+    )
+    remote_source_repository = RemoteSourceRepository(session)
+    if (
+        extracted_link is not None
+        and request.app.state.settings.conversation_remote_csv_enabled
+    ):
+        await remote_source_repository.register(
+            tenant_id=operator.tenant_id,
+            created_by=operator.operator_id,
+            conversation_id=conversation.id,
+            original_url=extracted_link.original_url,
+            display_origin=extracted_link.display_origin,
+        )
+    remote_sources = await remote_source_repository.list_for_conversation(
+        tenant_id=operator.tenant_id,
+        created_by=operator.operator_id,
+        conversation_id=conversation.id,
+    )
     message_token = str(uuid4())
     conversation.context = {
         **conversation.context,
@@ -524,7 +575,7 @@ async def send_agent_message(
         conversation_id=conversation.id,
         tenant_id=operator.tenant_id,
         role="user",
-        text=body.message,
+        text=safe_message,
     )
     messages = await repository.list_conversation_messages(
         conversation_id=conversation.id,
@@ -534,7 +585,7 @@ async def send_agent_message(
         ConversationHistoryMessage(
             role=message.role,
             kind=message.kind,
-            text=message.text,
+            text=redact_conversation_links(message.text),
         )
         for message in messages
     )
@@ -581,9 +632,16 @@ async def send_agent_message(
             ConversationAgentContext(
                 conversation_id=conversation.id,
                 tenant_id=operator.tenant_id,
-                message=body.message,
+                message=safe_message,
                 history=history,
                 available_source_refs=tuple(source.source_ref for source in sources),
+                available_remote_sources=tuple(
+                    ConversationRemoteSource(
+                        remote_source_id=remote_source.id,
+                        display_origin=remote_source.display_origin,
+                    )
+                    for remote_source in remote_sources
+                ),
                 available_database_connectors=tuple(
                     ConversationDatabaseConnector(
                         connector_id=connector_id,
@@ -692,7 +750,12 @@ async def send_agent_message(
             else previous_intent.get("entity_types", [])
         ),
         "source": (
-            {"kind": "local", "source_ref": decision.source_ref}
+            {
+                "kind": "remote_csv",
+                "remote_source_id": str(decision.remote_source_id),
+            }
+            if decision.remote_source_id is not None
+            else {"kind": "local", "source_ref": decision.source_ref}
             if decision.source_ref is not None
             else {
                 "kind": "database",
@@ -720,7 +783,13 @@ async def send_agent_message(
         role="assistant",
         text=decision.message_zh,
     )
-    view = AgentIntentView.model_validate(intent)
+    view = _intent_view(
+        intent,
+        remote_origins={
+            str(remote_source.id): remote_source.display_origin
+            for remote_source in remote_sources
+        },
+    )
     confirmation = None
     can_confirm = (
         decision.kind == "start_confirmation"
@@ -735,6 +804,7 @@ async def send_agent_message(
             entity_types=view.entity_types,
         )
     return AgentMessageResponse(
+        accepted_message=safe_message,
         message=decision.message_zh,
         intent=view,
         start_confirmation=confirmation,
@@ -874,7 +944,10 @@ async def start_manual_agent_task(
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=128)],
 ) -> AgentTaskResponse:
     _require_enabled(request)
-    if body.source.kind == "database" or body.target.kind == "database":
+    if (
+        body.source.kind in {"database", "remote_csv"}
+        or body.target.kind in {"database", "remote_csv"}
+    ):
         raise HTTPException(
             422,
             detail=_error(
@@ -3255,6 +3328,23 @@ _PHONE_PATTERN = re.compile(r"(?<!\d)1\d{10}(?!\d)")
 _EMAIL_PATTERN = re.compile(
     r"\b([A-Za-z0-9._%+-])([A-Za-z0-9._%+-]*)@([A-Za-z0-9.-]+\.[A-Za-z]{2,})\b"
 )
+
+
+def _intent_view(
+    context: Mapping[str, Any],
+    *,
+    remote_origins: Mapping[str, str],
+) -> AgentIntentView:
+    payload = dict(context)
+    source = payload.get("source")
+    if isinstance(source, dict) and source.get("kind") == "remote_csv":
+        source_view = dict(source)
+        remote_source_id = source_view.get("remote_source_id")
+        display_origin = remote_origins.get(str(remote_source_id))
+        if display_origin is not None:
+            source_view["display_origin"] = display_origin
+        payload["source"] = source_view
+    return AgentIntentView.model_validate(payload)
 
 
 def _sanitize_public(value: Any, *, field: str | None = None) -> Any:

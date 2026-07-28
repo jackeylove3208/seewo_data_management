@@ -208,6 +208,33 @@ SYNC_GRAPH_V1 = GraphDefinitionV1(
 )
 
 
+SYNC_GRAPH_V2 = GraphDefinitionV1(
+    graph_version="agent-sync-graph-v2",
+    initial_node=SYNC_GRAPH_V1.initial_node,
+    nodes=tuple(
+        (
+            _node(
+                "acquire_school_lock",
+                GraphNodeKind.DETERMINISTIC,
+                ("materialize_sources", "materialize_sources"),
+            )
+            if node.node_id == "acquire_school_lock"
+            else node
+        )
+        for node in SYNC_GRAPH_V1.nodes
+        if node.node_id != "terminal"
+    )
+    + (
+        _node(
+            "materialize_sources",
+            GraphNodeKind.DETERMINISTIC,
+            ("materialize_remote_authority", "inspect_sources"),
+        ),
+        SYNC_GRAPH_V1.node("terminal"),
+    ),
+)
+
+
 ROLLBACK_GRAPH_V1 = GraphDefinitionV1(
     graph_version="agent-rollback-graph-v1",
     initial_node="rollback_intent_confirmed",
@@ -289,6 +316,7 @@ ROLLBACK_GRAPH_V1 = GraphDefinitionV1(
 
 GRAPH_DEFINITIONS = {
     SYNC_GRAPH_V1.graph_version: SYNC_GRAPH_V1,
+    SYNC_GRAPH_V2.graph_version: SYNC_GRAPH_V2,
     ROLLBACK_GRAPH_V1.graph_version: ROLLBACK_GRAPH_V1,
 }
 
