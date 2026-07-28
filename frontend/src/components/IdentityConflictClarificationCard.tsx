@@ -155,6 +155,14 @@ export function IdentityConflictClarificationCard({
     taskId,
   ]);
 
+  function refreshSafely() {
+    try {
+      void Promise.resolve(onRefresh()).catch(() => undefined);
+    } catch {
+      // Polling remains authoritative; a later refresh will reconcile the card.
+    }
+  }
+
   if (confirmed || conflict.status === "confirmed") {
     return (
       <section className="identity-clarification-card is-confirmed" aria-live="polite">
@@ -217,7 +225,7 @@ export function IdentityConflictClarificationCard({
         saving: false,
       });
       onOptimisticSubmission?.(conflict.clarification_id, persistedSubmission);
-      void onRefresh();
+      refreshSafely();
     } catch (submitError) {
       setSubmission(previousSubmission);
       setSaving(false);
@@ -237,7 +245,7 @@ export function IdentityConflictClarificationCard({
       setError(
         submitError instanceof Error ? submitError.message : "身份冲突选择保存失败",
       );
-      void onRefresh();
+      refreshSafely();
     }
   }
 
@@ -254,7 +262,7 @@ export function IdentityConflictClarificationCard({
       setConfirmed(true);
       writeStoredSubmission(taskId, conflict.clarification_id, undefined);
       onConfirmed?.(conflict.clarification_id);
-      void onRefresh();
+      refreshSafely();
     } catch (confirmError) {
       setError(
         confirmError instanceof Error
