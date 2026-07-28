@@ -16,13 +16,6 @@ NEW_AGENT_SKILLS = {
         "start_confirmation",
         "safe_failure",
     ),
-    "orchestrate-school-data-sync": (
-        "固定阶段",
-        "学校锁",
-        "终止",
-        "模型失败",
-        "报告",
-    ),
     "inspect-external-data-source": (
         "CSV",
         "API",
@@ -77,14 +70,6 @@ NEW_AGENT_SKILLS = {
         "target_missing",
         "field_difference",
         "authority_invalid",
-    ),
-    "aggregate-risk-approvals": (
-        "学生手机号",
-        "冻结",
-        "内容哈希",
-        "同意",
-        "拒绝",
-        "不得代替",
     ),
     "resolve-human-conflict-instruction": (
         "候选",
@@ -143,7 +128,6 @@ LEGACY_SKILLS = {
     "assess-rollback-impact",
     "generate-governance-plan",
     "generate-governance-report",
-    "resolve-ambiguous-entity",
     "resolve-entity-rematching",
 }
 
