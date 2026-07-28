@@ -1,9 +1,10 @@
 import re
+from asyncio import CancelledError
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Annotated, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from sqlalchemy import case, func, select
@@ -66,7 +67,11 @@ from app.models.agent_analysis import (
     AgentWorkItemRecord,
 )
 from app.models.agent_graph import AgentGraphRunRecord, AgentHumanGateRecord
-from app.models.agent_runtime import AgentRunRecord, SchoolTaskLockRecord
+from app.models.agent_runtime import (
+    AgentConversationRecord,
+    AgentRunRecord,
+    SchoolTaskLockRecord,
+)
 from app.models.reconciliation import ReconciliationTask
 from app.models.reporting import AgentReportRecord
 from app.repositories.agent_governance import (
@@ -123,6 +128,49 @@ from app.tasks.deletion_service import (
 )
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
+
+_ACTIVE_CONVERSATION_RUN_STATUSES = (
+    "pending",
+    "running",
+    "waiting_human",
+    "blocked_model_error",
+    "terminating",
+)
+_CONVERSATION_MESSAGE_TOKEN_KEY = "_message_in_flight"
+_CONVERSATION_MESSAGE_LEASE_DURATION = timedelta(minutes=15)
+
+
+def _message_claim(token: str) -> dict[str, str]:
+    return {
+        "token": token,
+        "claimed_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _message_claim_token(context: Mapping[str, Any]) -> str | None:
+    claim = context.get(_CONVERSATION_MESSAGE_TOKEN_KEY)
+    if not isinstance(claim, Mapping):
+        return None
+    token = claim.get("token")
+    return token if isinstance(token, str) else None
+
+
+def _message_claim_is_active(context: Mapping[str, Any]) -> bool:
+    claim = context.get(_CONVERSATION_MESSAGE_TOKEN_KEY)
+    if not isinstance(claim, Mapping):
+        return False
+    claimed_at = claim.get("claimed_at")
+    if not isinstance(claimed_at, str) or _message_claim_token(context) is None:
+        return False
+    try:
+        claimed_at_time = datetime.fromisoformat(claimed_at)
+    except ValueError:
+        return False
+    if claimed_at_time.tzinfo is None:
+        claimed_at_time = claimed_at_time.replace(tzinfo=UTC)
+    return datetime.now(UTC) - claimed_at_time.astimezone(UTC) < (
+        _CONVERSATION_MESSAGE_LEASE_DURATION
+    )
 
 _GRAPH_STAGE_BY_NODE = {
     "inspect_sources": "data_ingestion",
@@ -357,8 +405,12 @@ async def get_current_agent_conversation(
     )
     intent = AgentIntentView.model_validate(conversation.context) if conversation.context else None
     confirmation = None
+    latest_run_is_active = (
+        run is not None and run.status in _ACTIVE_CONVERSATION_RUN_STATUSES
+    )
     can_confirm = (
-        run is None
+        not latest_run_is_active
+        and not _message_claim_is_active(conversation.context)
         and conversation.context.get("decision_kind") == "start_confirmation"
         and intent is not None
         and intent.source is not None
@@ -418,16 +470,16 @@ async def send_agent_message(
     _require_enabled(request)
     repository = AgentRuntimeRepository(session)
     conversation = await repository.get_active_conversation(
-        conversation_id, tenant_id=operator.tenant_id
+        conversation_id,
+        tenant_id=operator.tenant_id,
+        for_update=True,
     )
     if conversation is None:
         raise HTTPException(404, detail=_error("conversation_not_found", "Conversation not found"))
     active = await session.scalar(
         select(AgentRunRecord).where(
             AgentRunRecord.conversation_id == conversation.id,
-            AgentRunRecord.status.in_(
-                ("pending", "running", "waiting_human", "blocked_model_error", "terminating")
-            ),
+            AgentRunRecord.status.in_(_ACTIVE_CONVERSATION_RUN_STATUSES),
         )
     )
     if active is not None:
@@ -435,6 +487,19 @@ async def send_agent_message(
             409,
             detail=_error("invalid_state", "Conversation is locked by an active task"),
         )
+    if _message_claim_is_active(conversation.context):
+        raise HTTPException(
+            409,
+            detail=_error(
+                "conversation_busy",
+                "Conversation is already processing another message",
+            ),
+        )
+    message_token = str(uuid4())
+    conversation.context = {
+        **conversation.context,
+        _CONVERSATION_MESSAGE_TOKEN_KEY: _message_claim(message_token),
+    }
     await repository.append_conversation_message(
         conversation_id=conversation.id,
         tenant_id=operator.tenant_id,
@@ -445,12 +510,46 @@ async def send_agent_message(
         conversation_id=conversation.id,
         tenant_id=operator.tenant_id,
     )
+    history = tuple(
+        ConversationHistoryMessage(
+            role=message.role,
+            kind=message.kind,
+            text=message.text,
+        )
+        for message in messages
+    )
+    current_intent = {
+        key: value
+        for key, value in conversation.context.items()
+        if key != _CONVERSATION_MESSAGE_TOKEN_KEY
+    }
     sources = LocalSourceService(request.app.state.settings).list_sources()
     provider = getattr(
         request.app.state,
         "conversation_provider",
         HttpLLMProvider(settings=request.app.state.settings),
     )
+    # Do not keep a database transaction or Conversation row lock open while the
+    # model is working. The persisted user message remains part of full history.
+    await session.commit()
+
+    async def clear_message_claim() -> AgentConversationRecord | None:
+        claimed_conversation = await repository.get_active_conversation(
+            conversation_id,
+            tenant_id=operator.tenant_id,
+            for_update=True,
+        )
+        if (
+            claimed_conversation is not None
+            and _message_claim_token(claimed_conversation.context) == message_token
+        ):
+            claimed_conversation.context = {
+                key: value
+                for key, value in claimed_conversation.context.items()
+                if key != _CONVERSATION_MESSAGE_TOKEN_KEY
+            }
+        return claimed_conversation
+
     try:
         decision = await ConversationSupervisorAgent(
             provider,
@@ -463,14 +562,7 @@ async def send_agent_message(
                 conversation_id=conversation.id,
                 tenant_id=operator.tenant_id,
                 message=body.message,
-                history=tuple(
-                    ConversationHistoryMessage(
-                        role=message.role,
-                        kind=message.kind,
-                        text=message.text,
-                    )
-                    for message in messages
-                ),
+                history=history,
                 available_source_refs=tuple(source.source_ref for source in sources),
                 available_database_connectors=tuple(
                     ConversationDatabaseConnector(
@@ -483,10 +575,11 @@ async def send_agent_message(
                     )
                     if request.app.state.settings.agent_graph_sql_execution_enabled
                 ),
-                current_intent=dict(conversation.context),
+                current_intent=current_intent,
             )
         )
     except ConversationContextLimitError as error:
+        await clear_message_claim()
         await session.commit()
         raise HTTPException(
             409,
@@ -498,6 +591,7 @@ async def send_agent_message(
             ),
         ) from error
     except (ConversationModelResponseError, ModelProviderError) as error:
+        await clear_message_claim()
         safe_message = "对话模型暂时无法生成有效回复，请稍后重试。"
         await repository.append_conversation_message(
             conversation_id=conversation.id,
@@ -514,7 +608,62 @@ async def send_agent_message(
                 safe_message,
             ),
         ) from error
-    previous_intent = dict(conversation.context)
+    except CancelledError:
+        await clear_message_claim()
+        await session.commit()
+        raise
+    except Exception:
+        await clear_message_claim()
+        await session.commit()
+        raise
+    conversation = await repository.get_active_conversation(
+        conversation_id,
+        tenant_id=operator.tenant_id,
+        for_update=True,
+    )
+    if conversation is None:
+        raise HTTPException(
+            404,
+            detail=_error("conversation_not_found", "Conversation not found"),
+        )
+    active = await session.scalar(
+        select(AgentRunRecord).where(
+            AgentRunRecord.conversation_id == conversation.id,
+            AgentRunRecord.status.in_(_ACTIVE_CONVERSATION_RUN_STATUSES),
+        )
+    )
+    if active is not None:
+        if _message_claim_token(conversation.context) == message_token:
+            conversation.context = {
+                key: value
+                for key, value in conversation.context.items()
+                if key != _CONVERSATION_MESSAGE_TOKEN_KEY
+            }
+        await repository.append_conversation_message(
+            conversation_id=conversation.id,
+            tenant_id=operator.tenant_id,
+            role="assistant",
+            kind="error",
+            text="任务已经开始，本条新需求未应用。",
+        )
+        await session.commit()
+        raise HTTPException(
+            409,
+            detail=_error("invalid_state", "Conversation is locked by an active task"),
+        )
+    if _message_claim_token(conversation.context) != message_token:
+        raise HTTPException(
+            409,
+            detail=_error(
+                "conversation_request_superseded",
+                "Conversation changed while the model was processing",
+            ),
+        )
+    previous_intent = {
+        key: value
+        for key, value in conversation.context.items()
+        if key != _CONVERSATION_MESSAGE_TOKEN_KEY
+    }
     intent = {
         "title": decision.title or previous_intent.get("title") or "全校组织数据同步",
         "entity_types": (
@@ -588,7 +737,9 @@ async def start_conversation_agent_task(
     _require_enabled(request)
     del body
     conversation = await AgentRuntimeRepository(session).get_active_conversation(
-        conversation_id, tenant_id=operator.tenant_id
+        conversation_id,
+        tenant_id=operator.tenant_id,
+        for_update=True,
     )
     if conversation is None:
         raise HTTPException(404, detail=_error("conversation_not_found", "Conversation not found"))
@@ -630,7 +781,11 @@ async def start_conversation_agent_task(
             intent, idempotency_key=idempotency_key, conversation_id=conversation_id
         )
         conversation.context = {
-            **conversation.context,
+            **{
+                key: value
+                for key, value in conversation.context.items()
+                if key != _CONVERSATION_MESSAGE_TOKEN_KEY
+            },
             "decision_kind": "task_started",
         }
         return await _task_response(service, task.id)

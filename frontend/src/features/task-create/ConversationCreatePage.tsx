@@ -14,6 +14,7 @@ import { TASK_HISTORY_UPDATED_EVENT } from "../../data/taskHistory";
 import { IdentityConflictEvidence } from "../../components/IdentityConflictEvidence";
 import { TaskStatusRail } from "../../components/TaskStatusRail";
 import { presentAgentEvent, presentAgentPhase } from "../agent-events/presentation";
+import { ConversationMediumRiskReviewCard } from "./ConversationMediumRiskReviewCard";
 import { ConversationRiskApprovalCard } from "./ConversationRiskApprovalCard";
 
 type ConversationState = "idle" | "collecting" | "needs-input" | "draft-ready" | "submitting" | "failed" | "created";
@@ -89,6 +90,7 @@ export function ConversationCreatePage({
   const handledClarificationEvents = useRef(new Set<string>());
   const [terminationGate, setTerminationGate] = useState<AgentGraphHumanGate>();
   const [highRiskGates, setHighRiskGates] = useState<AgentGraphHumanGate[]>([]);
+  const [mediumRiskGates, setMediumRiskGates] = useState<AgentGraphHumanGate[]>([]);
   const [graphCursor, setGraphCursor] = useState<number>();
   const [terminationLoading, setTerminationLoading] = useState(false);
   const [terminationError, setTerminationError] = useState<string>();
@@ -111,7 +113,11 @@ export function ConversationCreatePage({
           setMessages(current.messages.length ? current.messages : initialMessages);
           setAgentIntent(current.intent ?? undefined);
           const restoredTask = current.task ?? undefined;
-          setConfirmation(restoredTask ? undefined : current.start_confirmation ?? undefined);
+          setConfirmation(
+            restoredTask && !terminalTaskStatuses.has(restoredTask.status)
+              ? undefined
+              : current.start_confirmation ?? undefined,
+          );
           setTask(restoredTask);
           setState(
             restoredTask?.status === "failed"
@@ -173,6 +179,14 @@ export function ConversationCreatePage({
           setHighRiskGates((current) => {
             const merged = new Map(current.map((gate) => [gate.id, gate]));
             for (const gate of refreshedGates) merged.set(gate.id, gate);
+            return [...merged.values()];
+          });
+          const refreshedMediumGates = graphProgress.human_gates.filter(
+            (gate) => gate.kind === "high_risk_approval" && gate.risk === "medium",
+          );
+          setMediumRiskGates((current) => {
+            const merged = new Map(current.map((gate) => [gate.id, gate]));
+            for (const gate of refreshedMediumGates) merged.set(gate.id, gate);
             return [...merged.values()];
           });
           const currentIdentityGate = graphProgress.human_gates.find(
@@ -252,6 +266,9 @@ export function ConversationCreatePage({
 
   useEffect(() => {
     setHighRiskGates([]);
+    setMediumRiskGates([]);
+    setEvents([]);
+    setEventCursor(undefined);
     setGraphCursor(undefined);
     setIdentityGate(undefined);
     setClarificationDecisionId(undefined);
@@ -261,15 +278,53 @@ export function ConversationCreatePage({
     handledClarificationEvents.current.clear();
   }, [task?.id]);
 
+  const terminalTaskStatus = task && terminalTaskStatuses.has(task.status)
+    ? task.status
+    : undefined;
+
+  useEffect(() => {
+    if (!terminalTaskStatus) return;
+    setClarificationOpen(false);
+    setIdentityGate(undefined);
+    setClarificationDecisionId(undefined);
+    setClarificationInterpretation(undefined);
+    setRewritingClarificationId(undefined);
+    setClarificationError(undefined);
+    setTerminationGate(undefined);
+    setHighRiskGates((current) => current.map((gate) => (
+      gate.status === "pending"
+        ? {
+            ...gate,
+            actionable: false,
+            unavailable_reason_zh: "任务已经结束，不能再提交审批。",
+          }
+        : gate
+    )));
+    setMediumRiskGates((current) => current.map((gate) => (
+      gate.status === "pending"
+        ? {
+            ...gate,
+            actionable: false,
+            unavailable_reason_zh: "任务已经结束，不能再提交复核。",
+          }
+        : gate
+    )));
+  }, [terminalTaskStatus]);
+
   async function sendMessage(event: FormEvent) {
     event.preventDefault();
     const message = input.trim();
-    if (!message || hydrating || state === "collecting" || (task && !clarificationOpen)) return;
+    if (
+      !message
+      || hydrating
+      || state === "collecting"
+      || (taskActive && !clarificationOpen)
+    ) return;
     setInput("");
     setState("collecting");
     setMessages((current) => [...current, { id: messageId(), role: "user", text: message }]);
     try {
-      if (task && clarificationOpen && backendApi.clarify) {
+      if (taskActive && task && clarificationOpen && backendApi.clarify) {
         setClarificationError(undefined);
         const interpretation = await backendApi.clarify(task.id, message);
         if (task.workflow_version !== "agent-graph-v1") {
@@ -311,6 +366,7 @@ export function ConversationCreatePage({
         }]);
         return;
       }
+      setConfirmation(undefined);
       const response = await backendApi.sendMessage(
         conversationId ?? await createConversation(),
         message,
@@ -368,6 +424,7 @@ export function ConversationCreatePage({
       handledClarificationEvents.current.clear();
       setTerminationGate(undefined);
       setHighRiskGates([]);
+      setMediumRiskGates([]);
       setGraphCursor(undefined);
       setTerminationError(undefined);
       setContextLimitReached(false);
@@ -390,7 +447,7 @@ export function ConversationCreatePage({
   }
 
   async function startTask() {
-    if (!confirmation || !conversationId || task) return;
+    if (!confirmation || !conversationId || taskActive) return;
     setState("submitting");
     try {
       const created = await backendApi.startTask(conversationId, {
@@ -399,6 +456,17 @@ export function ConversationCreatePage({
         source: agentIntent?.source,
         target: agentIntent?.target,
       }, sessionKey());
+      setEvents([]);
+      setEventCursor(undefined);
+      setClarificationOpen(false);
+      setIdentityGate(undefined);
+      setClarificationDecisionId(undefined);
+      setClarificationInterpretation(undefined);
+      setRewritingClarificationId(undefined);
+      setClarificationError(undefined);
+      setHighRiskGates([]);
+      setMediumRiskGates([]);
+      setGraphCursor(undefined);
       setTask(created);
       setConfirmation(undefined);
       setState("created");
@@ -559,9 +627,57 @@ export function ConversationCreatePage({
     return result.status;
   }
 
+  async function submitMediumRiskGates(
+    gates: AgentGraphHumanGate[],
+    rejectedFindingIds: Set<string>,
+  ) {
+    if (
+      !task
+      || !backendApi.decideGraphGates
+      || typeof graphCursor !== "number"
+      || gates.some((gate) =>
+        gate.actionable === false
+        || !gate.membership_hash
+        || !gate.items?.length
+      )
+    ) {
+      throw new Error("中风险审核证据不完整，请等待任务刷新后重试");
+    }
+    const decisions = gates.map((gate) => {
+      const approvedFindingIds: string[] = [];
+      const rejectedIds: string[] = [];
+      for (const item of gate.items ?? []) {
+        if (rejectedFindingIds.has(item.finding_id)) {
+          rejectedIds.push(item.finding_id);
+        } else {
+          approvedFindingIds.push(item.finding_id);
+        }
+      }
+      return {
+        gate_id: gate.id,
+        decision: approvedFindingIds.length ? "approve" as const : "reject" as const,
+        reason: "操作人通过聊天窗口完成中风险批量复核",
+        approved_finding_ids: approvedFindingIds,
+        rejected_finding_ids: rejectedIds,
+        graph_cursor: graphCursor,
+        membership_hash: gate.membership_hash!,
+      };
+    });
+    const result = await backendApi.decideGraphGates(task.id, decisions);
+    const statuses = Object.fromEntries(
+      result.decisions.map((decision) => [decision.gate_id, decision.status]),
+    );
+    setMediumRiskGates((current) => current.map((gate) => (
+      statuses[gate.id]
+        ? { ...gate, status: statuses[gate.id], actionable: false }
+        : gate
+    )));
+    return statuses;
+  }
+
   const isCollecting = state === "collecting";
   const taskActive = Boolean(task && !terminalTaskStatuses.has(task.status));
-  const composerLocked = Boolean(task && !clarificationOpen);
+  const composerLocked = Boolean(taskActive && !clarificationOpen);
   const taskBlocked = task?.status === "blocked_model_error";
   const taskFailed = task?.status === "failed";
   const taskTitle = taskFailed
@@ -614,11 +730,15 @@ export function ConversationCreatePage({
           message={newConversationError}
         />
       )}
-      <div className={`conversation-workspace${task ? " has-task-status" : ""}`}>
+      <div className="conversation-workspace has-task-status">
         <section className="conversation-surface" aria-label="新建对话">
         <div className="conversation-messages" aria-live="polite">
           {messages.map((message) => (
-            <article className={`conversation-message ${message.role} ${message.kind ?? ""}`} key={message.id}>
+            <article
+              className={`conversation-message ${message.role} ${message.kind ?? ""}`}
+              aria-label={message.role === "assistant" ? "同步助手消息" : "你的消息"}
+              key={message.id}
+            >
               <span className="message-avatar">{message.role === "assistant" ? <Bot size={17} /> : <UserRound size={17} />}</span>
               <div>
                 <strong>{message.role === "assistant" ? "同步助手" : "你"}</strong>
@@ -626,7 +746,7 @@ export function ConversationCreatePage({
               </div>
             </article>
           ))}
-          {confirmation && !task && (
+          {confirmation && !taskActive && (
             <article className="conversation-card start-confirmation" aria-label="开始确认">
               <strong>开始同步前确认</strong>
               <p>{confirmation.summary}</p>
@@ -707,10 +827,19 @@ export function ConversationCreatePage({
                   onDecide={decideHighRiskGate}
                 />
               ))}
+              {mediumRiskGates.length > 0 && (
+                <ConversationMediumRiskReviewCard
+                  gates={mediumRiskGates}
+                  onSubmit={submitMediumRiskGates}
+                />
+              )}
               <div className="agent-event-list">
                 {events
                   .filter((event) => !(
-                    (highRiskGates.length > 0 && event.type === "approval_required")
+                    (
+                      (highRiskGates.length > 0 || mediumRiskGates.length > 0)
+                      && event.type === "approval_required"
+                    )
                     || (
                       Boolean(identityGate)
                       && ["clarification_required", "clarification_decision_ready"].includes(
@@ -766,7 +895,9 @@ export function ConversationCreatePage({
             placeholder={
               clarificationOpen
                 ? "请说明当前身份冲突应选择哪个候选，或按希沃多余处理"
-                : "例如：只核对七年级的老师和学生"
+                : task && !taskActive
+                  ? "继续描述下一次数据同步任务"
+                  : "例如：只核对七年级的老师和学生"
             }
             rows={2}
             disabled={hydrating || isCollecting || composerLocked}
@@ -778,14 +909,12 @@ export function ConversationCreatePage({
           </button>
         </form>
         </section>
-        {task && (
-          <TaskStatusRail
-            stages={agentTaskStages}
-            currentIndex={taskStageIndex(task.phase)}
-            blocked={taskBlocked || taskFailed}
-            terminationRequested={task.status === "terminated"}
-          />
-        )}
+        <TaskStatusRail
+          stages={agentTaskStages}
+          currentIndex={task ? taskStageIndex(task.phase) : -1}
+          blocked={taskBlocked || taskFailed}
+          terminationRequested={task?.status === "terminated"}
+        />
       </div>
       <Modal
         rootClassName="apple-agent-modal"

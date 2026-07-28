@@ -1,5 +1,10 @@
+import asyncio
 import json
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event
 from uuid import UUID, uuid4
 
 import pytest
@@ -77,6 +82,31 @@ class InvalidConversationProvider:
         del request
         return LLMResponse(
             output={"unexpected": "shape"},
+            provider="stub",
+            model="stub",
+        )
+
+
+class BlockingConversationProvider:
+    def __init__(self) -> None:
+        self.entered = Event()
+        self.release = Event()
+
+    async def complete_json_once(self, request: LLMRequest) -> LLMResponse:
+        del request
+        self.entered.set()
+        await asyncio.to_thread(self.release.wait)
+        return LLMResponse(
+            output={
+                "result": {
+                    "kind": "start_confirmation",
+                    "title": "不应覆盖活动任务的新确认",
+                    "entity_types": ["student"],
+                    "source_ref": "third-party/roster.csv",
+                    "target_ref": "seewo/roster.csv",
+                    "message_zh": "这条并发模型结果必须被丢弃。",
+                }
+            },
             provider="stub",
             model="stub",
         )
@@ -979,6 +1009,252 @@ def test_started_conversation_does_not_restore_confirmation_after_task_failure(
     assert current.status_code == 200
     assert current.json()["task"]["status"] == "failed"
     assert current.json()["start_confirmation"] is None
+
+
+def test_terminal_conversation_restores_the_next_start_confirmation(
+    agent_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "terminal-conversation-sources"
+    for relative in ("third-party/roster.csv", "seewo/roster.csv"):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "类别,姓名,编号,班级,电话,邮箱\n学生,张三,S001,一班,13800000001,a@example.test\n",
+            encoding="utf-8",
+        )
+    agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
+    agent_client.app.state.settings.agent_local_write_roots = ((root / "seewo").resolve(),)
+    agent_client.app.state.conversation_provider = ConversationProvider()
+    conversation = agent_client.post("/api/agent/conversations").json()
+    first_message = agent_client.post(
+        f"/api/agent/conversations/{conversation['id']}/messages",
+        json={"message": "同步本地学生数据"},
+    )
+    assert first_message.status_code == 200, first_message.text
+    created = agent_client.post(
+        f"/api/agent/conversations/{conversation['id']}/tasks",
+        headers={"Idempotency-Key": "terminal-conversation-first-task"},
+        json={
+            "title": "客户端不会成为事实",
+            "entity_types": ["teacher"],
+            "source": {"kind": "local", "source_ref": "third-party/other.csv"},
+            "target": {"kind": "local", "source_ref": "seewo/other.csv"},
+        },
+    )
+    assert created.status_code == 202, created.text
+
+    async def complete_task() -> None:
+        async with agent_client.app.state.database.session_factory() as session:
+            task = await session.get(ReconciliationTask, UUID(created.json()["id"]))
+            run = await session.scalar(
+                select(AgentRunRecord).where(AgentRunRecord.task_id == task.id)
+            )
+            lock = await session.scalar(
+                select(SchoolTaskLockRecord).where(
+                    SchoolTaskLockRecord.owner_task_id == task.id,
+                    SchoolTaskLockRecord.active.is_(True),
+                )
+            )
+            assert task is not None
+            assert run is not None
+            assert lock is not None
+            task.status = "completed"
+            run.status = "completed"
+            lock.active = False
+            await session.commit()
+
+    agent_client.portal.call(complete_task)
+    next_message = agent_client.post(
+        f"/api/agent/conversations/{conversation['id']}/messages",
+        json={"message": "再同步一次学生数据"},
+    )
+    assert next_message.status_code == 200, next_message.text
+
+    current = agent_client.get("/api/agent/conversations/current")
+
+    assert current.status_code == 200, current.text
+    assert current.json()["task"]["status"] == "completed"
+    assert current.json()["start_confirmation"] == {
+        "title": "本地学生同步",
+        "summary": "已确认两份本地数据。",
+        "entity_types": ["student"],
+    }
+    second_task = agent_client.post(
+        f"/api/agent/conversations/{conversation['id']}/tasks",
+        headers={"Idempotency-Key": "terminal-conversation-second-task"},
+        json={
+            "title": "仍以服务端确认意图为准",
+            "entity_types": ["teacher"],
+            "source": {"kind": "local", "source_ref": "third-party/other.csv"},
+            "target": {"kind": "local", "source_ref": "seewo/other.csv"},
+        },
+    )
+    assert second_task.status_code == 202, second_task.text
+    assert second_task.json()["id"] != created.json()["id"]
+
+
+def test_message_result_cannot_overwrite_a_task_started_during_model_work(
+    agent_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "concurrent-conversation-sources"
+    for relative in ("third-party/roster.csv", "seewo/roster.csv"):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "类别,姓名,编号,班级,电话,邮箱\n学生,张三,S001,一班,13800000001,a@example.test\n",
+            encoding="utf-8",
+        )
+    agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
+    agent_client.app.state.settings.agent_local_write_roots = ((root / "seewo").resolve(),)
+    agent_client.app.state.conversation_provider = ConversationProvider()
+    conversation = agent_client.post("/api/agent/conversations").json()
+    prepared = agent_client.post(
+        f"/api/agent/conversations/{conversation['id']}/messages",
+        json={"message": "同步本地学生数据"},
+    )
+    assert prepared.status_code == 200, prepared.text
+
+    blocking_provider = BlockingConversationProvider()
+    agent_client.app.state.conversation_provider = blocking_provider
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        message_future = executor.submit(
+            agent_client.post,
+            f"/api/agent/conversations/{conversation['id']}/messages",
+            json={"message": "模型处理期间尝试启动旧确认"},
+        )
+        assert blocking_provider.entered.wait(timeout=2)
+        start_future = executor.submit(
+            agent_client.post,
+            f"/api/agent/conversations/{conversation['id']}/tasks",
+            headers={"Idempotency-Key": "concurrent-conversation-task"},
+            json={
+                "title": "客户端不会成为事实",
+                "entity_types": ["teacher"],
+                "source": {"kind": "local", "source_ref": "third-party/other.csv"},
+                "target": {"kind": "local", "source_ref": "seewo/other.csv"},
+            },
+        )
+        try:
+            started = start_future.result(timeout=1)
+        except FutureTimeoutError:
+            blocking_provider.release.set()
+            started = start_future.result(timeout=5)
+        else:
+            blocking_provider.release.set()
+        message_response = message_future.result(timeout=5)
+
+    assert started.status_code == 202, started.text
+    assert message_response.status_code == 409, message_response.text
+    assert message_response.json()["detail"]["code"] == "invalid_state"
+    current = agent_client.get("/api/agent/conversations/current")
+    assert current.status_code == 200
+    assert current.json()["task"]["id"] == started.json()["id"]
+    assert current.json()["start_confirmation"] is None
+    assert all(
+        message["text"] != "这条并发模型结果必须被丢弃。"
+        for message in current.json()["messages"]
+    )
+
+
+def test_conversation_rejects_a_second_message_while_model_work_is_in_flight(
+    agent_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "concurrent-message-sources"
+    for relative in ("third-party/roster.csv", "seewo/roster.csv"):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "类别,姓名,编号,班级,电话,邮箱\n学生,张三,S001,一班,13800000001,a@example.test\n",
+            encoding="utf-8",
+        )
+    agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
+    agent_client.app.state.settings.agent_local_write_roots = ((root / "seewo").resolve(),)
+    agent_client.app.state.conversation_provider = ConversationProvider()
+    conversation = agent_client.post("/api/agent/conversations").json()
+    prepared = agent_client.post(
+        f"/api/agent/conversations/{conversation['id']}/messages",
+        json={"message": "同步本地学生数据"},
+    )
+    assert prepared.status_code == 200, prepared.text
+
+    blocking_provider = BlockingConversationProvider()
+    agent_client.app.state.conversation_provider = blocking_provider
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first_future = executor.submit(
+            agent_client.post,
+            f"/api/agent/conversations/{conversation['id']}/messages",
+            json={"message": "继续完善当前同步要求"},
+        )
+        assert blocking_provider.entered.wait(timeout=2)
+        try:
+            second_response = agent_client.post(
+                f"/api/agent/conversations/{conversation['id']}/messages",
+                json={"message": "这条并发消息不应进入对话"},
+            )
+        finally:
+            blocking_provider.release.set()
+        first_response = first_future.result(timeout=5)
+
+    assert second_response.status_code == 409, second_response.text
+    assert second_response.json()["detail"]["code"] == "conversation_busy"
+    assert first_response.status_code == 200, first_response.text
+    current = agent_client.get("/api/agent/conversations/current")
+    assert current.status_code == 200
+    assert current.json()["start_confirmation"]["title"] == "不应覆盖活动任务的新确认"
+    assert all(
+        message["text"] != "这条并发消息不应进入对话"
+        for message in current.json()["messages"]
+    )
+
+
+def test_conversation_recovers_an_abandoned_message_claim(
+    agent_client: TestClient,
+) -> None:
+    agent_client.app.state.conversation_provider = ConversationProvider()
+    conversation = agent_client.post("/api/agent/conversations").json()
+
+    async def abandon_claim() -> None:
+        async with agent_client.app.state.database.session_factory() as session:
+            record = await session.get(
+                AgentConversationRecord,
+                UUID(conversation["id"]),
+            )
+            assert record is not None
+            record.context = {
+                "_message_in_flight": {
+                    "token": "abandoned-worker",
+                    "claimed_at": (datetime.now(UTC) - timedelta(hours=1)).isoformat(),
+                }
+            }
+            await session.commit()
+
+    agent_client.portal.call(abandon_claim)
+    recovered = agent_client.post(
+        f"/api/agent/conversations/{conversation['id']}/messages",
+        json={"message": "继续同步本地学生数据"},
+    )
+
+    assert recovered.status_code == 200, recovered.text
+    current = agent_client.get("/api/agent/conversations/current")
+    assert current.status_code == 200
+    assert any(
+        message["text"] == "继续同步本地学生数据"
+        for message in current.json()["messages"]
+    )
+
+    async def load_context() -> dict[str, object]:
+        async with agent_client.app.state.database.session_factory() as session:
+            record = await session.get(
+                AgentConversationRecord,
+                UUID(conversation["id"]),
+            )
+            assert record is not None
+            return record.context
+
+    assert "_message_in_flight" not in agent_client.portal.call(load_context)
 
 
 def test_current_conversation_restores_an_unstarted_confirmation(
