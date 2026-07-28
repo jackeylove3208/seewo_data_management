@@ -35,6 +35,7 @@ from app.agent_graph.rollback_executors import (
 )
 from app.agent_graph.tools import GraphPhaseToolGateway
 from app.agent_graph.worker import GraphActionOutcome, GraphWorkContext
+from app.agent_reporting.rollback_cycles import has_fully_verified_mutations
 from app.agent_runtime.csv_governance_handlers import (
     CsvGovernanceHandlers,
     build_agent_report_facts,
@@ -1577,11 +1578,9 @@ class ProductionGraphActionExecutor:
                     operator=operator,
                     max_retries=self._max_retries,
                 )
-                mutations = facts.get("mutations", [])
-                rollback_eligible = terminal_state == "completed" and any(
-                    isinstance(item, dict) and item.get("status") == "succeeded"
-                    for item in mutations
-                    if isinstance(mutations, list)
+                rollback_eligible = has_fully_verified_mutations(
+                    terminal_state,
+                    facts,
                 )
                 invocation = GraphSkillInvocation(
                     task_id=context.task_id,

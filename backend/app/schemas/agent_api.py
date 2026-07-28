@@ -104,6 +104,7 @@ class AgentTaskResponse(BaseModel):
     title: str | None = None
     report_id: UUID | None = None
     rollback_eligible: bool = False
+    rollback_blocked_reason: Literal["already_rolled_back"] | None = None
     deletion_eligible: bool = True
     error: dict[str, object] | None = None
 

@@ -50,6 +50,42 @@ class AgentReportRecord(Base, TimestampMixin):
     )
 
 
+class AgentRollbackCycleRecord(Base, TimestampMixin):
+    __tablename__ = "agent_rollback_cycles"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(128), index=True)
+    data_source_key: Mapped[str] = mapped_column(String(64))
+    target_kind: Mapped[str] = mapped_column(String(32))
+    generation: Mapped[int] = mapped_column(Integer, default=1)
+    latest_successful_sync_task_id: Mapped[UUID] = mapped_column(
+        ForeignKey("reconciliation_tasks.id", ondelete="RESTRICT"), index=True
+    )
+    completed_rollback_task_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("reconciliation_tasks.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    completed_rollback_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "data_source_key",
+            name="uq_agent_rollback_cycle_data_source",
+        ),
+    )
+
+
 def _reject_report_job_fact_mutation(_mapper: object, _connection: object, target: object) -> None:
     state = inspect(target)
     if state is None:

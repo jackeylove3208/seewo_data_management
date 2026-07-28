@@ -9,6 +9,12 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent_reporting.rollback_cycles import (
+    AgentRollbackCycleService,
+    has_fully_verified_mutations,
+    is_fully_successful_sync,
+    require_rollback_cycle_generation,
+)
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentRunKind
 from app.models.agent_runtime import AgentRunRecord, SchoolTaskLockRecord
@@ -90,6 +96,11 @@ class AgentReportingService:
         )
         self.session.add(report)
         await self.session.flush()
+        cycles = AgentRollbackCycleService(self.session)
+        if is_fully_successful_sync(task, terminal_state, normalized):
+            await cycles.record_fully_successful_sync(task)
+        elif task.task_kind == "rollback" and terminal_state == "completed":
+            await cycles.record_completed_rollback(task)
         return report
 
     async def history(
@@ -138,13 +149,22 @@ class AgentReportingService:
         requested_by: str,
         target_version_id: UUID,
     ) -> RollbackTaskPreview:
+        source = await self.session.get(ReconciliationTask, source_task_id)
+        if source is None or source.tenant_id != tenant_id:
+            raise LookupError("source Agent task not found")
+        cycles = AgentRollbackCycleService(self.session)
+        rollback_cycle_generation = await cycles.ensure_available(source)
         report = await self.session.scalar(
             select(AgentReportRecord).where(
                 AgentReportRecord.task_id == source_task_id,
                 AgentReportRecord.tenant_id == tenant_id,
             )
         )
-        if report is None or not report.rollback_eligible:
+        if report is None or not is_fully_successful_sync(
+            source,
+            report.terminal_state,
+            report.facts,
+        ):
             raise ValueError("rollback is not eligible from verified execution facts")
         idempotency_key = f"rollback:{source_task_id}:{target_version_id}"
         existing_task = await self.session.scalar(
@@ -154,6 +174,11 @@ class AgentReportingService:
             )
         )
         if existing_task is not None:
+            existing_generation = require_rollback_cycle_generation(existing_task)
+            await cycles.ensure_available(
+                source,
+                expected_generation=existing_generation,
+            )
             existing_run = await AgentRuntimeRepository(self.session).get_run_for_task(
                 existing_task.id
             )
@@ -178,9 +203,6 @@ class AgentReportingService:
         )
         if active is not None:
             raise ValueError(f"school lock is owned by task {active.owner_task_id}")
-        source = await self.session.get(ReconciliationTask, source_task_id)
-        if source is None:
-            raise LookupError("source Agent task not found")
         workflow_version = (
             "agent-graph-v1" if source.workflow_version == "agent-graph-v1" else "new-agent-v1"
         )
@@ -195,7 +217,7 @@ class AgentReportingService:
         rollback_target = (
             dict(source_target)
             if isinstance(source_target, dict)
-            and source_target.get("kind") in {"database", "local", "csv"}
+            and source_target.get("kind") in {"api", "database", "local", "csv"}
             else None
         )
         task = ReconciliationTask(
@@ -216,6 +238,7 @@ class AgentReportingService:
                 "operations": [],
                 "source_mode": rollback_source_mode,
                 "target": rollback_target,
+                "rollback_cycle_generation": rollback_cycle_generation,
             },
             idempotency_key=idempotency_key,
             request_hash=_hash(
@@ -277,6 +300,7 @@ class AgentReportingService:
             "operations": list(operations),
             "source_mode": rollback_source_mode,
             "target": rollback_target,
+            "rollback_cycle_generation": rollback_cycle_generation,
         }
         return RollbackTaskPreview(
             task_id=task.id,
@@ -311,8 +335,9 @@ def _facts(facts: Mapping[str, Any], terminal_state: str) -> dict[str, Any]:
             successful.append(str(mutation["id"]))
     result = dict(facts)
     result["mutation_summary"] = counts
+    eligible = has_fully_verified_mutations(terminal_state, result)
     result["rollback_evidence"] = {
-        "eligible": terminal_state != "abnormal_input" and bool(successful),
+        "eligible": eligible,
         "reason": "abnormal_input" if terminal_state == "abnormal_input" else None,
         "successful_mutation_ids": successful,
         "successful_mutations": [

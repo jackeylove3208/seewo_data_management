@@ -62,6 +62,7 @@ from app.models.rematching import (
 )
 from app.models.reporting import (
     AgentReportRecord,
+    AgentRollbackCycleRecord,
     GovernanceReportRecord,
     ReportJobRecord,
     RestoreExecutionLinkRecord,
@@ -122,6 +123,7 @@ __all__ = [
     "ExecutionOperationRecord",
     "GovernanceReportRecord",
     "AgentReportRecord",
+    "AgentRollbackCycleRecord",
     "GovernancePlanRecord",
     "GovernancePlanExplanationRecord",
     "GovernanceProposalRecord",

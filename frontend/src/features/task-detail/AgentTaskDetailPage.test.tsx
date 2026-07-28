@@ -410,6 +410,43 @@ describe("controlled Agent graph task detail", () => {
     client.clear();
   });
 
+  it("keeps the rollback control visible with the data-source cycle explanation", async () => {
+    vi.mocked(agentApi.task).mockResolvedValue({
+      id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      task_kind: "sync",
+      phase: "terminal",
+      status: "completed",
+      title: "已完成同步",
+      rollback_eligible: false,
+      rollback_blocked_reason: "already_rolled_back",
+    });
+    vi.mocked(agentApi.graph).mockResolvedValue({
+      task_id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      graph_version: "agent-sync-graph-v1",
+      graph_cursor: 20,
+      current_node: "terminal",
+      business_stage: "terminal",
+      current_action_zh: "任务已结束",
+      status: "completed",
+      can_terminate: false,
+      termination_requested: false,
+      human_gates: [],
+    });
+    const preview = vi.spyOn(agentApi, "previewRollback");
+    const { client } = renderPage();
+
+    const lockedButton = await screen.findByRole("button", { name: "已经回滚" });
+    expect(lockedButton).toBeDisabled();
+    expect(lockedButton).toHaveAttribute(
+      "title",
+      "已经回滚，若想再次回滚，需下次同步后执行。",
+    );
+    expect(preview).not.toHaveBeenCalled();
+    client.clear();
+  });
+
   it("renders legacy Agent events as a Chinese blocked-state timeline", async () => {
     vi.mocked(agentApi.task).mockResolvedValue({
       id: "task-graph-1",
