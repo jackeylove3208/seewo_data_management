@@ -74,6 +74,12 @@ from app.models.agent_runtime import (
 )
 from app.models.reconciliation import ReconciliationTask
 from app.models.reporting import AgentReportRecord
+from app.remote_sources.links import (
+    RemoteSourceRegistrationError,
+    extract_conversation_link,
+    redact_conversation_links,
+)
+from app.remote_sources.repository import RemoteSourceRepository
 from app.repositories.agent_governance import (
     AgentGovernanceRepository,
     GovernanceReplayConflict,
@@ -108,6 +114,7 @@ from app.schemas.agent_conversation import (
     ConversationAgentContext,
     ConversationDatabaseConnector,
     ConversationHistoryMessage,
+    ConversationRemoteSource,
 )
 from app.schemas.agent_graph_api import (
     AgentGraphApprovalChangeView,
@@ -513,6 +520,35 @@ async def send_agent_message(
                 "Conversation is already processing another message",
             ),
         )
+    try:
+        extracted_link = extract_conversation_link(body.message)
+    except RemoteSourceRegistrationError as error:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=_error(error.code, error.safe_message),
+        ) from error
+    safe_message = (
+        extracted_link.redacted_message
+        if extracted_link is not None
+        else redact_conversation_links(body.message)
+    )
+    remote_source_repository = RemoteSourceRepository(session)
+    if (
+        extracted_link is not None
+        and request.app.state.settings.conversation_remote_csv_enabled
+    ):
+        await remote_source_repository.register(
+            tenant_id=operator.tenant_id,
+            created_by=operator.operator_id,
+            conversation_id=conversation.id,
+            original_url=extracted_link.original_url,
+            display_origin=extracted_link.display_origin,
+        )
+    remote_sources = await remote_source_repository.list_for_conversation(
+        tenant_id=operator.tenant_id,
+        created_by=operator.operator_id,
+        conversation_id=conversation.id,
+    )
     message_token = str(uuid4())
     conversation.context = {
         **conversation.context,
@@ -522,7 +558,7 @@ async def send_agent_message(
         conversation_id=conversation.id,
         tenant_id=operator.tenant_id,
         role="user",
-        text=body.message,
+        text=safe_message,
     )
     messages = await repository.list_conversation_messages(
         conversation_id=conversation.id,
@@ -532,7 +568,7 @@ async def send_agent_message(
         ConversationHistoryMessage(
             role=message.role,
             kind=message.kind,
-            text=message.text,
+            text=redact_conversation_links(message.text),
         )
         for message in messages
     )
@@ -579,9 +615,16 @@ async def send_agent_message(
             ConversationAgentContext(
                 conversation_id=conversation.id,
                 tenant_id=operator.tenant_id,
-                message=body.message,
+                message=safe_message,
                 history=history,
                 available_source_refs=tuple(source.source_ref for source in sources),
+                available_remote_sources=tuple(
+                    ConversationRemoteSource(
+                        remote_source_id=remote_source.id,
+                        display_origin=remote_source.display_origin,
+                    )
+                    for remote_source in remote_sources
+                ),
                 available_database_connectors=tuple(
                     ConversationDatabaseConnector(
                         connector_id=connector_id,
@@ -690,7 +733,12 @@ async def send_agent_message(
             else previous_intent.get("entity_types", [])
         ),
         "source": (
-            {"kind": "local", "source_ref": decision.source_ref}
+            {
+                "kind": "remote_csv",
+                "remote_source_id": str(decision.remote_source_id),
+            }
+            if decision.remote_source_id is not None
+            else {"kind": "local", "source_ref": decision.source_ref}
             if decision.source_ref is not None
             else {
                 "kind": "database",

@@ -1,9 +1,9 @@
 ## 1. Conversation contract and persistence
 
 - [x] 1.1 Add remote-source settings, SQLAlchemy model, repository, and Alembic migration with tenant/operator/conversation/task/file bindings and safe lifecycle fields
-- [ ] 1.2 Add deterministic one-link extraction, HTTPS registration validation, origin cleaning, and raw-link replacement tests and implementation
-- [ ] 1.3 Extend conversation context, decision, and intent contracts with trusted remote-source references and reject unlisted or cross-conversation selections
-- [ ] 1.4 Integrate registration and sanitized history into the conversation message endpoint without changing no-link behavior
+- [x] 1.2 Add deterministic one-link extraction, HTTPS registration validation, origin cleaning, and raw-link replacement tests and implementation
+- [x] 1.3 Extend conversation context, decision, and intent contracts with trusted remote-source references and reject unlisted or cross-conversation selections
+- [x] 1.4 Integrate registration and sanitized history into the conversation message endpoint without changing no-link behavior
 - [ ] 1.5 Reject `remote_csv` from the manual task endpoint and require a matching conversation binding in `AgentTaskService`
 
 ## 2. Safe remote materialization

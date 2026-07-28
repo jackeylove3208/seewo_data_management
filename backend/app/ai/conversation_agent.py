@@ -73,6 +73,28 @@ def _validate_source_references(
     context: ConversationAgentContext,
 ) -> ConversationAgentDecision:
     references = {value for value in context.available_source_refs}
+    remote_source_ids = {
+        item.remote_source_id for item in context.available_remote_sources
+    }
+    if decision.remote_source_id is not None:
+        mixed_remote_selection = bool(
+            decision.source_ref
+            or decision.source_configuration_id
+            or decision.target_configuration_id
+        )
+        target_is_valid = (
+            decision.target_ref is None or decision.target_ref in references
+        )
+        if (
+            not mixed_remote_selection
+            and target_is_valid
+            and decision.remote_source_id in remote_source_ids
+        ):
+            return decision
+        return ConversationAgentDecision(
+            kind="clarification",
+            message_zh="远程数据来源已变化，请重新发送当前对话可用的第三方 CSV 链接。",
+        )
     selected_local = {value for value in (decision.source_ref, decision.target_ref) if value}
     selected_database = {
         value

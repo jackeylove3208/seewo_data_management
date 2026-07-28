@@ -32,6 +32,7 @@ from app.models.agent_runtime import (
     SchoolTaskLockRecord,
 )
 from app.models.reconciliation import ReconciliationTask
+from app.models.remote_sources import RemoteSourceRecord
 from app.models.snapshots import Snapshot, SourceFile
 from tests.settings import build_test_settings
 
@@ -135,6 +136,33 @@ class IncrementalConversationProvider:
                 }
             }
         return LLMResponse(output=output, provider="stub", model="stub")
+
+
+class RemoteConversationProvider:
+    def __init__(self) -> None:
+        self.requests: list[LLMRequest] = []
+
+    async def complete_json_once(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        evidence = json.loads(request.messages[1].content)["untrusted_evidence"]
+        remote_sources = evidence.get("available_remote_sources", [])
+        remote_source_id = (
+            remote_sources[0]["remote_source_id"] if remote_sources else str(uuid4())
+        )
+        return LLMResponse(
+            output={
+                "result": {
+                    "kind": "start_confirmation",
+                    "title": "网页学生同步",
+                    "entity_types": ["student"],
+                    "remote_source_id": remote_source_id,
+                    "target_ref": "seewo/roster.csv",
+                    "message_zh": "已登记网页数据，并确认希沃目标。",
+                }
+            },
+            provider="stub",
+            model="stub",
+        )
 
 
 @pytest.fixture
@@ -735,6 +763,107 @@ def test_conversation_uses_model_discovered_local_sources(
     )
     assert replay.status_code == 202, replay.text
     assert replay.json()["id"] == created.json()["id"]
+
+
+def test_conversation_registers_one_remote_source_without_exposing_its_url(
+    agent_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "remote-conversation-sources"
+    target = root / "seewo/roster.csv"
+    target.parent.mkdir(parents=True)
+    target.write_text("编号,姓名\nS001,张三\n", encoding="utf-8")
+    agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
+    agent_client.app.state.settings.agent_local_write_roots = (
+        (root / "seewo").resolve(),
+    )
+    agent_client.app.state.settings.conversation_remote_csv_enabled = True
+    provider = RemoteConversationProvider()
+    agent_client.app.state.conversation_provider = provider
+    conversation = agent_client.post("/api/agent/conversations").json()
+    submitted_url = "https://data.example.test/roster.csv?secret=value"
+
+    response = agent_client.post(
+        f"/api/agent/conversations/{conversation['id']}/messages",
+        json={"message": f"请同步 {submitted_url} 的学生"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["intent"]["source"]["kind"] == "remote_csv"
+    remote_source_id = response.json()["intent"]["source"]["remote_source_id"]
+    request_text = "\n".join(
+        message.content for message in provider.requests[0].messages
+    )
+    assert submitted_url not in request_text
+    assert "secret=value" not in request_text
+    assert "https://" not in provider.requests[0].messages[1].content
+    assert "[远程CSV来源:data.example.test]" in provider.requests[0].messages[1].content
+
+    async def load_facts() -> tuple[RemoteSourceRecord, list[str]]:
+        async with agent_client.app.state.database.session_factory() as session:
+            remote = await session.scalar(
+                select(RemoteSourceRecord).where(
+                    RemoteSourceRecord.id == UUID(remote_source_id)
+                )
+            )
+            messages = list(
+                await session.scalars(
+                    select(AgentConversationMessageRecord).order_by(
+                        AgentConversationMessageRecord.created_at
+                    )
+                )
+            )
+            assert remote is not None
+            return remote, [message.text for message in messages]
+
+    remote, persisted_messages = agent_client.portal.call(load_facts)
+    assert remote.original_url == submitted_url
+    assert remote.display_origin == "data.example.test"
+    assert persisted_messages[0] == "请同步 [远程CSV来源:data.example.test] 的学生"
+    assert all(submitted_url not in message for message in persisted_messages)
+
+
+def test_conversation_link_registration_requires_one_link(
+    agent_client: TestClient,
+) -> None:
+    agent_client.app.state.settings.conversation_remote_csv_enabled = True
+    provider = RemoteConversationProvider()
+    agent_client.app.state.conversation_provider = provider
+    conversation = agent_client.post("/api/agent/conversations").json()
+
+    response = agent_client.post(
+        f"/api/agent/conversations/{conversation['id']}/messages",
+        json={
+            "message": (
+                "比较 https://one.example.test/a.csv "
+                "和 https://two.example.test/b.csv"
+            )
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "remote_source_multiple_links"
+    assert provider.requests == []
+
+
+def test_conversation_without_link_does_not_register_remote_source(
+    agent_client: TestClient,
+) -> None:
+    agent_client.app.state.settings.conversation_remote_csv_enabled = True
+    agent_client.app.state.conversation_provider = IncrementalConversationProvider()
+    conversation = agent_client.post("/api/agent/conversations").json()
+
+    response = agent_client.post(
+        f"/api/agent/conversations/{conversation['id']}/messages",
+        json={"message": "我要同步学生"},
+    )
+    assert response.status_code == 200, response.text
+
+    async def count_remote_sources() -> int:
+        async with agent_client.app.state.database.session_factory() as session:
+            return len(list(await session.scalars(select(RemoteSourceRecord))))
+
+    assert agent_client.portal.call(count_remote_sources) == 0
 
 
 def test_local_source_api_returns_only_safe_server_capabilities(

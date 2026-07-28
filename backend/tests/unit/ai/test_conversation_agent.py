@@ -76,6 +76,60 @@ async def test_supervisor_rejects_source_not_returned_by_server_discovery() -> N
 
 
 @pytest.mark.asyncio
+async def test_supervisor_accepts_server_listed_remote_source_with_local_target() -> None:
+    remote_source_id = uuid4()
+    provider = CapturingProvider(
+        {
+            "result": {
+                "kind": "start_confirmation",
+                "title": "远程学生同步",
+                "entity_types": ["student"],
+                "remote_source_id": str(remote_source_id),
+                "target_ref": "seewo/roster.csv",
+                "message_zh": "已确认远程权威来源和希沃目标。",
+            }
+        }
+    )
+
+    decision = await ConversationSupervisorAgent(provider).reply(
+        _context(
+            message="请同步 [远程CSV来源:data.example.test]",
+            available_remote_sources=(
+                {
+                    "remote_source_id": remote_source_id,
+                    "display_origin": "data.example.test",
+                },
+            ),
+        )
+    )
+
+    assert decision.kind == "start_confirmation"
+    assert decision.remote_source_id == remote_source_id
+    assert decision.target_ref == "seewo/roster.csv"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_rejects_remote_source_not_listed_for_conversation() -> None:
+    provider = CapturingProvider(
+        {
+            "result": {
+                "kind": "start_confirmation",
+                "title": "越权远程同步",
+                "entity_types": ["student"],
+                "remote_source_id": str(uuid4()),
+                "target_ref": "seewo/roster.csv",
+                "message_zh": "已确认。",
+            }
+        }
+    )
+
+    decision = await ConversationSupervisorAgent(provider).reply(_context())
+
+    assert decision.kind == "clarification"
+    assert decision.remote_source_id is None
+
+
+@pytest.mark.asyncio
 async def test_supervisor_accepts_server_listed_postgresql_to_mysql_pair() -> None:
     provider = CapturingProvider(
         {
