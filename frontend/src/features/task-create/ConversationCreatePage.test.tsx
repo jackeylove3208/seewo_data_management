@@ -33,6 +33,16 @@ function api(overrides: Partial<AgentConversationApi> = {}): AgentConversationAp
     events: vi.fn().mockResolvedValue({ cursor: "cursor-1", events: [] }),
     task: vi.fn().mockResolvedValue(undefined),
     terminate: vi.fn().mockResolvedValue({ status: "terminating" }),
+    submitClarificationSelection: vi.fn().mockResolvedValue({
+      decision_id: "clarification-1",
+      status: "interpreted",
+      task_id: "task-identity",
+      decision: "select_candidate",
+      selected_candidate_id: "candidate-1",
+      interpretation_zh: "你选择了第三方候选 A，确认后继续。",
+      requires_second_confirmation: true,
+    }),
+    confirmClarification: vi.fn().mockResolvedValue({ status: "confirmed" }),
     ...overrides,
   };
 }
@@ -78,6 +88,7 @@ function identityGraph(
         },
         candidates: [
           {
+            candidate_id: "candidate-1",
             entity_kind: "student",
             category: "student",
             name: "测试学生",
@@ -87,6 +98,7 @@ function identityGraph(
             email_masked: "s***@example.test",
           },
           {
+            candidate_id: "candidate-2",
             entity_kind: "student",
             category: "student",
             name: "测试学生二号",
@@ -98,6 +110,17 @@ function identityGraph(
         ],
         allowed_outcomes: ["use_candidate", "target_extra"],
         interpretation_zh: interpretation ?? null,
+        operator_submission: status === "interpreted"
+          ? {
+              decision: "select_candidate",
+              selected_candidate_id: "candidate-1",
+              note: null,
+              interpretation_zh:
+                interpretation ?? "你选择了第三方候选 A，确认后继续。",
+              submitted_at: "2026-07-28T10:00:00Z",
+              source: "structured_selection",
+            }
+          : null,
       }],
     }],
   };
@@ -273,13 +296,13 @@ describe("backend Agent conversation", () => {
   });
 
   it("shows the current identity conflict and completes clarification inside chat", async () => {
-    const clarify = vi.fn().mockResolvedValue({
+    const submitClarificationSelection = vi.fn().mockResolvedValue({
       decision_id: "clarification-1",
       status: "interpreted",
       task_id: "task-identity",
       decision: "select_candidate",
       selected_candidate_id: "candidate-1",
-      interpretation_zh: "我理解为选择第三方候选 A，确认后继续。",
+      interpretation_zh: "你选择了第三方候选 A，确认后继续。",
       requires_second_confirmation: true,
     });
     const confirmClarification = vi.fn().mockResolvedValue({ status: "confirmed" });
@@ -328,6 +351,7 @@ describe("backend Agent conversation", () => {
             },
             candidates: [
               {
+                candidate_id: "candidate-1",
                 entity_kind: "student",
                 category: "student",
                 name: "测试学生",
@@ -337,6 +361,7 @@ describe("backend Agent conversation", () => {
                 email_masked: "s***@example.test",
               },
               {
+                candidate_id: "candidate-2",
                 entity_kind: "student",
                 category: "student",
                 name: "测试学生二号",
@@ -351,7 +376,7 @@ describe("backend Agent conversation", () => {
           }],
         }],
       }),
-      clarify,
+      submitClarificationSelection,
       confirmClarification,
     });
     const user = userEvent.setup();
@@ -364,14 +389,24 @@ describe("backend Agent conversation", () => {
     expect(screen.getByText("第三方候选 B")).toBeInTheDocument();
     expect(screen.getByText("S-009")).toBeInTheDocument();
     expect(screen.getByText("S-001")).toBeInTheDocument();
-    expect(screen.getByLabelText("对账目标")).toBeEnabled();
+    expect(screen.getByLabelText("对账目标")).toBeDisabled();
 
-    await user.type(screen.getByLabelText("对账目标"), "请选择第三方候选 A。");
-    await user.click(screen.getByRole("button", { name: "发送" }));
+    await user.click(screen.getByRole("radio", { name: "采用第三方候选 A" }));
+    await user.type(screen.getByLabelText("补充说明（可选）"), "在对话页选择候选");
+    await user.click(screen.getByRole("button", { name: "提交选择" }));
 
-    expect(clarify).toHaveBeenCalledWith("task-identity", "请选择第三方候选 A。");
-    expect(await screen.findByText("我理解为选择第三方候选 A，确认后继续。")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "确认模型解释" }));
+    expect(submitClarificationSelection).toHaveBeenCalledWith(
+      "task-identity",
+      "clarification-1",
+      expect.objectContaining({
+        decision: "select_candidate",
+        selected_candidate_id: "candidate-1",
+        note: "在对话页选择候选",
+        graph_cursor: 6,
+      }),
+    );
+    expect(await screen.findByText("等待确认")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "确认选择并继续" }));
     expect(confirmClarification).toHaveBeenCalledWith(
       "task-identity",
       "clarification-1",
@@ -404,19 +439,21 @@ describe("backend Agent conversation", () => {
       await screen.findByText("当前说明无法唯一确定候选，请明确选择候选 A 或按希沃多余处理。"),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("对账目标")).toBeDisabled();
-    expect(screen.queryByText(/请直接在下方输入框说明/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "补充说明" }));
-    expect(screen.getByLabelText("对账目标")).toBeEnabled();
+    expect(screen.getByLabelText("对账目标")).toBeDisabled();
+    expect(screen.getByRole("radio", { name: "采用第三方候选 A" })).not.toBeChecked();
+    expect(screen.getByLabelText("补充说明（可选）")).toHaveValue("");
   });
 
   it("does not reopen a confirmed clarification from a stale graph response", async () => {
-    const clarify = vi.fn().mockResolvedValue({
+    const submitClarificationSelection = vi.fn().mockResolvedValue({
       decision_id: "clarification-1",
       status: "interpreted",
       task_id: "task-identity",
       decision: "select_candidate",
       selected_candidate_id: "candidate-1",
-      interpretation_zh: "我理解为选择第三方候选 A，确认后继续。",
+      interpretation_zh: "你选择了第三方候选 A，确认后继续。",
       requires_second_confirmation: true,
     });
     const backend = api({
@@ -432,21 +469,21 @@ describe("backend Agent conversation", () => {
         },
       }),
       graph: vi.fn().mockResolvedValue(identityGraph()),
-      clarify,
+      submitClarificationSelection,
       confirmClarification: vi.fn().mockResolvedValue({ status: "confirmed" }),
     });
     const user = userEvent.setup();
 
     render(<ConversationCreatePage agentApi={backend} />);
 
-    await waitFor(() => expect(screen.getByLabelText("对账目标")).toBeEnabled());
-    await user.type(screen.getByLabelText("对账目标"), "请选择第三方候选 A。");
-    await user.click(screen.getByRole("button", { name: "发送" }));
-    await user.click(await screen.findByRole("button", { name: "确认模型解释" }));
+    await screen.findByRole("radio", { name: "采用第三方候选 A" });
+    await user.click(screen.getByRole("radio", { name: "采用第三方候选 A" }));
+    await user.click(screen.getByRole("button", { name: "提交选择" }));
+    await user.click(await screen.findByRole("button", { name: "确认选择并继续" }));
 
-    expect(await screen.findByText("身份冲突说明已确认，Agent 正在继续处理。")).toBeInTheDocument();
+    expect(await screen.findByText("身份冲突选择已确认，Agent 正在继续处理。")).toBeInTheDocument();
     await new Promise((resolve) => window.setTimeout(resolve, 1_700));
-    expect(screen.queryByText("需要你判断一条身份冲突")).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "身份冲突处理" })).not.toBeInTheDocument();
     expect(screen.getByLabelText("对账目标")).toBeDisabled();
   });
 

@@ -32,7 +32,7 @@ function displayValue(
   return value;
 }
 
-function candidateLabel(index: number) {
+export function candidateLabel(index: number) {
   return index < 26 ? String.fromCharCode(65 + index) : String(index + 1);
 }
 
@@ -102,7 +102,7 @@ export function IdentityConflictEvidence({
         ))}
       </div>
       <small>
-        请说明应采用哪个第三方候选；如果候选都不对应，也可以明确将这条希沃记录按“希沃多余”处理。
+        请选择应采用哪个第三方候选；如果候选都不对应，也可以将这条希沃记录按“希沃多余”处理。
       </small>
     </section>
   );

@@ -1,19 +1,21 @@
-import { useQuery } from "@tanstack/react-query";
-import { Alert, Button, Checkbox, Input, Modal, Progress, Skeleton, Tag } from "antd";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Alert, Button, Checkbox, Modal, Progress, Skeleton, Tag } from "antd";
 import { Check, CircleCheck, FileInput, FileText, Flag, GitBranch, RotateCcw, ShieldCheck, StopCircle, X } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import {
   agentApi,
+  type AgentClarificationSubmission,
   type AgentGraphApprovalItem,
   type AgentGraphHumanGate,
+  type AgentGraphProgress,
   type AgentPhase,
   type AgentRollbackPreview,
   type AgentTask,
 } from "../../api/agent";
 import { BackButton } from "../../components/BackButton";
-import { IdentityConflictEvidence } from "../../components/IdentityConflictEvidence";
+import { IdentityConflictClarificationCard } from "../../components/IdentityConflictClarificationCard";
 import { TaskStatusRail } from "../../components/TaskStatusRail";
 import { presentAgentEvent, presentAgentPhase } from "../agent-events/presentation";
 
@@ -241,8 +243,33 @@ function reviewDecisionForGateState(
     ?? "approved";
 }
 
+function updateConflictSubmission(
+  current: AgentGraphProgress | undefined,
+  clarificationId: string,
+  submission: AgentClarificationSubmission | null,
+) {
+  if (!current) return current;
+  return {
+    ...current,
+    human_gates: current.human_gates.map((gate) => ({
+      ...gate,
+      conflicts: gate.conflicts?.map((conflict) => (
+        conflict.clarification_id === clarificationId
+          ? {
+              ...conflict,
+              status: submission ? "interpreted" : "pending",
+              interpretation_zh: submission?.interpretation_zh ?? null,
+              operator_submission: submission,
+            }
+          : conflict
+      )),
+    })),
+  };
+}
+
 export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; initialTask?: AgentTask }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [terminateError, setTerminateError] = useState<string>();
   const [terminationLoading, setTerminationLoading] = useState(false);
   const [terminationGate, setTerminationGate] = useState<AgentGraphHumanGate>();
@@ -256,10 +283,6 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
     Record<string, Record<string, ReviewDecision>>
   >({});
   const [gateErrors, setGateErrors] = useState<Partial<Record<string, string>>>({});
-  const [clarificationMessage, setClarificationMessage] = useState("");
-  const [clarificationDecisionId, setClarificationDecisionId] = useState<string>();
-  const [clarificationInterpretation, setClarificationInterpretation] = useState<string>();
-  const [rewritingClarificationId, setRewritingClarificationId] = useState<string>();
   const [confirmedClarificationIds, setConfirmedClarificationIds] = useState<string[]>([]);
   const [clarificationConfirmedNotice, setClarificationConfirmedNotice] = useState(false);
   const task = useQuery({
@@ -621,53 +644,6 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
     }
   }
 
-  async function submitClarification(gateId: string) {
-    const message = clarificationMessage.trim();
-    if (!message || !agentApi.clarify) return;
-    setGateLoading(gateId);
-    setTerminateError(undefined);
-    try {
-      const interpretation = await agentApi.clarify(taskId, message);
-      setRewritingClarificationId(undefined);
-      setClarificationInterpretation(
-        interpretation.interpretation_zh ?? "模型已形成受限解释，请确认后继续。",
-      );
-      setClarificationDecisionId(
-        interpretation.requires_second_confirmation
-          ? interpretation.decision_id
-          : undefined,
-      );
-      setClarificationMessage("");
-      await graph.refetch();
-    } catch (error) {
-      setTerminateError(error instanceof Error ? error.message : "身份冲突说明未提交");
-    } finally {
-      setGateLoading(undefined);
-    }
-  }
-
-  async function confirmClarification(gateId: string, decisionId: string) {
-    if (!agentApi.confirmClarification) return;
-    setGateLoading(gateId);
-    setTerminateError(undefined);
-    try {
-      await agentApi.confirmClarification(taskId, decisionId);
-      setConfirmedClarificationIds((currentIds) => [
-        ...new Set([...currentIds, decisionId]),
-      ]);
-      setClarificationConfirmedNotice(true);
-      setClarificationDecisionId(undefined);
-      setClarificationInterpretation(undefined);
-      setClarificationMessage("");
-      setRewritingClarificationId(undefined);
-      await Promise.all([task.refetch(), graph.refetch(), events.refetch()]);
-    } catch (error) {
-      setTerminateError(error instanceof Error ? error.message : "身份冲突解释未确认");
-    } finally {
-      setGateLoading(undefined);
-    }
-  }
-
   return (
     <main className="page-shell task-detail-page agent-task-detail-page apple-page">
       <BackButton fallback="/tasks" label="返回任务列表" />
@@ -765,7 +741,7 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
         <Alert
           type="success"
           showIcon
-          message="身份冲突说明已确认，Agent 正在继续处理。"
+          message="身份冲突选择已确认，Agent 正在继续处理。"
         />
       )}
       {mediumGates.length > 0 && (
@@ -868,138 +844,54 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
           (conflict) =>
             !confirmedClarificationIds.includes(conflict.clarification_id),
         );
-        const currentConflictIndex = Math.max(
-          conflicts.findIndex((conflict) =>
-            ["pending", "interpreted"].includes(conflict.status),
-          ),
-          0,
-        );
-        const currentConflict = conflicts[currentConflictIndex];
-        const restoredDecisionId = currentConflict?.status === "interpreted"
-          && rewritingClarificationId !== currentConflict.clarification_id
-          ? currentConflict.clarification_id
-          : undefined;
-        const decisionId = clarificationDecisionId ?? restoredDecisionId;
-        const interpretation = clarificationInterpretation
-          ?? (
-            rewritingClarificationId !== currentConflict?.clarification_id
-              ? currentConflict?.interpretation_zh
-              : undefined
-          )
-          ?? undefined;
-        const isEditing = Boolean(
-          currentConflict
-          && (
-            rewritingClarificationId === currentConflict.clarification_id
-            || (
-              currentConflict.status === "pending"
-              && !interpretation
-            )
-          ),
-        );
-        const needsRevision = Boolean(
-          currentConflict
-          && currentConflict.status === "pending"
-          && interpretation
-          && rewritingClarificationId !== currentConflict.clarification_id,
-        );
-        const startRewrite = () => {
-          if (!currentConflict) return;
-          setClarificationDecisionId(undefined);
-          setClarificationInterpretation(undefined);
-          setClarificationMessage("");
-          setRewritingClarificationId(currentConflict.clarification_id);
-        };
-        return (
+        if (!conflicts.length) {
+          return (
           <section className="graph-approval-card graph-clarification-card" key={gate.id}>
-            <div>
-              <Tag color="warning">需要说明</Tag>
-              <h2>需要人工判断身份冲突</h2>
-              <p>请先核对当前希沃记录与第三方候选，再说明它们的关系和期望处理方式；模型会先解释为受限决策，确认后才继续。</p>
-            </div>
-            {currentConflict ? (
-              <IdentityConflictEvidence
-                conflict={currentConflict}
-                index={currentConflictIndex}
-                total={conflicts.length}
-              />
-            ) : (
-              <Alert
-                type="error"
-                showIcon
-                message={gate.unavailable_reason_zh ?? "冲突明细不完整，不能要求用户盲目判断。"}
-              />
-            )}
-            {gate.actionable === false && (
-              <Alert
-                type="error"
-                showIcon
-                message={
-                  gate.unavailable_reason_zh
-                  ?? "冲突证据不完整，当前不能提交说明。"
-                }
-              />
-            )}
-            {isEditing && (
-              <>
-                <label htmlFor={`identity-clarification-${gate.id}`}>身份冲突处理说明</label>
-                <Input.TextArea
-                  id={`identity-clarification-${gate.id}`}
-                  aria-label="身份冲突处理说明"
-                  value={clarificationMessage}
-                  rows={4}
-                  disabled={!currentConflict || gate.actionable === false}
-                  placeholder="例如：请选择第三方候选 A；或者候选都不是同一人，请按希沃多余处理。"
-                  onChange={(event) => setClarificationMessage(event.target.value)}
-                />
-              </>
-            )}
-            {interpretation && (
-              <Alert
-                type={decisionId ? "info" : "warning"}
-                showIcon
-                message={decisionId ? "待确认的模型解释" : "需要补充说明"}
-                description={interpretation}
-              />
-            )}
-            <div className="graph-approval-actions">
-              {decisionId ? (
-                <>
-                  <Button
-                    onClick={startRewrite}
-                  >
-                    重新说明
-                  </Button>
-                  <Button
-                    type="primary"
-                    icon={<Check size={14} />}
-                    loading={gateLoading === gate.id}
-                    onClick={() => void confirmClarification(gate.id, decisionId)}
-                  >
-                    确认模型解释
-                  </Button>
-                </>
-              ) : needsRevision ? (
-                <Button type="primary" onClick={startRewrite}>
-                  补充说明
-                </Button>
-              ) : isEditing ? (
-                <Button
-                  type="primary"
-                  disabled={
-                    !clarificationMessage.trim()
-                    || !currentConflict
-                    || gate.actionable === false
-                  }
-                  loading={gateLoading === gate.id}
-                  onClick={() => void submitClarification(gate.id)}
-                >
-                  提交说明
-                </Button>
-              ) : null}
-            </div>
+            <Alert
+              type="error"
+              showIcon
+              message={
+                gate.unavailable_reason_zh
+                ?? "冲突明细不完整，不能要求用户盲目判断。"
+              }
+            />
           </section>
-        );
+          );
+        }
+        return conflicts.map((conflict, conflictIndex) => (
+          <IdentityConflictClarificationCard
+            key={conflict.clarification_id}
+            taskId={taskId}
+            gate={gate}
+            conflict={conflict}
+            conflictIndex={conflictIndex}
+            conflictCount={conflicts.length}
+            graphCursor={graph.data?.graph_cursor ?? gate.cursor ?? 0}
+            api={{
+              submitClarificationSelection: agentApi.submitClarificationSelection,
+              confirmClarification: agentApi.confirmClarification,
+            }}
+            onOptimisticSubmission={(clarificationId, submission) => {
+              queryClient.setQueryData<AgentGraphProgress>(
+                ["agent-task-graph", taskId],
+                (currentGraph) => updateConflictSubmission(
+                  currentGraph,
+                  clarificationId,
+                  submission,
+                ),
+              );
+            }}
+            onRefresh={async () => {
+              await Promise.all([task.refetch(), graph.refetch(), events.refetch()]);
+            }}
+            onConfirmed={(clarificationId) => {
+              setConfirmedClarificationIds((currentIds) => [
+                ...new Set([...currentIds, clarificationId]),
+              ]);
+              setClarificationConfirmedNotice(true);
+            }}
+          />
+        ));
       })() : (
         <section
           className={`graph-approval-card graph-approval-${gateDecisions[gate.id] ?? gate.status}`}

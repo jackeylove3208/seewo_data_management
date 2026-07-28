@@ -7,10 +7,20 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
-import { agentApi as defaultAgentApi, type AgentConversationApi, type AgentGraphHumanGate, type AgentIntent, type AgentStartConfirmation, type AgentTask, type AgentTaskEvent } from "../../api/agent";
+import {
+  agentApi as defaultAgentApi,
+  type AgentClarificationSubmission,
+  type AgentConversationApi,
+  type AgentGraphHumanGate,
+  type AgentGraphProgress,
+  type AgentIntent,
+  type AgentStartConfirmation,
+  type AgentTask,
+  type AgentTaskEvent,
+} from "../../api/agent";
 import { ApiError } from "../../api/client";
 import { TASK_HISTORY_UPDATED_EVENT } from "../../data/taskHistory";
-import { IdentityConflictEvidence } from "../../components/IdentityConflictEvidence";
+import { IdentityConflictClarificationCard } from "../../components/IdentityConflictClarificationCard";
 import { TaskStatusRail } from "../../components/TaskStatusRail";
 import { presentAgentEvent, presentAgentPhase } from "../agent-events/presentation";
 import { ConversationMediumRiskReviewCard } from "./ConversationMediumRiskReviewCard";
@@ -64,6 +74,21 @@ function sessionKey() {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function visibleIdentityGate(
+  progress: AgentGraphProgress,
+  confirmedClarificationIds: ReadonlySet<string>,
+) {
+  const persistedGate = progress.human_gates.find(
+    (gate) => gate.kind === "identity_conflict" && gate.status === "pending",
+  );
+  const visibleConflicts = persistedGate?.conflicts?.filter(
+    (conflict) => !confirmedClarificationIds.has(conflict.clarification_id),
+  );
+  return persistedGate && visibleConflicts?.length
+    ? { ...persistedGate, conflicts: visibleConflicts }
+    : undefined;
+}
+
 export function ConversationCreatePage({
   agentApi,
 }: {
@@ -80,14 +105,8 @@ export function ConversationCreatePage({
   const [eventCursor, setEventCursor] = useState<string>();
   const [clarificationOpen, setClarificationOpen] = useState(false);
   const [identityGate, setIdentityGate] = useState<AgentGraphHumanGate>();
-  const [clarificationDecisionId, setClarificationDecisionId] = useState<string>();
-  const [clarificationInterpretation, setClarificationInterpretation] = useState<string>();
-  const [rewritingClarificationId, setRewritingClarificationId] = useState<string>();
-  const [clarificationError, setClarificationError] = useState<string>();
-  const [submittedClarifications, setSubmittedClarifications] = useState<string[]>([]);
   const [handledApprovalGroups, setHandledApprovalGroups] = useState<string[]>([]);
   const [confirmedClarifications, setConfirmedClarifications] = useState<string[]>([]);
-  const submittedClarificationsRef = useRef(new Set<string>());
   const confirmedClarificationsRef = useRef(new Set<string>());
   const handledClarificationEvents = useRef(new Set<string>());
   const [terminationGate, setTerminationGate] = useState<AgentGraphHumanGate>();
@@ -191,53 +210,10 @@ export function ConversationCreatePage({
             for (const gate of refreshedMediumGates) merged.set(gate.id, gate);
             return [...merged.values()];
           });
-          const persistedIdentityGate = graphProgress.human_gates.find(
-            (gate) =>
-              gate.kind === "identity_conflict"
-              && gate.status === "pending",
+          setIdentityGate(
+            visibleIdentityGate(graphProgress, confirmedClarificationsRef.current),
           );
-          const visibleConflicts = persistedIdentityGate?.conflicts?.filter(
-            (conflict) =>
-              !confirmedClarificationsRef.current.has(conflict.clarification_id),
-          );
-          const currentIdentityGate = persistedIdentityGate && visibleConflicts?.length
-            ? { ...persistedIdentityGate, conflicts: visibleConflicts }
-            : undefined;
-          setIdentityGate(currentIdentityGate);
-          const currentConflict = currentIdentityGate?.conflicts?.find(
-            (conflict) => ["pending", "interpreted"].includes(conflict.status),
-          );
-          if (!currentConflict) {
-            setClarificationOpen(false);
-            setClarificationDecisionId(undefined);
-            setClarificationInterpretation(undefined);
-            setRewritingClarificationId(undefined);
-            setClarificationError(undefined);
-          } else if (currentIdentityGate?.actionable === false) {
-            setClarificationOpen(false);
-            setClarificationDecisionId(undefined);
-            setClarificationInterpretation(undefined);
-          } else if (rewritingClarificationId !== currentConflict.clarification_id) {
-            if (currentConflict.status === "interpreted") {
-              setClarificationOpen(false);
-              setClarificationDecisionId(currentConflict.clarification_id);
-              setClarificationInterpretation(
-                currentConflict.interpretation_zh ?? "模型已形成受限解释，请确认后继续。",
-              );
-            } else if (currentConflict.interpretation_zh) {
-              setClarificationOpen(false);
-              setClarificationDecisionId(undefined);
-              setClarificationInterpretation(currentConflict.interpretation_zh);
-            } else if (
-              submittedClarificationsRef.current.has(currentConflict.clarification_id)
-            ) {
-              setClarificationOpen(false);
-            } else {
-              setClarificationOpen(true);
-              setClarificationDecisionId(undefined);
-              setClarificationInterpretation(undefined);
-            }
-          }
+          setClarificationOpen(false);
         }
         setEventCursor(page.cursor);
         setEvents((current) => {
@@ -278,8 +254,6 @@ export function ConversationCreatePage({
     backendApi,
     confirmedClarifications,
     eventCursor,
-    rewritingClarificationId,
-    submittedClarifications,
     task,
   ]);
 
@@ -290,13 +264,7 @@ export function ConversationCreatePage({
     setEventCursor(undefined);
     setGraphCursor(undefined);
     setIdentityGate(undefined);
-    setClarificationDecisionId(undefined);
-    setClarificationInterpretation(undefined);
-    setRewritingClarificationId(undefined);
-    setClarificationError(undefined);
-    setSubmittedClarifications([]);
     setConfirmedClarifications([]);
-    submittedClarificationsRef.current.clear();
     confirmedClarificationsRef.current.clear();
     handledClarificationEvents.current.clear();
   }, [task?.id]);
@@ -309,10 +277,6 @@ export function ConversationCreatePage({
     if (!terminalTaskStatus) return;
     setClarificationOpen(false);
     setIdentityGate(undefined);
-    setClarificationDecisionId(undefined);
-    setClarificationInterpretation(undefined);
-    setRewritingClarificationId(undefined);
-    setClarificationError(undefined);
     setTerminationGate(undefined);
     setHighRiskGates((current) => current.map((gate) => (
       gate.status === "pending"
@@ -347,49 +311,30 @@ export function ConversationCreatePage({
     setState("collecting");
     setMessages((current) => [...current, { id: messageId(), role: "user", text: message }]);
     try {
-      if (taskActive && task && clarificationOpen && backendApi.clarify) {
-        setClarificationError(undefined);
+      if (
+        taskActive
+        && task
+        && task.workflow_version !== "agent-graph-v1"
+        && clarificationOpen
+        && backendApi.clarify
+      ) {
         const interpretation = await backendApi.clarify(task.id, message);
-        if (task.workflow_version !== "agent-graph-v1") {
-          const clarificationEventId = events
-            .slice()
-            .reverse()
-            .find((item) => item.type === "clarification_required")
-            ?.id;
-          if (clarificationEventId) {
-            handledClarificationEvents.current.add(clarificationEventId);
-          }
-          setClarificationOpen(false);
-          setState("created");
-          setMessages((current) => [...current, {
-            id: messageId(),
-            role: "assistant",
-            text: "已提交澄清，等待后端生成结构化决策确认。",
-          }]);
-          return;
+        const clarificationEventId = events
+          .slice()
+          .reverse()
+          .find((item) => item.type === "clarification_required")
+          ?.id;
+        if (clarificationEventId) {
+          handledClarificationEvents.current.add(clarificationEventId);
         }
-        const requiresConfirmation = interpretation.requires_second_confirmation === true;
-        submittedClarificationsRef.current.add(interpretation.decision_id);
-        setSubmittedClarifications((current) => [
-          ...new Set([...current, interpretation.decision_id]),
-        ]);
-        setRewritingClarificationId(undefined);
-        setClarificationInterpretation(
-          interpretation.interpretation_zh ?? "模型已形成受限解释，请确认后继续。",
-        );
-        setClarificationDecisionId(
-          requiresConfirmation
-            ? interpretation.decision_id
-            : undefined,
-        );
         setClarificationOpen(false);
         setState("created");
         setMessages((current) => [...current, {
           id: messageId(),
           role: "assistant",
-          text: requiresConfirmation
-            ? "已生成受限解释，请核对冲突卡片并确认后继续。"
-            : interpretation.interpretation_zh ?? "请补充说明后重试。",
+          text: interpretation.requires_second_confirmation
+            ? "已提交澄清，等待确认后继续。"
+            : "已提交澄清，等待后端生成结构化决策确认。",
         }]);
         return;
       }
@@ -445,14 +390,8 @@ export function ConversationCreatePage({
       setEventCursor(undefined);
       setClarificationOpen(false);
       setIdentityGate(undefined);
-      setClarificationDecisionId(undefined);
-      setClarificationInterpretation(undefined);
-      setRewritingClarificationId(undefined);
-      setClarificationError(undefined);
       setHandledApprovalGroups([]);
-      setSubmittedClarifications([]);
       setConfirmedClarifications([]);
-      submittedClarificationsRef.current.clear();
       confirmedClarificationsRef.current.clear();
       handledClarificationEvents.current.clear();
       setTerminationGate(undefined);
@@ -493,10 +432,6 @@ export function ConversationCreatePage({
       setEventCursor(undefined);
       setClarificationOpen(false);
       setIdentityGate(undefined);
-      setClarificationDecisionId(undefined);
-      setClarificationInterpretation(undefined);
-      setRewritingClarificationId(undefined);
-      setClarificationError(undefined);
       setHighRiskGates([]);
       setMediumRiskGates([]);
       setGraphCursor(undefined);
@@ -589,52 +524,6 @@ export function ConversationCreatePage({
     confirmedClarificationsRef.current.add(decisionId);
     setConfirmedClarifications((current) => [...new Set([...current, decisionId])]);
     setClarificationOpen(false);
-  }
-
-  async function confirmIdentityClarification() {
-    if (
-      !task
-      || identityGate?.actionable === false
-      || !clarificationDecisionId
-      || !backendApi.confirmClarification
-    ) return;
-    setClarificationError(undefined);
-    try {
-      await backendApi.confirmClarification(task.id, clarificationDecisionId);
-      confirmedClarificationsRef.current.add(clarificationDecisionId);
-      setConfirmedClarifications((current) => [
-        ...new Set([...current, clarificationDecisionId]),
-      ]);
-      setClarificationOpen(false);
-      setClarificationDecisionId(undefined);
-      setClarificationInterpretation(undefined);
-      setRewritingClarificationId(undefined);
-      setIdentityGate(undefined);
-      setMessages((current) => [...current, {
-        id: messageId(),
-        role: "assistant",
-        text: "身份冲突说明已确认，Agent 正在继续处理。",
-      }]);
-    } catch (error) {
-      setClarificationError(
-        error instanceof Error ? error.message : "身份冲突解释未确认，请重试。",
-      );
-    }
-  }
-
-  function rewriteIdentityClarification() {
-    const clarificationId = clarificationDecisionId
-      ?? currentIdentityConflict?.clarification_id;
-    if (!clarificationId) return;
-    submittedClarificationsRef.current.delete(clarificationId);
-    setRewritingClarificationId(clarificationId);
-    setSubmittedClarifications((current) =>
-      current.filter((item) => item !== clarificationId)
-    );
-    setClarificationDecisionId(undefined);
-    setClarificationInterpretation(undefined);
-    setClarificationError(undefined);
-    setClarificationOpen(true);
   }
 
   async function decideHighRiskGate(
@@ -736,13 +625,6 @@ export function ConversationCreatePage({
           ? "Agent 任务已暂停"
           : "任务进行中";
   const identityConflicts = identityGate?.conflicts ?? [];
-  const currentIdentityConflictIndex = Math.max(
-    identityConflicts.findIndex((conflict) =>
-      ["pending", "interpreted"].includes(conflict.status),
-    ),
-    0,
-  );
-  const currentIdentityConflict = identityConflicts[currentIdentityConflictIndex];
 
   return (
     <main className="page-shell conversation-create-page apple-page">
@@ -802,74 +684,88 @@ export function ConversationCreatePage({
               <p>当前阶段：{presentAgentPhase(task.phase)}</p>
               {identityGate && (
                 <section className="conversation-identity-clarification">
-                  <header>
-                    <strong>需要你判断一条身份冲突</strong>
-                    <span>当前任务已暂停在此处</span>
-                  </header>
-                  {currentIdentityConflict ? (
-                    <IdentityConflictEvidence
-                      conflict={currentIdentityConflict}
-                      index={currentIdentityConflictIndex}
-                      total={identityConflicts.length}
+                  {(
+                    !backendApi.submitClarificationSelection
+                    || !backendApi.confirmClarification
+                    || typeof graphCursor !== "number"
+                  ) ? (
+                    <Alert
+                      type="error"
+                      showIcon
+                      message="当前客户端缺少身份冲突处理能力，请刷新页面后重试。"
                     />
                   ) : (
-                    <Alert
-                      type="error"
-                      showIcon
-                      message={
-                        identityGate.unavailable_reason_zh
-                        ?? "冲突明细不完整，不能要求你盲目判断。"
-                      }
-                    />
+                    identityConflicts.map((conflict, conflictIndex) => (
+                      <IdentityConflictClarificationCard
+                        key={conflict.clarification_id}
+                        taskId={task.id}
+                        gate={identityGate}
+                        conflict={conflict}
+                        conflictIndex={conflictIndex}
+                        conflictCount={identityConflicts.length}
+                        graphCursor={graphCursor}
+                        api={{
+                          submitClarificationSelection:
+                            backendApi.submitClarificationSelection!,
+                          confirmClarification: backendApi.confirmClarification!,
+                        }}
+                        onOptimisticSubmission={(
+                          clarificationId,
+                          submission: AgentClarificationSubmission | null,
+                        ) => {
+                          setIdentityGate((currentGate) => (
+                            currentGate
+                              ? {
+                                  ...currentGate,
+                                  conflicts: currentGate.conflicts?.map((item) => (
+                                    item.clarification_id === clarificationId
+                                      ? {
+                                          ...item,
+                                          status: submission ? "interpreted" : "pending",
+                                          interpretation_zh:
+                                            submission?.interpretation_zh ?? null,
+                                          operator_submission: submission,
+                                        }
+                                      : item
+                                  )),
+                                }
+                              : currentGate
+                          ));
+                        }}
+                        onRefresh={async () => {
+                          if (!backendApi.graph) return;
+                          const progress = await backendApi.graph(task.id);
+                          setGraphCursor(progress.graph_cursor);
+                          setIdentityGate(
+                            visibleIdentityGate(
+                              progress,
+                              confirmedClarificationsRef.current,
+                            ),
+                          );
+                        }}
+                        onConfirmed={(clarificationId) => {
+                          confirmedClarificationsRef.current.add(clarificationId);
+                          setConfirmedClarifications((current) => [
+                            ...new Set([...current, clarificationId]),
+                          ]);
+                          setIdentityGate((currentGate) => {
+                            if (!currentGate) return undefined;
+                            const remaining = currentGate.conflicts?.filter(
+                              (item) => item.clarification_id !== clarificationId,
+                            );
+                            return remaining?.length
+                              ? { ...currentGate, conflicts: remaining }
+                              : undefined;
+                          });
+                          setMessages((current) => [...current, {
+                            id: messageId(),
+                            role: "assistant",
+                            text: "身份冲突选择已确认，Agent 正在继续处理。",
+                          }]);
+                        }}
+                      />
+                    ))
                   )}
-                  {clarificationInterpretation && (
-                    <Alert
-                      type={clarificationDecisionId ? "info" : "warning"}
-                      showIcon
-                      message={
-                        clarificationDecisionId
-                          ? "待确认的模型解释"
-                          : "需要补充说明"
-                      }
-                      description={clarificationInterpretation}
-                    />
-                  )}
-                  {identityGate.actionable === false && (
-                    <Alert
-                      type="error"
-                      showIcon
-                      message={
-                        identityGate.unavailable_reason_zh
-                        ?? "冲突证据不完整，当前不能提交说明。"
-                      }
-                    />
-                  )}
-                  {clarificationError && (
-                    <Alert type="error" showIcon message={clarificationError} />
-                  )}
-                  {identityGate.actionable !== false && clarificationDecisionId ? (
-                    <div className="conversation-identity-actions">
-                      <button type="button" onClick={rewriteIdentityClarification}>
-                        重新说明
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void confirmIdentityClarification()}
-                      >
-                        确认模型解释
-                      </button>
-                    </div>
-                  ) : identityGate.actionable !== false && clarificationInterpretation ? (
-                    <div className="conversation-identity-actions">
-                      <button type="button" onClick={rewriteIdentityClarification}>
-                        补充说明
-                      </button>
-                    </div>
-                  ) : identityGate.actionable !== false ? (
-                    <small>
-                      请直接在下方输入框说明当前记录应采用哪个候选，或明确按“希沃多余”处理。
-                    </small>
-                  ) : null}
                 </section>
               )}
               {highRiskGates.map((gate) => (

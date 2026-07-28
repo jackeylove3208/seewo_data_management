@@ -99,6 +99,7 @@ export interface AgentEventPage {
 }
 
 export interface AgentGraphIdentityRecord {
+  candidate_id?: string | null;
   entity_kind?: AgentEntityType | null;
   category?: string | null;
   name?: string | null;
@@ -106,6 +107,15 @@ export interface AgentGraphIdentityRecord {
   class_name?: string | null;
   phone_masked?: string | null;
   email_masked?: string | null;
+}
+
+export interface AgentClarificationSubmission {
+  decision: "select_candidate" | "treat_as_extra";
+  selected_candidate_id: string | null;
+  note: string | null;
+  interpretation_zh: string;
+  submitted_at: string;
+  source: "structured_selection";
 }
 
 export interface AgentGraphIdentityConflict {
@@ -116,6 +126,7 @@ export interface AgentGraphIdentityConflict {
   candidates: AgentGraphIdentityRecord[];
   allowed_outcomes: string[];
   interpretation_zh?: string | null;
+  operator_submission?: AgentClarificationSubmission | null;
 }
 
 export interface AgentGraphHumanGate {
@@ -196,6 +207,14 @@ export interface AgentClarificationConfirmation {
   status: string;
 }
 
+export interface StructuredClarificationSelectionInput {
+  decision: "select_candidate" | "treat_as_extra";
+  selected_candidate_id: string | null;
+  note: string | null;
+  graph_cursor: number;
+  idempotency_key: string;
+}
+
 export interface AgentConversationApi {
   currentConversation(): Promise<AgentConversationCurrent | null>;
   createConversation(): Promise<AgentConversation>;
@@ -221,6 +240,11 @@ export interface AgentConversationApi {
   approveGroup?(taskId: string, groupId: string): Promise<unknown>;
   rejectGroup?(taskId: string, groupId: string, reason?: string): Promise<unknown>;
   clarify?(taskId: string, message: string): Promise<AgentClarificationInterpretation>;
+  submitClarificationSelection?(
+    taskId: string,
+    clarificationId: string,
+    selection: StructuredClarificationSelectionInput,
+  ): Promise<AgentClarificationInterpretation>;
   confirmClarification?(
     taskId: string,
     decisionId: string,
@@ -422,6 +446,21 @@ async function clarify(taskId: string, message: string) {
   });
 }
 
+async function submitClarificationSelection(
+  taskId: string,
+  clarificationId: string,
+  selection: StructuredClarificationSelectionInput,
+) {
+  return requestJson<AgentClarificationInterpretation>(
+    `/api/agent/tasks/${taskId}/clarifications/${clarificationId}/selection`,
+    {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(selection),
+    },
+  );
+}
+
 async function confirmClarification(taskId: string, decisionId: string) {
   return requestJson<AgentClarificationConfirmation>(`/api/agent/tasks/${taskId}/clarification/${decisionId}/confirm`, {
     method: "POST",
@@ -495,6 +534,7 @@ export const agentApi: AgentConversationApi & AgentManualTaskApi & {
   decideGraphGates: typeof decideGraphGates;
   previewTermination: typeof previewTermination;
   clarify: typeof clarify;
+  submitClarificationSelection: typeof submitClarificationSelection;
   confirmClarification: typeof confirmClarification;
 } = {
   currentConversation,
@@ -508,6 +548,7 @@ export const agentApi: AgentConversationApi & AgentManualTaskApi & {
   approveGroup,
   rejectGroup,
   clarify,
+  submitClarificationSelection,
   confirmClarification,
   history,
   task,

@@ -3637,6 +3637,161 @@ body {
   color: #a35a12;
 }
 
+.identity-clarification-card {
+  display: grid;
+  gap: 14px;
+}
+
+.identity-clarification-heading {
+  display: grid;
+  gap: 5px;
+}
+
+.identity-clarification-heading > span {
+  width: fit-content;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: #8a5b0c;
+  background: #fff0cc;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.identity-clarification-heading > h2,
+.identity-clarification-heading > p {
+  margin: 0;
+}
+
+.identity-clarification-heading > p {
+  color: #5b6673;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.identity-clarification-submission,
+.identity-clarification-form {
+  display: grid;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid #cbd9e8;
+  border-radius: 10px;
+  background: #f7faff;
+}
+
+.identity-clarification-submission > strong,
+.identity-clarification-submission > p {
+  margin: 0;
+}
+
+.identity-clarification-submission > p {
+  color: #526579;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.identity-clarification-submission.is-revision {
+  border-color: #e4c27d;
+  background: #fffaf0;
+}
+
+.identity-clarification-note {
+  display: grid;
+  gap: 3px;
+}
+
+.identity-clarification-note > span {
+  color: #7b8a98;
+  font-size: 11px;
+}
+
+.identity-clarification-state {
+  width: fit-content;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: #315f8f;
+  background: #e9f2fb;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.identity-clarification-state.is-saving {
+  color: #8a5b0c;
+  background: #fff0cc;
+}
+
+.identity-clarification-form fieldset {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.identity-clarification-form legend,
+.identity-clarification-form > label {
+  margin-bottom: 4px;
+  color: #344454;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.identity-clarification-form fieldset label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  color: #344454;
+  font-size: 12px;
+}
+
+.identity-clarification-form textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.identity-clarification-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.identity-clarification-actions button,
+.identity-clarification-submission.is-revision button {
+  width: fit-content;
+  min-height: 32px;
+  padding: 6px 11px;
+  border: 1px solid #9bb2c9;
+  border-radius: 7px;
+  color: #315477;
+  background: #fff;
+  cursor: pointer;
+}
+
+.identity-clarification-actions button.primary-button {
+  border-color: #315f8f;
+  color: #fff;
+  background: #315f8f;
+}
+
+.identity-clarification-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.identity-clarification-error {
+  margin: 0;
+  color: #a12f35;
+  font-size: 12px;
+}
+
+.identity-clarification-card.is-confirmed {
+  padding: 14px;
+  border: 1px solid #afd3bb;
+  border-radius: 10px;
+  color: #24643a;
+  background: #f2fbf5;
+}
+
 .conversation-identity-clarification {
   display: grid;
   gap: 12px;

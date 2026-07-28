@@ -1102,7 +1102,7 @@ describe("controlled Agent graph task detail", () => {
     client.clear();
   });
 
-  it("uses temporary dialogue and second confirmation for identity conflicts", async () => {
+  it("uses a structured read-only selection and second confirmation for identity conflicts", async () => {
     const user = userEvent.setup();
     vi.mocked(agentApi.graph).mockResolvedValue({
       task_id: "task-graph-1",
@@ -1138,6 +1138,7 @@ describe("controlled Agent graph task detail", () => {
             },
             candidates: [
               {
+                candidate_id: "candidate-1",
                 entity_kind: "student",
                 category: "student",
                 name: "测试学生",
@@ -1147,6 +1148,7 @@ describe("controlled Agent graph task detail", () => {
                 email_masked: "s***@example.test",
               },
               {
+                candidate_id: "candidate-2",
                 entity_kind: "student",
                 category: "student",
                 name: "测试学生二号",
@@ -1162,13 +1164,16 @@ describe("controlled Agent graph task detail", () => {
         },
       ],
     });
-    const clarify = vi.spyOn(agentApi, "clarify").mockResolvedValue({
-      decision_id: "decision-1",
+    const submitSelection = vi.spyOn(
+      agentApi,
+      "submitClarificationSelection",
+    ).mockResolvedValue({
+      decision_id: "clarification-1",
       status: "interpreted",
       task_id: "task-graph-1",
       decision: "select_candidate",
       selected_candidate_id: "candidate-1",
-      interpretation_zh: "我理解为保留编号 S-001 的候选，确认后继续。",
+      interpretation_zh: "你选择了第三方候选 A，确认后继续。",
       requires_second_confirmation: true,
     });
     const confirm = vi.spyOn(agentApi, "confirmClarification").mockResolvedValue({
@@ -1186,25 +1191,35 @@ describe("controlled Agent graph task detail", () => {
     expect(screen.getByText("***0009")).toBeInTheDocument();
     expect(screen.getByText("***0001")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "同意" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("radio", { name: "采用第三方候选 A" }));
     await user.type(
-      screen.getByRole("textbox", { name: "身份冲突处理说明" }),
-      "两条记录属于同一名学生，请保留编号 S-001。",
+      screen.getByRole("textbox", { name: "补充说明（可选）" }),
+      "两条记录属于同一名学生。",
     );
-    await user.click(screen.getByRole("button", { name: "提交说明" }));
+    await user.click(screen.getByRole("button", { name: "提交选择" }));
 
-    expect(clarify).toHaveBeenCalledWith(
+    expect(submitSelection).toHaveBeenCalledWith(
       "task-graph-1",
-      "两条记录属于同一名学生，请保留编号 S-001。",
+      "clarification-1",
+      {
+        decision: "select_candidate",
+        selected_candidate_id: "candidate-1",
+        note: "两条记录属于同一名学生。",
+        graph_cursor: 6,
+        idempotency_key: expect.any(String),
+      },
     );
-    expect(
-      await screen.findByText("我理解为保留编号 S-001 的候选，确认后继续。"),
-    ).toBeInTheDocument();
-    await user.click(await screen.findByRole("button", { name: "确认模型解释" }));
-    expect(confirm).toHaveBeenCalledWith("task-graph-1", "decision-1");
+    expect(await screen.findByText("等待确认")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "提交选择" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
+    await user.click(
+      await screen.findByRole("button", { name: "确认选择并继续" }),
+    );
+    expect(confirm).toHaveBeenCalledWith("task-graph-1", "clarification-1");
     client.clear();
   });
 
-  it("allows rewriting a persisted interpretation after the page reloads", async () => {
+  it("keeps a persisted selection read only and opens a blank replacement form", async () => {
     const user = userEvent.setup();
     vi.mocked(agentApi.graph).mockResolvedValue({
       task_id: "task-graph-1",
@@ -1239,6 +1254,7 @@ describe("controlled Agent graph task detail", () => {
           },
           candidates: [
             {
+              candidate_id: "candidate-1",
               entity_kind: "student",
               category: "student",
               name: "测试学生",
@@ -1248,6 +1264,7 @@ describe("controlled Agent graph task detail", () => {
               email_masked: "s***@example.test",
             },
             {
+              candidate_id: "candidate-2",
               entity_kind: "student",
               category: "student",
               name: "测试学生二号",
@@ -1258,36 +1275,54 @@ describe("controlled Agent graph task detail", () => {
             },
           ],
           allowed_outcomes: ["use_candidate", "target_extra"],
-          interpretation_zh: "我理解为选择第三方候选 A，确认后继续。",
+          interpretation_zh: "你选择了第三方候选 A，确认后继续。",
+          operator_submission: {
+            decision: "select_candidate",
+            selected_candidate_id: "candidate-1",
+            note: "首次选择",
+            interpretation_zh: "你选择了第三方候选 A，确认后继续。",
+            submitted_at: "2026-07-28T10:00:00Z",
+            source: "structured_selection",
+          },
         }],
       }],
     });
-    const clarify = vi.spyOn(agentApi, "clarify").mockResolvedValue({
+    const submitSelection = vi.spyOn(
+      agentApi,
+      "submitClarificationSelection",
+    ).mockResolvedValue({
       decision_id: "clarification-restored",
       status: "interpreted",
       task_id: "task-graph-1",
       decision: "select_candidate",
       selected_candidate_id: "candidate-2",
-      interpretation_zh: "我理解为改选第三方候选 B，确认后继续。",
+      interpretation_zh: "你选择了第三方候选 B，确认后继续。",
       requires_second_confirmation: true,
     });
     const { client } = renderPage();
 
     expect(
-      await screen.findByText("我理解为选择第三方候选 A，确认后继续。"),
+      await screen.findByText("你选择了第三方候选 A，确认后继续。"),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("textbox", { name: "身份冲突处理说明" }),
+      screen.queryByRole("textbox", { name: "补充说明（可选）" }),
     ).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "重新说明" }));
-    const input = await screen.findByRole("textbox", { name: "身份冲突处理说明" });
-    expect(input).toBeEnabled();
-    await user.type(input, "请改选第三方候选 B。");
-    await user.click(screen.getByRole("button", { name: "提交说明" }));
+    await user.click(screen.getByRole("button", { name: "重新选择" }));
+    const input = await screen.findByRole("textbox", { name: "补充说明（可选）" });
+    expect(input).toHaveValue("");
+    expect(screen.getByRole("radio", { name: "采用第三方候选 A" })).not.toBeChecked();
+    await user.click(screen.getByRole("radio", { name: "采用第三方候选 B" }));
+    await user.click(screen.getByRole("button", { name: "提交选择" }));
 
-    expect(clarify).toHaveBeenCalledWith(
+    expect(submitSelection).toHaveBeenCalledWith(
       "task-graph-1",
-      "请改选第三方候选 B。",
+      "clarification-restored",
+      expect.objectContaining({
+        decision: "select_candidate",
+        selected_candidate_id: "candidate-2",
+        note: null,
+        graph_cursor: 7,
+      }),
     );
     client.clear();
   });
@@ -1326,6 +1361,7 @@ describe("controlled Agent graph task detail", () => {
             email_masked: "s***@example.test",
           },
           candidates: [{
+            candidate_id: "candidate-1",
             entity_kind: "student",
             category: "student",
             name: "测试学生",
@@ -1344,10 +1380,10 @@ describe("controlled Agent graph task detail", () => {
     expect(
       await screen.findByText("当前说明无法唯一确定候选，请明确选择候选 A 或按希沃多余处理。"),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("textbox", { name: "身份冲突处理说明" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "提交说明" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "补充说明（可选）" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "提交选择" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "补充说明" }));
-    expect(screen.getByRole("textbox", { name: "身份冲突处理说明" })).toBeEnabled();
+    expect(screen.getByRole("textbox", { name: "补充说明（可选）" })).toBeEnabled();
     client.clear();
   });
 
@@ -1385,6 +1421,7 @@ describe("controlled Agent graph task detail", () => {
             email_masked: "s***@example.test",
           },
           candidates: [{
+            candidate_id: "candidate-1",
             entity_kind: "student",
             category: "student",
             name: "测试学生",
@@ -1394,18 +1431,26 @@ describe("controlled Agent graph task detail", () => {
             email_masked: "s***@example.test",
           }],
           allowed_outcomes: ["use_candidate", "target_extra"],
-          interpretation_zh: "我理解为选择第三方候选 A，确认后继续。",
+          interpretation_zh: "你选择了第三方候选 A，确认后继续。",
+          operator_submission: {
+            decision: "select_candidate",
+            selected_candidate_id: "candidate-1",
+            note: null,
+            interpretation_zh: "你选择了第三方候选 A，确认后继续。",
+            submitted_at: "2026-07-28T10:00:00Z",
+            source: "structured_selection",
+          },
         }],
       }],
     });
     vi.spyOn(agentApi, "confirmClarification").mockResolvedValue({ status: "confirmed" });
     const { client } = renderPage();
 
-    await user.click(await screen.findByRole("button", { name: "确认模型解释" }));
+    await user.click(await screen.findByRole("button", { name: "确认选择并继续" }));
 
-    expect(await screen.findByText("身份冲突说明已确认，Agent 正在继续处理。")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "确认模型解释" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "提交说明" })).not.toBeInTheDocument();
+    expect(await screen.findByText("身份冲突选择已确认，Agent 正在继续处理。")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "确认选择并继续" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "提交选择" })).not.toBeInTheDocument();
     client.clear();
   });
 });

@@ -736,6 +736,19 @@ select {
   color: var(--codex-ink-faint);
 }
 
+.apple-page .identity-clarification-submission,
+.apple-page .identity-clarification-form {
+  color: var(--codex-ink);
+  border-color: var(--codex-border);
+  background: var(--codex-panel-muted);
+}
+
+.apple-page .identity-clarification-form legend,
+.apple-page .identity-clarification-form > label,
+.apple-page .identity-clarification-form fieldset label {
+  color: var(--codex-ink);
+}
+
 .apple-page .graph-item-review {
   border-top-color: var(--codex-border);
 }
