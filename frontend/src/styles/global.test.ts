@@ -54,7 +54,13 @@ describe("responsive analysis styles", () => {
       /\.conversation-create-page\s*\{[^}]*height:\s*100%[^}]*min-height:\s*0[^}]*overflow:\s*hidden/s,
     );
     expect(globalCss).toMatch(
+      /\.conversation-create-page\s*\{[^}]*grid-template-rows:\s*auto auto minmax\(0,\s*1fr\)/s,
+    );
+    expect(globalCss).toMatch(
       /\.workspace-main:has\(>\s*\.conversation-create-page\)\s*>\s*\.conversation-create-page\s*\{[^}]*grid-row:\s*2/s,
+    );
+    expect(globalCss).toMatch(
+      /\.conversation-create-page\s+\.conversation-workspace\s*\{[^}]*grid-row:\s*3/s,
     );
     expect(globalCss).toMatch(/\.conversation-surface\s*\{[^}]*overflow:\s*hidden/s);
     expect(globalCss).toMatch(/\.conversation-messages\s*\{[^}]*overflow-y:\s*auto/s);
