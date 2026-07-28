@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -578,6 +578,50 @@ describe("controlled Agent graph task detail", () => {
     expect(await screen.findByText("已允许")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "同意" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "拒绝" })).not.toBeInTheDocument();
+    client.clear();
+  });
+
+  it("advances to the next pending high-risk heading after rejection", async () => {
+    const user = userEvent.setup();
+    vi.mocked(agentApi.graph).mockResolvedValue({
+      task_id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      graph_version: "agent-sync-graph-v1",
+      graph_cursor: 8,
+      current_node: "wait_high_risk_approvals",
+      business_stage: "governance_execution",
+      current_action_zh: "正在等待高风险操作审批",
+      status: "waiting_human",
+      can_terminate: true,
+      termination_requested: false,
+      human_gates: [
+        highRiskGate("gate-1", "finding-1", "第一组高风险操作"),
+        highRiskGate("gate-2", "finding-2", "第二组高风险操作"),
+      ],
+    });
+    vi.mocked(agentApi.decideGraphGate).mockResolvedValue({
+      gate_id: "gate-1",
+      status: "rejected",
+      graph_cursor: 8,
+    });
+    const { client, container } = renderPage();
+    const rejectButtons = await screen.findAllByRole("button", { name: "拒绝" });
+    const nextHeading = container.querySelectorAll<HTMLElement>(
+      "[data-risk-approval-heading]",
+    )[1];
+    const scrollIntoView = vi.fn();
+    const focus = vi.spyOn(nextHeading, "focus");
+    nextHeading.scrollIntoView = scrollIntoView;
+
+    await user.click(rejectButtons[0]);
+
+    await waitFor(() => {
+      expect(scrollIntoView).toHaveBeenCalledWith({
+        behavior: "smooth",
+        block: "start",
+      });
+    });
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
     client.clear();
   });
 
@@ -1493,5 +1537,17 @@ function mediumGate(
         changes: [],
       },
     ],
+  };
+}
+
+function highRiskGate(
+  id: string,
+  findingId: string,
+  summary: string,
+): AgentGraphHumanGate {
+  return {
+    ...mediumGate(id, findingId, summary, "测试学生"),
+    risk: "high",
+    risk_reason_zh: "该操作属于高风险变更。",
   };
 }

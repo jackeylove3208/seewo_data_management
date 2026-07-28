@@ -1,4 +1,5 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AgentGraphHumanGate } from "../../api/agent";
@@ -48,5 +49,73 @@ describe("ConversationRiskApprovalCard", () => {
 
     expect(screen.getByText("已同意")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "同意高风险操作" })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["同意高风险操作", "approved"],
+    ["拒绝高风险操作", "rejected"],
+  ] as const)(
+    "advances to the next pending risk after clicking %s",
+    async (buttonName, result) => {
+      const user = userEvent.setup();
+      const onDecide = vi.fn().mockResolvedValue(result);
+      const firstGate = gate("pending");
+      const secondGate = {
+        ...gate("pending"),
+        id: "gate-2",
+        membership_hash: "membership-2",
+      };
+      const { container } = render(
+        <>
+          <ConversationRiskApprovalCard gate={firstGate} onDecide={onDecide} />
+          <ConversationRiskApprovalCard gate={secondGate} onDecide={onDecide} />
+        </>,
+      );
+      const nextHeading = container.querySelectorAll<HTMLElement>(
+        "[data-risk-approval-heading]",
+      )[1];
+      const scrollIntoView = vi.fn();
+      const focus = vi.spyOn(nextHeading, "focus");
+      nextHeading.scrollIntoView = scrollIntoView;
+
+      await user.click(screen.getAllByRole("button", { name: buttonName })[0]);
+
+      await waitFor(() => {
+        expect(scrollIntoView).toHaveBeenCalledWith({
+          behavior: "smooth",
+          block: "start",
+        });
+      });
+      expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    },
+  );
+
+  it("does not advance when the decision fails", async () => {
+    const user = userEvent.setup();
+    const onDecide = vi.fn().mockRejectedValue(new Error("提交失败"));
+    const firstGate = gate("pending");
+    const secondGate = {
+      ...gate("pending"),
+      id: "gate-2",
+      membership_hash: "membership-2",
+    };
+    const { container } = render(
+      <>
+        <ConversationRiskApprovalCard gate={firstGate} onDecide={onDecide} />
+        <ConversationRiskApprovalCard gate={secondGate} onDecide={onDecide} />
+      </>,
+    );
+    const nextHeading = container.querySelectorAll<HTMLElement>(
+      "[data-risk-approval-heading]",
+    )[1];
+    const scrollIntoView = vi.fn();
+    nextHeading.scrollIntoView = scrollIntoView;
+
+    await user.click(
+      screen.getAllByRole("button", { name: "同意高风险操作" })[0],
+    );
+
+    expect(await screen.findByText("提交失败")).toBeInTheDocument();
+    expect(scrollIntoView).not.toHaveBeenCalled();
   });
 });

@@ -17,6 +17,7 @@ import {
 import { BackButton } from "../../components/BackButton";
 import { IdentityConflictClarificationCard } from "../../components/IdentityConflictClarificationCard";
 import { TaskStatusRail } from "../../components/TaskStatusRail";
+import { advanceToNextPendingRiskHeading } from "../agent-approvals/advanceToNextRisk";
 import { presentAgentEvent, presentAgentPhase } from "../agent-events/presentation";
 
 const syncPhases: Array<{ id: AgentPhase; label: string; icon: typeof FileInput }> = [
@@ -529,6 +530,9 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
         ...currentDecisions,
         [gateId]: result.status,
       }));
+      if (requiresFrozenReview) {
+        advanceToNextPendingRiskHeading(gateId);
+      }
       await Promise.all([task.refetch(), graph.refetch(), events.refetch()]);
     } catch (error) {
       const rawMessage = error instanceof Error ? error.message : "审批操作未完成";
@@ -896,6 +900,14 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
         <section
           className={`graph-approval-card graph-approval-${gateDecisions[gate.id] ?? gate.status}`}
           key={gate.id}
+          data-risk-approval-id={
+            gate.kind === "high_risk_approval" ? gate.id : undefined
+          }
+          data-risk-approval-status={
+            gate.kind === "high_risk_approval"
+              ? gateDecisions[gate.id] ?? gate.status
+              : undefined
+          }
         >
           <div className="graph-approval-main">
             {(gateDecisions[gate.id] ?? gate.status) === "approved" ? (
@@ -905,7 +917,14 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
             ) : (
               <Tag color="warning">需要确认</Tag>
             )}
-            <h2>{gate.summary_zh ?? "治理操作审核"}</h2>
+            <h2
+              data-risk-approval-heading={
+                gate.kind === "high_risk_approval" ? "" : undefined
+              }
+              tabIndex={gate.kind === "high_risk_approval" ? -1 : undefined}
+            >
+              {gate.summary_zh ?? "治理操作审核"}
+            </h2>
             {gate.risk_reason_zh && <p>{gate.risk_reason_zh}</p>}
             <p>同类问题已合并，共 {gate.item_count} 条记录。只有本组当前冻结内容会受到本次决定影响。</p>
             <ApprovalItemDetails

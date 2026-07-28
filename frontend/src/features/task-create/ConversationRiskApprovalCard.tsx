@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import type { AgentGraphHumanGate } from "../../api/agent";
+import { advanceToNextPendingRiskHeading } from "../agent-approvals/advanceToNextRisk";
 
 type GateDecision = "approved" | "rejected";
 
@@ -59,7 +60,9 @@ export function ConversationRiskApprovalCard({
     setLoading(true);
     setError(undefined);
     try {
-      setDecision(await onDecide(gate, nextDecision));
+      const completedDecision = await onDecide(gate, nextDecision);
+      setDecision(completedDecision);
+      advanceToNextPendingRiskHeading(gate.id);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "审批提交失败，请重试");
     } finally {
@@ -68,11 +71,18 @@ export function ConversationRiskApprovalCard({
   }
 
   return (
-    <section className="conversation-risk-approval" aria-label="高风险治理操作">
+    <section
+      className="conversation-risk-approval"
+      aria-label="高风险治理操作"
+      data-risk-approval-id={gate.id}
+      data-risk-approval-status={decision ?? gate.status}
+    >
       <header className="conversation-risk-header">
         <div>
           <span>高风险操作</span>
-          <strong>需要你的确认</strong>
+          <strong data-risk-approval-heading tabIndex={-1}>
+            需要你的确认
+          </strong>
         </div>
         {decision && (
           <span className={`conversation-risk-decision ${decision}`}>
