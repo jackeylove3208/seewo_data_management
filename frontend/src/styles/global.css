@@ -3268,7 +3268,7 @@ body {
 
 .conversation-create-page {
   width: min(calc(100% - 32px), 1440px);
-  padding-top: 28px;
+  padding-top: 12px;
 }
 
 .external-sync-page {
@@ -3281,7 +3281,7 @@ body {
   grid-template-rows: auto auto minmax(0, 1fr);
   height: 100%;
   min-height: 0;
-  padding: 28px 0 24px;
+  padding: 12px 0 14px;
   overflow: hidden;
 }
 
@@ -3290,13 +3290,13 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  min-height: 42px;
-  margin-bottom: 14px;
+  min-height: 32px;
+  margin-bottom: 7px;
 }
 
 .conversation-page-actions .conversation-assistant-title {
   color: var(--v2-ink);
-  font-size: 18px;
+  font-size: 15px;
   font-weight: 680;
 }
 
@@ -4295,7 +4295,7 @@ body {
 
   .conversation-create-page {
     min-height: 0;
-    padding: 18px 0 14px;
+    padding: 10px 0;
   }
 
   .conversation-surface {
@@ -4305,7 +4305,7 @@ body {
   }
 
   .conversation-page-actions {
-    margin-bottom: 8px;
+    margin-bottom: 6px;
   }
 
   .conversation-page-heading,

@@ -75,6 +75,27 @@ describe("responsive analysis styles", () => {
     );
   });
 
+  it("keeps the conversation header compact on desktop and mobile", () => {
+    expect(globalCss).toMatch(
+      /\.conversation-create-page\s*\{[^}]*padding:\s*12px 0 14px/s,
+    );
+    expect(globalCss).toMatch(
+      /\.conversation-page-actions\s*\{[^}]*min-height:\s*32px[^}]*margin-bottom:\s*7px/s,
+    );
+    expect(globalCss).toMatch(
+      /\.conversation-page-actions \.conversation-assistant-title\s*\{[^}]*font-size:\s*15px/s,
+    );
+    expect(appleCss).toMatch(
+      /\.conversation-reset-button\s*\{[^}]*min-height:\s*32px[^}]*padding:\s*0 10px/s,
+    );
+    expect(globalCss).toMatch(
+      /@media \(max-width:\s*720px\)[\s\S]*\.conversation-create-page\s*\{[^}]*padding:\s*10px 0/s,
+    );
+    expect(globalCss).toMatch(
+      /@media \(max-width:\s*720px\)[\s\S]*\.conversation-page-actions\s*\{[^}]*margin-bottom:\s*6px/s,
+    );
+  });
+
   it("uses one visual shell for the conversation composer", () => {
     expect(globalCss).toMatch(
       /\.conversation-composer\s*\{[^}]*border:\s*1px solid[^}]*border-radius:/s,
