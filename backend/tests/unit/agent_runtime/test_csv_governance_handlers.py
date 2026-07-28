@@ -32,3 +32,27 @@ def test_changed_values_use_semantic_fields_and_raw_csv_before_values() -> None:
 
     assert before == {"phone": "+86 13800138000"}
     assert after == {"phone": "13900139000"}
+
+
+def test_changed_values_allow_cross_category_target_without_student_fields() -> None:
+    authority = _record(
+        entity_kind="student",
+        category="学生",
+        number="S-001",
+        class_name="一年级一班",
+    )
+    target = _record(
+        entity_kind="teacher",
+        category="老师",
+        number="S-001",
+        class_name=None,
+    )
+
+    before, after = _changed_values(
+        target,
+        authority,
+        raw_target_values={"category": "老师", "number": "S-001"},
+    )
+
+    assert before == {"category": "老师", "class_name": None}
+    assert after == {"category": "学生", "class_name": "一年级一班"}

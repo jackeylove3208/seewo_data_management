@@ -896,7 +896,7 @@ def _changed_values(
     fields = ordinary_field_differences(authority, target)
     raw_values = raw_target_values or target_values
     return (
-        {key: raw_values.get(key, target_values[key]) for key in fields},
+        {key: raw_values.get(key, target_values.get(key)) for key in fields},
         {key: authority_values[key] for key in fields},
     )
 
