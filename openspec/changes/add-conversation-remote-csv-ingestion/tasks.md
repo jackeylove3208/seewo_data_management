@@ -8,10 +8,10 @@
 
 ## 2. Safe remote materialization
 
-- [ ] 2.1 Add unit-tested URL, public-address, redirect, downgrade, timeout, content-length, streamed-size, and content-type policies
-- [ ] 2.2 Implement a connection-pinned HTTPS downloader with injectable DNS/network dependencies and managed temporary-file cleanup
-- [ ] 2.3 Materialize valid CSV content into an immutable authoritative `SourceFile` and `Snapshot`, persisting hash and safe provenance idempotently
-- [ ] 2.4 Add safe failure classification and ensure no partial file, task resource, raw URL, query string, or response body is exposed
+- [x] 2.1 Add unit-tested URL, public-address, redirect, downgrade, timeout, content-length, streamed-size, and content-type policies
+- [x] 2.2 Implement a connection-pinned HTTPS downloader with injectable DNS/network dependencies and managed temporary-file cleanup
+- [x] 2.3 Materialize valid CSV content into an immutable authoritative `SourceFile` and `Snapshot`, persisting hash and safe provenance idempotently
+- [x] 2.4 Add safe failure classification and ensure no partial file, task resource, raw URL, query string, or response body is exposed
 
 ## 3. Versioned graph integration
 

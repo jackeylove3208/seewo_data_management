@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy import select
@@ -69,7 +70,7 @@ class RemoteSourceRepository:
         )
         if for_update:
             statement = statement.with_for_update()
-        return await self.session.scalar(statement)
+        return cast(RemoteSourceRecord | None, await self.session.scalar(statement))
 
     async def get_for_task(
         self,
@@ -84,7 +85,7 @@ class RemoteSourceRepository:
         )
         if for_update:
             statement = statement.with_for_update()
-        return await self.session.scalar(statement)
+        return cast(RemoteSourceRecord | None, await self.session.scalar(statement))
 
     async def bind_to_task(
         self,
@@ -99,7 +100,7 @@ class RemoteSourceRepository:
 
     @staticmethod
     def mark_materializing(record: RemoteSourceRecord) -> None:
-        if record.state not in {"registered", "materializing"}:
+        if record.state not in {"registered", "materializing", "failed"}:
             raise ValueError("remote source cannot enter materializing state")
         record.state = "materializing"
         record.safe_problem_code = None
