@@ -60,6 +60,7 @@ from app.models.rematching import (
     EntityRematchJobRecord,
     EntityRematchWorkItemRecord,
 )
+from app.models.remote_sources import RemoteSourceRecord
 from app.models.reporting import (
     AgentReportRecord,
     AgentRollbackCycleRecord,
@@ -69,7 +70,6 @@ from app.models.reporting import (
     RestoreExecutionResultRecord,
     RestoreRequestRecord,
 )
-from app.models.remote_sources import RemoteSourceRecord
 from app.models.snapshots import (
     CanonicalEntityRecord,
     IngestionIssueRecord,

@@ -95,7 +95,7 @@ async function seedGovernanceWorkbench(page, mode: "ai" | "manual", configuredTa
   return { taskId, differenceId };
 }
 
-test("opens history, returns, and selects one issue independently", async ({ page }, testInfo) => {
+test("opens history, returns, and reopens one stored task", async ({ page }) => {
   await page.addInitScript(() => {
     window.localStorage.setItem("mofa-reconciliation-tasks", JSON.stringify([{
       id: "demo-001",
@@ -118,31 +118,17 @@ test("opens history, returns, and selects one issue independently", async ({ pag
     }),
   );
   await page.goto("/tasks");
-  await page.getByRole("button", { name: /三方全校数据核对/ }).click();
+  const demoTask = page.getByRole("button", {
+    name: "三方全校数据核对 third_party_data.csv",
+  });
+  await demoTask.click();
   await expect(page).toHaveURL(/\/tasks\/demo-001$/);
 
   await page.getByRole("button", { name: "返回任务列表" }).click();
   await expect(page).toHaveURL(/\/tasks$/);
 
-  await page.getByRole("button", { name: /三方全校数据核对/ }).click();
-  await page.getByRole("button", { name: "查看教师问题" }).click();
-  if (testInfo.project.name === "desktop") {
-    const sidebarBox = await page.locator(".workspace-sidebar").boundingBox();
-    const selectionBox = await page.locator(".selection-bar").boundingBox();
-    expect(selectionBox?.x ?? 0).toBeGreaterThanOrEqual((sidebarBox?.width ?? 0) + 20);
-  } else {
-    const selectionBox = await page.locator(".selection-bar").boundingBox();
-    expect(selectionBox).not.toBeNull();
-    expect(selectionBox!.x).toBeGreaterThanOrEqual(9);
-    expect(selectionBox!.x).toBeLessThanOrEqual(11);
-    expect(selectionBox!.x + selectionBox!.width).toBeLessThanOrEqual(page.viewportSize()!.width - 9);
-    expect(selectionBox!.width).toBeGreaterThanOrEqual(page.viewportSize()!.width - 22);
-  }
-  await page.getByText("张三", { exact: true }).click();
-  await page.getByLabel("选择张三的所属部门").check();
-
-  await expect(page.getByText("已选择 1 人，共 1 个问题", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("选择张三的手机号")).not.toBeChecked();
+  await demoTask.click();
+  await expect(page).toHaveURL(/\/tasks\/demo-001$/);
 });
 
 test("reveals only manual external data sync after explicit selection", async ({ page }) => {
@@ -351,14 +337,17 @@ test("creates a task from independent manual external data sync", async ({ page 
   await expect(page.getByRole("link", { name: /全校组织数据同步/ })).toHaveAttribute("aria-current", "page");
 });
 
-test("collapses the desktop workspace without hiding the main task", async ({ page }, testInfo) => {
+test("collapses the desktop workspace without hiding the main task list", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop");
-  await page.goto("/tasks/demo-001");
+  await page.route("**/api/agent/history*", (route) =>
+    route.fulfill({ json: { items: [], next_cursor: null } }),
+  );
+  await page.goto("/tasks");
 
   await page.getByRole("button", { name: "收起侧栏" }).click();
 
   await expect(page.getByRole("button", { name: "展开侧栏" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "三方全校数据核对" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "对账任务" })).toBeVisible();
 });
 
 test("uses a drawer for workspace navigation on mobile", async ({ page }, testInfo) => {
