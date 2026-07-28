@@ -198,7 +198,7 @@ test("task detail keeps an in-flight identity choice read only after navigation"
 
   expect(confirmed).toBe(true);
   await expect(
-    page.getByText("身份冲突选择已确认，Agent 正在继续处理。"),
+    page.getByText("正在分析可执行批次", { exact: true }).first(),
   ).toBeVisible();
 });
 
