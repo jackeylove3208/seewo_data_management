@@ -158,7 +158,7 @@ class AgentGovernanceRepository:
         )
         if record is None:
             raise LookupError("clarification not found")
-        if record.status != "pending":
+        if record.status not in {"pending", "interpreted"}:
             raise GovernanceReplayConflict("clarification is not awaiting interpretation")
         if not original_text.strip() or len(original_text) > 500:
             raise ValueError("clarification text is invalid")

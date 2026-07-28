@@ -26,6 +26,27 @@ class AgentGraphApprovalItemView(BaseModel):
     changes: tuple[AgentGraphApprovalChangeView, ...] = ()
 
 
+class AgentGraphIdentityRecordView(BaseModel):
+    entity_kind: str | None = None
+    category: str | None = None
+    name: str | None = None
+    number: str | None = None
+    class_name: str | None = None
+    phone_masked: str | None = None
+    email_masked: str | None = None
+
+
+class AgentGraphIdentityConflictView(BaseModel):
+    clarification_id: UUID
+    status: str
+    summary_zh: str
+    subject: AgentGraphIdentityRecordView
+    candidates: tuple[AgentGraphIdentityRecordView, ...]
+    allowed_outcomes: tuple[str, ...]
+    interpretation_zh: str | None = None
+    evidence_complete: bool = Field(exclude=True)
+
+
 class AgentGraphHumanGateView(BaseModel):
     id: UUID
     kind: str
@@ -43,6 +64,7 @@ class AgentGraphHumanGateView(BaseModel):
     actionable: bool = False
     unavailable_reason_zh: str | None = None
     items: tuple[AgentGraphApprovalItemView, ...] = ()
+    conflicts: tuple[AgentGraphIdentityConflictView, ...] = ()
 
 
 class AgentGraphProgressResponse(BaseModel):

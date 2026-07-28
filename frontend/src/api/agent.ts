@@ -97,6 +97,26 @@ export interface AgentEventPage {
   events: AgentTaskEvent[];
 }
 
+export interface AgentGraphIdentityRecord {
+  entity_kind?: AgentEntityType | null;
+  category?: string | null;
+  name?: string | null;
+  number?: string | null;
+  class_name?: string | null;
+  phone_masked?: string | null;
+  email_masked?: string | null;
+}
+
+export interface AgentGraphIdentityConflict {
+  clarification_id: string;
+  status: string;
+  summary_zh: string;
+  subject: AgentGraphIdentityRecord;
+  candidates: AgentGraphIdentityRecord[];
+  allowed_outcomes: string[];
+  interpretation_zh?: string | null;
+}
+
 export interface AgentGraphHumanGate {
   id: string;
   kind: string;
@@ -114,6 +134,7 @@ export interface AgentGraphHumanGate {
   actionable?: boolean;
   unavailable_reason_zh?: string | null;
   items?: AgentGraphApprovalItem[];
+  conflicts?: AgentGraphIdentityConflict[];
 }
 
 export interface AgentGraphApprovalChange {
@@ -166,8 +187,8 @@ export interface AgentClarificationInterpretation {
   task_id: string;
   decision: "select_candidate" | "treat_as_extra" | "leave_unresolved";
   selected_candidate_id: string | null;
-  interpretation_zh: string;
-  requires_second_confirmation: boolean;
+  interpretation_zh?: string;
+  requires_second_confirmation?: boolean;
 }
 
 export interface AgentClarificationConfirmation {

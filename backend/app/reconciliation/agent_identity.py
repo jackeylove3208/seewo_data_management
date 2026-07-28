@@ -258,9 +258,19 @@ def _masked_candidate(record: AgentInputRecord) -> dict[str, object]:
     return {
         "id": str(record.id),
         "entity_kind": record.entity_kind,
+        "category": record.category,
         "name": record.name,
         "number": record.number,
         "class_name": record.class_name,
         "phone": "***" + record.phone[-4:] if record.phone else None,
-        "email": record.email,
+        "email": _masked_email(record.email),
     }
+
+
+def _masked_email(value: str | None) -> str | None:
+    if not value or "@" not in value:
+        return "已保护" if value else None
+    local_part, domain = value.rsplit("@", 1)
+    if not local_part or not domain:
+        return "已保护"
+    return f"{local_part[0]}***@{domain}"

@@ -207,6 +207,162 @@ describe("backend Agent conversation", () => {
     expect(backend.approveGroup).toHaveBeenCalledWith("task-2", "group-1");
   });
 
+  it("shows the current identity conflict and completes clarification inside chat", async () => {
+    const clarify = vi.fn().mockResolvedValue({
+      decision_id: "clarification-1",
+      status: "interpreted",
+      task_id: "task-identity",
+      decision: "select_candidate",
+      selected_candidate_id: "candidate-1",
+      interpretation_zh: "我理解为选择第三方候选 A，确认后继续。",
+      requires_second_confirmation: true,
+    });
+    const confirmClarification = vi.fn().mockResolvedValue({ status: "confirmed" });
+    const backend = api({
+      currentConversation: vi.fn().mockResolvedValue({
+        id: "conversation-identity",
+        status: "active",
+        messages: [],
+        task: {
+          id: "task-identity",
+          workflow_version: "agent-graph-v1",
+          phase: "clarify_identity_conflicts",
+          status: "waiting_human",
+        },
+      }),
+      graph: vi.fn().mockResolvedValue({
+        task_id: "task-identity",
+        workflow_version: "agent-graph-v1",
+        graph_version: "agent-controlled-graph-v1",
+        graph_cursor: 6,
+        current_node: "resolve_identity_conflicts",
+        business_stage: "agent_analysis",
+        current_action_zh: "正在等待身份冲突说明",
+        status: "waiting_human",
+        can_terminate: true,
+        termination_requested: false,
+        human_gates: [{
+          id: "identity-gate-1",
+          kind: "identity_conflict",
+          status: "pending",
+          item_count: 1,
+          cursor: 5,
+          actionable: true,
+          conflicts: [{
+            clarification_id: "clarification-1",
+            status: "pending",
+            summary_zh: "唯一身份字段命中了多个第三方权威候选，Agent 无法安全选择。",
+            subject: {
+              entity_kind: "student",
+              category: "student",
+              name: "测试学生",
+              number: "S-009",
+              class_name: "一年级一班",
+              phone_masked: "***0009",
+              email_masked: "s***@example.test",
+            },
+            candidates: [
+              {
+                entity_kind: "student",
+                category: "student",
+                name: "测试学生",
+                number: "S-001",
+                class_name: "一年级一班",
+                phone_masked: "***0001",
+                email_masked: "s***@example.test",
+              },
+              {
+                entity_kind: "student",
+                category: "student",
+                name: "测试学生二号",
+                number: "S-002",
+                class_name: "一年级二班",
+                phone_masked: "***0002",
+                email_masked: "s***@example.test",
+              },
+            ],
+            allowed_outcomes: ["use_candidate", "target_extra"],
+            interpretation_zh: null,
+          }],
+        }],
+      }),
+      clarify,
+      confirmClarification,
+    });
+    const user = userEvent.setup();
+
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    expect(await screen.findByText("第 1/1 条")).toBeInTheDocument();
+    expect(screen.getByText("希沃记录")).toBeInTheDocument();
+    expect(screen.getByText("第三方候选 A")).toBeInTheDocument();
+    expect(screen.getByText("第三方候选 B")).toBeInTheDocument();
+    expect(screen.getByText("S-009")).toBeInTheDocument();
+    expect(screen.getByText("S-001")).toBeInTheDocument();
+    expect(screen.getByLabelText("对账目标")).toBeEnabled();
+
+    await user.type(screen.getByLabelText("对账目标"), "请选择第三方候选 A。");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(clarify).toHaveBeenCalledWith("task-identity", "请选择第三方候选 A。");
+    expect(await screen.findByText("我理解为选择第三方候选 A，确认后继续。")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "确认模型解释" }));
+    expect(confirmClarification).toHaveBeenCalledWith(
+      "task-identity",
+      "clarification-1",
+    );
+  });
+
+  it("keeps legacy clarification compatible with its minimal response", async () => {
+    const clarify = vi.fn().mockResolvedValue({
+      decision_id: "legacy-decision",
+      status: "interpreted",
+      task_id: "task-legacy",
+    });
+    const backend = api({
+      currentConversation: vi.fn().mockResolvedValue({
+        id: "conversation-legacy",
+        status: "active",
+        messages: [],
+        task: {
+          id: "task-legacy",
+          workflow_version: "new-agent-v1",
+          phase: "clarify_identity_conflicts",
+          status: "waiting_human",
+        },
+      }),
+      events: vi.fn().mockResolvedValue({
+        cursor: "legacy-cursor",
+        events: [{
+          id: "legacy-conflict",
+          cursor: "legacy-cursor",
+          type: "clarification_required",
+          phase: "clarify_identity_conflicts",
+          status: "waiting_human",
+          payload: { masked_evidence: "已遮罩的身份冲突证据" },
+          created_at: "",
+        }],
+      }),
+      clarify,
+    });
+    const user = userEvent.setup();
+
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    await waitFor(() => expect(screen.getByLabelText("对账目标")).toBeEnabled());
+    await user.type(screen.getByLabelText("对账目标"), "这两条记录属于同一个人。");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(clarify).toHaveBeenCalledWith(
+      "task-legacy",
+      "这两条记录属于同一个人。",
+    );
+    expect(
+      await screen.findByText("已提交澄清，等待后端生成结构化决策确认。"),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("对账目标")).toBeDisabled();
+  });
+
   it("shows compact SQL high-risk changes in chat and approves the frozen gate", async () => {
     const decideGraphGate = vi.fn().mockResolvedValue({
       gate_id: "gate-high-1",
