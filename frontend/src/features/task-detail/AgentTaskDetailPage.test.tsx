@@ -1273,9 +1273,14 @@ describe("controlled Agent graph task detail", () => {
     });
     const { client } = renderPage();
 
-    const input = await screen.findByRole("textbox", { name: "身份冲突处理说明" });
-    expect(input).toBeDisabled();
+    expect(
+      await screen.findByText("我理解为选择第三方候选 A，确认后继续。"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("textbox", { name: "身份冲突处理说明" }),
+    ).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "重新说明" }));
+    const input = await screen.findByRole("textbox", { name: "身份冲突处理说明" });
     expect(input).toBeEnabled();
     await user.type(input, "请改选第三方候选 B。");
     await user.click(screen.getByRole("button", { name: "提交说明" }));
@@ -1284,6 +1289,123 @@ describe("controlled Agent graph task detail", () => {
       "task-graph-1",
       "请改选第三方候选 B。",
     );
+    client.clear();
+  });
+
+  it("restores unresolved model feedback without reopening the explanation form", async () => {
+    const user = userEvent.setup();
+    vi.mocked(agentApi.graph).mockResolvedValue({
+      task_id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      graph_version: "agent-sync-graph-v1",
+      graph_cursor: 7,
+      current_node: "resolve_identity_conflicts",
+      business_stage: "agent_analysis",
+      current_action_zh: "正在等待补充身份冲突说明",
+      status: "waiting_human",
+      can_terminate: true,
+      termination_requested: false,
+      human_gates: [{
+        id: "identity-gate-feedback",
+        kind: "identity_conflict",
+        status: "pending",
+        item_count: 1,
+        cursor: 6,
+        actionable: true,
+        conflicts: [{
+          clarification_id: "clarification-feedback",
+          status: "pending",
+          summary_zh: "唯一身份字段命中了多个第三方权威候选，Agent 无法安全选择。",
+          subject: {
+            entity_kind: "student",
+            category: "student",
+            name: "测试学生",
+            number: "S-009",
+            class_name: "一年级一班",
+            phone_masked: "***0009",
+            email_masked: "s***@example.test",
+          },
+          candidates: [{
+            entity_kind: "student",
+            category: "student",
+            name: "测试学生",
+            number: "S-001",
+            class_name: "一年级一班",
+            phone_masked: "***0001",
+            email_masked: "s***@example.test",
+          }],
+          allowed_outcomes: ["use_candidate", "target_extra"],
+          interpretation_zh: "当前说明无法唯一确定候选，请明确选择候选 A 或按希沃多余处理。",
+        }],
+      }],
+    });
+    const { client } = renderPage();
+
+    expect(
+      await screen.findByText("当前说明无法唯一确定候选，请明确选择候选 A 或按希沃多余处理。"),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "身份冲突处理说明" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "提交说明" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "补充说明" }));
+    expect(screen.getByRole("textbox", { name: "身份冲突处理说明" })).toBeEnabled();
+    client.clear();
+  });
+
+  it("keeps a confirmed clarification closed while graph polling is stale", async () => {
+    const user = userEvent.setup();
+    vi.mocked(agentApi.graph).mockResolvedValue({
+      task_id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      graph_version: "agent-sync-graph-v1",
+      graph_cursor: 7,
+      current_node: "resolve_identity_conflicts",
+      business_stage: "agent_analysis",
+      current_action_zh: "正在等待确认模型解释",
+      status: "waiting_human",
+      can_terminate: true,
+      termination_requested: false,
+      human_gates: [{
+        id: "identity-gate-confirm",
+        kind: "identity_conflict",
+        status: "pending",
+        item_count: 1,
+        cursor: 6,
+        actionable: true,
+        conflicts: [{
+          clarification_id: "clarification-confirm",
+          status: "interpreted",
+          summary_zh: "唯一身份字段命中了多个第三方权威候选，Agent 无法安全选择。",
+          subject: {
+            entity_kind: "student",
+            category: "student",
+            name: "测试学生",
+            number: "S-009",
+            class_name: "一年级一班",
+            phone_masked: "***0009",
+            email_masked: "s***@example.test",
+          },
+          candidates: [{
+            entity_kind: "student",
+            category: "student",
+            name: "测试学生",
+            number: "S-001",
+            class_name: "一年级一班",
+            phone_masked: "***0001",
+            email_masked: "s***@example.test",
+          }],
+          allowed_outcomes: ["use_candidate", "target_extra"],
+          interpretation_zh: "我理解为选择第三方候选 A，确认后继续。",
+        }],
+      }],
+    });
+    vi.spyOn(agentApi, "confirmClarification").mockResolvedValue({ status: "confirmed" });
+    const { client } = renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "确认模型解释" }));
+
+    expect(await screen.findByText("身份冲突说明已确认，Agent 正在继续处理。")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "确认模型解释" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "提交说明" })).not.toBeInTheDocument();
     client.clear();
   });
 });

@@ -84,8 +84,11 @@ export function ConversationCreatePage({
   const [clarificationInterpretation, setClarificationInterpretation] = useState<string>();
   const [rewritingClarificationId, setRewritingClarificationId] = useState<string>();
   const [clarificationError, setClarificationError] = useState<string>();
+  const [submittedClarifications, setSubmittedClarifications] = useState<string[]>([]);
   const [handledApprovalGroups, setHandledApprovalGroups] = useState<string[]>([]);
   const [confirmedClarifications, setConfirmedClarifications] = useState<string[]>([]);
+  const submittedClarificationsRef = useRef(new Set<string>());
+  const confirmedClarificationsRef = useRef(new Set<string>());
   const handledClarificationEvents = useRef(new Set<string>());
   const [terminationGate, setTerminationGate] = useState<AgentGraphHumanGate>();
   const [highRiskGates, setHighRiskGates] = useState<AgentGraphHumanGate[]>([]);
@@ -188,11 +191,18 @@ export function ConversationCreatePage({
             for (const gate of refreshedMediumGates) merged.set(gate.id, gate);
             return [...merged.values()];
           });
-          const currentIdentityGate = graphProgress.human_gates.find(
+          const persistedIdentityGate = graphProgress.human_gates.find(
             (gate) =>
               gate.kind === "identity_conflict"
               && gate.status === "pending",
           );
+          const visibleConflicts = persistedIdentityGate?.conflicts?.filter(
+            (conflict) =>
+              !confirmedClarificationsRef.current.has(conflict.clarification_id),
+          );
+          const currentIdentityGate = persistedIdentityGate && visibleConflicts?.length
+            ? { ...persistedIdentityGate, conflicts: visibleConflicts }
+            : undefined;
           setIdentityGate(currentIdentityGate);
           const currentConflict = currentIdentityGate?.conflicts?.find(
             (conflict) => ["pending", "interpreted"].includes(conflict.status),
@@ -214,6 +224,14 @@ export function ConversationCreatePage({
               setClarificationInterpretation(
                 currentConflict.interpretation_zh ?? "模型已形成受限解释，请确认后继续。",
               );
+            } else if (currentConflict.interpretation_zh) {
+              setClarificationOpen(false);
+              setClarificationDecisionId(undefined);
+              setClarificationInterpretation(currentConflict.interpretation_zh);
+            } else if (
+              submittedClarificationsRef.current.has(currentConflict.clarification_id)
+            ) {
+              setClarificationOpen(false);
             } else {
               setClarificationOpen(true);
               setClarificationDecisionId(undefined);
@@ -258,8 +276,10 @@ export function ConversationCreatePage({
     };
   }, [
     backendApi,
+    confirmedClarifications,
     eventCursor,
     rewritingClarificationId,
+    submittedClarifications,
     task,
   ]);
 
@@ -274,6 +294,10 @@ export function ConversationCreatePage({
     setClarificationInterpretation(undefined);
     setRewritingClarificationId(undefined);
     setClarificationError(undefined);
+    setSubmittedClarifications([]);
+    setConfirmedClarifications([]);
+    submittedClarificationsRef.current.clear();
+    confirmedClarificationsRef.current.clear();
     handledClarificationEvents.current.clear();
   }, [task?.id]);
 
@@ -345,6 +369,10 @@ export function ConversationCreatePage({
           return;
         }
         const requiresConfirmation = interpretation.requires_second_confirmation === true;
+        submittedClarificationsRef.current.add(interpretation.decision_id);
+        setSubmittedClarifications((current) => [
+          ...new Set([...current, interpretation.decision_id]),
+        ]);
         setRewritingClarificationId(undefined);
         setClarificationInterpretation(
           interpretation.interpretation_zh ?? "模型已形成受限解释，请确认后继续。",
@@ -354,7 +382,7 @@ export function ConversationCreatePage({
             ? interpretation.decision_id
             : undefined,
         );
-        setClarificationOpen(!requiresConfirmation);
+        setClarificationOpen(false);
         setState("created");
         setMessages((current) => [...current, {
           id: messageId(),
@@ -422,7 +450,10 @@ export function ConversationCreatePage({
       setRewritingClarificationId(undefined);
       setClarificationError(undefined);
       setHandledApprovalGroups([]);
+      setSubmittedClarifications([]);
       setConfirmedClarifications([]);
+      submittedClarificationsRef.current.clear();
+      confirmedClarificationsRef.current.clear();
       handledClarificationEvents.current.clear();
       setTerminationGate(undefined);
       setHighRiskGates([]);
@@ -555,6 +586,7 @@ export function ConversationCreatePage({
     const decisionId = payloadText(event, "decision_id");
     if (!decisionId) return;
     await backendApi.confirmClarification(task.id, decisionId);
+    confirmedClarificationsRef.current.add(decisionId);
     setConfirmedClarifications((current) => [...new Set([...current, decisionId])]);
     setClarificationOpen(false);
   }
@@ -569,6 +601,7 @@ export function ConversationCreatePage({
     setClarificationError(undefined);
     try {
       await backendApi.confirmClarification(task.id, clarificationDecisionId);
+      confirmedClarificationsRef.current.add(clarificationDecisionId);
       setConfirmedClarifications((current) => [
         ...new Set([...current, clarificationDecisionId]),
       ]);
@@ -577,6 +610,11 @@ export function ConversationCreatePage({
       setClarificationInterpretation(undefined);
       setRewritingClarificationId(undefined);
       setIdentityGate(undefined);
+      setMessages((current) => [...current, {
+        id: messageId(),
+        role: "assistant",
+        text: "身份冲突说明已确认，Agent 正在继续处理。",
+      }]);
     } catch (error) {
       setClarificationError(
         error instanceof Error ? error.message : "身份冲突解释未确认，请重试。",
@@ -585,8 +623,14 @@ export function ConversationCreatePage({
   }
 
   function rewriteIdentityClarification() {
-    if (!clarificationDecisionId) return;
-    setRewritingClarificationId(clarificationDecisionId);
+    const clarificationId = clarificationDecisionId
+      ?? currentIdentityConflict?.clarification_id;
+    if (!clarificationId) return;
+    submittedClarificationsRef.current.delete(clarificationId);
+    setRewritingClarificationId(clarificationId);
+    setSubmittedClarifications((current) =>
+      current.filter((item) => item !== clarificationId)
+    );
     setClarificationDecisionId(undefined);
     setClarificationInterpretation(undefined);
     setClarificationError(undefined);
@@ -779,9 +823,13 @@ export function ConversationCreatePage({
                   )}
                   {clarificationInterpretation && (
                     <Alert
-                      type="info"
+                      type={clarificationDecisionId ? "info" : "warning"}
                       showIcon
-                      message="待确认的模型解释"
+                      message={
+                        clarificationDecisionId
+                          ? "待确认的模型解释"
+                          : "需要补充说明"
+                      }
                       description={clarificationInterpretation}
                     />
                   )}
@@ -808,6 +856,12 @@ export function ConversationCreatePage({
                         onClick={() => void confirmIdentityClarification()}
                       >
                         确认模型解释
+                      </button>
+                    </div>
+                  ) : identityGate.actionable !== false && clarificationInterpretation ? (
+                    <div className="conversation-identity-actions">
+                      <button type="button" onClick={rewriteIdentityClarification}>
+                        补充说明
                       </button>
                     </div>
                   ) : identityGate.actionable !== false ? (

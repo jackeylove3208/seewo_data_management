@@ -1322,6 +1322,91 @@ def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
     assert id_only_gate["actionable"] is False
     agent_client.portal.call(replace_candidates, original_candidates)
     resource_id = f"identity-conflict:{clarification_id}"
+    unresolved_draft = {
+        "schema_version": "agent-contract-v1",
+        "conflict_id": clarification_id,
+        "decision": "leave_unresolved",
+        "selected_candidate_id": None,
+        "interpretation_zh": "当前说明无法唯一确定候选，请明确选择候选 A 或按希沃多余处理。",
+        "requires_second_confirmation": True,
+    }
+
+    class UnresolvedProvider:
+        def __init__(self) -> None:
+            self.outputs = [
+                {
+                    "result": {
+                        "tool_call": {
+                            "name": "read_frozen_conflict",
+                            "arguments": {"resource_id": resource_id},
+                        }
+                    }
+                },
+                {
+                    "result": {
+                        "tool_call": {
+                            "name": "submit_conflict_interpretation",
+                            "arguments": {
+                                "resource_id": resource_id,
+                                **unresolved_draft,
+                            },
+                        }
+                    }
+                },
+                {"result": unresolved_draft},
+            ]
+
+        async def complete_json_once(self, _request) -> LLMResponse:
+            return LLMResponse(
+                output=self.outputs.pop(0),
+                provider="scripted",
+                model="conflict-model",
+                request_id=str(uuid4()),
+            )
+
+    agent_client.app.state.graph_skill_provider = UnresolvedProvider()
+    unresolved = agent_client.post(
+        f"/api/agent/tasks/{task_id}/clarification",
+        json={"message": "他们可能是同一个人。"},
+    )
+    assert unresolved.status_code == 200, unresolved.text
+    assert unresolved.json() == {
+        "decision_id": clarification_id,
+        "status": "pending",
+        "task_id": task_id,
+        "decision": "leave_unresolved",
+        "selected_candidate_id": None,
+        "interpretation_zh": unresolved_draft["interpretation_zh"],
+        "requires_second_confirmation": False,
+    }
+    unresolved_progress = agent_client.get(f"/api/agent/tasks/{task_id}/graph")
+    unresolved_conflict = next(
+        gate
+        for gate in unresolved_progress.json()["human_gates"]
+        if gate["kind"] == "identity_conflict"
+    )["conflicts"][0]
+    assert unresolved_conflict["status"] == "pending"
+    assert (
+        unresolved_conflict["interpretation_zh"]
+        == unresolved_draft["interpretation_zh"]
+    )
+    assert (
+        unresolved_progress.json()["current_action_zh"]
+        == "正在等待补充身份冲突说明"
+    )
+
+    class MustNotReplayProvider:
+        async def complete_json_once(self, _request) -> LLMResponse:
+            raise AssertionError("identical clarification feedback must not call the model again")
+
+    agent_client.app.state.graph_skill_provider = MustNotReplayProvider()
+    replayed_unresolved = agent_client.post(
+        f"/api/agent/tasks/{task_id}/clarification",
+        json={"message": "他们可能是同一个人。"},
+    )
+    assert replayed_unresolved.status_code == 200, replayed_unresolved.text
+    assert replayed_unresolved.json() == unresolved.json()
+
     draft = {
         "schema_version": "agent-contract-v1",
         "conflict_id": clarification_id,
@@ -1396,6 +1481,10 @@ def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
         interpreted_conflict["interpretation_zh"]
         == "我理解为选择编号 S-001 的候选，确认后继续。"
     )
+    assert (
+        interpreted_progress.json()["current_action_zh"]
+        == "正在等待确认身份冲突解释"
+    )
 
     agent_client.app.state.graph_skill_provider = ConflictProvider()
     reinterpreted = agent_client.post(
@@ -1412,3 +1501,18 @@ def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
     )
     assert confirmed.status_code == 200, confirmed.text
     assert confirmed.json()["status"] == "confirmed"
+    replayed_confirmation = agent_client.post(
+        f"/api/agent/tasks/{task_id}/clarification/{clarification_id}/confirm",
+        json={},
+    )
+    assert replayed_confirmation.status_code == 200, replayed_confirmation.text
+    assert replayed_confirmation.json()["status"] == "confirmed"
+    resumed_progress = agent_client.get(f"/api/agent/tasks/{task_id}/graph")
+    resumed_gate = next(
+        gate
+        for gate in resumed_progress.json()["human_gates"]
+        if gate["kind"] == "identity_conflict"
+    )
+    assert resumed_gate["status"] == "approved"
+    assert resumed_progress.json()["status"] == "running"
+    assert resumed_progress.json()["progress_total"] is None

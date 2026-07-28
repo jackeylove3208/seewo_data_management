@@ -173,6 +173,39 @@ class AgentGovernanceRepository:
         await self.session.flush()
         return record
 
+    async def record_clarification_feedback(
+        self,
+        clarification_id: UUID,
+        *,
+        original_text: str,
+        feedback_zh: str,
+        actor_id: str,
+    ) -> AgentClarificationRecord:
+        record = await self.session.scalar(
+            select(AgentClarificationRecord)
+            .where(AgentClarificationRecord.id == clarification_id)
+            .with_for_update()
+        )
+        if record is None:
+            raise LookupError("clarification not found")
+        if record.status not in {"pending", "interpreted"}:
+            raise GovernanceReplayConflict("clarification is not awaiting more detail")
+        normalized_text = original_text.strip()
+        normalized_feedback = feedback_zh.strip()
+        if not normalized_text or len(normalized_text) > 500 or not normalized_feedback:
+            raise ValueError("clarification feedback is invalid")
+        record.status = "pending"
+        record.original_text = normalized_text
+        record.interpretation = {
+            "outcome": "leave_unresolved",
+            "interpretation_zh": normalized_feedback,
+            "model_decision": "leave_unresolved",
+        }
+        record.interpreted_by = actor_id
+        record.updated_at = datetime.now(UTC)
+        await self.session.flush()
+        return record
+
     async def confirm_clarification(
         self,
         clarification_id: UUID,
@@ -187,10 +220,13 @@ class AgentGovernanceRepository:
         )
         if record is None:
             raise LookupError("clarification not found")
+        requested_status = "confirmed" if confirmed else "rejected"
+        if record.status == requested_status:
+            return record
         if record.status != "interpreted":
             raise GovernanceReplayConflict("second confirmation is required")
         now = datetime.now(UTC)
-        record.status = "confirmed" if confirmed else "rejected"
+        record.status = requested_status
         record.confirmed_by = actor_id
         record.confirmed_at = now
         record.updated_at = now
