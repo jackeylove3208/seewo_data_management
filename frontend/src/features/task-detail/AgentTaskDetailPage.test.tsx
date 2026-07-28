@@ -1092,20 +1092,33 @@ describe("controlled Agent graph task detail", () => {
             summary_zh: "唯一身份字段命中了多个第三方权威候选，Agent 无法安全选择。",
             subject: {
               entity_kind: "student",
+              category: "student",
               name: "测试学生",
               number: "S-009",
               class_name: "一年级一班",
               phone_masked: "***0009",
-              email: "student@example.test",
+              email_masked: "s***@example.test",
             },
-            candidates: [{
-              entity_kind: "student",
-              name: "测试学生",
-              number: "S-001",
-              class_name: "一年级一班",
-              phone_masked: "138****0001",
-              email: "student@example.test",
-            }],
+            candidates: [
+              {
+                entity_kind: "student",
+                category: "student",
+                name: "测试学生",
+                number: "S-001",
+                class_name: "一年级一班",
+                phone_masked: "***0001",
+                email_masked: "s***@example.test",
+              },
+              {
+                entity_kind: "student",
+                category: "student",
+                name: "测试学生二号",
+                number: "S-002",
+                class_name: "一年级二班",
+                phone_masked: "***0002",
+                email_masked: "s***@example.test",
+              },
+            ],
             allowed_outcomes: ["use_candidate", "target_extra"],
             interpretation_zh: null,
           }],
@@ -1130,10 +1143,11 @@ describe("controlled Agent graph task detail", () => {
     expect(screen.getByText("第 1/1 条")).toBeInTheDocument();
     expect(screen.getByText("希沃记录")).toBeInTheDocument();
     expect(screen.getByText("第三方候选 A")).toBeInTheDocument();
+    expect(screen.getByText("第三方候选 B")).toBeInTheDocument();
     expect(screen.getByText("S-009")).toBeInTheDocument();
     expect(screen.getByText("S-001")).toBeInTheDocument();
     expect(screen.getByText("***0009")).toBeInTheDocument();
-    expect(screen.getByText("138****0001")).toBeInTheDocument();
+    expect(screen.getByText("***0001")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "同意" })).not.toBeInTheDocument();
     await user.type(
       screen.getByRole("textbox", { name: "身份冲突处理说明" }),
@@ -1150,6 +1164,89 @@ describe("controlled Agent graph task detail", () => {
     ).toBeInTheDocument();
     await user.click(await screen.findByRole("button", { name: "确认模型解释" }));
     expect(confirm).toHaveBeenCalledWith("task-graph-1", "decision-1");
+    client.clear();
+  });
+
+  it("allows rewriting a persisted interpretation after the page reloads", async () => {
+    const user = userEvent.setup();
+    vi.mocked(agentApi.graph).mockResolvedValue({
+      task_id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      graph_version: "agent-sync-graph-v1",
+      graph_cursor: 7,
+      current_node: "resolve_identity_conflicts",
+      business_stage: "agent_analysis",
+      current_action_zh: "正在等待身份冲突说明",
+      status: "waiting_human",
+      can_terminate: true,
+      termination_requested: false,
+      human_gates: [{
+        id: "identity-gate-restored",
+        kind: "identity_conflict",
+        status: "pending",
+        item_count: 1,
+        cursor: 6,
+        actionable: true,
+        conflicts: [{
+          clarification_id: "clarification-restored",
+          status: "interpreted",
+          summary_zh: "唯一身份字段命中了多个第三方权威候选，Agent 无法安全选择。",
+          subject: {
+            entity_kind: "student",
+            category: "student",
+            name: "测试学生",
+            number: "S-009",
+            class_name: "一年级一班",
+            phone_masked: "***0009",
+            email_masked: "s***@example.test",
+          },
+          candidates: [
+            {
+              entity_kind: "student",
+              category: "student",
+              name: "测试学生",
+              number: "S-001",
+              class_name: "一年级一班",
+              phone_masked: "***0001",
+              email_masked: "s***@example.test",
+            },
+            {
+              entity_kind: "student",
+              category: "student",
+              name: "测试学生二号",
+              number: "S-002",
+              class_name: "一年级二班",
+              phone_masked: "***0002",
+              email_masked: "s***@example.test",
+            },
+          ],
+          allowed_outcomes: ["use_candidate", "target_extra"],
+          interpretation_zh: "我理解为选择第三方候选 A，确认后继续。",
+        }],
+      }],
+    });
+    const clarify = vi.spyOn(agentApi, "clarify").mockResolvedValue({
+      decision_id: "clarification-restored",
+      status: "interpreted",
+      task_id: "task-graph-1",
+      decision: "select_candidate",
+      selected_candidate_id: "candidate-2",
+      interpretation_zh: "我理解为改选第三方候选 B，确认后继续。",
+      requires_second_confirmation: true,
+    });
+    const { client } = renderPage();
+
+    const input = await screen.findByRole("textbox", { name: "身份冲突处理说明" });
+    expect(input).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "重新说明" }));
+    expect(input).toBeEnabled();
+    await user.type(input, "请改选第三方候选 B。");
+    await user.click(screen.getByRole("button", { name: "提交说明" }));
+
+    expect(clarify).toHaveBeenCalledWith(
+      "task-graph-1",
+      "请改选第三方候选 B。",
+    );
     client.clear();
   });
 });

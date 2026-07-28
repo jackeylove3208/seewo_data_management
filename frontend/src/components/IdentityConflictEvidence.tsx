@@ -13,12 +13,13 @@ const fields: Array<{
   key: keyof AgentGraphIdentityRecord;
   label: string;
 }> = [
-  { key: "entity_kind", label: "类别" },
+  { key: "entity_kind", label: "实体" },
+  { key: "category", label: "类别" },
   { key: "name", label: "姓名" },
   { key: "number", label: "编号" },
   { key: "class_name", label: "班级" },
   { key: "phone_masked", label: "电话" },
-  { key: "email", label: "邮箱" },
+  { key: "email_masked", label: "邮箱" },
 ];
 
 function displayValue(

@@ -99,11 +99,12 @@ export interface AgentEventPage {
 
 export interface AgentGraphIdentityRecord {
   entity_kind?: AgentEntityType | null;
+  category?: string | null;
   name?: string | null;
   number?: string | null;
   class_name?: string | null;
   phone_masked?: string | null;
-  email?: string | null;
+  email_masked?: string | null;
 }
 
 export interface AgentGraphIdentityConflict {
@@ -186,8 +187,8 @@ export interface AgentClarificationInterpretation {
   task_id: string;
   decision: "select_candidate" | "treat_as_extra" | "leave_unresolved";
   selected_candidate_id: string | null;
-  interpretation_zh: string;
-  requires_second_confirmation: boolean;
+  interpretation_zh?: string;
+  requires_second_confirmation?: boolean;
 }
 
 export interface AgentClarificationConfirmation {

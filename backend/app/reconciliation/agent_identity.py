@@ -258,6 +258,7 @@ def _masked_candidate(record: AgentInputRecord) -> dict[str, object]:
     return {
         "id": str(record.id),
         "entity_kind": record.entity_kind,
+        "category": record.category,
         "name": record.name,
         "number": record.number,
         "class_name": record.class_name,

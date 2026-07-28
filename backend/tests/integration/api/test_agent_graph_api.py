@@ -13,6 +13,7 @@ from app.core.config import Settings
 from app.main import create_app
 from app.models.agent_analysis import (
     AgentApprovalGroupRecord,
+    AgentClarificationRecord,
     AgentFindingRecord,
     AgentFindingSolutionRecord,
     AgentIdentityClaimRecord,
@@ -49,7 +50,7 @@ def test_graph_progress_and_tenant_safe_gate_decision(
     graph_agent_client: TestClient,
 ) -> None:
     agent_client = graph_agent_client
-    async def seed() -> tuple[str, str, str]:
+    async def seed() -> tuple[str, str, str, str]:
         async with agent_client.app.state.database.session_factory() as session:
             task = ReconciliationTask(
                 tenant_id="school-1",
@@ -1069,7 +1070,7 @@ def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
 ) -> None:
     agent_client = graph_agent_client
 
-    async def seed() -> tuple[str, str, str]:
+    async def seed() -> tuple[str, str, str, str]:
         async with agent_client.app.state.database.session_factory() as session:
             task = ReconciliationTask(
                 tenant_id="school-1",
@@ -1162,6 +1163,7 @@ def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
             session.add(work_item)
             await session.flush()
             candidate_id = uuid4()
+            second_candidate_id = uuid4()
             clarification = await AgentGovernanceRepository(
                 session
             ).create_clarification(
@@ -1172,11 +1174,22 @@ def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
                     {
                         "id": str(candidate_id),
                         "entity_kind": "student",
+                        "category": "student",
                         "name": "测试学生",
                         "number": "S-001",
                         "class_name": "一年级一班",
                         "phone": "138****0001",
                         "email": "student@example.test",
+                    },
+                    {
+                        "id": str(second_candidate_id),
+                        "entity_kind": "student",
+                        "category": "student",
+                        "name": "测试学生二号",
+                        "number": "S-002",
+                        "class_name": "一年级二班",
+                        "phone": "13812345678*",
+                        "email": "secret.person@example.test",
                     },
                 ),
                 allowed_outcomes=("use_candidate", "target_extra"),
@@ -1191,9 +1204,16 @@ def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
             )
             graph.cursor = 1
             await session.commit()
-            return str(task.id), str(clarification.id), str(candidate_id)
+            return (
+                str(task.id),
+                str(clarification.id),
+                str(candidate_id),
+                str(second_candidate_id),
+            )
 
-    task_id, clarification_id, candidate_id = agent_client.portal.call(seed)
+    task_id, clarification_id, candidate_id, second_candidate_id = (
+        agent_client.portal.call(seed)
+    )
     progress = agent_client.get(f"/api/agent/tasks/{task_id}/graph")
     assert progress.status_code == 200, progress.text
     identity_gate = next(
@@ -1208,26 +1228,78 @@ def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
             "summary_zh": "唯一身份字段命中了多个第三方权威候选，Agent 无法安全选择。",
             "subject": {
                 "entity_kind": "student",
+                "category": "student",
                 "name": "测试学生",
                 "number": "S-009",
                 "class_name": "一年级一班",
                 "phone_masked": "***0009",
-                "email": "student@example.test",
+                "email_masked": "s***@example.test",
             },
             "candidates": [
                 {
                     "entity_kind": "student",
+                    "category": "student",
                     "name": "测试学生",
                     "number": "S-001",
                     "class_name": "一年级一班",
-                    "phone_masked": "138****0001",
-                    "email": "student@example.test",
-                }
+                    "phone_masked": "***0001",
+                    "email_masked": "s***@example.test",
+                },
+                {
+                    "entity_kind": "student",
+                    "category": "student",
+                    "name": "测试学生二号",
+                    "number": "S-002",
+                    "class_name": "一年级二班",
+                    "phone_masked": "***5678",
+                    "email_masked": "s***@example.test",
+                },
             ],
             "allowed_outcomes": ["use_candidate", "target_extra"],
             "interpretation_zh": None,
         }
     ]
+
+    async def replace_candidates(candidates: list[dict[str, str]]) -> None:
+        async with agent_client.app.state.database.session_factory() as session:
+            record = await session.get(
+                AgentClarificationRecord,
+                UUID(clarification_id),
+            )
+            assert record is not None
+            record.masked_candidates = candidates
+            await session.commit()
+
+    original_candidates = [
+        {
+            "id": candidate_id,
+            "entity_kind": "student",
+            "category": "student",
+            "name": "测试学生",
+            "number": "S-001",
+            "class_name": "一年级一班",
+            "phone": "138****0001",
+            "email": "student@example.test",
+        },
+        {
+            "id": second_candidate_id,
+            "entity_kind": "student",
+            "category": "student",
+            "name": "测试学生二号",
+            "number": "S-002",
+            "class_name": "一年级二班",
+            "phone": "13812345678*",
+            "email": "secret.person@example.test",
+        },
+    ]
+    agent_client.portal.call(replace_candidates, [])
+    incomplete = agent_client.post(
+        f"/api/agent/tasks/{task_id}/clarification",
+        json={"message": "请按希沃多余处理。"},
+    )
+    assert incomplete.status_code == 409, incomplete.text
+    assert incomplete.json()["detail"]["code"] == "incomplete_conflict_evidence"
+    agent_client.portal.call(replace_candidates, original_candidates)
     resource_id = f"identity-conflict:{clarification_id}"
     draft = {
         "schema_version": "agent-contract-v1",

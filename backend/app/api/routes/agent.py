@@ -788,6 +788,7 @@ async def get_agent_graph_progress(
         elif gate.gate_kind == "identity_conflict":
             identity_conflicts_by_gate[gate.id] = await _graph_identity_conflicts(
                 session,
+                run_id=run.id,
                 clarification_ids=tuple(gate.member_ids),
             )
     progress_completed, progress_total = await _graph_progress_counts(
@@ -1021,6 +1022,7 @@ def _student_phone_change_is_complete(item: AgentGraphApprovalItemView) -> bool:
 async def _graph_identity_conflicts(
     session: AsyncSession,
     *,
+    run_id: UUID,
     clarification_ids: tuple[str, ...],
 ) -> tuple[AgentGraphIdentityConflictView, ...]:
     try:
@@ -1032,7 +1034,8 @@ async def _graph_identity_conflicts(
     clarifications = tuple(
         await session.scalars(
             select(AgentClarificationRecord).where(
-                AgentClarificationRecord.id.in_(parsed_ids)
+                AgentClarificationRecord.id.in_(parsed_ids),
+                AgentClarificationRecord.run_id == run_id,
             )
         )
     )
@@ -1040,14 +1043,20 @@ async def _graph_identity_conflicts(
     work_item_ids = {record.work_item_id for record in clarifications}
     work_items = tuple(
         await session.scalars(
-            select(AgentWorkItemRecord).where(AgentWorkItemRecord.id.in_(work_item_ids))
+            select(AgentWorkItemRecord).where(
+                AgentWorkItemRecord.id.in_(work_item_ids),
+                AgentWorkItemRecord.run_id == run_id,
+            )
         )
     )
     work_items_by_id = {record.id: record for record in work_items}
     subject_ids = {record.subject_input_id for record in work_items}
     subjects = tuple(
         await session.scalars(
-            select(AgentInputRecord).where(AgentInputRecord.id.in_(subject_ids))
+            select(AgentInputRecord).where(
+                AgentInputRecord.id.in_(subject_ids),
+                AgentInputRecord.run_id == run_id,
+            )
         )
     )
     subjects_by_id = {record.id: record for record in subjects}
@@ -1074,6 +1083,7 @@ async def _graph_identity_conflicts(
                 subject=_graph_identity_record_view(
                     {
                         "entity_kind": subject.entity_kind,
+                        "category": subject.category,
                         "name": subject.name,
                         "number": subject.number,
                         "class_name": subject.class_name,
@@ -1110,22 +1120,29 @@ def _graph_identity_record_view(
 
     return AgentGraphIdentityRecordView(
         entity_kind=text_value("entity_kind") or default_entity_kind,
+        category=text_value("category"),
         name=text_value("name"),
         number=text_value("number"),
         class_name=text_value("class_name"),
         phone_masked=_mask_graph_phone(text_value("phone")),
-        email=text_value("email"),
+        email_masked=_mask_graph_email(text_value("email")),
     )
 
 
 def _mask_graph_phone(value: str | None) -> str | None:
     if value is None:
         return None
-    if "*" in value:
-        return value
     if value.startswith("token:"):
         return "已保护"
-    return f"***{value[-4:]}" if len(value) >= 4 else "***"
+    digits = "".join(character for character in value if character.isdigit())
+    return f"***{digits[-4:]}" if len(digits) >= 4 else "已保护"
+
+
+def _mask_graph_email(value: str | None) -> str | None:
+    if value is None:
+        return None
+    masked = _sanitize_public(value)
+    return str(masked) if masked != value else "已保护"
 
 
 async def _graph_approval_items(
@@ -2286,9 +2303,12 @@ async def clarify_agent_conflict(
             409,
             detail=_error("clarification_required", "No pending clarification"),
         )
-    candidate_ids = tuple(
-        UUID(str(item["id"])) for item in record.masked_candidates if "id" in item
-    )
+    try:
+        candidate_ids = tuple(
+            UUID(str(item["id"])) for item in record.masked_candidates if "id" in item
+        )
+    except (TypeError, ValueError):
+        candidate_ids = ()
     if task.workflow_version == "agent-graph-v1":
         graph = await AgentGraphRepository(session).get_run_state_for_agent_run(
             run.id,
@@ -2315,6 +2335,29 @@ async def clarify_agent_conflict(
                 detail=_error(
                     "stale_graph_gate",
                     "Frozen identity conflict gate is missing or stale",
+                ),
+            )
+        conflict_views = await _graph_identity_conflicts(
+            session,
+            run_id=run.id,
+            clarification_ids=(str(record.id),),
+        )
+        candidates_are_complete = (
+            len(record.masked_candidates) >= 2
+            and len(candidate_ids) == len(record.masked_candidates)
+            and len(set(candidate_ids)) == len(candidate_ids)
+        )
+        if (
+            gate.cursor > graph.cursor
+            or len(conflict_views) != 1
+            or not candidates_are_complete
+            or len(conflict_views[0].candidates) != len(candidate_ids)
+        ):
+            raise HTTPException(
+                409,
+                detail=_error(
+                    "incomplete_conflict_evidence",
+                    "身份冲突证据不完整，不能要求操作人盲目判断。",
                 ),
             )
         normalized_message = body.message.strip()

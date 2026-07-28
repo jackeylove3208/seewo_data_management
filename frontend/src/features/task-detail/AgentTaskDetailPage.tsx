@@ -257,6 +257,7 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
   const [clarificationMessage, setClarificationMessage] = useState("");
   const [clarificationDecisionId, setClarificationDecisionId] = useState<string>();
   const [clarificationInterpretation, setClarificationInterpretation] = useState<string>();
+  const [rewritingClarificationId, setRewritingClarificationId] = useState<string>();
   const task = useQuery({
     queryKey: ["agent-task", taskId],
     queryFn: ({ signal }) => agentApi.task(taskId, signal),
@@ -616,7 +617,10 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
     setTerminateError(undefined);
     try {
       const interpretation = await agentApi.clarify(taskId, message);
-      setClarificationInterpretation(interpretation.interpretation_zh);
+      setRewritingClarificationId(undefined);
+      setClarificationInterpretation(
+        interpretation.interpretation_zh ?? "模型已形成受限解释，请确认后继续。",
+      );
       setClarificationDecisionId(
         interpretation.requires_second_confirmation
           ? interpretation.decision_id
@@ -638,6 +642,7 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
       setClarificationDecisionId(undefined);
       setClarificationInterpretation(undefined);
       setClarificationMessage("");
+      setRewritingClarificationId(undefined);
       await Promise.all([task.refetch(), graph.refetch(), events.refetch()]);
     } catch (error) {
       setTerminateError(error instanceof Error ? error.message : "身份冲突解释未确认");
@@ -830,11 +835,16 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
         );
         const currentConflict = conflicts[currentConflictIndex];
         const restoredDecisionId = currentConflict?.status === "interpreted"
+          && rewritingClarificationId !== currentConflict.clarification_id
           ? currentConflict.clarification_id
           : undefined;
         const decisionId = clarificationDecisionId ?? restoredDecisionId;
         const interpretation = clarificationInterpretation
-          ?? currentConflict?.interpretation_zh
+          ?? (
+            rewritingClarificationId !== currentConflict?.clarification_id
+              ? currentConflict?.interpretation_zh
+              : undefined
+          )
           ?? undefined;
         return (
           <section className="graph-approval-card graph-clarification-card" key={gate.id}>
@@ -856,13 +866,27 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
                 message={gate.unavailable_reason_zh ?? "冲突明细不完整，不能要求用户盲目判断。"}
               />
             )}
+            {gate.actionable === false && (
+              <Alert
+                type="error"
+                showIcon
+                message={
+                  gate.unavailable_reason_zh
+                  ?? "冲突证据不完整，当前不能提交说明。"
+                }
+              />
+            )}
             <label htmlFor={`identity-clarification-${gate.id}`}>身份冲突处理说明</label>
             <Input.TextArea
               id={`identity-clarification-${gate.id}`}
               aria-label="身份冲突处理说明"
               value={clarificationMessage}
               rows={4}
-              disabled={Boolean(decisionId) || !currentConflict}
+              disabled={
+                Boolean(decisionId)
+                || !currentConflict
+                || gate.actionable === false
+              }
               placeholder="例如：请选择第三方候选 A；或者候选都不是同一人，请按希沃多余处理。"
               onChange={(event) => setClarificationMessage(event.target.value)}
             />
@@ -881,6 +905,7 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
                     onClick={() => {
                       setClarificationDecisionId(undefined);
                       setClarificationInterpretation(undefined);
+                      setRewritingClarificationId(decisionId);
                     }}
                   >
                     重新说明
@@ -897,7 +922,11 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
               ) : (
                 <Button
                   type="primary"
-                  disabled={!clarificationMessage.trim() || !currentConflict}
+                  disabled={
+                    !clarificationMessage.trim()
+                    || !currentConflict
+                    || gate.actionable === false
+                  }
                   loading={gateLoading === gate.id}
                   onClick={() => void submitClarification(gate.id)}
                 >

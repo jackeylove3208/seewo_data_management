@@ -28,11 +28,12 @@ class AgentGraphApprovalItemView(BaseModel):
 
 class AgentGraphIdentityRecordView(BaseModel):
     entity_kind: str | None = None
+    category: str | None = None
     name: str | None = None
     number: str | None = None
     class_name: str | None = None
     phone_masked: str | None = None
-    email: str | None = None
+    email_masked: str | None = None
 
 
 class AgentGraphIdentityConflictView(BaseModel):
