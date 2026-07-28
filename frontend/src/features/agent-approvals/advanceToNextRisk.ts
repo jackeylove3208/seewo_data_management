@@ -11,7 +11,11 @@ export function advanceToNextPendingRiskHeading(currentGateId: string) {
 
   const nextCard = cards
     .slice(currentIndex + 1)
-    .find((card) => card.dataset.riskApprovalStatus === "pending");
+    .find(
+      (card) =>
+        card.dataset.riskApprovalStatus === "pending"
+        && card.dataset.riskApprovalSelectable === "true",
+    );
   const heading = nextCard?.querySelector<HTMLElement>(
     "[data-risk-approval-heading]",
   );

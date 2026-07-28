@@ -76,6 +76,7 @@ export function ConversationRiskApprovalCard({
       aria-label="高风险治理操作"
       data-risk-approval-id={gate.id}
       data-risk-approval-status={decision ?? gate.status}
+      data-risk-approval-selectable={String(!decision && canDecide)}
     >
       <header className="conversation-risk-header">
         <div>

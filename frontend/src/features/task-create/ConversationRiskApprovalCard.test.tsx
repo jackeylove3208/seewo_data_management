@@ -60,23 +60,32 @@ describe("ConversationRiskApprovalCard", () => {
       const user = userEvent.setup();
       const onDecide = vi.fn().mockResolvedValue(result);
       const firstGate = gate("pending");
-      const secondGate = {
+      const unavailableGate = {
         ...gate("pending"),
         id: "gate-2",
         membership_hash: "membership-2",
+        actionable: false,
+      };
+      const nextGate = {
+        ...gate("pending"),
+        id: "gate-3",
+        membership_hash: "membership-3",
       };
       const { container } = render(
         <>
           <ConversationRiskApprovalCard gate={firstGate} onDecide={onDecide} />
-          <ConversationRiskApprovalCard gate={secondGate} onDecide={onDecide} />
+          <ConversationRiskApprovalCard gate={unavailableGate} onDecide={onDecide} />
+          <ConversationRiskApprovalCard gate={nextGate} onDecide={onDecide} />
         </>,
       );
-      const nextHeading = container.querySelectorAll<HTMLElement>(
+      const headings = container.querySelectorAll<HTMLElement>(
         "[data-risk-approval-heading]",
-      )[1];
+      );
+      const unavailableScroll = vi.fn();
       const scrollIntoView = vi.fn();
-      const focus = vi.spyOn(nextHeading, "focus");
-      nextHeading.scrollIntoView = scrollIntoView;
+      const focus = vi.spyOn(headings[2], "focus");
+      headings[1].scrollIntoView = unavailableScroll;
+      headings[2].scrollIntoView = scrollIntoView;
 
       await user.click(screen.getAllByRole("button", { name: buttonName })[0]);
 
@@ -86,6 +95,7 @@ describe("ConversationRiskApprovalCard", () => {
           block: "start",
         });
       });
+      expect(unavailableScroll).not.toHaveBeenCalled();
       expect(focus).toHaveBeenCalledWith({ preventScroll: true });
     },
   );

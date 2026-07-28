@@ -908,6 +908,14 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
               ? gateDecisions[gate.id] ?? gate.status
               : undefined
           }
+          data-risk-approval-selectable={
+            gate.kind === "high_risk_approval"
+              ? String(
+                (gateDecisions[gate.id] ?? gate.status) === "pending"
+                && gate.actionable !== false,
+              )
+              : undefined
+          }
         >
           <div className="graph-approval-main">
             {(gateDecisions[gate.id] ?? gate.status) === "approved" ? (

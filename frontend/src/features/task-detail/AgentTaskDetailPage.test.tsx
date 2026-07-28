@@ -596,7 +596,11 @@ describe("controlled Agent graph task detail", () => {
       termination_requested: false,
       human_gates: [
         highRiskGate("gate-1", "finding-1", "第一组高风险操作"),
-        highRiskGate("gate-2", "finding-2", "第二组高风险操作"),
+        {
+          ...highRiskGate("gate-2", "finding-2", "暂不可操作的高风险操作"),
+          actionable: false,
+        },
+        highRiskGate("gate-3", "finding-3", "第二组可操作的高风险操作"),
       ],
     });
     vi.mocked(agentApi.decideGraphGate).mockResolvedValue({
@@ -606,12 +610,14 @@ describe("controlled Agent graph task detail", () => {
     });
     const { client, container } = renderPage();
     const rejectButtons = await screen.findAllByRole("button", { name: "拒绝" });
-    const nextHeading = container.querySelectorAll<HTMLElement>(
+    const headings = container.querySelectorAll<HTMLElement>(
       "[data-risk-approval-heading]",
-    )[1];
+    );
+    const unavailableScroll = vi.fn();
     const scrollIntoView = vi.fn();
-    const focus = vi.spyOn(nextHeading, "focus");
-    nextHeading.scrollIntoView = scrollIntoView;
+    const focus = vi.spyOn(headings[2], "focus");
+    headings[1].scrollIntoView = unavailableScroll;
+    headings[2].scrollIntoView = scrollIntoView;
 
     await user.click(rejectButtons[0]);
 
@@ -621,6 +627,7 @@ describe("controlled Agent graph task detail", () => {
         block: "start",
       });
     });
+    expect(unavailableScroll).not.toHaveBeenCalled();
     expect(focus).toHaveBeenCalledWith({ preventScroll: true });
     client.clear();
   });
