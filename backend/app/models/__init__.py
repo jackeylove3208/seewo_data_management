@@ -69,6 +69,7 @@ from app.models.reporting import (
     RestoreExecutionResultRecord,
     RestoreRequestRecord,
 )
+from app.models.remote_sources import RemoteSourceRecord
 from app.models.snapshots import (
     CanonicalEntityRecord,
     IngestionIssueRecord,
@@ -135,6 +136,7 @@ __all__ = [
     "IngestionIssueRecord",
     "RawSnapshotRow",
     "ReportJobRecord",
+    "RemoteSourceRecord",
     "ReconciliationTask",
     "RestoreExecutionLinkRecord",
     "RestoreExecutionResultRecord",

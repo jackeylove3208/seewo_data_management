@@ -3,6 +3,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
+from app.schemas.agent_api import AgentConnectorSelection
 from app.schemas.agent_ingestion import (
     AgentContractRecord,
     AgentEntityKind,
@@ -141,4 +142,19 @@ def test_input_marks_reject_sensitive_evidence_fields() -> None:
             inclusion_state="anomaly",
             report_disposition="report",
             safe_evidence={"message": "call +1-415-555-0199"},
+        )
+def test_remote_csv_connector_requires_only_remote_source_id() -> None:
+    remote_source_id = uuid4()
+
+    selection = AgentConnectorSelection(
+        kind="remote_csv",
+        remote_source_id=remote_source_id,
+    )
+
+    assert selection.remote_source_id == remote_source_id
+    with pytest.raises(ValidationError, match="remote CSV connector"):
+        AgentConnectorSelection(
+            kind="remote_csv",
+            remote_source_id=remote_source_id,
+            source_ref="seewo/current.csv",
         )

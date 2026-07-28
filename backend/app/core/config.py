@@ -113,6 +113,11 @@ class Settings(BaseSettings):
     new_agent_csv_execution_enabled: bool = False
     new_agent_api_connector_enabled: bool = False
     new_agent_database_connector_enabled: bool = False
+    conversation_remote_csv_enabled: bool = False
+    remote_source_max_redirects: int = Field(default=3, ge=0, le=5)
+    remote_source_connect_timeout_seconds: PositiveFloat = 10
+    remote_source_read_timeout_seconds: PositiveFloat = 30
+    remote_source_total_timeout_seconds: PositiveFloat = 60
     api_connector_configurations: dict[str, ApiConnectorConfiguration] = {}
     database_connector_configurations: dict[str, DatabaseConnectorConfiguration] = {}
     database_connector_credentials: dict[str, SecretStr] = {}
