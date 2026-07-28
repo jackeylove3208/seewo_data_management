@@ -2808,6 +2808,47 @@ async def clarify_agent_conflict(
                 )
             )
         except GraphSubAgentFailure as error:
+            revision_failure_categories = {
+                "model_provider_failure",
+                "model_output_failure",
+                "model_contract_failure",
+                "tool_argument_rejected",
+            }
+            if error.failure_categories and set(error.failure_categories).issubset(
+                revision_failure_categories
+            ):
+                feedback_zh = (
+                    "模型未能安全理解这条说明。请补充更明确的处理意见："
+                    "选择一个第三方候选，或明确按“希沃多余”处理。"
+                )
+                updated = await AgentGovernanceRepository(
+                    session
+                ).record_clarification_feedback(
+                    record.id,
+                    original_text=body.message,
+                    feedback_zh=feedback_zh,
+                    actor_id=operator.operator_id,
+                )
+                await AgentRuntimeRepository(session).append_event(
+                    run.id,
+                    "clarification_revision_required",
+                    {
+                        "decision_id": str(updated.id),
+                        "interpretation_zh": feedback_zh,
+                        "reason": "model_interpretation_failure",
+                        "failure_categories": list(error.failure_categories),
+                        "attempt_count": error.attempt_count,
+                    },
+                )
+                return {
+                    "decision_id": str(updated.id),
+                    "status": updated.status,
+                    "task_id": str(task.id),
+                    "decision": "leave_unresolved",
+                    "selected_candidate_id": None,
+                    "interpretation_zh": feedback_zh,
+                    "requires_second_confirmation": False,
+                }
             raise HTTPException(
                 503,
                 detail=_error(

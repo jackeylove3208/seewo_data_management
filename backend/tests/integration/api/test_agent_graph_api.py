@@ -8,7 +8,7 @@ from sqlalchemy import select
 from app.agent_graph.repository import AgentGraphRepository
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentPhase, AgentRunKind
-from app.ai.providers.base import LLMResponse
+from app.ai.providers.base import LLMResponse, ModelProviderError
 from app.main import create_app
 from app.models.agent_analysis import (
     AgentApprovalGroupRecord,
@@ -1406,6 +1406,41 @@ def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
     )
     assert replayed_unresolved.status_code == 200, replayed_unresolved.text
     assert replayed_unresolved.json() == unresolved.json()
+
+    class FailingConflictProvider:
+        async def complete_json_once(self, _request) -> LLMResponse:
+            raise ModelProviderError("synthetic conflict interpretation failure")
+
+    agent_client.app.state.graph_skill_provider = FailingConflictProvider()
+    failed_interpretation = agent_client.post(
+        f"/api/agent/tasks/{task_id}/clarification",
+        json={"message": "我暂时无法判断这两个候选。"},
+    )
+    assert failed_interpretation.status_code == 200, failed_interpretation.text
+    assert failed_interpretation.json() == {
+        "decision_id": clarification_id,
+        "status": "pending",
+        "task_id": task_id,
+        "decision": "leave_unresolved",
+        "selected_candidate_id": None,
+        "interpretation_zh": (
+            "模型未能安全理解这条说明。请补充更明确的处理意见："
+            "选择一个第三方候选，或明确按“希沃多余”处理。"
+        ),
+        "requires_second_confirmation": False,
+    }
+    failed_progress = agent_client.get(f"/api/agent/tasks/{task_id}/graph")
+    failed_conflict = next(
+        gate
+        for gate in failed_progress.json()["human_gates"]
+        if gate["kind"] == "identity_conflict"
+    )["conflicts"][0]
+    assert failed_conflict["status"] == "pending"
+    assert (
+        failed_conflict["interpretation_zh"]
+        == failed_interpretation.json()["interpretation_zh"]
+    )
+    assert failed_progress.json()["current_action_zh"] == "正在等待补充身份冲突说明"
 
     draft = {
         "schema_version": "agent-contract-v1",
