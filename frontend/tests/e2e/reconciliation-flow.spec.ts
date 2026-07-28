@@ -95,7 +95,7 @@ async function seedGovernanceWorkbench(page, mode: "ai" | "manual", configuredTa
   return { taskId, differenceId };
 }
 
-test("opens history, returns, and selects one issue independently", async ({ page }, testInfo) => {
+test("opens history, returns, and inspects one issue independently", async ({ page }) => {
   await page.addInitScript(() => {
     window.localStorage.setItem("mofa-reconciliation-tasks", JSON.stringify([{
       id: "demo-001",
@@ -117,32 +117,86 @@ test("opens history, returns, and selects one issue independently", async ({ pag
       json: { detail: { code: "offline_fixture", message: "使用本地演示历史" } },
     }),
   );
+  await page.route("**/api/reconciliation-tasks/demo-001", (route) =>
+    route.fulfill({
+      json: {
+        id: "demo-001",
+        tenant_id: "school-1",
+        scope_id: "all",
+        status: "ready",
+        stage: "analysis_ready",
+        entity_types: ["teacher"],
+        snapshots: {
+          authoritative: {
+            accepted: 1,
+            normalized_with_warning: 0,
+            quarantined: 0,
+            rejected: 0,
+            quarantine_available: false,
+          },
+          target: {
+            accepted: 1,
+            normalized_with_warning: 0,
+            quarantined: 0,
+            rejected: 0,
+            quarantine_available: false,
+          },
+        },
+        workflow: {
+          stage: "complete",
+          status: "succeeded",
+          attempt: 1,
+          processed: 1,
+          total: 1,
+          analysis: {
+            job_id: null,
+            total: 1,
+            completed: 1,
+            succeeded: 1,
+            manual_review: 0,
+            failed: 0,
+          },
+          error: null,
+        },
+        error: null,
+      },
+    }),
+  );
+  await page.route(
+    "**/api/reconciliation-tasks/demo-001/analysis-summary",
+    (route) => route.fulfill({
+      json: {
+        task_id: "demo-001",
+        analysis_job_id: null,
+        job_status: "completed",
+        terminal: true,
+        entity_types: [{
+          entity_type: "teacher",
+          issue_count: 1,
+          proposal_ready: 1,
+          needs_information: 0,
+          manual_only: 0,
+          failed: 0,
+        }],
+      },
+    }),
+  );
+  await seedGovernanceWorkbench(page, "ai", "demo-001", false);
   await page.goto("/tasks");
-  await page.getByRole("button", { name: /三方全校数据核对/ }).click();
+  const history = page.getByRole("region", { name: "历史任务" });
+  await history.getByRole("button", { name: /^三方全校数据核对 / }).click();
   await expect(page).toHaveURL(/\/tasks\/demo-001$/);
 
   await page.getByRole("button", { name: "返回任务列表" }).click();
   await expect(page).toHaveURL(/\/tasks$/);
 
-  await page.getByRole("button", { name: /三方全校数据核对/ }).click();
+  await history.getByRole("button", { name: /^三方全校数据核对 / }).click();
   await page.getByRole("button", { name: "查看教师问题" }).click();
-  if (testInfo.project.name === "desktop") {
-    const sidebarBox = await page.locator(".workspace-sidebar").boundingBox();
-    const selectionBox = await page.locator(".selection-bar").boundingBox();
-    expect(selectionBox?.x ?? 0).toBeGreaterThanOrEqual((sidebarBox?.width ?? 0) + 20);
-  } else {
-    const selectionBox = await page.locator(".selection-bar").boundingBox();
-    expect(selectionBox).not.toBeNull();
-    expect(selectionBox!.x).toBeGreaterThanOrEqual(9);
-    expect(selectionBox!.x).toBeLessThanOrEqual(11);
-    expect(selectionBox!.x + selectionBox!.width).toBeLessThanOrEqual(page.viewportSize()!.width - 9);
-    expect(selectionBox!.width).toBeGreaterThanOrEqual(page.viewportSize()!.width - 22);
-  }
-  await page.getByText("张三", { exact: true }).click();
-  await page.getByLabel("选择张三的所属部门").check();
-
-  await expect(page.getByText("已选择 1 人，共 1 个问题", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("选择张三的手机号")).not.toBeChecked();
+  await expect(page.getByRole("heading", { name: "教师差异" })).toBeVisible();
+  await expect(page.getByText("张老师", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "查看 AI 分析" }).click();
+  await expect(page.getByRole("dialog", { name: "差异治理分析" })).toBeVisible();
+  await expect(page.getByText("希沃手机号未同步到权威系统最新值")).toBeVisible();
 });
 
 test("reveals only manual external data sync after explicit selection", async ({ page }) => {
@@ -353,6 +407,27 @@ test("creates a task from independent manual external data sync", async ({ page 
 
 test("collapses the desktop workspace without hiding the main task", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop");
+  await page.addInitScript(() => {
+    window.localStorage.setItem("mofa-reconciliation-tasks", JSON.stringify([{
+      id: "demo-001",
+      title: "三方全校数据核对",
+      createdAt: "2026-07-16T10:32:00+08:00",
+      sourceFile: "third_party_data.csv",
+      targetFile: "mofa_data.csv",
+      sourceAccepted: 515,
+      targetAccepted: 518,
+      issueCount: 9,
+      status: "ready",
+      selectedEntityTypes: ["organization_unit", "class", "teacher", "student"],
+      isDemo: true,
+    }]));
+  });
+  await page.route("**/api/agent/history*", (route) =>
+    route.fulfill({
+      status: 503,
+      json: { detail: { code: "offline_fixture", message: "使用本地演示历史" } },
+    }),
+  );
   await page.goto("/tasks/demo-001");
 
   await page.getByRole("button", { name: "收起侧栏" }).click();

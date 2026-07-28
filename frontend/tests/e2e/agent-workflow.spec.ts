@@ -23,6 +23,265 @@ function historyItem(overrides: Record<string, unknown>) {
   };
 }
 
+function identityGraph(
+  taskId: string,
+  {
+    submitted = false,
+    confirmed = false,
+  }: { submitted?: boolean; confirmed?: boolean } = {},
+) {
+  return {
+    task_id: taskId,
+    workflow_version: "agent-graph-v1",
+    graph_version: "agent-sync-graph-v1",
+    graph_cursor: 6,
+    current_node: confirmed
+      ? "analyze_actionable_batches"
+      : "resolve_identity_conflicts",
+    business_stage: "agent_analysis",
+    current_action_zh: confirmed
+      ? "正在分析可执行批次"
+      : submitted
+        ? "正在等待确认身份冲突选择"
+        : "正在等待身份冲突选择",
+    status: confirmed ? "running" : "waiting_human",
+    can_terminate: true,
+    termination_requested: false,
+    human_gates: confirmed ? [] : [{
+      id: "identity-gate-1",
+      kind: "identity_conflict",
+      status: "pending",
+      item_count: 1,
+      cursor: 5,
+      actionable: true,
+      conflicts: [{
+        clarification_id: "clarification-1",
+        status: submitted ? "interpreted" : "pending",
+        summary_zh: "唯一身份字段命中了多个第三方权威候选，Agent 无法安全选择。",
+        subject: {
+          candidate_id: null,
+          entity_kind: "student",
+          category: "学生",
+          name: "测试学生",
+          number: "S-009",
+          class_name: "一年级一班",
+          phone_masked: "***0009",
+          email_masked: "s***@example.test",
+        },
+        candidates: [
+          {
+            candidate_id: "candidate-1",
+            entity_kind: "student",
+            category: "学生",
+            name: "测试学生",
+            number: "S-001",
+            class_name: "一年级一班",
+            phone_masked: "***0001",
+            email_masked: "s***@example.test",
+          },
+          {
+            candidate_id: "candidate-2",
+            entity_kind: "student",
+            category: "学生",
+            name: "测试学生二号",
+            number: "S-002",
+            class_name: "一年级二班",
+            phone_masked: "***0002",
+            email_masked: "s***@example.test",
+          },
+        ],
+        allowed_outcomes: ["use_candidate", "target_extra"],
+        interpretation_zh: submitted
+          ? "你选择了第三方候选 A，确认后继续。"
+          : null,
+        operator_submission: submitted ? {
+          decision: "select_candidate",
+          selected_candidate_id: "candidate-1",
+          note: "采用候选 A",
+          interpretation_zh: "你选择了第三方候选 A，确认后继续。",
+          submitted_at: now,
+          source: "structured_selection",
+        } : null,
+      }],
+    }],
+  };
+}
+
+test("task detail keeps an in-flight identity choice read only after navigation", async ({ page }) => {
+  let submitted = false;
+  let confirmed = false;
+  let selectionRequests = 0;
+  let releaseSelection!: () => void;
+  const selectionDelay = new Promise<void>((resolve) => {
+    releaseSelection = resolve;
+  });
+  const task = historyItem({
+    id: "identity-task",
+    workflow_version: "agent-graph-v1",
+    title: "身份冲突同步",
+    phase: "clarify_identity_conflicts",
+    status: "waiting_human",
+    report_id: null,
+    completed_at: null,
+    deletion_eligible: false,
+  });
+  await page.route("**/api/agent/history*", (route) =>
+    route.fulfill({ json: { items: [task], next_cursor: null } }),
+  );
+  await page.route(/\/api\/agent\/tasks\/identity-task$/, (route) =>
+    route.fulfill({ json: task }),
+  );
+  await page.route("**/api/agent/tasks/identity-task/events*", (route) =>
+    route.fulfill({ json: { cursor: "0", events: [] } }),
+  );
+  await page.route("**/api/agent/tasks/identity-task/graph", (route) =>
+    route.fulfill({
+      json: identityGraph("identity-task", { submitted, confirmed }),
+    }),
+  );
+  await page.route(
+    "**/api/agent/tasks/identity-task/clarifications/clarification-1/selection",
+    async (route) => {
+      selectionRequests += 1;
+      expect(route.request().postDataJSON()).toMatchObject({
+        decision: "select_candidate",
+        selected_candidate_id: "candidate-1",
+        note: "采用候选 A",
+        graph_cursor: 6,
+      });
+      submitted = true;
+      await selectionDelay;
+      await route.fulfill({
+        json: {
+          decision_id: "clarification-1",
+          status: "interpreted",
+          task_id: "identity-task",
+          decision: "select_candidate",
+          selected_candidate_id: "candidate-1",
+          interpretation_zh: "你选择了第三方候选 A，确认后继续。",
+          requires_second_confirmation: true,
+        },
+      });
+    },
+  );
+  await page.route(
+    "**/api/agent/tasks/identity-task/clarification/clarification-1/confirm",
+    (route) => {
+      confirmed = true;
+      return route.fulfill({ json: { status: "confirmed" } });
+    },
+  );
+
+  await page.goto("/tasks/identity-task");
+  await page.getByRole("radio", { name: "采用第三方候选 A" }).check();
+  await page.getByLabel("补充说明（可选）").fill("采用候选 A");
+  await page.getByRole("button", { name: "提交选择" }).click();
+
+  await expect(page.locator(".identity-clarification-state")).toHaveText(
+    /正在保存|等待确认/,
+  );
+  await expect(page.getByRole("button", { name: "提交选择" })).toHaveCount(0);
+  await expect.poll(() => selectionRequests).toBe(1);
+
+  await page.goto("/tasks");
+  await page
+    .getByRole("region", { name: "历史任务" })
+    .getByRole("button", { name: /^身份冲突同步 / })
+    .click();
+
+  await expect(page.getByText("已选择：第三方候选 A")).toBeVisible();
+  await expect(page.getByRole("button", { name: "提交选择" })).toHaveCount(0);
+  await expect(page.getByRole("radio")).toHaveCount(0);
+  releaseSelection();
+  await expect(page.locator(".identity-clarification-state")).toHaveText("等待确认");
+  await page.getByRole("button", { name: "确认选择并继续" }).click();
+
+  expect(confirmed).toBe(true);
+  await expect(
+    page.getByText("身份冲突选择已确认，Agent 正在继续处理。"),
+  ).toBeVisible();
+});
+
+test("conversation completes a structured identity conflict without leaving chat", async ({ page }) => {
+  let submitted = false;
+  let confirmed = false;
+  await page.route("**/api/agent/history*", (route) =>
+    route.fulfill({ json: { items: [], next_cursor: null } }),
+  );
+  await page.route("**/api/agent/conversations/current", (route) =>
+    route.fulfill({
+      json: {
+        id: "conversation-identity",
+        status: "active",
+        messages: [],
+        task: {
+          id: "conversation-identity-task",
+          workflow_version: "agent-graph-v1",
+          phase: "clarify_identity_conflicts",
+          status: "waiting_human",
+        },
+      },
+    }),
+  );
+  await page.route(/\/api\/agent\/tasks\/conversation-identity-task$/, (route) =>
+    route.fulfill({
+      json: {
+        id: "conversation-identity-task",
+        workflow_version: "agent-graph-v1",
+        phase: "clarify_identity_conflicts",
+        status: "waiting_human",
+      },
+    }),
+  );
+  await page.route(
+    "**/api/agent/tasks/conversation-identity-task/events*",
+    (route) => route.fulfill({ json: { cursor: "0", events: [] } }),
+  );
+  await page.route(
+    "**/api/agent/tasks/conversation-identity-task/graph",
+    (route) => route.fulfill({
+      json: identityGraph("conversation-identity-task", { submitted, confirmed }),
+    }),
+  );
+  await page.route(
+    "**/api/agent/tasks/conversation-identity-task/clarifications/clarification-1/selection",
+    (route) => {
+      submitted = true;
+      return route.fulfill({
+        json: {
+          decision_id: "clarification-1",
+          status: "interpreted",
+          task_id: "conversation-identity-task",
+          decision: "select_candidate",
+          selected_candidate_id: "candidate-2",
+          interpretation_zh: "你选择了第三方候选 B，确认后继续。",
+          requires_second_confirmation: true,
+        },
+      });
+    },
+  );
+  await page.route(
+    "**/api/agent/tasks/conversation-identity-task/clarification/clarification-1/confirm",
+    (route) => {
+      confirmed = true;
+      return route.fulfill({ json: { status: "confirmed" } });
+    },
+  );
+
+  await page.goto("/conversations/new");
+  await expect(page.getByLabel("对账目标")).toBeDisabled();
+  await page.getByRole("radio", { name: "采用第三方候选 B" }).check();
+  await page.getByRole("button", { name: "提交选择" }).click();
+  await expect(page.getByText("等待确认")).toBeVisible();
+  await page.getByRole("button", { name: "确认选择并继续" }).click();
+
+  expect(submitted).toBe(true);
+  expect(confirmed).toBe(true);
+  await expect(
+    page.getByText("身份冲突选择已确认，Agent 正在继续处理。"),
+  ).toBeVisible();
+});
+
 test("conversation Agent handles grouped approval, conflict dialogue, second confirmation and termination", async ({ page }) => {
   let clarified = false;
   let terminated = false;
