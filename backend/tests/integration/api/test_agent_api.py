@@ -549,6 +549,55 @@ def test_manual_api_rejects_non_csv_connector_before_task_and_lock_are_created(
     assert agent_client.get("/api/agent/history").json()["items"] == []
 
 
+def test_manual_api_rejects_remote_csv_before_task_and_lock_are_created(
+    agent_client: TestClient,
+) -> None:
+    response = agent_client.post(
+        "/api/agent/tasks",
+        headers={"Idempotency-Key": "forged-manual-remote-source"},
+        json={
+            "title": "伪造网页来源",
+            "entity_types": ["student"],
+            "source": {
+                "kind": "remote_csv",
+                "remote_source_id": str(uuid4()),
+            },
+            "target": {
+                "kind": "local",
+                "source_ref": "seewo/roster.csv",
+            },
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "manual_csv_only"
+    assert agent_client.get("/api/agent/active-lock").json()["active"] is False
+    assert agent_client.get("/api/agent/history").json()["items"] == []
+
+
+def test_manual_api_rejects_raw_url_before_task_and_lock_are_created(
+    agent_client: TestClient,
+) -> None:
+    response = agent_client.post(
+        "/api/agent/tasks",
+        headers={"Idempotency-Key": "forged-manual-url"},
+        json={
+            "title": "伪造网页地址",
+            "entity_types": ["student"],
+            "source": {
+                "kind": "csv",
+                "upload_id": str(uuid4()),
+                "url": "https://data.example.test/roster.csv",
+            },
+            "target": {"kind": "csv", "upload_id": str(uuid4())},
+        },
+    )
+
+    assert response.status_code == 422
+    assert agent_client.get("/api/agent/active-lock").json()["active"] is False
+    assert agent_client.get("/api/agent/history").json()["items"] == []
+
+
 def test_sql_pair_creates_durable_task_without_exposing_database_credentials(
     tmp_path: Path,
 ) -> None:
@@ -844,6 +893,150 @@ def test_conversation_link_registration_requires_one_link(
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "remote_source_multiple_links"
     assert provider.requests == []
+
+
+def test_conversation_link_registration_rejects_non_https_url(
+    agent_client: TestClient,
+) -> None:
+    agent_client.app.state.settings.conversation_remote_csv_enabled = True
+    provider = RemoteConversationProvider()
+    agent_client.app.state.conversation_provider = provider
+    conversation = agent_client.post("/api/agent/conversations").json()
+
+    response = agent_client.post(
+        f"/api/agent/conversations/{conversation['id']}/messages",
+        json={"message": "同步 http://data.example.test/roster.csv"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "remote_source_https_required"
+    assert provider.requests == []
+
+
+def test_conversation_task_binds_its_remote_source_and_local_target(
+    graph_agent_v2_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "remote-task-sources"
+    target = root / "seewo/roster.csv"
+    target.parent.mkdir(parents=True)
+    target.write_text("编号,姓名\nS001,张三\n", encoding="utf-8")
+    graph_agent_v2_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
+    graph_agent_v2_client.app.state.settings.agent_local_write_roots = (
+        (root / "seewo").resolve(),
+    )
+    graph_agent_v2_client.app.state.settings.conversation_remote_csv_enabled = True
+    graph_agent_v2_client.app.state.conversation_provider = RemoteConversationProvider()
+    conversation = graph_agent_v2_client.post("/api/agent/conversations").json()
+    message = graph_agent_v2_client.post(
+        f"/api/agent/conversations/{conversation['id']}/messages",
+        json={"message": "同步 https://data.example.test/roster.csv 的学生"},
+    )
+    assert message.status_code == 200, message.text
+    remote_source_id = message.json()["intent"]["source"]["remote_source_id"]
+
+    created = graph_agent_v2_client.post(
+        f"/api/agent/conversations/{conversation['id']}/tasks",
+        headers={"Idempotency-Key": "conversation-remote-task"},
+        json={
+            "title": "客户端内容应被忽略",
+            "entity_types": ["teacher"],
+            "source": {"kind": "csv", "upload_id": str(uuid4())},
+            "target": {"kind": "csv", "upload_id": str(uuid4())},
+        },
+    )
+
+    assert created.status_code == 202, created.text
+    task_id = created.json()["id"]
+
+    async def load_bindings() -> tuple[RemoteSourceRecord, ReconciliationTask, list[SourceFile]]:
+        async with graph_agent_v2_client.app.state.database.session_factory() as session:
+            remote = await session.scalar(
+                select(RemoteSourceRecord).where(
+                    RemoteSourceRecord.id == UUID(remote_source_id)
+                )
+            )
+            task = await session.get(ReconciliationTask, UUID(task_id))
+            files = list(
+                await session.scalars(
+                    select(SourceFile).where(SourceFile.task_id == UUID(task_id))
+                )
+            )
+            assert remote is not None
+            assert task is not None
+            return remote, task, files
+
+    remote, task, files = graph_agent_v2_client.portal.call(load_bindings)
+    assert remote.task_id == UUID(task_id)
+    assert remote.source_file_id is None
+    assert task.agent_intent["source"] == {
+        "kind": "remote_csv",
+        "remote_source_id": remote_source_id,
+        "upload_id": None,
+        "configuration_id": None,
+        "source_ref": None,
+    }
+    assert [source.source_role for source in files] == ["target"]
+
+
+def test_conversation_task_rejects_remote_source_from_another_conversation(
+    graph_agent_v2_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "cross-conversation-remote-sources"
+    target = root / "seewo/roster.csv"
+    target.parent.mkdir(parents=True)
+    target.write_text("编号,姓名\nS001,张三\n", encoding="utf-8")
+    graph_agent_v2_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
+    graph_agent_v2_client.app.state.settings.agent_local_write_roots = (
+        (root / "seewo").resolve(),
+    )
+    graph_agent_v2_client.app.state.settings.conversation_remote_csv_enabled = True
+    graph_agent_v2_client.app.state.conversation_provider = RemoteConversationProvider()
+    owner = graph_agent_v2_client.post("/api/agent/conversations").json()
+    owner_message = graph_agent_v2_client.post(
+        f"/api/agent/conversations/{owner['id']}/messages",
+        json={"message": "同步 https://data.example.test/roster.csv 的学生"},
+    )
+    remote_source_id = owner_message.json()["intent"]["source"]["remote_source_id"]
+
+    async def create_foreign_intent() -> UUID:
+        async with graph_agent_v2_client.app.state.database.session_factory() as session:
+            conversation = await AgentRuntimeRepository(session).create_conversation(
+                tenant_id="school-1",
+                created_by="operator-1",
+            )
+            conversation.context = {
+                "title": "越权远程同步",
+                "entity_types": ["student"],
+                "source": {
+                    "kind": "remote_csv",
+                    "remote_source_id": remote_source_id,
+                },
+                "target": {
+                    "kind": "local",
+                    "source_ref": "seewo/roster.csv",
+                },
+                "decision_kind": "start_confirmation",
+            }
+            await session.commit()
+            return conversation.id
+
+    foreign_conversation_id = graph_agent_v2_client.portal.call(create_foreign_intent)
+    response = graph_agent_v2_client.post(
+        f"/api/agent/conversations/{foreign_conversation_id}/tasks",
+        headers={"Idempotency-Key": "cross-conversation-remote-task"},
+        json={
+            "title": "客户端内容应被忽略",
+            "entity_types": ["teacher"],
+            "source": {"kind": "csv", "upload_id": str(uuid4())},
+            "target": {"kind": "csv", "upload_id": str(uuid4())},
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "resource_not_found"
+    assert graph_agent_v2_client.get("/api/agent/active-lock").json()["active"] is False
 
 
 def test_conversation_without_link_does_not_register_remote_source(

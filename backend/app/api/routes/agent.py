@@ -920,7 +920,10 @@ async def start_manual_agent_task(
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=128)],
 ) -> AgentTaskResponse:
     _require_enabled(request)
-    if body.source.kind == "database" or body.target.kind == "database":
+    if (
+        body.source.kind in {"database", "remote_csv"}
+        or body.target.kind in {"database", "remote_csv"}
+    ):
         raise HTTPException(
             422,
             detail=_error(

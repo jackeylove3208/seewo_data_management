@@ -14,8 +14,10 @@ from app.core.security import OperatorContext
 from app.local_sources.service import LocalSourceService
 from app.models.agent_runtime import AgentRunRecord, SchoolTaskLockRecord
 from app.models.reconciliation import ReconciliationTask
+from app.models.remote_sources import RemoteSourceRecord
 from app.models.reporting import AgentReportRecord
 from app.models.snapshots import Snapshot, SourceFile
+from app.remote_sources.repository import RemoteSourceRepository
 from app.repositories.files import FileRepository
 from app.schemas.agent_api import AgentTaskIntent
 from app.schemas.canonical_entities import SourceRole
@@ -49,9 +51,17 @@ class AgentTaskService:
         idempotency_key: str,
         conversation_id: UUID | None = None,
     ) -> tuple[ReconciliationTask, AgentRunRecord]:
-        self._validate_connector_runtime(intent)
+        self._validate_connector_runtime(intent, conversation_id=conversation_id)
         payload = intent.model_dump(mode="json")
-        request_hash = _hash({"tenant_id": self.operator.tenant_id, **payload})
+        request_hash = _hash(
+            {
+                "tenant_id": self.operator.tenant_id,
+                "conversation_id": (
+                    str(conversation_id) if conversation_id is not None else None
+                ),
+                **payload,
+            }
+        )
         existing = await self.session.scalar(
             select(ReconciliationTask).where(ReconciliationTask.idempotency_key == idempotency_key)
         )
@@ -63,6 +73,10 @@ class AgentTaskService:
                 raise AgentTaskConflict("Agent task exists without a runtime")
             return existing, run
 
+        remote_source = await self._load_remote_source(
+            intent,
+            conversation_id=conversation_id,
+        )
         active_lock = await self.session.scalar(
             select(SchoolTaskLockRecord).where(
                 SchoolTaskLockRecord.tenant_id == self.operator.tenant_id,
@@ -113,6 +127,13 @@ class AgentTaskService:
                 source_id=intent.source.upload_id,
                 target_ref=intent.target.source_ref,
             )
+        elif intent.source.kind == "remote_csv" and intent.target.kind == "local":
+            assert remote_source is not None
+            await self._bind_remote_source_local_target(
+                task,
+                remote_source=remote_source,
+                target_ref=intent.target.source_ref,
+            )
         elif intent.source.kind == "database" and intent.target.kind == "database":
             assert intent.source.configuration_id is not None
             assert intent.target.configuration_id is not None
@@ -129,10 +150,21 @@ class AgentTaskService:
         ).start(task_id=task.id, conversation_id=conversation_id)
         return task, run
 
-    def _validate_connector_runtime(self, intent: AgentTaskIntent) -> None:
+    def _validate_connector_runtime(
+        self,
+        intent: AgentTaskIntent,
+        *,
+        conversation_id: UUID | None,
+    ) -> None:
         source_kind = intent.source.kind
         target_kind = intent.target.kind
         if source_kind in {"csv", "local"} and target_kind in {"csv", "local"}:
+            return
+        if source_kind == "remote_csv" and target_kind == "local":
+            if conversation_id is None:
+                raise AgentConnectorCapabilityFailure(
+                    "Remote CSV sources require a conversation"
+                )
             return
         if source_kind == "database" and target_kind == "database":
             self._validate_database_pair(intent)
@@ -146,6 +178,31 @@ class AgentTaskService:
         raise AgentConnectorCapabilityFailure(
             "Agent task requires CSV-to-CSV or SQL-to-SQL sources"
         )
+
+    async def _load_remote_source(
+        self,
+        intent: AgentTaskIntent,
+        *,
+        conversation_id: UUID | None,
+    ) -> RemoteSourceRecord | None:
+        if intent.source.kind != "remote_csv":
+            return None
+        if conversation_id is None or intent.source.remote_source_id is None:
+            raise AgentConnectorCapabilityFailure(
+                "Remote CSV sources require a conversation binding"
+            )
+        remote_source = await RemoteSourceRepository(self.session).get_for_conversation(
+            intent.source.remote_source_id,
+            tenant_id=self.operator.tenant_id,
+            created_by=self.operator.operator_id,
+            conversation_id=conversation_id,
+            for_update=True,
+        )
+        if remote_source is None:
+            raise LookupError("Conversation remote source not found")
+        if remote_source.task_id is not None or remote_source.state != "registered":
+            raise AgentTaskConflict("Conversation remote source is no longer available")
+        return remote_source
 
     def _validate_database_pair(self, intent: AgentTaskIntent) -> None:
         if (
@@ -294,6 +351,36 @@ class AgentTaskService:
         await files.bind_to_task(source.id, task.id)
         await files.bind_to_task(target.id, task.id)
         self.session.add_all((_agent_snapshot(task.id, source), _agent_snapshot(task.id, target)))
+        await self.session.flush()
+
+    async def _bind_remote_source_local_target(
+        self,
+        task: ReconciliationTask,
+        *,
+        remote_source: RemoteSourceRecord,
+        target_ref: str | None,
+    ) -> None:
+        if self.settings is None or target_ref is None:
+            raise ValueError("local Agent target requires a configured source reference")
+        target_material = LocalSourceService(self.settings).describe_target_for_write(target_ref)
+        files = FileRepository(self.session)
+        target = await files.create(
+            source_role=SourceRole.TARGET,
+            original_name=target_material.path.name,
+            storage_name=f"local-{uuid4().hex}",
+            storage_path=target_material.path,
+            sha256=target_material.sha256,
+            size_bytes=target_material.size_bytes,
+            detected_encoding="utf-8",
+            managed_storage=False,
+        )
+        await self.session.flush()
+        await files.bind_to_task(target.id, task.id)
+        await RemoteSourceRepository(self.session).bind_to_task(
+            remote_source,
+            task_id=task.id,
+        )
+        self.session.add(_agent_snapshot(task.id, target))
         await self.session.flush()
 
     async def get(self, task_id: UUID) -> tuple[ReconciliationTask, AgentRunRecord]:

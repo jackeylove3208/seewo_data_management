@@ -4,7 +4,7 @@
 - [x] 1.2 Add deterministic one-link extraction, HTTPS registration validation, origin cleaning, and raw-link replacement tests and implementation
 - [x] 1.3 Extend conversation context, decision, and intent contracts with trusted remote-source references and reject unlisted or cross-conversation selections
 - [x] 1.4 Integrate registration and sanitized history into the conversation message endpoint without changing no-link behavior
-- [ ] 1.5 Reject `remote_csv` from the manual task endpoint and require a matching conversation binding in `AgentTaskService`
+- [x] 1.5 Reject `remote_csv` from the manual task endpoint and require a matching conversation binding in `AgentTaskService`
 
 ## 2. Safe remote materialization
 
@@ -29,8 +29,8 @@
 
 ## 5. API and UI behavior
 
-- [ ] 5.1 Add conversation API tests for one link, no link, multiple/invalid links, sanitization, source confirmation, and task creation
-- [ ] 5.2 Add manual API regression tests proving forged URL and `remote_csv` requests fail before task/run/lock creation
+- [x] 5.1 Add conversation API tests for one link, no link, multiple/invalid links, sanitization, source confirmation, and task creation
+- [x] 5.2 Add manual API regression tests proving forged URL and `remote_csv` requests fail before task/run/lock creation
 - [ ] 5.3 Update conversation API types and presentation to display only the cleaned remote origin; leave manual-sync UI and API types unchanged
 - [ ] 5.4 Add frontend unit and Playwright coverage for link-triggered conversation confirmation and absence of manual link controls
 
