@@ -177,6 +177,28 @@ class ClarificationRequest(BaseModel):
     message: str = Field(min_length=1, max_length=500)
 
 
+class StructuredClarificationSelectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["select_candidate", "treat_as_extra"]
+    selected_candidate_id: UUID | None = None
+    note: str | None = Field(default=None, max_length=500)
+    graph_cursor: int = Field(ge=0)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_selection(self) -> "StructuredClarificationSelectionRequest":
+        self.note = self.note.strip() or None if self.note is not None else None
+        self.idempotency_key = self.idempotency_key.strip()
+        if not self.idempotency_key:
+            raise ValueError("idempotency_key must not be blank")
+        if self.decision == "select_candidate" and self.selected_candidate_id is None:
+            raise ValueError("selected_candidate_id is required when selecting a candidate")
+        if self.decision == "treat_as_extra" and self.selected_candidate_id is not None:
+            raise ValueError("selected_candidate_id is not allowed for target extra")
+        return self
+
+
 class ClarificationConfirmationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

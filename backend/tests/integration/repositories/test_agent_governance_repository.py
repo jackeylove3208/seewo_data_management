@@ -198,6 +198,127 @@ async def test_clarification_requires_interpretation_then_second_confirmation(se
 
 
 @pytest.mark.asyncio
+async def test_structured_clarification_selection_is_idempotent_and_replaceable(session) -> None:
+    task, run, snapshots = await _context(session)
+    repository = AgentGovernanceRepository(session)
+    input_record = AgentInputRecord(
+        id=uuid4(),
+        run_id=run.id,
+        task_id=task.id,
+        snapshot_id=snapshots[1].id,
+        tenant_id=task.tenant_id,
+        source_role="target",
+        stable_locator="row:structured",
+        stable_order=3,
+        entity_kind="student",
+        input_hash="3" * 64,
+    )
+    session.add(input_record)
+    await session.flush()
+    work_item = AgentWorkItemRecord(
+        id=uuid4(),
+        run_id=run.id,
+        task_id=task.id,
+        tenant_id=task.tenant_id,
+        source_snapshot_id=snapshots[0].id,
+        target_snapshot_id=snapshots[1].id,
+        subject_input_id=input_record.id,
+        entity_kind="student",
+        kind="identity_conflict",
+        state="awaiting_clarification",
+        idempotency_hash="4" * 64,
+        evidence_hash="5" * 64,
+    )
+    session.add(work_item)
+    await session.flush()
+    first_candidate_id = uuid4()
+    second_candidate_id = uuid4()
+    clarification = await repository.create_clarification(
+        run=run,
+        task=task,
+        work_item_id=work_item.id,
+        candidates=(
+            {"id": str(first_candidate_id), "masked_number": "S-***1"},
+            {"id": str(second_candidate_id), "masked_number": "S-***2"},
+        ),
+        allowed_outcomes=("use_candidate", "target_extra"),
+    )
+
+    first, first_created = await repository.record_structured_clarification_selection(
+        clarification.id,
+        tenant_id=task.tenant_id,
+        decision="select_candidate",
+        selected_candidate_id=first_candidate_id,
+        note="采用候选 A",
+        interpretation_zh="你选择了第三方候选 A，确认后继续。",
+        idempotency_key="selection-1",
+        actor_id="operator-1",
+    )
+
+    assert first_created is True
+    assert first.status == "interpreted"
+    assert first.original_text == "采用候选 A"
+    assert first.interpretation == {
+        "outcome": "use_candidate",
+        "candidate_id": str(first_candidate_id),
+        "note": "采用候选 A",
+        "interpretation_zh": "你选择了第三方候选 A，确认后继续。",
+        "model_decision": "select_candidate",
+        "submission_source": "structured_selection",
+        "idempotency_key": "selection-1",
+    }
+
+    replayed, replay_created = (
+        await repository.record_structured_clarification_selection(
+            clarification.id,
+            tenant_id=task.tenant_id,
+            decision="select_candidate",
+            selected_candidate_id=first_candidate_id,
+            note="采用候选 A",
+            interpretation_zh="你选择了第三方候选 A，确认后继续。",
+            idempotency_key="selection-1",
+            actor_id="operator-1",
+        )
+    )
+    assert replay_created is False
+    assert replayed.interpretation == first.interpretation
+
+    replaced, replacement_created = (
+        await repository.record_structured_clarification_selection(
+            clarification.id,
+            tenant_id=task.tenant_id,
+            decision="select_candidate",
+            selected_candidate_id=second_candidate_id,
+            note=None,
+            interpretation_zh="你选择了第三方候选 B，确认后继续。",
+            idempotency_key="selection-2",
+            actor_id="operator-1",
+        )
+    )
+    assert replacement_created is True
+    assert replaced.original_text == "操作人通过结构化控件提交身份冲突选择"
+    assert replaced.interpretation is not None
+    assert replaced.interpretation["candidate_id"] == str(second_candidate_id)
+
+    await repository.confirm_clarification(
+        clarification.id,
+        actor_id="operator-1",
+        confirmed=True,
+    )
+    with pytest.raises(GovernanceReplayConflict, match="not awaiting"):
+        await repository.record_structured_clarification_selection(
+            clarification.id,
+            tenant_id=task.tenant_id,
+            decision="treat_as_extra",
+            selected_candidate_id=None,
+            note=None,
+            interpretation_zh="你选择了按希沃多余处理，确认后继续。",
+            idempotency_key="selection-3",
+            actor_id="operator-1",
+        )
+
+
+@pytest.mark.asyncio
 async def test_unresolved_clarification_feedback_survives_page_reload(session) -> None:
     task, run, snapshots = await _context(session)
     repository = AgentGovernanceRepository(session)

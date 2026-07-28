@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
@@ -36,6 +37,15 @@ class AgentGraphIdentityRecordView(BaseModel):
     email_masked: str | None = None
 
 
+class AgentGraphClarificationSubmissionView(BaseModel):
+    decision: Literal["select_candidate", "treat_as_extra"]
+    selected_candidate_id: UUID | None = None
+    note: str | None = None
+    interpretation_zh: str
+    submitted_at: datetime
+    source: Literal["structured_selection"]
+
+
 class AgentGraphIdentityConflictView(BaseModel):
     clarification_id: UUID
     status: str
@@ -44,6 +54,7 @@ class AgentGraphIdentityConflictView(BaseModel):
     candidates: tuple[AgentGraphIdentityRecordView, ...]
     allowed_outcomes: tuple[str, ...]
     interpretation_zh: str | None = None
+    operator_submission: AgentGraphClarificationSubmissionView | None = None
     evidence_complete: bool = Field(exclude=True)
 
 

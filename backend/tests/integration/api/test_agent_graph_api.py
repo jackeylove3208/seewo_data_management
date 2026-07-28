@@ -1257,6 +1257,7 @@ def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
             ],
             "allowed_outcomes": ["use_candidate", "target_extra"],
             "interpretation_zh": None,
+            "operator_submission": None,
         }
     ]
 
@@ -1321,6 +1322,101 @@ def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
     )
     assert id_only_gate["actionable"] is False
     agent_client.portal.call(replace_candidates, original_candidates)
+
+    class StructuredSelectionMustNotCallModel:
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        async def complete_json_once(self, _request) -> LLMResponse:
+            self.call_count += 1
+            raise AssertionError("structured identity selection must not call the model")
+
+    structured_provider = StructuredSelectionMustNotCallModel()
+    agent_client.app.state.graph_skill_provider = structured_provider
+    selection_url = (
+        f"/api/agent/tasks/{task_id}/clarifications/"
+        f"{clarification_id}/selection"
+    )
+    structured_body = {
+        "decision": "select_candidate",
+        "selected_candidate_id": candidate_id,
+        "note": "采用候选 A",
+        "graph_cursor": progress.json()["graph_cursor"],
+        "idempotency_key": "structured-selection-1",
+    }
+    structured = agent_client.post(selection_url, json=structured_body)
+    assert structured.status_code == 200, structured.text
+    assert structured.json() == {
+        "decision_id": clarification_id,
+        "status": "interpreted",
+        "task_id": task_id,
+        "decision": "select_candidate",
+        "selected_candidate_id": candidate_id,
+        "interpretation_zh": "你选择了第三方候选 A，确认后继续。",
+        "requires_second_confirmation": True,
+    }
+    assert structured_provider.call_count == 0
+    structured_progress = agent_client.get(f"/api/agent/tasks/{task_id}/graph")
+    structured_conflict = next(
+        gate
+        for gate in structured_progress.json()["human_gates"]
+        if gate["kind"] == "identity_conflict"
+    )["conflicts"][0]
+    assert structured_conflict["operator_submission"] == {
+        "decision": "select_candidate",
+        "selected_candidate_id": candidate_id,
+        "note": "采用候选 A",
+        "interpretation_zh": "你选择了第三方候选 A，确认后继续。",
+        "submitted_at": structured_conflict["operator_submission"]["submitted_at"],
+        "source": "structured_selection",
+    }
+    first_events = agent_client.get(f"/api/agent/tasks/{task_id}/events").json()["events"]
+    first_ready_count = sum(
+        event["type"] == "clarification_decision_ready"
+        for event in first_events
+    )
+    replayed_structured = agent_client.post(selection_url, json=structured_body)
+    assert replayed_structured.status_code == 200, replayed_structured.text
+    replayed_events = agent_client.get(f"/api/agent/tasks/{task_id}/events").json()["events"]
+    assert (
+        sum(
+            event["type"] == "clarification_decision_ready"
+            for event in replayed_events
+        )
+        == first_ready_count
+    )
+    replacement = agent_client.post(
+        selection_url,
+        json={
+            **structured_body,
+            "selected_candidate_id": second_candidate_id,
+            "note": None,
+            "idempotency_key": "structured-selection-2",
+        },
+    )
+    assert replacement.status_code == 200, replacement.text
+    assert replacement.json()["selected_candidate_id"] == second_candidate_id
+    stale = agent_client.post(
+        selection_url,
+        json={
+            **structured_body,
+            "graph_cursor": progress.json()["graph_cursor"] - 1,
+            "idempotency_key": "structured-selection-stale",
+        },
+    )
+    assert stale.status_code == 409, stale.text
+    assert stale.json()["detail"]["code"] == "stale_graph_cursor"
+    unknown_candidate = agent_client.post(
+        selection_url,
+        json={
+            **structured_body,
+            "selected_candidate_id": str(uuid4()),
+            "idempotency_key": "structured-selection-unknown",
+        },
+    )
+    assert unknown_candidate.status_code == 409, unknown_candidate.text
+    assert unknown_candidate.json()["detail"]["code"] == "invalid_selection"
+
     resource_id = f"identity-conflict:{clarification_id}"
     unresolved_draft = {
         "schema_version": "agent-contract-v1",

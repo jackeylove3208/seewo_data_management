@@ -1,7 +1,7 @@
 """Persistence for the Conversation 3 governance boundary."""
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -172,6 +172,78 @@ class AgentGovernanceRepository:
         record.updated_at = datetime.now(UTC)
         await self.session.flush()
         return record
+
+    async def record_structured_clarification_selection(
+        self,
+        clarification_id: UUID,
+        *,
+        tenant_id: str,
+        decision: Literal["select_candidate", "treat_as_extra"],
+        selected_candidate_id: UUID | None,
+        note: str | None,
+        interpretation_zh: str,
+        idempotency_key: str,
+        actor_id: str,
+    ) -> tuple[AgentClarificationRecord, bool]:
+        record = await self.session.scalar(
+            select(AgentClarificationRecord)
+            .where(
+                AgentClarificationRecord.id == clarification_id,
+                AgentClarificationRecord.tenant_id == tenant_id,
+            )
+            .with_for_update()
+        )
+        if record is None:
+            raise LookupError("clarification not found")
+        if record.status not in {"pending", "interpreted"}:
+            raise GovernanceReplayConflict("clarification is not awaiting interpretation")
+
+        normalized_note = note.strip() or None if note is not None else None
+        outcome = "use_candidate" if decision == "select_candidate" else "target_extra"
+        if outcome not in record.allowed_outcomes:
+            raise GovernanceReplayConflict("selection is outside frozen outcomes")
+        frozen_candidate_ids = {
+            str(candidate.get("id"))
+            for candidate in record.masked_candidates
+            if candidate.get("id") is not None
+        }
+        if (
+            decision == "select_candidate"
+            and (
+                selected_candidate_id is None
+                or str(selected_candidate_id) not in frozen_candidate_ids
+            )
+        ):
+            raise GovernanceReplayConflict("selected candidate is outside frozen candidates")
+        if decision == "treat_as_extra" and selected_candidate_id is not None:
+            raise GovernanceReplayConflict("target extra selection cannot include a candidate")
+
+        interpretation = {
+            "outcome": outcome,
+            "candidate_id": (
+                str(selected_candidate_id) if selected_candidate_id is not None else None
+            ),
+            "note": normalized_note,
+            "interpretation_zh": interpretation_zh,
+            "model_decision": decision,
+            "submission_source": "structured_selection",
+            "idempotency_key": idempotency_key,
+        }
+        existing = record.interpretation or {}
+        if existing.get("idempotency_key") == idempotency_key:
+            if existing != interpretation:
+                raise GovernanceReplayConflict("idempotency key payload does not match")
+            return record, False
+
+        record.status = "interpreted"
+        record.original_text = (
+            normalized_note or "操作人通过结构化控件提交身份冲突选择"
+        )
+        record.interpretation = interpretation
+        record.interpreted_by = actor_id
+        record.updated_at = datetime.now(UTC)
+        await self.session.flush()
+        return record, True
 
     async def record_clarification_feedback(
         self,

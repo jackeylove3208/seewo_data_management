@@ -103,6 +103,7 @@ from app.schemas.agent_api import (
     ApprovalDecisionRequest,
     ClarificationConfirmationRequest,
     ClarificationRequest,
+    StructuredClarificationSelectionRequest,
 )
 from app.schemas.agent_conversation import (
     ConversationAgentContext,
@@ -112,6 +113,7 @@ from app.schemas.agent_conversation import (
 from app.schemas.agent_graph_api import (
     AgentGraphApprovalChangeView,
     AgentGraphApprovalItemView,
+    AgentGraphClarificationSubmissionView,
     AgentGraphGateBatchDecisionRequest,
     AgentGraphGateBatchDecisionResponse,
     AgentGraphGateDecisionRequest,
@@ -1296,6 +1298,28 @@ async def _graph_identity_conflicts(
             continue
         interpretation = clarification.interpretation or {}
         interpretation_zh = interpretation.get("interpretation_zh")
+        operator_submission: AgentGraphClarificationSubmissionView | None = None
+        if interpretation.get("submission_source") == "structured_selection":
+            decision = interpretation.get("model_decision")
+            candidate_id = interpretation.get("candidate_id")
+            try:
+                parsed_candidate_id = UUID(str(candidate_id)) if candidate_id else None
+            except ValueError:
+                parsed_candidate_id = None
+            if (
+                decision in {"select_candidate", "treat_as_extra"}
+                and isinstance(interpretation_zh, str)
+                and interpretation_zh
+            ):
+                note = interpretation.get("note")
+                operator_submission = AgentGraphClarificationSubmissionView(
+                    decision=decision,
+                    selected_candidate_id=parsed_candidate_id,
+                    note=note if isinstance(note, str) and note else None,
+                    interpretation_zh=interpretation_zh,
+                    submitted_at=clarification.updated_at,
+                    source="structured_selection",
+                )
         subject_view = _graph_identity_record_view(
             {
                 "entity_kind": subject.entity_kind,
@@ -1327,6 +1351,7 @@ async def _graph_identity_conflicts(
                     if isinstance(interpretation_zh, str) and interpretation_zh
                     else None
                 ),
+                operator_submission=operator_submission,
                 evidence_complete=_identity_conflict_evidence_is_complete(
                     clarification.masked_candidates,
                     subject=subject_view,
@@ -2623,6 +2648,185 @@ async def reject_agent_group(
     )
     await _resume_after_approvals(session, decided.run_id)
     return {"status": decided.status}
+
+
+@router.post(
+    "/tasks/{task_id}/clarifications/{clarification_id}/selection"
+)
+async def submit_structured_agent_clarification(
+    task_id: UUID,
+    clarification_id: UUID,
+    body: StructuredClarificationSelectionRequest,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    operator: Annotated[OperatorContext, Depends(get_operator_context)],
+) -> dict[str, object]:
+    _require_enabled(request)
+    task, run = await AgentTaskService(session, operator=operator).get(task_id)
+    if task.workflow_version != "agent-graph-v1":
+        raise HTTPException(
+            409,
+            detail=_error(
+                "invalid_state",
+                "Structured identity selection requires the Agent graph workflow",
+            ),
+        )
+    graph = await AgentGraphRepository(session).get_run_state_for_agent_run(
+        run.id,
+        for_update=True,
+    )
+    if graph is None or graph.current_node != "resolve_identity_conflicts":
+        raise HTTPException(
+            409,
+            detail=_error(
+                "invalid_state",
+                "Agent graph is not waiting for identity clarification",
+            ),
+        )
+    if graph.cursor != body.graph_cursor:
+        raise HTTPException(
+            409,
+            detail=_error(
+                "stale_graph_cursor",
+                "Identity conflict candidates changed; refresh before selecting",
+            ),
+        )
+    record = await session.scalar(
+        select(AgentClarificationRecord).where(
+            AgentClarificationRecord.id == clarification_id,
+            AgentClarificationRecord.run_id == run.id,
+            AgentClarificationRecord.task_id == task.id,
+            AgentClarificationRecord.tenant_id == operator.tenant_id,
+        )
+    )
+    if record is None:
+        raise HTTPException(
+            404,
+            detail=_error("clarification_not_found", "Clarification not found"),
+        )
+    if record.status not in {"pending", "interpreted"}:
+        raise HTTPException(
+            409,
+            detail=_error(
+                "stale_version",
+                "Clarification is no longer accepting a selection",
+            ),
+        )
+    gate = await session.scalar(
+        select(AgentHumanGateRecord).where(
+            AgentHumanGateRecord.graph_run_id == graph.id,
+            AgentHumanGateRecord.gate_kind == "identity_conflict",
+            AgentHumanGateRecord.status == "pending",
+        )
+    )
+    if (
+        gate is None
+        or gate.cursor > graph.cursor
+        or str(record.id) not in gate.member_ids
+    ):
+        raise HTTPException(
+            409,
+            detail=_error(
+                "stale_graph_gate",
+                "Frozen identity conflict gate is missing or stale",
+            ),
+        )
+    conflict_views = await _graph_identity_conflicts(
+        session,
+        run_id=run.id,
+        clarification_ids=(str(record.id),),
+    )
+    if len(conflict_views) != 1 or not conflict_views[0].evidence_complete:
+        raise HTTPException(
+            409,
+            detail=_error(
+                "incomplete_conflict_evidence",
+                "身份冲突证据不完整，不能要求操作人盲目判断。",
+            ),
+        )
+
+    outcome = (
+        "use_candidate"
+        if body.decision == "select_candidate"
+        else "target_extra"
+    )
+    if outcome not in record.allowed_outcomes:
+        raise HTTPException(
+            409,
+            detail=_error("invalid_selection", "Selection is outside frozen outcomes"),
+        )
+    candidate_ids = tuple(
+        str(candidate.get("id"))
+        for candidate in record.masked_candidates
+        if candidate.get("id") is not None
+    )
+    selected_candidate_id = (
+        str(body.selected_candidate_id)
+        if body.selected_candidate_id is not None
+        else None
+    )
+    if (
+        body.decision == "select_candidate"
+        and selected_candidate_id not in candidate_ids
+    ):
+        raise HTTPException(
+            409,
+            detail=_error(
+                "invalid_selection",
+                "Selected candidate is outside frozen candidates",
+            ),
+        )
+    if body.decision == "select_candidate":
+        candidate_index = candidate_ids.index(selected_candidate_id)
+        candidate_label = (
+            chr(ord("A") + candidate_index)
+            if candidate_index < 26
+            else str(candidate_index + 1)
+        )
+        interpretation_zh = (
+            f"你选择了第三方候选 {candidate_label}，确认后继续。"
+        )
+    else:
+        interpretation_zh = "你选择了按希沃多余处理，确认后继续。"
+    try:
+        updated, created_or_replaced = await AgentGovernanceRepository(
+            session
+        ).record_structured_clarification_selection(
+            record.id,
+            tenant_id=operator.tenant_id,
+            decision=body.decision,
+            selected_candidate_id=body.selected_candidate_id,
+            note=body.note,
+            interpretation_zh=interpretation_zh,
+            idempotency_key=body.idempotency_key,
+            actor_id=operator.operator_id,
+        )
+    except GovernanceReplayConflict as error:
+        raise HTTPException(
+            409,
+            detail=_error("invalid_selection", str(error)),
+        ) from error
+    if created_or_replaced:
+        await AgentRuntimeRepository(session).append_event(
+            run.id,
+            "clarification_decision_ready",
+            {
+                "decision_id": str(updated.id),
+                "outcome": outcome,
+                "candidate_id": selected_candidate_id,
+                "interpretation_zh": interpretation_zh,
+                "submission_source": "structured_selection",
+            },
+        )
+    return {
+        "decision_id": str(updated.id),
+        "status": updated.status,
+        "task_id": str(task.id),
+        "decision": body.decision,
+        "selected_candidate_id": selected_candidate_id,
+        "interpretation_zh": interpretation_zh,
+        "requires_second_confirmation": True,
+    }
 
 
 @router.post("/tasks/{task_id}/clarification")
