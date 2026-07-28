@@ -1,10 +1,10 @@
 from sqlalchemy.dialects import postgresql, sqlite
 
-from app.models.mappings import SnapshotEntityEmbedding, TargetEntityEmbedding
+from app.models.mappings import SnapshotEntityEmbedding
 
 
 def test_embedding_block_uses_jsonb_on_postgresql_and_json_on_sqlite() -> None:
-    column_type = TargetEntityEmbedding.__table__.c.block_key.type
+    column_type = SnapshotEntityEmbedding.__table__.c.block_key.type
     postgresql_dialect = postgresql.dialect()
     sqlite_dialect = sqlite.dialect()
 
@@ -15,7 +15,7 @@ def test_embedding_block_uses_jsonb_on_postgresql_and_json_on_sqlite() -> None:
 
 
 def test_embedding_block_has_indexed_scalar_partition_columns() -> None:
-    table = TargetEntityEmbedding.__table__
+    table = SnapshotEntityEmbedding.__table__
 
     assert {
         "snapshot_id",
@@ -28,10 +28,9 @@ def test_embedding_block_has_indexed_scalar_partition_columns() -> None:
     assert "ix_target_embedding_partition" in {index.name for index in table.indexes}
 
 
-def test_snapshot_embedding_is_role_aware_and_keeps_legacy_alias() -> None:
+def test_snapshot_embedding_is_role_aware() -> None:
     table = SnapshotEntityEmbedding.__table__
 
     assert table.name == "snapshot_entity_embeddings"
     assert "source_role" in table.c
-    assert TargetEntityEmbedding is SnapshotEntityEmbedding
     assert "uq_snapshot_embedding_version" in {constraint.name for constraint in table.constraints}

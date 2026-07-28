@@ -39,7 +39,7 @@ export function useTaskDeletion(onDeleted?: (taskId: string) => void) {
   }
 
   function requestDelete(task: TaskHistoryItem) {
-    if (task.isDemo || pending) return;
+    if (pending) return;
     setError(undefined);
     setSelectedTask(task);
   }

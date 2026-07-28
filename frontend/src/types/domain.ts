@@ -37,7 +37,6 @@ export interface TaskHistoryItem {
   status: TaskStatus;
   selectedEntityTypes: EntityType[];
   entityCounts?: Partial<Record<EntityType, { source: number; target: number }>>;
-  isDemo?: boolean;
   workflowVersion?: string;
   taskKind?: "sync" | "rollback";
   reportId?: string | null;

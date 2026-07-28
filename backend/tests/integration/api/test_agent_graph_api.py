@@ -9,7 +9,6 @@ from app.agent_graph.repository import AgentGraphRepository
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentPhase, AgentRunKind
 from app.ai.providers.base import LLMResponse
-from app.core.config import Settings
 from app.main import create_app
 from app.models.agent_analysis import (
     AgentApprovalGroupRecord,
@@ -25,11 +24,12 @@ from app.models.agent_runtime import AgentRunRecord
 from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import Snapshot, SourceFile
 from app.repositories.agent_governance import AgentGovernanceRepository
+from tests.settings import build_test_settings
 
 
 @pytest.fixture
 def graph_agent_client(tmp_path: Path):
-    settings = Settings(
+    settings = build_test_settings(
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'agent-graph-api.db'}",
         upload_root=tmp_path / "uploads",
         snapshot_root=tmp_path / "snapshots",

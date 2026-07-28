@@ -85,7 +85,6 @@ export function TaskListPage() {
               <span className="task-main">
                 <span className="task-title-line">
                   <strong>{task.title}</strong>
-                  {task.isDemo && <Tag bordered={false}>演示数据</Tag>}
                 </span>
                 <span className="task-file-line">
                   {task.sourceFile} <ArrowRight size={13} /> {task.targetFile}
@@ -102,7 +101,7 @@ export function TaskListPage() {
               </span>
               <ArrowRight className="task-arrow" size={18} />
             </button>
-            {!task.isDemo && task.deletionEligible !== false && (
+            {task.deletionEligible !== false && (
               <button
                 className="task-delete-button"
                 type="button"

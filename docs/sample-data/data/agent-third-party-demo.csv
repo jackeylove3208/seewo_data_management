@@ -1,9 +1,0 @@
-类别,姓名,编号,班级,电话,邮箱
-部门,教务处,D001,,13900000001,academic@example.edu.cn
-部门,信息中心,D002,,13900000002,it@example.edu.cn
-教师,张敏,T001,,13900000011,zhangmin@example.edu.cn
-教师,李强,T002,,13900000012,liqiang@example.edu.cn
-学生,王小明,S001,高一1班,13900000101,wangxiaoming@example.edu.cn
-学生,刘雨桐,S002,高一1班,13900000102,liuyutong@example.edu.cn
-学生,陈子涵,S003,高一2班,13900000103,chenzihan@example.edu.cn
-学生,周可欣,S004,高一2班,13900000104,zhoukexin@example.edu.cn

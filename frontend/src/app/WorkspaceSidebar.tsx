@@ -140,7 +140,7 @@ export function WorkspaceSidebar({
                   </span>
                   <ChevronRight className="workspace-label" size={14} />
                 </NavLink>
-                {!task.isDemo && task.deletionEligible !== false && (
+                {task.deletionEligible !== false && (
                   <button
                     className="history-delete-button"
                     type="button"
