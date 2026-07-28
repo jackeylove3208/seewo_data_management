@@ -2,6 +2,7 @@ import type {
   AgentGraphIdentityConflict,
   AgentGraphIdentityRecord,
 } from "../api/agent";
+import { candidateLabel } from "./identityConflictPresentation";
 
 const entityLabels: Record<string, string> = {
   student: "学生",
@@ -30,10 +31,6 @@ function displayValue(
   if (!value) return "未填写";
   if (key === "entity_kind") return entityLabels[value] ?? value;
   return value;
-}
-
-export function candidateLabel(index: number) {
-  return index < 26 ? String.fromCharCode(65 + index) : String(index + 1);
 }
 
 function differsFromSubject(

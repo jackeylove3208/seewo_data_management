@@ -8,10 +8,8 @@ import type {
   AgentGraphHumanGate,
   AgentGraphIdentityConflict,
 } from "../api/agent";
-import {
-  candidateLabel,
-  IdentityConflictEvidence,
-} from "./IdentityConflictEvidence";
+import { IdentityConflictEvidence } from "./IdentityConflictEvidence";
+import { candidateLabel } from "./identityConflictPresentation";
 
 type ClarificationApi = {
   submitClarificationSelection: NonNullable<
