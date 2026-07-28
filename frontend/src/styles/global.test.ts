@@ -71,7 +71,7 @@ describe("responsive analysis styles", () => {
       /\.conversation-workspace\s*>\s*\.task-status-rail\s*\{[^}]*align-self:\s*start[^}]*height:\s*auto[^}]*max-height:\s*min\(50dvh,\s*440px\)/s,
     );
     expect(appleCss).toMatch(
-      /\.conversation-workspace\s*>\s*\.task-status-rail\.is-collapsed\s*\{[^}]*max-height:\s*58px/s,
+      /\.conversation-workspace\s*>\s*\.task-status-rail\.is-collapsed\s*\{[^}]*max-height:\s*59px/s,
     );
   });
 

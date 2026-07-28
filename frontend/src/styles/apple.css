@@ -1282,7 +1282,7 @@ select {
   }
 
   .conversation-workspace > .task-status-rail.is-collapsed {
-    max-height: 58px;
+    max-height: 59px;
   }
 
   .task-status-rail.is-collapsed .task-status-rail-header {
