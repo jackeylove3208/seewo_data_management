@@ -16,6 +16,7 @@ function api(overrides: Partial<AgentConversationApi> = {}): AgentConversationAp
       status: "active",
     }),
     sendMessage: vi.fn().mockResolvedValue({
+      accepted_message: "同步全校教师",
       message: "已整理好全校教师同步需求。",
       intent: { title: "全校教师同步", entity_types: ["teacher"] },
       start_confirmation: {
@@ -223,6 +224,82 @@ describe("backend Agent conversation", () => {
       expect.objectContaining({ title: "全校教师同步" }),
       expect.any(String),
     );
+  });
+
+  it("shows only the backend-cleaned origin for a conversation remote source", async () => {
+    const submittedUrl = "https://data.example.test/roster.csv?secret=value";
+    const backend = api({
+      sendMessage: vi.fn().mockResolvedValue({
+        accepted_message: "请同步 [远程CSV来源:data.example.test] 的学生",
+        message: "已识别第三方学生 CSV，可以开始同步。",
+        intent: {
+          title: "远程学生同步",
+          entity_types: ["student"],
+          source: {
+            kind: "remote_csv",
+            remote_source_id: "remote-source-1",
+            display_origin: "data.example.test",
+          },
+          target: { kind: "local", source_ref: "seewo/students.csv" },
+        },
+        start_confirmation: {
+          title: "远程学生同步",
+          summary: "将第三方学生 CSV 对齐到希沃数据。",
+          entity_types: ["student"],
+        },
+      }),
+    });
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    await waitForComposer();
+    await user.type(
+      screen.getByLabelText("对账目标"),
+      `请同步 ${submittedUrl} 的学生`,
+    );
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(
+      await screen.findByText("请同步 [远程CSV来源:data.example.test] 的学生"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("第三方来源：data.example.test")).toBeInTheDocument();
+    expect(screen.queryByText(/secret=value/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "确认开始同步" }));
+    expect(backend.startTask).toHaveBeenCalledWith(
+      "conversation-1",
+      expect.objectContaining({
+        source: {
+          kind: "remote_csv",
+          remote_source_id: "remote-source-1",
+          display_origin: "data.example.test",
+        },
+      }),
+      expect.any(String),
+    );
+  });
+
+  it("does not echo a rejected link before the backend accepts it", async () => {
+    const backend = api({
+      sendMessage: vi.fn().mockRejectedValue(
+        new ApiError("第三方数据链接必须使用 HTTPS。", 422, "remote_source_https_required"),
+      ),
+    });
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    await waitForComposer();
+    await user.type(
+      screen.getByLabelText("对账目标"),
+      "同步 http://data.example.test/roster.csv?secret=value",
+    );
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(
+      await screen.findByText("第三方数据链接必须使用 HTTPS。"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/secret=value/)).not.toBeInTheDocument();
+    expect(screen.getByText("消息未被接受。")).toBeInTheDocument();
   });
 
   it("refreshes task history immediately after the conversation starts a task", async () => {
@@ -963,6 +1040,7 @@ describe("backend Agent conversation", () => {
 
   it("continues the same conversation and starts a sequential task after completion", async () => {
     const sendMessage = vi.fn().mockResolvedValue({
+      accepted_message: "再同步一次教师数据",
       message: "已准备下一次教师同步。",
       intent: { title: "下一次教师同步", entity_types: ["teacher"] },
       start_confirmation: {
@@ -1024,6 +1102,7 @@ describe("backend Agent conversation", () => {
   it("does not carry an old cursor or clarification into the next sequential task", async () => {
     const clarify = vi.fn();
     const sendMessage = vi.fn().mockResolvedValue({
+      accepted_message: "再同步一次学生数据",
       message: "已准备下一次同步。",
       intent: { title: "下一次同步", entity_types: ["student"] },
       start_confirmation: {

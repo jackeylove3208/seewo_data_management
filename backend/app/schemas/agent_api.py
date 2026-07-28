@@ -87,11 +87,22 @@ class AgentMessageRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
 
 
+class AgentConnectorView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["csv", "api", "database", "local", "remote_csv"]
+    upload_id: UUID | None = None
+    configuration_id: str | None = None
+    source_ref: str | None = None
+    remote_source_id: UUID | None = None
+    display_origin: str | None = None
+
+
 class AgentIntentView(BaseModel):
     title: str
     entity_types: tuple[AgentEntityType, ...]
-    source: AgentConnectorSelection | None = None
-    target: AgentConnectorSelection | None = None
+    source: AgentConnectorView | None = None
+    target: AgentConnectorView | None = None
 
 
 class AgentStartConfirmation(BaseModel):
@@ -101,6 +112,7 @@ class AgentStartConfirmation(BaseModel):
 
 
 class AgentMessageResponse(BaseModel):
+    accepted_message: str
     message: str
     intent: AgentIntentView
     start_confirmation: AgentStartConfirmation | None = None

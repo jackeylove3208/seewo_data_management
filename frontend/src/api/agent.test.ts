@@ -29,6 +29,30 @@ describe("Agent API", () => {
     expect((calls[2]?.[1] as RequestInit).headers).toEqual(expect.objectContaining({ "Idempotency-Key": "start-key" }));
   });
 
+  it("starts a conversation task with only the registered remote source id", async () => {
+    await agentApi.startTask("conversation-1", {
+      title: "远程学生同步",
+      entity_types: ["student"],
+      source: {
+        kind: "remote_csv",
+        remote_source_id: "remote-source-1",
+        display_origin: "data.example.test",
+      },
+      target: { kind: "local", source_ref: "seewo/students.csv" },
+    }, "remote-start-key");
+
+    const [, request] = vi.mocked(fetch).mock.calls[0]!;
+    expect(JSON.parse(String((request as RequestInit).body))).toEqual({
+      title: "远程学生同步",
+      entity_types: ["student"],
+      source: {
+        kind: "remote_csv",
+        remote_source_id: "remote-source-1",
+      },
+      target: { kind: "local", source_ref: "seewo/students.csv" },
+    });
+  });
+
   it("atomically resets the current conversation with an idempotency key", async () => {
     await agentApi.resetConversation("reset-key");
 

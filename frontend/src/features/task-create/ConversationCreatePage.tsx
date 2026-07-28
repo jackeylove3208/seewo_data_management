@@ -345,7 +345,12 @@ export function ConversationCreatePage({
     ) return;
     setInput("");
     setState("collecting");
-    setMessages((current) => [...current, { id: messageId(), role: "user", text: message }]);
+    const submittedMessageId = messageId();
+    setMessages((current) => [...current, {
+      id: submittedMessageId,
+      role: "user",
+      text: taskActive ? message : "消息已提交，正在安全处理。",
+    }]);
     try {
       if (taskActive && task && clarificationOpen && backendApi.clarify) {
         setClarificationError(undefined);
@@ -403,11 +408,18 @@ export function ConversationCreatePage({
       );
       setContextLimitReached(false);
       setAgentIntent(response.intent);
-      setMessages((current) => [...current, {
-        id: messageId(),
-        role: "assistant",
-        text: response.message,
-      }]);
+      setMessages((current) => [
+        ...current.map((item) => (
+          item.id === submittedMessageId
+            ? { ...item, text: response.accepted_message }
+            : item
+        )),
+        {
+          id: messageId(),
+          role: "assistant",
+          text: response.message,
+        },
+      ]);
       if (response.start_confirmation) {
         setConfirmation(response.start_confirmation);
       }
@@ -416,14 +428,21 @@ export function ConversationCreatePage({
       setContextLimitReached(
         error instanceof ApiError && error.code === "conversation_context_limit",
       );
-      setMessages((current) => [...current, {
-        id: messageId(),
-        role: "assistant",
-        text: error instanceof Error
-          ? error.message
-          : "没有理解这条要求，请换一种说法后重试。",
-        kind: "error",
-      }]);
+      setMessages((current) => [
+        ...current.map((item) => (
+          item.id === submittedMessageId && !taskActive
+            ? { ...item, text: "消息未被接受。" }
+            : item
+        )),
+        {
+          id: messageId(),
+          role: "assistant",
+          text: error instanceof Error
+            ? error.message
+            : "没有理解这条要求，请换一种说法后重试。",
+          kind: "error",
+        },
+      ]);
       setState("failed");
     }
   }
@@ -791,6 +810,10 @@ export function ConversationCreatePage({
             <article className="conversation-card start-confirmation" aria-label="开始确认">
               <strong>开始同步前确认</strong>
               <p>{confirmation.summary}</p>
+              {agentIntent?.source?.kind === "remote_csv"
+                && agentIntent.source.display_origin && (
+                <small>第三方来源：{agentIntent.source.display_origin}</small>
+              )}
               <small>对象：{confirmation.entity_types.join("、")}</small>
               <button type="button" onClick={() => void startTask()}>确认开始同步</button>
             </article>

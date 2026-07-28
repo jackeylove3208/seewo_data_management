@@ -406,6 +406,11 @@ async def get_current_agent_conversation(
         conversation_id=conversation.id,
         tenant_id=operator.tenant_id,
     )
+    remote_sources = await RemoteSourceRepository(session).list_for_conversation(
+        tenant_id=operator.tenant_id,
+        created_by=operator.operator_id,
+        conversation_id=conversation.id,
+    )
     run = await session.scalar(
         select(AgentRunRecord)
         .where(
@@ -415,7 +420,17 @@ async def get_current_agent_conversation(
         .order_by(AgentRunRecord.created_at.desc(), AgentRunRecord.id.desc())
         .limit(1)
     )
-    intent = AgentIntentView.model_validate(conversation.context) if conversation.context else None
+    intent = (
+        _intent_view(
+            conversation.context,
+            remote_origins={
+                str(remote_source.id): remote_source.display_origin
+                for remote_source in remote_sources
+            },
+        )
+        if conversation.context
+        else None
+    )
     confirmation = None
     latest_run_is_active = (
         run is not None and run.status in _ACTIVE_CONVERSATION_RUN_STATUSES
@@ -766,7 +781,13 @@ async def send_agent_message(
         role="assistant",
         text=decision.message_zh,
     )
-    view = AgentIntentView.model_validate(intent)
+    view = _intent_view(
+        intent,
+        remote_origins={
+            str(remote_source.id): remote_source.display_origin
+            for remote_source in remote_sources
+        },
+    )
     confirmation = None
     can_confirm = (
         decision.kind == "start_confirmation"
@@ -781,6 +802,7 @@ async def send_agent_message(
             entity_types=view.entity_types,
         )
     return AgentMessageResponse(
+        accepted_message=safe_message,
         message=decision.message_zh,
         intent=view,
         start_confirmation=confirmation,
@@ -3055,6 +3077,23 @@ _PHONE_PATTERN = re.compile(r"(?<!\d)1\d{10}(?!\d)")
 _EMAIL_PATTERN = re.compile(
     r"\b([A-Za-z0-9._%+-])([A-Za-z0-9._%+-]*)@([A-Za-z0-9.-]+\.[A-Za-z]{2,})\b"
 )
+
+
+def _intent_view(
+    context: Mapping[str, Any],
+    *,
+    remote_origins: Mapping[str, str],
+) -> AgentIntentView:
+    payload = dict(context)
+    source = payload.get("source")
+    if isinstance(source, dict) and source.get("kind") == "remote_csv":
+        source_view = dict(source)
+        remote_source_id = source_view.get("remote_source_id")
+        display_origin = remote_origins.get(str(remote_source_id))
+        if display_origin is not None:
+            source_view["display_origin"] = display_origin
+        payload["source"] = source_view
+    return AgentIntentView.model_validate(payload)
 
 
 def _sanitize_public(value: Any, *, field: str | None = None) -> Any:

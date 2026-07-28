@@ -838,8 +838,14 @@ def test_conversation_registers_one_remote_source_without_exposing_its_url(
     )
 
     assert response.status_code == 200, response.text
+    assert response.json()["accepted_message"] == (
+        "请同步 [远程CSV来源:data.example.test] 的学生"
+    )
     assert response.json()["intent"]["source"]["kind"] == "remote_csv"
+    assert response.json()["intent"]["source"]["display_origin"] == "data.example.test"
     remote_source_id = response.json()["intent"]["source"]["remote_source_id"]
+    assert submitted_url not in response.text
+    assert "secret=value" not in response.text
     request_text = "\n".join(
         message.content for message in provider.requests[0].messages
     )
@@ -870,6 +876,15 @@ def test_conversation_registers_one_remote_source_without_exposing_its_url(
     assert remote.display_origin == "data.example.test"
     assert persisted_messages[0] == "请同步 [远程CSV来源:data.example.test] 的学生"
     assert all(submitted_url not in message for message in persisted_messages)
+
+    current = agent_client.get("/api/agent/conversations/current")
+    assert current.status_code == 200, current.text
+    current_source = current.json()["intent"]["source"]
+    assert current_source["kind"] == "remote_csv"
+    assert current_source["remote_source_id"] == remote_source_id
+    assert current_source["display_origin"] == "data.example.test"
+    assert submitted_url not in current.text
+    assert "secret=value" not in current.text
 
 
 def test_conversation_link_registration_requires_one_link(

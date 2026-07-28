@@ -34,6 +34,7 @@ test("conversation Agent handles grouped approval, conflict dialogue, second con
   );
   await page.route("**/api/agent/conversations", (route) => route.fulfill({ status: 201, json: { id: "conversation-1", status: "active" } }));
   await page.route("**/api/agent/conversations/conversation-1/messages", (route) => route.fulfill({ json: {
+    accepted_message: "同步全校学生",
     message: "已生成全校学生同步计划。",
     intent: { title: "全校学生同步", entity_types: ["student"] },
     start_confirmation: { title: "全校学生同步", summary: "将锁定全校并启动 Agent", entity_types: ["student"] },
@@ -110,6 +111,7 @@ test("exclusive lock conflict remains visible and keeps the conversation retryab
   );
   await page.route("**/api/agent/conversations", (route) => route.fulfill({ status: 201, json: { id: "conversation-lock", status: "active" } }));
   await page.route("**/api/agent/conversations/conversation-lock/messages", (route) => route.fulfill({ json: {
+    accepted_message: "同步全校教师",
     message: "同步计划已准备。",
     intent: { title: "全校教师同步", entity_types: ["teacher"] },
     start_confirmation: { title: "全校教师同步", summary: "准备申请学校排他锁", entity_types: ["teacher"] },
@@ -126,6 +128,92 @@ test("exclusive lock conflict remains visible and keeps the conversation retryab
 
   await expect(page.getByText("任务启动失败，现有需求仍然保留，可以重试。")).toBeVisible();
   await expect(page.getByRole("button", { name: "确认开始同步" })).toBeVisible();
+});
+
+test("a chat link shows only its cleaned origin and manual sync has no remote controls", async ({ page }) => {
+  const submittedUrl = "https://data.example.test/roster.csv?secret=value";
+  let taskRequest: Record<string, unknown> | undefined;
+  await page.route("**/api/agent/history*", (route) =>
+    route.fulfill({ json: { items: [], next_cursor: null } }),
+  );
+  await page.route("**/api/agent/conversations/current", (route) =>
+    route.fulfill({ json: null }),
+  );
+  await page.route("**/api/agent/conversations", (route) =>
+    route.fulfill({
+      status: 201,
+      json: { id: "conversation-remote", status: "active" },
+    }),
+  );
+  await page.route(
+    "**/api/agent/conversations/conversation-remote/messages",
+    (route) => route.fulfill({
+      json: {
+        accepted_message: "请同步 [远程CSV来源:data.example.test] 的学生",
+        message: "已识别远程学生 CSV。",
+        intent: {
+          title: "远程学生同步",
+          entity_types: ["student"],
+          source: {
+            kind: "remote_csv",
+            remote_source_id: "remote-source-1",
+            display_origin: "data.example.test",
+          },
+          target: { kind: "local", source_ref: "seewo/students.csv" },
+        },
+        start_confirmation: {
+          title: "远程学生同步",
+          summary: "将第三方学生 CSV 对齐到希沃数据。",
+          entity_types: ["student"],
+        },
+      },
+    }),
+  );
+  await page.route(
+    "**/api/agent/conversations/conversation-remote/tasks",
+    async (route) => {
+      taskRequest = route.request().postDataJSON() as Record<string, unknown>;
+      return route.fulfill({
+        status: 202,
+        json: {
+          id: "task-remote",
+          workflow_version: "agent-graph-v1",
+          task_kind: "sync",
+          phase: "ingest_and_normalize",
+          status: "running",
+          title: "远程学生同步",
+        },
+      });
+    },
+  );
+  await page.route("**/api/agent/local-sources", (route) =>
+    route.fulfill({ json: [] }),
+  );
+
+  await page.goto("/conversations/new");
+  await page.getByLabel("对账目标").fill(`请同步 ${submittedUrl} 的学生`);
+  await page.getByRole("button", { name: "发送" }).click();
+
+  await expect(
+    page.getByText("请同步 [远程CSV来源:data.example.test] 的学生"),
+  ).toBeVisible();
+  await expect(page.getByText("第三方来源：data.example.test")).toBeVisible();
+  await expect(page.locator("body")).not.toContainText("secret=value");
+  await page.getByRole("button", { name: "确认开始同步" }).click();
+  await expect.poll(() => taskRequest).toEqual({
+    title: "远程学生同步",
+    entity_types: ["student"],
+    source: {
+      kind: "remote_csv",
+      remote_source_id: "remote-source-1",
+    },
+    target: { kind: "local", source_ref: "seewo/students.csv" },
+  });
+
+  await page.goto("/tasks/new");
+  await page.getByRole("button", { name: "手动同步" }).click();
+  await expect(page.getByLabel(/网页链接|远程链接/)).toHaveCount(0);
+  await expect(page.getByRole("option", { name: /远程|网页/ })).toHaveCount(0);
 });
 
 test("history exposes abnormal and partial outcomes, protects mutations, and confirms an independent rollback", async ({ page }) => {
