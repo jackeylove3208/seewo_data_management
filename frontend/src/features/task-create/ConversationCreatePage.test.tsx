@@ -54,6 +54,7 @@ describe("backend Agent conversation", () => {
 
     expect(screen.getByRole("heading", { name: "新建对话" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "新建对话" })).toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "任务处理状态" })).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "任务草案" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("任务名称")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("选择三方系统 CSV")).not.toBeInTheDocument();
@@ -535,6 +536,128 @@ describe("backend Agent conversation", () => {
     expect(screen.getByText("李同学（S-002）")).toBeInTheDocument();
   });
 
+  it("shows all medium-risk findings in one chat review and submits one frozen batch", async () => {
+    const decideGraphGates = vi.fn().mockResolvedValue({
+      decisions: [
+        { gate_id: "gate-medium-1", status: "rejected", graph_cursor: 13 },
+        { gate_id: "gate-medium-2", status: "approved", graph_cursor: 13 },
+      ],
+    });
+    const backend = api({
+      currentConversation: vi.fn().mockResolvedValue({
+        id: "conversation-medium-review",
+        status: "active",
+        messages: [],
+        task: {
+          id: "task-medium-review",
+          workflow_version: "agent-graph-v1",
+          phase: "execute_and_verify",
+          status: "waiting_human",
+        },
+      }),
+      graph: vi.fn().mockResolvedValue({
+        task_id: "task-medium-review",
+        workflow_version: "agent-graph-v1",
+        graph_version: "agent-controlled-graph-v1",
+        graph_cursor: 13,
+        current_node: "wait_medium_risk_review",
+        business_stage: "governance_execution",
+        current_action_zh: "等待中风险批量复核",
+        status: "waiting_human",
+        can_terminate: true,
+        termination_requested: false,
+        human_gates: [
+          {
+            id: "gate-medium-1",
+            kind: "high_risk_approval",
+            status: "pending",
+            item_count: 1,
+            risk: "medium",
+            cursor: 12,
+            membership_hash: "membership-medium-1",
+            actionable: true,
+            items: [{
+              finding_id: "finding-medium-1",
+              entity_kind: "teacher",
+              entity_name: "张老师",
+              entity_number: "T-001",
+              source_locator: "database:seewo:T-001",
+              operation_zh: "修改教师邮箱",
+              issue_zh: "邮箱不一致",
+              analysis_zh: "隐藏分析",
+              solution_zh: "隐藏方案",
+              changes: [{
+                field: "email",
+                field_zh: "邮箱",
+                before: "old@example.test",
+                after: "new@example.test",
+              }],
+            }],
+          },
+          {
+            id: "gate-medium-2",
+            kind: "high_risk_approval",
+            status: "pending",
+            item_count: 1,
+            risk: "medium",
+            cursor: 12,
+            membership_hash: "membership-medium-2",
+            actionable: true,
+            items: [{
+              finding_id: "finding-medium-2",
+              entity_kind: "department",
+              entity_name: "教务处",
+              entity_number: "D-001",
+              source_locator: "database:seewo:D-001",
+              operation_zh: "修改部门名称",
+              issue_zh: "名称不一致",
+              analysis_zh: "隐藏分析",
+              solution_zh: "隐藏方案",
+              changes: [{
+                field: "name",
+                field_zh: "名称",
+                before: "教导处",
+                after: "教务处",
+              }],
+            }],
+          },
+        ],
+      }),
+      decideGraphGates,
+    });
+    const user = userEvent.setup();
+
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    const review = await screen.findByRole("region", { name: "中风险批量审核" });
+    expect(review).toHaveTextContent("张老师（T-001）");
+    expect(review).toHaveTextContent("教务处（D-001）");
+    expect(screen.getAllByRole("checkbox", { name: /拒绝/ })).toHaveLength(2);
+    await user.click(screen.getByRole("checkbox", { name: "拒绝张老师（T-001）" }));
+    await user.click(screen.getByRole("button", { name: "按当前选择继续（同意 1，拒绝 1）" }));
+
+    expect(decideGraphGates).toHaveBeenCalledWith("task-medium-review", [
+      {
+        gate_id: "gate-medium-1",
+        decision: "reject",
+        reason: "操作人通过聊天窗口完成中风险批量复核",
+        approved_finding_ids: [],
+        rejected_finding_ids: ["finding-medium-1"],
+        graph_cursor: 13,
+        membership_hash: "membership-medium-1",
+      },
+      {
+        gate_id: "gate-medium-2",
+        decision: "approve",
+        reason: "操作人通过聊天窗口完成中风险批量复核",
+        approved_finding_ids: ["finding-medium-2"],
+        rejected_finding_ids: [],
+        graph_cursor: 13,
+        membership_hash: "membership-medium-2",
+      },
+    ]);
+  });
+
   it("restores a previously approved SQL high-risk gate as read-only", async () => {
     const backend = api({
       currentConversation: vi.fn().mockResolvedValue({
@@ -674,7 +797,7 @@ describe("backend Agent conversation", () => {
     expect(screen.getAllByText("已确认同步需求。")).toHaveLength(2);
   });
 
-  it("keeps a failed task visible and ignores a stale restored confirmation", async () => {
+  it("keeps a failed task visible and unlocks the conversation without a new confirmation", async () => {
     const backend = api({
       currentConversation: vi.fn().mockResolvedValue({
         id: "conversation-failed",
@@ -684,11 +807,7 @@ describe("backend Agent conversation", () => {
           { id: "message-2", role: "assistant", kind: "normal", text: "任务已经开始。", created_at: "" },
         ],
         intent: { title: "MySQL 数据同步", entity_types: ["student"] },
-        start_confirmation: {
-          title: "MySQL 数据同步",
-          summary: "这是已经消费过的旧确认。",
-          entity_types: ["student"],
-        },
+        start_confirmation: null,
         task: {
           id: "task-failed",
           workflow_version: "agent-graph-v1",
@@ -703,8 +822,150 @@ describe("backend Agent conversation", () => {
     expect((await screen.findAllByText("任务处理失败")).length).toBeGreaterThan(0);
     expect(screen.getByRole("complementary", { name: "任务处理状态" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "确认开始同步" })).not.toBeInTheDocument();
-    expect(screen.getByLabelText("对账目标")).toBeDisabled();
+    expect(screen.getByLabelText("对账目标")).toBeEnabled();
     expect(screen.getByRole("button", { name: "开启新对话" })).toBeEnabled();
+  });
+
+  it("continues the same conversation and starts a sequential task after completion", async () => {
+    const sendMessage = vi.fn().mockResolvedValue({
+      message: "已准备下一次教师同步。",
+      intent: { title: "下一次教师同步", entity_types: ["teacher"] },
+      start_confirmation: {
+        title: "下一次教师同步",
+        summary: "继续沿用当前对话，启动新的教师同步任务。",
+        entity_types: ["teacher"],
+      },
+    });
+    const startTask = vi.fn().mockResolvedValue({
+      id: "task-next",
+      workflow_version: "agent-graph-v1",
+      phase: "ingest_and_normalize",
+      status: "running",
+    });
+    const backend = api({
+      currentConversation: vi.fn().mockResolvedValue({
+        id: "conversation-sequential",
+        status: "active",
+        messages: [
+          { id: "message-old", role: "assistant", kind: "normal", text: "上一次任务已经完成。", created_at: "" },
+        ],
+        task: {
+          id: "task-completed",
+          workflow_version: "agent-graph-v1",
+          phase: "terminal",
+          status: "completed",
+        },
+      }),
+      sendMessage,
+      startTask,
+    });
+    const user = userEvent.setup();
+
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    expect(await screen.findByText("上一次任务已经完成。")).toBeInTheDocument();
+    expect(screen.getByLabelText("对账目标")).toBeEnabled();
+    await user.type(screen.getByLabelText("对账目标"), "再同步一次教师数据");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    expect(await screen.findByRole("button", { name: "确认开始同步" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "确认开始同步" }));
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      "conversation-sequential",
+      "再同步一次教师数据",
+    );
+    expect(startTask).toHaveBeenCalledWith(
+      "conversation-sequential",
+      expect.objectContaining({
+        title: "下一次教师同步",
+        entity_types: ["teacher"],
+      }),
+      expect.any(String),
+    );
+    expect(await screen.findByText("任务已开始，我会持续同步后端进度。普通输入已锁定。")).toBeInTheDocument();
+  });
+
+  it("does not carry an old cursor or clarification into the next sequential task", async () => {
+    const clarify = vi.fn();
+    const sendMessage = vi.fn().mockResolvedValue({
+      message: "已准备下一次同步。",
+      intent: { title: "下一次同步", entity_types: ["student"] },
+      start_confirmation: {
+        title: "下一次同步",
+        summary: "开始新的学生同步。",
+        entity_types: ["student"],
+      },
+    });
+    const events = vi.fn().mockImplementation(
+      (taskId: string) => Promise.resolve(
+        taskId === "task-old"
+          ? {
+              cursor: "old-cursor",
+              events: [{
+                id: "old-clarification",
+                cursor: "old-cursor",
+                type: "clarification_required",
+                phase: "clarify_identity_conflicts",
+                status: "terminated",
+                payload: { masked_evidence: "旧任务冲突" },
+                created_at: "",
+              }],
+            }
+          : { cursor: "new-cursor", events: [] },
+      ),
+    );
+    const task = vi.fn().mockImplementation((taskId: string) => Promise.resolve(
+      taskId === "task-old"
+        ? {
+            id: "task-old",
+            workflow_version: "new-agent-v1",
+            phase: "terminal",
+            status: "terminated",
+          }
+        : undefined,
+    ));
+    const backend = api({
+      currentConversation: vi.fn().mockResolvedValue({
+        id: "conversation-clean-sequence",
+        status: "active",
+        messages: [],
+        task: {
+          id: "task-old",
+          workflow_version: "new-agent-v1",
+          phase: "clarify_identity_conflicts",
+          status: "running",
+        },
+      }),
+      events,
+      task,
+      clarify,
+      sendMessage,
+      startTask: vi.fn().mockResolvedValue({
+        id: "task-new",
+        workflow_version: "agent-graph-v1",
+        phase: "ingest_and_normalize",
+        status: "running",
+      }),
+    });
+    const user = userEvent.setup();
+
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    await waitFor(() => expect(task).toHaveBeenCalledWith("task-old"));
+    await waitFor(() => expect(screen.getByLabelText("对账目标")).toBeEnabled());
+    await user.type(screen.getByLabelText("对账目标"), "开始下一次学生同步");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      "conversation-clean-sequence",
+      "开始下一次学生同步",
+    );
+    expect(clarify).not.toHaveBeenCalled();
+    await user.click(await screen.findByRole("button", { name: "确认开始同步" }));
+
+    await waitFor(() => {
+      expect(events).toHaveBeenCalledWith("task-new", undefined);
+    });
   });
 
   it("renders exhausted model retries as a blocked Chinese timeline", async () => {
@@ -829,7 +1090,7 @@ describe("backend Agent conversation", () => {
     render(<ConversationCreatePage agentApi={backend} />);
 
     await waitFor(() => expect(task).toHaveBeenCalledWith("task-terminated"));
-    await waitFor(() => expect(screen.getByLabelText("对账目标")).toBeDisabled());
+    await waitFor(() => expect(screen.getByLabelText("对账目标")).toBeEnabled());
     expect(screen.getByRole("button", { name: "开启新对话" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "终止任务" })).not.toBeInTheDocument();
   });
@@ -875,8 +1136,33 @@ describe("backend Agent conversation", () => {
     expect((await screen.findAllByText("任务处理失败")).length).toBeGreaterThan(0);
     expect(screen.getByText("任务状态保存失败。")).toBeInTheDocument();
     expect(screen.getByRole("complementary", { name: "任务处理状态" })).toBeInTheDocument();
-    expect(screen.getByLabelText("对账目标")).toBeDisabled();
+    expect(screen.getByLabelText("对账目标")).toBeEnabled();
     expect(screen.getByRole("button", { name: "开启新对话" })).toBeEnabled();
+  });
+
+  it("aligns user and assistant messages semantically around the persistent status rail", async () => {
+    const backend = api({
+      currentConversation: vi.fn().mockResolvedValue({
+        id: "conversation-layout",
+        status: "active",
+        messages: [
+          { id: "assistant-message", role: "assistant", kind: "normal", text: "我在左侧回答。", created_at: "" },
+          { id: "user-message", role: "user", kind: "normal", text: "我在右侧提问。", created_at: "" },
+        ],
+        task: {
+          id: "task-layout",
+          workflow_version: "agent-graph-v1",
+          phase: "analyze_batches",
+          status: "running",
+        },
+      }),
+    });
+
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    expect(await screen.findByRole("article", { name: "同步助手消息" })).toHaveClass("assistant");
+    expect(screen.getByRole("article", { name: "你的消息" })).toHaveClass("user");
+    expect(screen.getByRole("complementary", { name: "任务处理状态" })).toBeInTheDocument();
   });
 
   it("keeps direct termination for legacy Agent tasks", async () => {

@@ -4,6 +4,8 @@ import differencePage from "../features/differences/DifferenceCategoryPage.tsx?r
 import executionDetailPage from "../features/executions/ExecutionDetailPage.tsx?raw";
 import executionHistoryPage from "../features/executions/ExecutionHistoryPage.tsx?raw";
 import taskDetailPage from "../features/task-detail/TaskDetailPage.tsx?raw";
+import appleCss from "./apple.css?raw";
+import globalCss from "./global.css?raw";
 
 const routedPages = [
   ["差异分类", differencePage],
@@ -17,5 +19,12 @@ describe("Codex page theme coverage", () => {
     expect(source.match(/<main\b/g)?.length).toBe(
       source.match(/<main\b[^>]*className="[^"]*\bapple-page\b/g)?.length,
     );
+  });
+
+  it("uses the approved wide chat canvas and right-aligned user messages", () => {
+    expect(globalCss).toContain("width: min(calc(100% - 32px), 1440px)");
+    expect(globalCss).toContain(".conversation-message.user");
+    expect(globalCss).toContain("justify-self: end");
+    expect(appleCss).toContain("grid-template-columns: minmax(0, 1fr) 280px");
   });
 });

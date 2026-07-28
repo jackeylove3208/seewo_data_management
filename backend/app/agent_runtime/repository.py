@@ -176,16 +176,18 @@ class AgentRuntimeRepository:
         conversation_id: UUID,
         *,
         tenant_id: str,
+        for_update: bool = False,
     ) -> AgentConversationRecord | None:
+        statement = select(AgentConversationRecord).where(
+            AgentConversationRecord.id == conversation_id,
+            AgentConversationRecord.tenant_id == tenant_id,
+            AgentConversationRecord.status == "active",
+        )
+        if for_update:
+            statement = statement.with_for_update()
         return cast(
             AgentConversationRecord | None,
-            await self.session.scalar(
-                select(AgentConversationRecord).where(
-                    AgentConversationRecord.id == conversation_id,
-                    AgentConversationRecord.tenant_id == tenant_id,
-                    AgentConversationRecord.status == "active",
-                )
-            ),
+            await self.session.scalar(statement),
         )
 
     async def get_current_conversation(
