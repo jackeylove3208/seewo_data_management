@@ -6,7 +6,7 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent_graph.evidence import build_evidence_manifest
@@ -106,6 +106,8 @@ from app.schemas.agent_graph_api import (
     AgentGraphGateDecisionRequest,
     AgentGraphGateDecisionResponse,
     AgentGraphHumanGateView,
+    AgentGraphIdentityConflictView,
+    AgentGraphIdentityRecordView,
     AgentGraphProgressResponse,
 )
 from app.tasks.deletion_service import (
@@ -770,6 +772,7 @@ async def get_agent_graph_progress(
     )
     approval_groups_by_members = {frozenset(group.finding_ids): group for group in approval_groups}
     approval_items_by_gate: dict[UUID, tuple[AgentGraphApprovalItemView, ...]] = {}
+    identity_conflicts_by_gate: dict[UUID, tuple[AgentGraphIdentityConflictView, ...]] = {}
     for gate in gates:
         if gate.gate_kind == "high_risk_approval":
             approval_items_by_gate[gate.id] = await _graph_approval_items(
@@ -781,6 +784,11 @@ async def get_agent_graph_progress(
                 session,
                 task=task,
                 operation_ids=tuple(gate.member_ids),
+            )
+        elif gate.gate_kind == "identity_conflict":
+            identity_conflicts_by_gate[gate.id] = await _graph_identity_conflicts(
+                session,
+                clarification_ids=tuple(gate.member_ids),
             )
     progress_completed, progress_total = await _graph_progress_counts(
         session,
@@ -810,6 +818,7 @@ async def get_agent_graph_progress(
                 run=run,
                 approval_group=approval_groups_by_members.get(frozenset(gate.member_ids)),
                 items=approval_items_by_gate.get(gate.id, ()),
+                conflicts=identity_conflicts_by_gate.get(gate.id, ()),
             )
             for gate in gates
         ),
@@ -823,6 +832,7 @@ def _graph_human_gate_view(
     run: AgentRunRecord,
     approval_group: AgentApprovalGroupRecord | None = None,
     items: tuple[AgentGraphApprovalItemView, ...] = (),
+    conflicts: tuple[AgentGraphIdentityConflictView, ...] = (),
 ) -> AgentGraphHumanGateView:
     summary_zh: str | None = None
     risk_reason_zh: str | None = None
@@ -881,6 +891,12 @@ def _graph_human_gate_view(
     ):
         actionable = False
         unavailable_reason_zh = "回滚审批明细不完整，任务不能继续，请终止任务后重新发起。"
+    elif gate.gate_kind == "identity_conflict" and (
+        len(conflicts) != len(gate.member_ids)
+        or any(not conflict.candidates for conflict in conflicts)
+    ):
+        actionable = False
+        unavailable_reason_zh = "冲突明细不完整，不能要求操作人盲目判断，请终止任务后重新发起。"
     return AgentGraphHumanGateView(
         id=gate.id,
         kind=gate.gate_kind,
@@ -902,6 +918,7 @@ def _graph_human_gate_view(
         actionable=actionable,
         unavailable_reason_zh=unavailable_reason_zh,
         items=items,
+        conflicts=conflicts,
     )
 
 
@@ -999,6 +1016,116 @@ def _student_phone_change_is_complete(item: AgentGraphApprovalItemView) -> bool:
         and "****" in change.before
         and "****" in change.after
     )
+
+
+async def _graph_identity_conflicts(
+    session: AsyncSession,
+    *,
+    clarification_ids: tuple[str, ...],
+) -> tuple[AgentGraphIdentityConflictView, ...]:
+    try:
+        parsed_ids = tuple(UUID(item) for item in clarification_ids)
+    except ValueError:
+        return ()
+    if not parsed_ids:
+        return ()
+    clarifications = tuple(
+        await session.scalars(
+            select(AgentClarificationRecord).where(
+                AgentClarificationRecord.id.in_(parsed_ids)
+            )
+        )
+    )
+    clarifications_by_id = {record.id: record for record in clarifications}
+    work_item_ids = {record.work_item_id for record in clarifications}
+    work_items = tuple(
+        await session.scalars(
+            select(AgentWorkItemRecord).where(AgentWorkItemRecord.id.in_(work_item_ids))
+        )
+    )
+    work_items_by_id = {record.id: record for record in work_items}
+    subject_ids = {record.subject_input_id for record in work_items}
+    subjects = tuple(
+        await session.scalars(
+            select(AgentInputRecord).where(AgentInputRecord.id.in_(subject_ids))
+        )
+    )
+    subjects_by_id = {record.id: record for record in subjects}
+    views: list[AgentGraphIdentityConflictView] = []
+    for clarification_id in parsed_ids:
+        clarification = clarifications_by_id.get(clarification_id)
+        if clarification is None:
+            continue
+        work_item = work_items_by_id.get(clarification.work_item_id)
+        subject = (
+            subjects_by_id.get(work_item.subject_input_id)
+            if work_item is not None
+            else None
+        )
+        if subject is None:
+            continue
+        interpretation = clarification.interpretation or {}
+        interpretation_zh = interpretation.get("interpretation_zh")
+        views.append(
+            AgentGraphIdentityConflictView(
+                clarification_id=clarification.id,
+                status=clarification.status,
+                summary_zh="唯一身份字段命中了多个第三方权威候选，Agent 无法安全选择。",
+                subject=_graph_identity_record_view(
+                    {
+                        "entity_kind": subject.entity_kind,
+                        "name": subject.name,
+                        "number": subject.number,
+                        "class_name": subject.class_name,
+                        "phone": subject.phone,
+                        "email": subject.email,
+                    }
+                ),
+                candidates=tuple(
+                    _graph_identity_record_view(
+                        candidate,
+                        default_entity_kind=subject.entity_kind,
+                    )
+                    for candidate in clarification.masked_candidates
+                ),
+                allowed_outcomes=tuple(clarification.allowed_outcomes),
+                interpretation_zh=(
+                    str(interpretation_zh)
+                    if isinstance(interpretation_zh, str) and interpretation_zh
+                    else None
+                ),
+            )
+        )
+    return tuple(views)
+
+
+def _graph_identity_record_view(
+    values: Mapping[str, object],
+    *,
+    default_entity_kind: str | None = None,
+) -> AgentGraphIdentityRecordView:
+    def text_value(key: str) -> str | None:
+        value = values.get(key)
+        return str(value) if value is not None and str(value) else None
+
+    return AgentGraphIdentityRecordView(
+        entity_kind=text_value("entity_kind") or default_entity_kind,
+        name=text_value("name"),
+        number=text_value("number"),
+        class_name=text_value("class_name"),
+        phone_masked=_mask_graph_phone(text_value("phone")),
+        email=text_value("email"),
+    )
+
+
+def _mask_graph_phone(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if "*" in value:
+        return value
+    if value.startswith("token:"):
+        return "已保护"
+    return f"***{value[-4:]}" if len(value) >= 4 else "***"
 
 
 async def _graph_approval_items(
@@ -2146,9 +2273,13 @@ async def clarify_agent_conflict(
         select(AgentClarificationRecord)
         .where(
             AgentClarificationRecord.run_id == run.id,
-            AgentClarificationRecord.status == "pending",
+            AgentClarificationRecord.status.in_(("pending", "interpreted")),
         )
-        .order_by(AgentClarificationRecord.created_at, AgentClarificationRecord.id)
+        .order_by(
+            case((AgentClarificationRecord.status == "interpreted", 0), else_=1),
+            AgentClarificationRecord.created_at,
+            AgentClarificationRecord.id,
+        )
     )
     if record is None:
         raise HTTPException(
@@ -2186,8 +2317,35 @@ async def clarify_agent_conflict(
                     "Frozen identity conflict gate is missing or stale",
                 ),
             )
+        normalized_message = body.message.strip()
+        if (
+            record.status == "interpreted"
+            and record.original_text == normalized_message
+            and record.interpretation
+        ):
+            outcome = str(record.interpretation.get("outcome", ""))
+            decision_name = (
+                "select_candidate"
+                if outcome == "use_candidate"
+                else "treat_as_extra"
+                if outcome == "target_extra"
+                else "leave_unresolved"
+            )
+            return {
+                "decision_id": str(record.id),
+                "status": record.status,
+                "task_id": str(task.id),
+                "decision": decision_name,
+                "selected_candidate_id": record.interpretation.get("candidate_id"),
+                "interpretation_zh": record.interpretation.get(
+                    "interpretation_zh",
+                    "模型已形成受限解释，请确认后继续。",
+                ),
+                "requires_second_confirmation": decision_name != "leave_unresolved",
+            }
         resource_id = f"identity-conflict:{record.id}"
-        action_id = f"interpret_identity_conflict:{record.id}"
+        instruction_hash = sha256(normalized_message.encode("utf-8")).hexdigest()[:12]
+        action_id = f"interpret_identity_conflict:{record.id}:{instruction_hash}"
         evidence_ref = f"{resource_id}:frozen"
         manifest = build_evidence_manifest(
             tenant_ref=f"tenant-ref:{operator.tenant_id}",

@@ -97,6 +97,25 @@ export interface AgentEventPage {
   events: AgentTaskEvent[];
 }
 
+export interface AgentGraphIdentityRecord {
+  entity_kind?: AgentEntityType | null;
+  name?: string | null;
+  number?: string | null;
+  class_name?: string | null;
+  phone_masked?: string | null;
+  email?: string | null;
+}
+
+export interface AgentGraphIdentityConflict {
+  clarification_id: string;
+  status: string;
+  summary_zh: string;
+  subject: AgentGraphIdentityRecord;
+  candidates: AgentGraphIdentityRecord[];
+  allowed_outcomes: string[];
+  interpretation_zh?: string | null;
+}
+
 export interface AgentGraphHumanGate {
   id: string;
   kind: string;
@@ -114,6 +133,7 @@ export interface AgentGraphHumanGate {
   actionable?: boolean;
   unavailable_reason_zh?: string | null;
   items?: AgentGraphApprovalItem[];
+  conflicts?: AgentGraphIdentityConflict[];
 }
 
 export interface AgentGraphApprovalChange {

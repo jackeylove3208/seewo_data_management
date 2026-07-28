@@ -11,6 +11,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { agentApi as defaultAgentApi, type AgentConversationApi, type AgentGraphHumanGate, type AgentIntent, type AgentStartConfirmation, type AgentTask, type AgentTaskEvent } from "../../api/agent";
 import { ApiError } from "../../api/client";
 import { TASK_HISTORY_UPDATED_EVENT } from "../../data/taskHistory";
+import { IdentityConflictEvidence } from "../../components/IdentityConflictEvidence";
 import { TaskStatusRail } from "../../components/TaskStatusRail";
 import { presentAgentEvent, presentAgentPhase } from "../agent-events/presentation";
 import { ConversationRiskApprovalCard } from "./ConversationRiskApprovalCard";
@@ -78,6 +79,11 @@ export function ConversationCreatePage({
   const [events, setEvents] = useState<AgentTaskEvent[]>([]);
   const [eventCursor, setEventCursor] = useState<string>();
   const [clarificationOpen, setClarificationOpen] = useState(false);
+  const [identityGate, setIdentityGate] = useState<AgentGraphHumanGate>();
+  const [clarificationDecisionId, setClarificationDecisionId] = useState<string>();
+  const [clarificationInterpretation, setClarificationInterpretation] = useState<string>();
+  const [rewritingClarificationId, setRewritingClarificationId] = useState<string>();
+  const [clarificationError, setClarificationError] = useState<string>();
   const [handledApprovalGroups, setHandledApprovalGroups] = useState<string[]>([]);
   const [confirmedClarifications, setConfirmedClarifications] = useState<string[]>([]);
   const [terminationGate, setTerminationGate] = useState<AgentGraphHumanGate>();
@@ -168,6 +174,34 @@ export function ConversationCreatePage({
             for (const gate of refreshedGates) merged.set(gate.id, gate);
             return [...merged.values()];
           });
+          const currentIdentityGate = graphProgress.human_gates.find(
+            (gate) =>
+              gate.kind === "identity_conflict"
+              && gate.status === "pending",
+          );
+          setIdentityGate(currentIdentityGate);
+          const currentConflict = currentIdentityGate?.conflicts?.find(
+            (conflict) => ["pending", "interpreted"].includes(conflict.status),
+          );
+          if (!currentConflict) {
+            setClarificationOpen(false);
+            setClarificationDecisionId(undefined);
+            setClarificationInterpretation(undefined);
+            setRewritingClarificationId(undefined);
+            setClarificationError(undefined);
+          } else if (rewritingClarificationId !== currentConflict.clarification_id) {
+            if (currentConflict.status === "interpreted") {
+              setClarificationOpen(false);
+              setClarificationDecisionId(currentConflict.clarification_id);
+              setClarificationInterpretation(
+                currentConflict.interpretation_zh ?? "模型已形成受限解释，请确认后继续。",
+              );
+            } else {
+              setClarificationOpen(true);
+              setClarificationDecisionId(undefined);
+              setClarificationInterpretation(undefined);
+            }
+          }
         }
         setEventCursor(page.cursor);
         setEvents((current) => {
@@ -182,7 +216,12 @@ export function ConversationCreatePage({
             status: latest.status ?? current.status,
           } : current);
         }
-        if (latest?.type === "clarification_required") setClarificationOpen(true);
+        if (
+          latest?.type === "clarification_required"
+          && task.workflow_version !== "agent-graph-v1"
+        ) {
+          setClarificationOpen(true);
+        }
         const terminalStatus = refreshedTask?.status
           ?? (terminalTaskStatuses.has(latest?.status ?? "") ? latest?.status : undefined);
         if (terminalStatus) {
@@ -198,11 +237,16 @@ export function ConversationCreatePage({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [backendApi, eventCursor, task]);
+  }, [backendApi, eventCursor, rewritingClarificationId, task]);
 
   useEffect(() => {
     setHighRiskGates([]);
     setGraphCursor(undefined);
+    setIdentityGate(undefined);
+    setClarificationDecisionId(undefined);
+    setClarificationInterpretation(undefined);
+    setRewritingClarificationId(undefined);
+    setClarificationError(undefined);
   }, [task?.id]);
 
   async function sendMessage(event: FormEvent) {
@@ -214,13 +258,23 @@ export function ConversationCreatePage({
     setMessages((current) => [...current, { id: messageId(), role: "user", text: message }]);
     try {
       if (task && clarificationOpen && backendApi.clarify) {
-        await backendApi.clarify(task.id, message);
-        setClarificationOpen(false);
+        setClarificationError(undefined);
+        const interpretation = await backendApi.clarify(task.id, message);
+        setRewritingClarificationId(undefined);
+        setClarificationInterpretation(interpretation.interpretation_zh);
+        setClarificationDecisionId(
+          interpretation.requires_second_confirmation
+            ? interpretation.decision_id
+            : undefined,
+        );
+        setClarificationOpen(!interpretation.requires_second_confirmation);
         setState("created");
         setMessages((current) => [...current, {
           id: messageId(),
           role: "assistant",
-          text: "已提交澄清，等待后端生成结构化决策确认。",
+          text: interpretation.requires_second_confirmation
+            ? "已生成受限解释，请核对冲突卡片并确认后继续。"
+            : interpretation.interpretation_zh,
         }]);
         return;
       }
@@ -271,6 +325,11 @@ export function ConversationCreatePage({
       setEvents([]);
       setEventCursor(undefined);
       setClarificationOpen(false);
+      setIdentityGate(undefined);
+      setClarificationDecisionId(undefined);
+      setClarificationInterpretation(undefined);
+      setRewritingClarificationId(undefined);
+      setClarificationError(undefined);
       setHandledApprovalGroups([]);
       setConfirmedClarifications([]);
       setTerminationGate(undefined);
@@ -387,13 +446,42 @@ export function ConversationCreatePage({
     setHandledApprovalGroups((current) => [...new Set([...current, groupId])]);
   }
 
-  async function confirmClarification(event: AgentTaskEvent) {
+  async function confirmEventClarification(event: AgentTaskEvent) {
     if (!task || !backendApi.confirmClarification) return;
     const decisionId = payloadText(event, "decision_id");
     if (!decisionId) return;
     await backendApi.confirmClarification(task.id, decisionId);
     setConfirmedClarifications((current) => [...new Set([...current, decisionId])]);
     setClarificationOpen(false);
+  }
+
+  async function confirmIdentityClarification() {
+    if (!task || !clarificationDecisionId || !backendApi.confirmClarification) return;
+    setClarificationError(undefined);
+    try {
+      await backendApi.confirmClarification(task.id, clarificationDecisionId);
+      setConfirmedClarifications((current) => [
+        ...new Set([...current, clarificationDecisionId]),
+      ]);
+      setClarificationOpen(false);
+      setClarificationDecisionId(undefined);
+      setClarificationInterpretation(undefined);
+      setRewritingClarificationId(undefined);
+      setIdentityGate(undefined);
+    } catch (error) {
+      setClarificationError(
+        error instanceof Error ? error.message : "身份冲突解释未确认，请重试。",
+      );
+    }
+  }
+
+  function rewriteIdentityClarification() {
+    if (!clarificationDecisionId) return;
+    setRewritingClarificationId(clarificationDecisionId);
+    setClarificationDecisionId(undefined);
+    setClarificationInterpretation(undefined);
+    setClarificationError(undefined);
+    setClarificationOpen(true);
   }
 
   async function decideHighRiskGate(
@@ -446,6 +534,14 @@ export function ConversationCreatePage({
         : taskBlocked
           ? "Agent 任务已暂停"
           : "任务进行中";
+  const identityConflicts = identityGate?.conflicts ?? [];
+  const currentIdentityConflictIndex = Math.max(
+    identityConflicts.findIndex((conflict) =>
+      ["pending", "interpreted"].includes(conflict.status),
+    ),
+    0,
+  );
+  const currentIdentityConflict = identityConflicts[currentIdentityConflictIndex];
 
   return (
     <main className="page-shell conversation-create-page apple-page">
@@ -503,6 +599,58 @@ export function ConversationCreatePage({
             <article className={`conversation-card agent-progress${taskBlocked || taskFailed ? " blocked" : ""}`} aria-label="Agent 任务进度">
               <strong>{taskTitle}</strong>
               <p>当前阶段：{presentAgentPhase(task.phase)}</p>
+              {identityGate && (
+                <section className="conversation-identity-clarification">
+                  <header>
+                    <strong>需要你判断一条身份冲突</strong>
+                    <span>当前任务已暂停在此处</span>
+                  </header>
+                  {currentIdentityConflict ? (
+                    <IdentityConflictEvidence
+                      conflict={currentIdentityConflict}
+                      index={currentIdentityConflictIndex}
+                      total={identityConflicts.length}
+                    />
+                  ) : (
+                    <Alert
+                      type="error"
+                      showIcon
+                      message={
+                        identityGate.unavailable_reason_zh
+                        ?? "冲突明细不完整，不能要求你盲目判断。"
+                      }
+                    />
+                  )}
+                  {clarificationInterpretation && (
+                    <Alert
+                      type="info"
+                      showIcon
+                      message="待确认的模型解释"
+                      description={clarificationInterpretation}
+                    />
+                  )}
+                  {clarificationError && (
+                    <Alert type="error" showIcon message={clarificationError} />
+                  )}
+                  {clarificationDecisionId ? (
+                    <div className="conversation-identity-actions">
+                      <button type="button" onClick={rewriteIdentityClarification}>
+                        重新说明
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void confirmIdentityClarification()}
+                      >
+                        确认模型解释
+                      </button>
+                    </div>
+                  ) : (
+                    <small>
+                      请直接在下方输入框说明当前记录应采用哪个候选，或明确按“希沃多余”处理。
+                    </small>
+                  )}
+                </section>
+              )}
               {highRiskGates.map((gate) => (
                 <ConversationRiskApprovalCard
                   gate={gate}
@@ -513,7 +661,13 @@ export function ConversationCreatePage({
               <div className="agent-event-list">
                 {events
                   .filter((event) => !(
-                    highRiskGates.length > 0 && event.type === "approval_required"
+                    (highRiskGates.length > 0 && event.type === "approval_required")
+                    || (
+                      Boolean(identityGate)
+                      && ["clarification_required", "clarification_decision_ready"].includes(
+                        event.type,
+                      )
+                    )
                   ))
                   .slice(-6)
                   .map((event) => {
@@ -542,7 +696,7 @@ export function ConversationCreatePage({
                       {decisionEvent && !confirmedClarifications.includes(decisionId) && (
                         <div className="agent-event-actions">
                           <small>{payloadText(event, "summary")}</small>
-                          <button type="button" onClick={() => void confirmClarification(event)}>确认解释</button>
+                          <button type="button" onClick={() => void confirmEventClarification(event)}>确认解释</button>
                           <button type="button" onClick={() => setClarificationOpen(true)}>重新说明</button>
                         </div>
                       )}
@@ -560,7 +714,11 @@ export function ConversationCreatePage({
         <form className="conversation-composer" onSubmit={(event) => void sendMessage(event)}>
           <textarea
             aria-label="对账目标"
-            placeholder="例如：只核对七年级的老师和学生"
+            placeholder={
+              clarificationOpen
+                ? "请说明当前身份冲突应选择哪个候选，或按希沃多余处理"
+                : "例如：只核对七年级的老师和学生"
+            }
             rows={2}
             disabled={hydrating || isCollecting || composerLocked}
             value={input}

@@ -1137,9 +1137,9 @@ def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
                 entity_kind="student",
                 category="student",
                 name="测试学生",
-                number="S-001",
+                number="S-009",
                 class_name="一年级一班",
-                phone="token:student-phone",
+                phone="13800000009",
                 email="student@example.test",
                 raw_row_number=1,
                 input_hash="e" * 64,
@@ -1171,8 +1171,12 @@ def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
                 candidates=(
                     {
                         "id": str(candidate_id),
+                        "entity_kind": "student",
+                        "name": "测试学生",
                         "number": "S-001",
+                        "class_name": "一年级一班",
                         "phone": "138****0001",
+                        "email": "student@example.test",
                     },
                 ),
                 allowed_outcomes=("use_candidate", "target_extra"),
@@ -1190,6 +1194,40 @@ def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
             return str(task.id), str(clarification.id), str(candidate_id)
 
     task_id, clarification_id, candidate_id = agent_client.portal.call(seed)
+    progress = agent_client.get(f"/api/agent/tasks/{task_id}/graph")
+    assert progress.status_code == 200, progress.text
+    identity_gate = next(
+        gate
+        for gate in progress.json()["human_gates"]
+        if gate["kind"] == "identity_conflict"
+    )
+    assert identity_gate["conflicts"] == [
+        {
+            "clarification_id": clarification_id,
+            "status": "pending",
+            "summary_zh": "唯一身份字段命中了多个第三方权威候选，Agent 无法安全选择。",
+            "subject": {
+                "entity_kind": "student",
+                "name": "测试学生",
+                "number": "S-009",
+                "class_name": "一年级一班",
+                "phone_masked": "***0009",
+                "email": "student@example.test",
+            },
+            "candidates": [
+                {
+                    "entity_kind": "student",
+                    "name": "测试学生",
+                    "number": "S-001",
+                    "class_name": "一年级一班",
+                    "phone_masked": "138****0001",
+                    "email": "student@example.test",
+                }
+            ],
+            "allowed_outcomes": ["use_candidate", "target_extra"],
+            "interpretation_zh": None,
+        }
+    ]
     resource_id = f"identity-conflict:{clarification_id}"
     draft = {
         "schema_version": "agent-contract-v1",
@@ -1246,6 +1284,26 @@ def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
         "interpretation_zh": "我理解为选择编号 S-001 的候选，确认后继续。",
         "requires_second_confirmation": True,
     }
+    interpreted_progress = agent_client.get(f"/api/agent/tasks/{task_id}/graph")
+    interpreted_conflict = next(
+        gate
+        for gate in interpreted_progress.json()["human_gates"]
+        if gate["kind"] == "identity_conflict"
+    )["conflicts"][0]
+    assert interpreted_conflict["status"] == "interpreted"
+    assert (
+        interpreted_conflict["interpretation_zh"]
+        == "我理解为选择编号 S-001 的候选，确认后继续。"
+    )
+
+    agent_client.app.state.graph_skill_provider = ConflictProvider()
+    reinterpreted = agent_client.post(
+        f"/api/agent/tasks/{task_id}/clarification",
+        json={"message": "重新确认：请选择第三方候选 A。"},
+    )
+    assert reinterpreted.status_code == 200, reinterpreted.text
+    assert reinterpreted.json()["decision_id"] == clarification_id
+    assert reinterpreted.json()["status"] == "interpreted"
 
     confirmed = agent_client.post(
         f"/api/agent/tasks/{task_id}/clarification/{clarification_id}/confirm",

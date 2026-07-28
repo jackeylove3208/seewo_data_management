@@ -1083,7 +1083,32 @@ describe("controlled Agent graph task detail", () => {
           id: "identity-gate-1",
           kind: "identity_conflict",
           status: "pending",
-          item_count: 2,
+          item_count: 1,
+          cursor: 5,
+          actionable: true,
+          conflicts: [{
+            clarification_id: "clarification-1",
+            status: "pending",
+            summary_zh: "唯一身份字段命中了多个第三方权威候选，Agent 无法安全选择。",
+            subject: {
+              entity_kind: "student",
+              name: "测试学生",
+              number: "S-009",
+              class_name: "一年级一班",
+              phone_masked: "***0009",
+              email: "student@example.test",
+            },
+            candidates: [{
+              entity_kind: "student",
+              name: "测试学生",
+              number: "S-001",
+              class_name: "一年级一班",
+              phone_masked: "138****0001",
+              email: "student@example.test",
+            }],
+            allowed_outcomes: ["use_candidate", "target_extra"],
+            interpretation_zh: null,
+          }],
         },
       ],
     });
@@ -1102,6 +1127,13 @@ describe("controlled Agent graph task detail", () => {
     const { client } = renderPage();
 
     expect(await screen.findByRole("heading", { name: "需要人工判断身份冲突" })).toBeInTheDocument();
+    expect(screen.getByText("第 1/1 条")).toBeInTheDocument();
+    expect(screen.getByText("希沃记录")).toBeInTheDocument();
+    expect(screen.getByText("第三方候选 A")).toBeInTheDocument();
+    expect(screen.getByText("S-009")).toBeInTheDocument();
+    expect(screen.getByText("S-001")).toBeInTheDocument();
+    expect(screen.getByText("***0009")).toBeInTheDocument();
+    expect(screen.getByText("138****0001")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "同意" })).not.toBeInTheDocument();
     await user.type(
       screen.getByRole("textbox", { name: "身份冲突处理说明" }),

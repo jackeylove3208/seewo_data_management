@@ -3481,6 +3481,150 @@ body {
   gap: 6px;
 }
 
+.identity-conflict-evidence {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #d9e0e8;
+  border-radius: 12px;
+  background: #f7f9fb;
+}
+
+.identity-conflict-evidence > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.identity-conflict-evidence > header span {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: #315477;
+  background: #e6eef7;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.identity-conflict-evidence > header p,
+.identity-conflict-evidence > small {
+  margin: 0;
+  color: #5b6673;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.identity-conflict-records {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+}
+
+.identity-conflict-record {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #dce3ea;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.identity-conflict-record > strong {
+  display: block;
+  margin-bottom: 9px;
+  color: #243445;
+  font-size: 12px;
+}
+
+.identity-conflict-record dl {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+}
+
+.identity-conflict-field {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+
+.identity-conflict-field.is-different {
+  background: #fff4e8;
+}
+
+.identity-conflict-field dt,
+.identity-conflict-field dd {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.identity-conflict-field dt {
+  color: #86909b;
+}
+
+.identity-conflict-field dd {
+  color: #344454;
+  font-weight: 600;
+}
+
+.identity-conflict-field.is-different dd {
+  color: #a35a12;
+}
+
+.conversation-identity-clarification {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #cbd9e8;
+  border-radius: 14px;
+  background: linear-gradient(145deg, #f7faff, #fff);
+  box-shadow: 0 8px 22px rgb(39 75 110 / 6%);
+}
+
+.conversation-identity-clarification > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.conversation-identity-clarification > header strong {
+  color: #263b50;
+  font-size: 13px;
+}
+
+.conversation-identity-clarification > header span,
+.conversation-identity-clarification > small {
+  color: #64788c;
+  font-size: 11px;
+}
+
+.conversation-identity-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.conversation-identity-actions button {
+  border: 1px solid #9bb2c9;
+  border-radius: 7px;
+  padding: 7px 11px;
+  color: #315477;
+  background: #fff;
+  cursor: pointer;
+}
+
+.conversation-identity-actions button:last-child {
+  border-color: #315f8f;
+  color: #fff;
+  background: #315f8f;
+}
+
 .conversation-risk-approval {
   display: grid;
   gap: 12px;
