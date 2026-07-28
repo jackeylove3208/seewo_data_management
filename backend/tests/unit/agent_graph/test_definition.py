@@ -29,7 +29,7 @@ def test_preflight_has_two_real_paths_instead_of_a_wrapped_next_phase() -> None:
     }
 
 
-def test_analysis_enters_risk_aggregation_without_reusing_side_effect_action() -> None:
+def test_identity_conflicts_resume_pending_analysis_before_risk_aggregation() -> None:
     graph = get_graph_definition("agent-sync-graph-v1")
     analysis_actions = {
         (template.action_kind, template.successor_node)
@@ -42,7 +42,9 @@ def test_analysis_enters_risk_aggregation_without_reusing_side_effect_action() -
 
     assert ("enter_aggregate_risk", "aggregate_risk") in analysis_actions
     assert ("aggregate_risk", "aggregate_risk") not in analysis_actions
-    assert conflict_actions == {("enter_aggregate_risk", "aggregate_risk")}
+    assert conflict_actions == {
+        ("resume_analysis_after_identity_conflicts", "analyze_actionable_batches")
+    }
 
 
 def test_rollback_graph_is_versioned_separately() -> None:

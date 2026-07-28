@@ -31,6 +31,7 @@ from app.connectors.configured import (
     InMemoryConnectorStore,
 )
 from app.models.agent_analysis import (
+    AgentClarificationRecord,
     AgentGovernancePlanRecord,
     AgentInputRecord,
     AgentModelBatchRecord,
@@ -47,6 +48,7 @@ from app.models.reconciliation import ReconciliationTask
 from app.models.reporting import AgentReportRecord
 from app.models.snapshots import Snapshot, SourceFile
 from app.repositories.agent_analysis import AgentAnalysisRepository
+from app.repositories.agent_governance import AgentGovernanceRepository
 from app.repositories.executions import ExecutionRepository
 from app.schemas.agent_ingestion import (
     AgentContractRecord,
@@ -1202,6 +1204,136 @@ async def test_aggregate_risk_side_effect_is_rejected_outside_aggregate_node(
             provider=ModelMustNotRun(),
             tokenization_secret="test-tokenization-secret",
         )(context, action)
+
+
+@pytest.mark.asyncio
+async def test_pending_identity_conflict_preempts_analysis_and_confirmation_resumes_it(
+    database,
+    tmp_path: Path,
+) -> None:
+    context = replace(
+        await _preflight_context(database, tmp_path),
+        current_node="analyze_actionable_batches",
+    )
+    async with database.session_factory() as session:
+        async with session.begin():
+            task = await session.get(ReconciliationTask, context.task_id)
+            run = await AgentRuntimeRepository(session).get_run(context.run_id)
+            snapshots = tuple(
+                await session.scalars(
+                    select(Snapshot).where(Snapshot.task_id == context.task_id)
+                )
+            )
+            assert task is not None
+            assert run is not None
+            snapshots_by_role = {item.source_role: item for item in snapshots}
+            repository = AgentAnalysisRepository(session)
+            authority, target = await repository.persist_inputs(
+                (
+                    AgentContractRecord(
+                        task_id=task.id,
+                        run_id=run.id,
+                        snapshot_id=snapshots_by_role["authoritative"].id,
+                        tenant_id=task.tenant_id,
+                        source_role=AgentSourceRole.AUTHORITATIVE,
+                        stable_locator="csv:authority:2",
+                        stable_order=2,
+                        entity_kind=AgentEntityKind.STUDENT,
+                        category="学生",
+                        name="测试学生",
+                        number="S-001",
+                        class_name="一年级一班",
+                        phone=None,
+                        email=None,
+                    ),
+                    AgentContractRecord(
+                        task_id=task.id,
+                        run_id=run.id,
+                        snapshot_id=snapshots_by_role["target"].id,
+                        tenant_id=task.tenant_id,
+                        source_role=AgentSourceRole.TARGET,
+                        stable_locator="csv:target:2",
+                        stable_order=2,
+                        entity_kind=AgentEntityKind.STUDENT,
+                        category="学生",
+                        name="测试学生",
+                        number="S-009",
+                        class_name="一年级一班",
+                        phone=None,
+                        email=None,
+                    ),
+                )
+            )
+            work_item = await repository.persist_work_item(
+                run_id=run.id,
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                source_snapshot_id=snapshots_by_role["authoritative"].id,
+                target_snapshot_id=snapshots_by_role["target"].id,
+                subject_input_id=target.id,
+                entity_kind="student",
+                kind="identity_conflict",
+                idempotency_hash="1" * 64,
+                evidence_hash="2" * 64,
+            )
+            await repository.create_or_get_batch(
+                run_id=run.id,
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                entity_kind="student",
+                input_hash="3" * 64,
+                work_item_ids=(work_item.id,),
+            )
+            clarification = await AgentGovernanceRepository(
+                session
+            ).create_clarification(
+                run=run,
+                task=task,
+                work_item_id=work_item.id,
+                candidates=(
+                    {
+                        "id": str(authority.id),
+                        "entity_kind": "student",
+                        "name": "测试学生",
+                        "number": "S-001",
+                    },
+                ),
+                allowed_outcomes=("use_candidate", "target_extra"),
+            )
+
+    candidate_plan = await ProductionGraphCandidateProvider(
+        database.session_factory
+    )(context)
+    allowed = tuple(
+        item.action for item in candidate_plan.candidate_evaluations if item.passed
+    )
+    rejected = {
+        item.action.graph_action_kind or item.action.action_id: item.rejected_guard_codes
+        for item in candidate_plan.candidate_evaluations
+        if not item.passed
+    }
+
+    assert [(item.action_id, item.successor_node) for item in allowed] == [
+        ("resolve_identity_conflicts", "resolve_identity_conflicts")
+    ]
+    assert rejected["analyze_next_batch"] == ("identity_conflict_pending",)
+
+    async with database.session_factory() as session:
+        async with session.begin():
+            saved = await session.get(AgentClarificationRecord, clarification.id)
+            assert saved is not None
+            saved.status = "confirmed"
+
+    resumed_plan = await ProductionGraphCandidateProvider(
+        database.session_factory
+    )(context)
+    resumed = tuple(
+        item.action for item in resumed_plan.candidate_evaluations if item.passed
+    )
+
+    assert len(resumed) == 1
+    assert resumed[0].graph_action_kind == "analyze_next_batch"
+    assert resumed[0].successor_node == "analyze_actionable_batches"
 
 
 @pytest.mark.asyncio

@@ -177,7 +177,10 @@ class ProductionGraphActionExecutor:
             return await self._analyze_batch(context, action)
         if action_kind == "resolve_identity_conflicts":
             return await self._open_identity_conflict_gate(context, action)
-        if action_kind == "enter_aggregate_risk":
+        if action_kind in {
+            "enter_aggregate_risk",
+            "resume_analysis_after_identity_conflicts",
+        }:
             return await self._record_guarded_noop(context, action)
         if action_kind == "aggregate_risk":
             if context.current_node != "aggregate_risk":
