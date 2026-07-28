@@ -463,6 +463,7 @@ async def test_worker_runs_csv_analysis_only_pipeline_without_target_mutation(
         database.session_factory,
         tokenization_secret="s" * 16,
         provider=_ExtraRowProvider(),
+        analysis_only=True,
     )
     worker = AgentWorker(
         database.session_factory,
