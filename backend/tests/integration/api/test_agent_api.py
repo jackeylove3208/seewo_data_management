@@ -7,6 +7,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.agent_reporting.service import AgentReportingService
+from app.agent_runtime.repository import AgentRuntimeRepository
+from app.agent_runtime.state_machine import AgentRunKind
 from app.ai.providers.base import LLMRequest, LLMResponse
 from app.api.dependencies import get_operator_context
 from app.core.security import OperatorContext
@@ -1403,6 +1405,116 @@ def test_rollback_preview_requires_a_separate_confirmation_before_locking(
     rollback_item = next(item for item in rollback_history if item["id"] == rollback_task_id)
     assert rollback_item["task_kind"] == "rollback"
     assert rollback_item["parent_task_id"] == source_task_id
+
+
+def test_completed_rollback_disables_same_csv_tasks_without_affecting_mysql(
+    agent_client: TestClient,
+) -> None:
+    async def seed_cycles() -> tuple[str, str]:
+        async with agent_client.app.state.database.session_factory() as session:
+            csv_target = {"kind": "csv", "upload_id": str(uuid4())}
+            mysql_target = {
+                "kind": "database",
+                "configuration_id": "mysql-school-1",
+            }
+            csv_tasks = [
+                ReconciliationTask(
+                    tenant_id="school-1",
+                    scope_id="all",
+                    snapshot_mode="full",
+                    entity_types=["student"],
+                    status="completed",
+                    stage="terminal",
+                    workflow_version="new-agent-v1",
+                    task_kind="sync",
+                    title=f"CSV 同步 {index}",
+                    agent_intent={"target": csv_target},
+                    idempotency_key=f"csv-cycle-{index}-{uuid4()}",
+                    request_hash="c" * 64,
+                )
+                for index in range(2)
+            ]
+            mysql_task = ReconciliationTask(
+                tenant_id="school-1",
+                scope_id="all",
+                snapshot_mode="full",
+                entity_types=["student"],
+                status="completed",
+                stage="terminal",
+                workflow_version="new-agent-v1",
+                task_kind="sync",
+                title="MySQL 同步",
+                agent_intent={"target": mysql_target},
+                idempotency_key=f"mysql-cycle-{uuid4()}",
+                request_hash="d" * 64,
+            )
+            session.add_all([*csv_tasks, mysql_task])
+            await session.flush()
+            reporting = AgentReportingService(session)
+            for task in (*csv_tasks, mysql_task):
+                await AgentRuntimeRepository(session).create_run(
+                    task_id=task.id,
+                    tenant_id=task.tenant_id,
+                    conversation_id=None,
+                    kind=AgentRunKind.SYNC,
+                )
+                await reporting.generate(
+                    task_id=task.id,
+                    tenant_id=task.tenant_id,
+                    kind="sync",
+                    terminal_state="completed",
+                    facts={
+                        "output_target_version_id": str(uuid4()),
+                        "mutations": [
+                            {
+                                "id": str(uuid4()),
+                                "status": "succeeded",
+                                "verification": {"valid": True},
+                            }
+                        ],
+                    },
+                )
+            rollback = await reporting.create_rollback_task(
+                source_task_id=csv_tasks[-1].id,
+                tenant_id="school-1",
+                requested_by="operator-1",
+                target_version_id=uuid4(),
+            )
+            await reporting.generate(
+                task_id=rollback.task_id,
+                tenant_id="school-1",
+                kind="rollback",
+                terminal_state="completed",
+                facts={
+                    "mutations": [
+                        {
+                            "id": str(uuid4()),
+                            "status": "succeeded",
+                            "verification": {"valid": True},
+                        }
+                    ]
+                },
+            )
+            await session.commit()
+            return str(csv_tasks[0].id), str(mysql_task.id)
+
+    csv_task_id, mysql_task_id = agent_client.portal.call(seed_cycles)
+
+    csv_task = agent_client.get(f"/api/agent/tasks/{csv_task_id}")
+    assert csv_task.status_code == 200, csv_task.text
+    assert csv_task.json()["rollback_eligible"] is False
+    assert csv_task.json()["rollback_blocked_reason"] == "already_rolled_back"
+
+    mysql_task = agent_client.get(f"/api/agent/tasks/{mysql_task_id}")
+    assert mysql_task.status_code == 200, mysql_task.text
+    assert mysql_task.json()["rollback_eligible"] is True
+    assert mysql_task.json()["rollback_blocked_reason"] is None
+
+    blocked_preview = agent_client.post(
+        f"/api/agent/tasks/{csv_task_id}/rollback-preview"
+    )
+    assert blocked_preview.status_code == 409, blocked_preview.text
+    assert blocked_preview.json()["detail"]["code"] == "rollback_already_performed"
 
 
 def test_agent_report_api_masks_student_phone_and_is_tenant_scoped(

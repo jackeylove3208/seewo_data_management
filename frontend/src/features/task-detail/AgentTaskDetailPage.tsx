@@ -32,6 +32,8 @@ const rollbackPhases: Array<{ id: AgentPhase; label: string; icon: typeof FileIn
   { id: "report_restore", label: "生成回滚报告", icon: Flag },
 ];
 
+const rollbackCycleLockedMessage = "已经回滚，若想再次回滚，需下次同步后执行。";
+
 function phaseIndex(
   phase: AgentPhase,
   taskPhases: Array<{ id: AgentPhase }>,
@@ -691,6 +693,20 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
         <div className="agent-task-actions">
           <Button danger loading={rollbackLoading} icon={<RotateCcw size={15} />} onClick={() => void requestRollback()}>
             创建回滚任务
+          </Button>
+        </div>
+      )}
+      {terminal
+        && current.task_kind !== "rollback"
+        && current.rollback_blocked_reason === "already_rolled_back" && (
+        <div className="agent-task-actions">
+          <Button
+            danger
+            disabled
+            icon={<RotateCcw size={15} />}
+            title={rollbackCycleLockedMessage}
+          >
+            已经回滚
           </Button>
         </div>
       )}

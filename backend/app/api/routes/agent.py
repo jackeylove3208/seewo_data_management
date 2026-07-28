@@ -17,6 +17,12 @@ from app.agent_graph.governance_executors import (
 )
 from app.agent_graph.repository import AgentGraphRepository
 from app.agent_graph.tools import GraphPhaseToolGateway
+from app.agent_reporting.rollback_cycles import (
+    AgentRollbackCycleService,
+    RollbackAlreadyPerformed,
+    RollbackCycleChanged,
+    is_fully_successful_sync,
+)
 from app.agent_reporting.service import AgentReportingService
 from app.agent_runtime.observability import agent_observability
 from app.agent_runtime.repository import (
@@ -655,6 +661,17 @@ async def _task_response(
     report = await service.session.scalar(
         select(AgentReportRecord).where(AgentReportRecord.task_id == task.id)
     )
+    rollback_blocked_reason = await AgentRollbackCycleService(
+        service.session
+    ).blocked_reason(task)
+    report_rollback_eligible = bool(
+        report
+        and is_fully_successful_sync(
+            task,
+            report.terminal_state,
+            report.facts,
+        )
+    )
     return AgentTaskResponse(
         id=task.id,
         workflow_version=task.workflow_version,
@@ -664,7 +681,10 @@ async def _task_response(
         status=run.status,
         title=task.title,
         report_id=report.id if report is not None else None,
-        rollback_eligible=bool(report and report.rollback_eligible),
+        rollback_eligible=bool(
+            report_rollback_eligible and rollback_blocked_reason is None
+        ),
+        rollback_blocked_reason=rollback_blocked_reason,
         deletion_eligible=report.deletion_eligible if report is not None else True,
         error=dict(task.error) if isinstance(task.error, dict) else None,
     )
@@ -2031,6 +2051,16 @@ async def get_agent_report(
     )
     if report is None:
         raise HTTPException(404, detail=_error("report_not_found", "Agent report not found"))
+    task = await session.get(ReconciliationTask, task_id)
+    report_rollback_eligible = bool(
+        task
+        and is_fully_successful_sync(
+            task,
+            report.terminal_state,
+            report.facts,
+        )
+        and await AgentRollbackCycleService(session).blocked_reason(task) is None
+    )
     return AgentReportResponse(
         id=report.id,
         task_id=report.task_id,
@@ -2038,7 +2068,7 @@ async def get_agent_report(
         terminal_state=report.terminal_state,
         facts=_sanitize_public(report.facts),
         content=_sanitize_public(report.content),
-        rollback_eligible=report.rollback_eligible,
+        rollback_eligible=report_rollback_eligible,
         deletion_eligible=report.deletion_eligible,
         created_at=report.created_at,
     )
@@ -2117,8 +2147,18 @@ async def get_agent_history(
         ).all()
     )
     items: list[AgentHistoryItem] = []
+    rollback_cycles = AgentRollbackCycleService(session)
     for task, run, report, termination_requested, live_finding_count in rows:
         summary = report.facts.get("mutation_summary", {}) if report is not None else {}
+        rollback_blocked_reason = await rollback_cycles.blocked_reason(task)
+        report_rollback_eligible = bool(
+            report
+            and is_fully_successful_sync(
+                task,
+                report.terminal_state,
+                report.facts,
+            )
+        )
         items.append(
             AgentHistoryItem(
                 id=task.id,
@@ -2147,7 +2187,11 @@ async def get_agent_history(
                     "failed": int(summary.get("failed", 0)),
                     "blocked": int(summary.get("blocked", 0)),
                 },
-                rollback_eligible=report.rollback_eligible if report is not None else False,
+                rollback_eligible=bool(
+                    report_rollback_eligible
+                    and rollback_blocked_reason is None
+                ),
+                rollback_blocked_reason=rollback_blocked_reason,
                 deletion_eligible=report.deletion_eligible if report is not None else True,
                 entity_types=tuple(task.entity_types),
             )
@@ -2189,7 +2233,17 @@ async def preview_agent_rollback(
             AgentReportRecord.tenant_id == operator.tenant_id,
         )
     )
-    if report is None or not report.rollback_eligible:
+    source_task = await session.get(ReconciliationTask, task_id)
+    if (
+        report is None
+        or source_task is None
+        or source_task.tenant_id != operator.tenant_id
+        or not is_fully_successful_sync(
+            source_task,
+            report.terminal_state,
+            report.facts,
+        )
+    ):
         raise HTTPException(
             409,
             detail=_error("rollback_not_eligible", "Task has no verified rollback evidence"),
@@ -2207,6 +2261,22 @@ async def preview_agent_rollback(
             requested_by=operator.operator_id,
             target_version_id=UUID(str(target_version)),
         )
+    except RollbackAlreadyPerformed as error:
+        raise HTTPException(
+            409,
+            detail=_error(
+                "rollback_already_performed",
+                "已经回滚，若想再次回滚，需下次同步后执行。",
+            ),
+        ) from error
+    except RollbackCycleChanged as error:
+        raise HTTPException(
+            409,
+            detail=_error(
+                "rollback_preview_stale",
+                "数据源已完成新一轮同步，请从最新同步任务重新发起回滚。",
+            ),
+        ) from error
     except ValueError as error:
         raise HTTPException(409, detail=_error("school_lock_conflict", str(error))) from error
     return AgentRollbackPreviewResponse(
@@ -2233,6 +2303,22 @@ async def confirm_agent_rollback(
         return await _task_response(AgentTaskService(session, operator=operator), task_id)
     except LookupError as error:
         raise HTTPException(404, detail=_error("agent_task_not_found", str(error))) from error
+    except RollbackAlreadyPerformed as error:
+        raise HTTPException(
+            409,
+            detail=_error(
+                "rollback_already_performed",
+                "已经回滚，若想再次回滚，需下次同步后执行。",
+            ),
+        ) from error
+    except RollbackCycleChanged as error:
+        raise HTTPException(
+            409,
+            detail=_error(
+                "rollback_preview_stale",
+                "数据源已完成新一轮同步，请从最新同步任务重新发起回滚。",
+            ),
+        ) from error
     except ValueError as error:
         raise HTTPException(409, detail=_error("invalid_state", str(error))) from error
 

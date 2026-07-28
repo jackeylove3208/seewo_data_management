@@ -7,6 +7,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent_graph.repository import AgentGraphRepository
+from app.agent_reporting.rollback_cycles import (
+    AgentRollbackCycleService,
+    require_rollback_cycle_generation,
+)
 from app.agent_runtime.repository import AgentRunNotFound, AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentPhase, AgentRunKind, AgentRunStatus
 from app.core.config import Settings
@@ -232,6 +236,10 @@ class AgentSupervisorService:
             or run.status != AgentRunStatus.PENDING.value
         ):
             raise ValueError("rollback Agent task is already confirmed")
+        await AgentRollbackCycleService(self.session).ensure_available(
+            task,
+            expected_generation=require_rollback_cycle_generation(task),
+        )
         run = await self.repository.transition_run(
             run.id, requested_phase=AgentPhase.ACQUIRE_SCHOOL_LOCK
         )

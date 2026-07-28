@@ -75,6 +75,7 @@ export interface AgentTask {
   title?: string;
   report_id?: string | null;
   rollback_eligible?: boolean;
+  rollback_blocked_reason?: "already_rolled_back" | null;
   deletion_eligible?: boolean;
   error?: {
     code: string;
