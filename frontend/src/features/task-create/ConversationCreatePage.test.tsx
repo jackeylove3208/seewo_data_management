@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AgentConversationApi } from "../../api/agent";
+import type { AgentConversationApi, AgentGraphProgress } from "../../api/agent";
 import { ApiError } from "../../api/client";
 import { TASK_HISTORY_UPDATED_EVENT } from "../../data/taskHistory";
 import { ConversationCreatePage } from "./ConversationCreatePage";
@@ -39,6 +39,68 @@ function api(overrides: Partial<AgentConversationApi> = {}): AgentConversationAp
 
 async function waitForComposer() {
   await waitFor(() => expect(screen.getByLabelText("对账目标")).toBeEnabled());
+}
+
+function identityGraph(
+  status: "pending" | "interpreted" = "pending",
+  interpretation?: string,
+): AgentGraphProgress {
+  return {
+    task_id: "task-identity",
+    workflow_version: "agent-graph-v1",
+    graph_version: "agent-controlled-graph-v1",
+    graph_cursor: 6,
+    current_node: "resolve_identity_conflicts",
+    business_stage: "agent_analysis",
+    current_action_zh: "正在等待身份冲突说明",
+    status: "waiting_human",
+    can_terminate: true,
+    termination_requested: false,
+    human_gates: [{
+      id: "identity-gate-1",
+      kind: "identity_conflict",
+      status: "pending",
+      item_count: 1,
+      cursor: 5,
+      actionable: true,
+      conflicts: [{
+        clarification_id: "clarification-1",
+        status,
+        summary_zh: "唯一身份字段命中了多个第三方权威候选，Agent 无法安全选择。",
+        subject: {
+          entity_kind: "student",
+          category: "student",
+          name: "测试学生",
+          number: "S-009",
+          class_name: "一年级一班",
+          phone_masked: "***0009",
+          email_masked: "s***@example.test",
+        },
+        candidates: [
+          {
+            entity_kind: "student",
+            category: "student",
+            name: "测试学生",
+            number: "S-001",
+            class_name: "一年级一班",
+            phone_masked: "***0001",
+            email_masked: "s***@example.test",
+          },
+          {
+            entity_kind: "student",
+            category: "student",
+            name: "测试学生二号",
+            number: "S-002",
+            class_name: "一年级二班",
+            phone_masked: "***0002",
+            email_masked: "s***@example.test",
+          },
+        ],
+        allowed_outcomes: ["use_candidate", "target_extra"],
+        interpretation_zh: interpretation ?? null,
+      }],
+    }],
+  };
 }
 
 describe("backend Agent conversation", () => {
@@ -313,6 +375,78 @@ describe("backend Agent conversation", () => {
       "task-identity",
       "clarification-1",
     );
+  });
+
+  it("restores submitted clarification feedback without reopening duplicate submission", async () => {
+    const backend = api({
+      currentConversation: vi.fn().mockResolvedValue({
+        id: "conversation-identity",
+        status: "active",
+        messages: [],
+        task: {
+          id: "task-identity",
+          workflow_version: "agent-graph-v1",
+          phase: "clarify_identity_conflicts",
+          status: "waiting_human",
+        },
+      }),
+      graph: vi.fn().mockResolvedValue(identityGraph(
+        "pending",
+        "当前说明无法唯一确定候选，请明确选择候选 A 或按希沃多余处理。",
+      )),
+    });
+    const user = userEvent.setup();
+
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    expect(
+      await screen.findByText("当前说明无法唯一确定候选，请明确选择候选 A 或按希沃多余处理。"),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("对账目标")).toBeDisabled();
+    expect(screen.queryByText(/请直接在下方输入框说明/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "补充说明" }));
+    expect(screen.getByLabelText("对账目标")).toBeEnabled();
+  });
+
+  it("does not reopen a confirmed clarification from a stale graph response", async () => {
+    const clarify = vi.fn().mockResolvedValue({
+      decision_id: "clarification-1",
+      status: "interpreted",
+      task_id: "task-identity",
+      decision: "select_candidate",
+      selected_candidate_id: "candidate-1",
+      interpretation_zh: "我理解为选择第三方候选 A，确认后继续。",
+      requires_second_confirmation: true,
+    });
+    const backend = api({
+      currentConversation: vi.fn().mockResolvedValue({
+        id: "conversation-identity",
+        status: "active",
+        messages: [],
+        task: {
+          id: "task-identity",
+          workflow_version: "agent-graph-v1",
+          phase: "clarify_identity_conflicts",
+          status: "waiting_human",
+        },
+      }),
+      graph: vi.fn().mockResolvedValue(identityGraph()),
+      clarify,
+      confirmClarification: vi.fn().mockResolvedValue({ status: "confirmed" }),
+    });
+    const user = userEvent.setup();
+
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    await waitFor(() => expect(screen.getByLabelText("对账目标")).toBeEnabled());
+    await user.type(screen.getByLabelText("对账目标"), "请选择第三方候选 A。");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await user.click(await screen.findByRole("button", { name: "确认模型解释" }));
+
+    expect(await screen.findByText("身份冲突说明已确认，Agent 正在继续处理。")).toBeInTheDocument();
+    await new Promise((resolve) => window.setTimeout(resolve, 1_700));
+    expect(screen.queryByText("需要你判断一条身份冲突")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("对账目标")).toBeDisabled();
   });
 
   it("keeps legacy clarification compatible with its minimal response", async () => {

@@ -260,6 +260,8 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
   const [clarificationDecisionId, setClarificationDecisionId] = useState<string>();
   const [clarificationInterpretation, setClarificationInterpretation] = useState<string>();
   const [rewritingClarificationId, setRewritingClarificationId] = useState<string>();
+  const [confirmedClarificationIds, setConfirmedClarificationIds] = useState<string[]>([]);
+  const [clarificationConfirmedNotice, setClarificationConfirmedNotice] = useState(false);
   const task = useQuery({
     queryKey: ["agent-task", taskId],
     queryFn: ({ signal }) => agentApi.task(taskId, signal),
@@ -318,6 +320,13 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
   const visibleGates = graph.data?.human_gates.filter(
     (gate) =>
       gate.kind !== "termination_confirmation"
+      && !(
+        gate.kind === "identity_conflict"
+        && gate.conflicts?.length
+        && gate.conflicts.every((conflict) =>
+          confirmedClarificationIds.includes(conflict.clarification_id)
+        )
+      )
       && (
         gate.status === "pending"
         || (
@@ -628,6 +637,8 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
           ? interpretation.decision_id
           : undefined,
       );
+      setClarificationMessage("");
+      await graph.refetch();
     } catch (error) {
       setTerminateError(error instanceof Error ? error.message : "身份冲突说明未提交");
     } finally {
@@ -641,6 +652,10 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
     setTerminateError(undefined);
     try {
       await agentApi.confirmClarification(taskId, decisionId);
+      setConfirmedClarificationIds((currentIds) => [
+        ...new Set([...currentIds, decisionId]),
+      ]);
+      setClarificationConfirmedNotice(true);
       setClarificationDecisionId(undefined);
       setClarificationInterpretation(undefined);
       setClarificationMessage("");
@@ -746,6 +761,13 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
           </div>
         </section>
       )}
+      {clarificationConfirmedNotice && graph.data?.current_node === "resolve_identity_conflicts" && (
+        <Alert
+          type="success"
+          showIcon
+          message="身份冲突说明已确认，Agent 正在继续处理。"
+        />
+      )}
       {mediumGates.length > 0 && (
         <section
           className="graph-approval-card graph-medium-review-panel"
@@ -842,7 +864,10 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
         </section>
       )}
       {otherGates.map((gate) => gate.kind === "identity_conflict" ? (() => {
-        const conflicts = gate.conflicts ?? [];
+        const conflicts = (gate.conflicts ?? []).filter(
+          (conflict) =>
+            !confirmedClarificationIds.includes(conflict.clarification_id),
+        );
         const currentConflictIndex = Math.max(
           conflicts.findIndex((conflict) =>
             ["pending", "interpreted"].includes(conflict.status),
@@ -862,6 +887,29 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
               : undefined
           )
           ?? undefined;
+        const isEditing = Boolean(
+          currentConflict
+          && (
+            rewritingClarificationId === currentConflict.clarification_id
+            || (
+              currentConflict.status === "pending"
+              && !interpretation
+            )
+          ),
+        );
+        const needsRevision = Boolean(
+          currentConflict
+          && currentConflict.status === "pending"
+          && interpretation
+          && rewritingClarificationId !== currentConflict.clarification_id,
+        );
+        const startRewrite = () => {
+          if (!currentConflict) return;
+          setClarificationDecisionId(undefined);
+          setClarificationInterpretation(undefined);
+          setClarificationMessage("");
+          setRewritingClarificationId(currentConflict.clarification_id);
+        };
         return (
           <section className="graph-approval-card graph-clarification-card" key={gate.id}>
             <div>
@@ -892,25 +940,25 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
                 }
               />
             )}
-            <label htmlFor={`identity-clarification-${gate.id}`}>身份冲突处理说明</label>
-            <Input.TextArea
-              id={`identity-clarification-${gate.id}`}
-              aria-label="身份冲突处理说明"
-              value={clarificationMessage}
-              rows={4}
-              disabled={
-                Boolean(decisionId)
-                || !currentConflict
-                || gate.actionable === false
-              }
-              placeholder="例如：请选择第三方候选 A；或者候选都不是同一人，请按希沃多余处理。"
-              onChange={(event) => setClarificationMessage(event.target.value)}
-            />
+            {isEditing && (
+              <>
+                <label htmlFor={`identity-clarification-${gate.id}`}>身份冲突处理说明</label>
+                <Input.TextArea
+                  id={`identity-clarification-${gate.id}`}
+                  aria-label="身份冲突处理说明"
+                  value={clarificationMessage}
+                  rows={4}
+                  disabled={!currentConflict || gate.actionable === false}
+                  placeholder="例如：请选择第三方候选 A；或者候选都不是同一人，请按希沃多余处理。"
+                  onChange={(event) => setClarificationMessage(event.target.value)}
+                />
+              </>
+            )}
             {interpretation && (
               <Alert
                 type={decisionId ? "info" : "warning"}
                 showIcon
-                message={decisionId ? "待确认的模型解释" : "请补充说明"}
+                message={decisionId ? "待确认的模型解释" : "需要补充说明"}
                 description={interpretation}
               />
             )}
@@ -918,11 +966,7 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
               {decisionId ? (
                 <>
                   <Button
-                    onClick={() => {
-                      setClarificationDecisionId(undefined);
-                      setClarificationInterpretation(undefined);
-                      setRewritingClarificationId(decisionId);
-                    }}
+                    onClick={startRewrite}
                   >
                     重新说明
                   </Button>
@@ -935,7 +979,11 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
                     确认模型解释
                   </Button>
                 </>
-              ) : (
+              ) : needsRevision ? (
+                <Button type="primary" onClick={startRewrite}>
+                  补充说明
+                </Button>
+              ) : isEditing ? (
                 <Button
                   type="primary"
                   disabled={
@@ -948,7 +996,7 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
                 >
                   提交说明
                 </Button>
-              )}
+              ) : null}
             </div>
           </section>
         );

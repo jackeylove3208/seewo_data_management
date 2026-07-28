@@ -998,7 +998,10 @@ async def get_agent_graph_progress(
         graph_cursor=graph.cursor,
         current_node=graph.current_node,
         business_stage=_graph_business_stage(graph.current_node, run.phase),
-        current_action_zh=_graph_action_label(graph.current_node),
+        current_action_zh=_graph_current_action_label(
+            graph.current_node,
+            identity_conflicts_by_gate=identity_conflicts_by_gate,
+        ),
         sub_agent_zh=_GRAPH_SUB_AGENT_LABELS.get(graph.current_node),
         progress_completed=progress_completed,
         progress_total=progress_total,
@@ -1017,6 +1020,31 @@ async def get_agent_graph_progress(
             for gate in gates
         ),
     )
+
+
+def _graph_current_action_label(
+    current_node: str,
+    *,
+    identity_conflicts_by_gate: Mapping[
+        UUID,
+        tuple[AgentGraphIdentityConflictView, ...],
+    ],
+) -> str:
+    if current_node != "resolve_identity_conflicts":
+        return _graph_action_label(current_node)
+    conflicts = tuple(
+        conflict
+        for gate_conflicts in identity_conflicts_by_gate.values()
+        for conflict in gate_conflicts
+    )
+    if any(conflict.status == "interpreted" for conflict in conflicts):
+        return "正在等待确认身份冲突解释"
+    if any(
+        conflict.status == "pending" and conflict.interpretation_zh
+        for conflict in conflicts
+    ):
+        return "正在等待补充身份冲突说明"
+    return _graph_action_label(current_node)
 
 
 def _graph_human_gate_view(
@@ -2677,11 +2705,7 @@ async def clarify_agent_conflict(
                 ),
             )
         normalized_message = body.message.strip()
-        if (
-            record.status == "interpreted"
-            and record.original_text == normalized_message
-            and record.interpretation
-        ):
+        if record.original_text == normalized_message and record.interpretation:
             outcome = str(record.interpretation.get("outcome", ""))
             decision_name = (
                 "select_candidate"
@@ -2700,7 +2724,10 @@ async def clarify_agent_conflict(
                     "interpretation_zh",
                     "模型已形成受限解释，请确认后继续。",
                 ),
-                "requires_second_confirmation": decision_name != "leave_unresolved",
+                "requires_second_confirmation": (
+                    record.status == "interpreted"
+                    and decision_name != "leave_unresolved"
+                ),
             }
         resource_id = f"identity-conflict:{record.id}"
         instruction_hash = sha256(normalized_message.encode("utf-8")).hexdigest()[:12]
@@ -2789,9 +2816,25 @@ async def clarify_agent_conflict(
                 ),
             ) from error
         if draft.decision == "leave_unresolved":
+            updated = await AgentGovernanceRepository(
+                session
+            ).record_clarification_feedback(
+                record.id,
+                original_text=body.message,
+                feedback_zh=draft.interpretation_zh,
+                actor_id=operator.operator_id,
+            )
+            await AgentRuntimeRepository(session).append_event(
+                run.id,
+                "clarification_revision_required",
+                {
+                    "decision_id": str(updated.id),
+                    "interpretation_zh": draft.interpretation_zh,
+                },
+            )
             return {
-                "decision_id": str(record.id),
-                "status": "pending",
+                "decision_id": str(updated.id),
+                "status": updated.status,
                 "task_id": str(task.id),
                 "decision": draft.decision,
                 "selected_candidate_id": None,

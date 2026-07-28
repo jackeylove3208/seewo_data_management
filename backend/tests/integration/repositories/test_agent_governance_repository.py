@@ -189,3 +189,83 @@ async def test_clarification_requires_interpretation_then_second_confirmation(se
         confirmed=True,
     )
     assert confirmed.status == "confirmed"
+    replayed = await repository.confirm_clarification(
+        clarification.id,
+        actor_id="operator-1",
+        confirmed=True,
+    )
+    assert replayed.status == "confirmed"
+
+
+@pytest.mark.asyncio
+async def test_unresolved_clarification_feedback_survives_page_reload(session) -> None:
+    task, run, snapshots = await _context(session)
+    repository = AgentGovernanceRepository(session)
+    input_record = AgentInputRecord(
+        id=uuid4(),
+        run_id=run.id,
+        task_id=task.id,
+        snapshot_id=snapshots[1].id,
+        tenant_id=task.tenant_id,
+        source_role="target",
+        stable_locator="row:2",
+        stable_order=2,
+        entity_kind="student",
+        input_hash="f" * 64,
+    )
+    session.add(input_record)
+    await session.flush()
+    work_item = AgentWorkItemRecord(
+        id=uuid4(),
+        run_id=run.id,
+        task_id=task.id,
+        tenant_id=task.tenant_id,
+        source_snapshot_id=snapshots[0].id,
+        target_snapshot_id=snapshots[1].id,
+        subject_input_id=input_record.id,
+        entity_kind="student",
+        kind="identity_conflict",
+        state="awaiting_clarification",
+        idempotency_hash="1" * 64,
+        evidence_hash="2" * 64,
+    )
+    session.add(work_item)
+    await session.flush()
+    clarification = await repository.create_clarification(
+        run=run,
+        task=task,
+        work_item_id=work_item.id,
+        candidates=({"id": str(uuid4()), "masked_number": "S-***"},),
+        allowed_outcomes=("use_candidate", "target_extra"),
+    )
+
+    feedback = await repository.record_clarification_feedback(
+        clarification.id,
+        original_text="他们可能是同一个人。",
+        feedback_zh="当前说明无法唯一确定候选，请明确选择候选 A 或按希沃多余处理。",
+        actor_id="operator-1",
+    )
+
+    assert feedback.status == "pending"
+    assert feedback.original_text == "他们可能是同一个人。"
+    assert feedback.interpretation == {
+        "outcome": "leave_unresolved",
+        "interpretation_zh": "当前说明无法唯一确定候选，请明确选择候选 A 或按希沃多余处理。",
+        "model_decision": "leave_unresolved",
+    }
+    interpreted = await repository.record_clarification_interpretation(
+        clarification.id,
+        original_text="选择候选 A。",
+        interpretation={"outcome": "use_candidate"},
+        actor_id="operator-1",
+    )
+    assert interpreted.status == "interpreted"
+
+    revised_feedback = await repository.record_clarification_feedback(
+        clarification.id,
+        original_text="还是无法确定。",
+        feedback_zh="请明确选择候选 A，或按希沃多余处理。",
+        actor_id="operator-1",
+    )
+    assert revised_feedback.status == "pending"
+    assert revised_feedback.original_text == "还是无法确定。"
