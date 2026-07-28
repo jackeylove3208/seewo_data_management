@@ -44,6 +44,7 @@ class AgentGraphIdentityConflictView(BaseModel):
     candidates: tuple[AgentGraphIdentityRecordView, ...]
     allowed_outcomes: tuple[str, ...]
     interpretation_zh: str | None = None
+    evidence_complete: bool = Field(exclude=True)
 
 
 class AgentGraphHumanGateView(BaseModel):

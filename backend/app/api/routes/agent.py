@@ -894,7 +894,7 @@ def _graph_human_gate_view(
         unavailable_reason_zh = "回滚审批明细不完整，任务不能继续，请终止任务后重新发起。"
     elif gate.gate_kind == "identity_conflict" and (
         len(conflicts) != len(gate.member_ids)
-        or any(not conflict.candidates for conflict in conflicts)
+        or any(not conflict.evidence_complete for conflict in conflicts)
     ):
         actionable = False
         unavailable_reason_zh = "冲突明细不完整，不能要求操作人盲目判断，请终止任务后重新发起。"
@@ -1075,34 +1075,41 @@ async def _graph_identity_conflicts(
             continue
         interpretation = clarification.interpretation or {}
         interpretation_zh = interpretation.get("interpretation_zh")
+        subject_view = _graph_identity_record_view(
+            {
+                "entity_kind": subject.entity_kind,
+                "category": subject.category,
+                "name": subject.name,
+                "number": subject.number,
+                "class_name": subject.class_name,
+                "phone": subject.phone,
+                "email": subject.email,
+            }
+        )
+        candidate_views = tuple(
+            _graph_identity_record_view(
+                candidate,
+                default_entity_kind=subject.entity_kind,
+            )
+            for candidate in clarification.masked_candidates
+        )
         views.append(
             AgentGraphIdentityConflictView(
                 clarification_id=clarification.id,
                 status=clarification.status,
                 summary_zh="唯一身份字段命中了多个第三方权威候选，Agent 无法安全选择。",
-                subject=_graph_identity_record_view(
-                    {
-                        "entity_kind": subject.entity_kind,
-                        "category": subject.category,
-                        "name": subject.name,
-                        "number": subject.number,
-                        "class_name": subject.class_name,
-                        "phone": subject.phone,
-                        "email": subject.email,
-                    }
-                ),
-                candidates=tuple(
-                    _graph_identity_record_view(
-                        candidate,
-                        default_entity_kind=subject.entity_kind,
-                    )
-                    for candidate in clarification.masked_candidates
-                ),
+                subject=subject_view,
+                candidates=candidate_views,
                 allowed_outcomes=tuple(clarification.allowed_outcomes),
                 interpretation_zh=(
                     str(interpretation_zh)
                     if isinstance(interpretation_zh, str) and interpretation_zh
                     else None
+                ),
+                evidence_complete=_identity_conflict_evidence_is_complete(
+                    clarification.masked_candidates,
+                    subject=subject_view,
+                    candidates=candidate_views,
                 ),
             )
         )
@@ -1141,8 +1148,63 @@ def _mask_graph_phone(value: str | None) -> str | None:
 def _mask_graph_email(value: str | None) -> str | None:
     if value is None:
         return None
-    masked = _sanitize_public(value)
-    return str(masked) if masked != value else "已保护"
+    if "@" not in value:
+        return "已保护"
+    local_part, domain = value.rsplit("@", 1)
+    if not local_part or not domain:
+        return "已保护"
+    return f"{local_part[0]}***@{domain}"
+
+
+def _identity_conflict_evidence_is_complete(
+    frozen_candidates: list[dict[str, Any]],
+    *,
+    subject: AgentGraphIdentityRecordView,
+    candidates: tuple[AgentGraphIdentityRecordView, ...],
+) -> bool:
+    if len(frozen_candidates) < 2 or len(candidates) != len(frozen_candidates):
+        return False
+    candidate_ids: set[UUID] = set()
+    for frozen, candidate in zip(frozen_candidates, candidates, strict=True):
+        try:
+            candidate_id = UUID(str(frozen["id"]))
+        except (KeyError, TypeError, ValueError):
+            return False
+        if candidate_id in candidate_ids or not _identity_record_has_evidence(candidate):
+            return False
+        candidate_ids.add(candidate_id)
+    return _identity_record_has_evidence(subject)
+
+
+def _identity_record_has_evidence(record: AgentGraphIdentityRecordView) -> bool:
+    has_kind = bool(record.entity_kind or record.category)
+    has_identity = any(
+        (
+            record.name,
+            record.number,
+            record.class_name,
+            record.phone_masked,
+            record.email_masked,
+        )
+    )
+    return has_kind and has_identity
+
+
+def _sanitized_frozen_candidate(candidate: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "id": candidate.get("id"),
+        "entity_kind": candidate.get("entity_kind"),
+        "category": candidate.get("category"),
+        "name": candidate.get("name"),
+        "number": candidate.get("number"),
+        "class_name": candidate.get("class_name"),
+        "phone": _mask_graph_phone(
+            str(candidate["phone"]) if candidate.get("phone") is not None else None
+        ),
+        "email": _mask_graph_email(
+            str(candidate["email"]) if candidate.get("email") is not None else None
+        ),
+    }
 
 
 async def _graph_approval_items(
@@ -2342,16 +2404,11 @@ async def clarify_agent_conflict(
             run_id=run.id,
             clarification_ids=(str(record.id),),
         )
-        candidates_are_complete = (
-            len(record.masked_candidates) >= 2
-            and len(candidate_ids) == len(record.masked_candidates)
-            and len(set(candidate_ids)) == len(candidate_ids)
-        )
         if (
             gate.cursor > graph.cursor
             or len(conflict_views) != 1
-            or not candidates_are_complete
-            or len(conflict_views[0].candidates) != len(candidate_ids)
+            or not conflict_views[0].evidence_complete
+            or len(candidate_ids) != len(record.masked_candidates)
         ):
             raise HTTPException(
                 409,
@@ -2415,7 +2472,10 @@ async def clarify_agent_conflict(
             conflict=FrozenConflictDraft(
                 conflict_id=record.id,
                 work_item_id=record.work_item_id,
-                masked_candidates=tuple(dict(item) for item in record.masked_candidates),
+                masked_candidates=tuple(
+                    _sanitized_frozen_candidate(item)
+                    for item in record.masked_candidates
+                ),
                 allowed_outcomes=tuple(record.allowed_outcomes),
             ),
         )

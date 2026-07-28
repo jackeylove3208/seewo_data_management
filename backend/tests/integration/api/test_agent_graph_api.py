@@ -1293,12 +1293,33 @@ def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
         },
     ]
     agent_client.portal.call(replace_candidates, [])
+    incomplete_progress = agent_client.get(f"/api/agent/tasks/{task_id}/graph")
+    incomplete_gate = next(
+        gate
+        for gate in incomplete_progress.json()["human_gates"]
+        if gate["kind"] == "identity_conflict"
+    )
+    assert incomplete_gate["actionable"] is False
     incomplete = agent_client.post(
         f"/api/agent/tasks/{task_id}/clarification",
         json={"message": "请按希沃多余处理。"},
     )
     assert incomplete.status_code == 409, incomplete.text
     assert incomplete.json()["detail"]["code"] == "incomplete_conflict_evidence"
+    agent_client.portal.call(
+        replace_candidates,
+        [
+            {"id": candidate_id, "entity_kind": "student"},
+            {"id": second_candidate_id, "entity_kind": "student"},
+        ],
+    )
+    id_only_progress = agent_client.get(f"/api/agent/tasks/{task_id}/graph")
+    id_only_gate = next(
+        gate
+        for gate in id_only_progress.json()["human_gates"]
+        if gate["kind"] == "identity_conflict"
+    )
+    assert id_only_gate["actionable"] is False
     agent_client.portal.call(replace_candidates, original_candidates)
     resource_id = f"identity-conflict:{clarification_id}"
     draft = {
@@ -1312,6 +1333,7 @@ def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
 
     class ConflictProvider:
         def __init__(self) -> None:
+            self.requests: list[str] = []
             self.outputs = [
                 {
                     "result": {
@@ -1333,6 +1355,7 @@ def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
             ]
 
         async def complete_json_once(self, _request) -> LLMResponse:
+            self.requests.append(str(_request))
             return LLMResponse(
                 output=self.outputs.pop(0),
                 provider="scripted",
@@ -1340,7 +1363,8 @@ def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
                 request_id=str(uuid4()),
             )
 
-    agent_client.app.state.graph_skill_provider = ConflictProvider()
+    conflict_provider = ConflictProvider()
+    agent_client.app.state.graph_skill_provider = conflict_provider
     interpreted = agent_client.post(
         f"/api/agent/tasks/{task_id}/clarification",
         json={"message": "请选择编号 S-001 的候选。"},
@@ -1356,6 +1380,11 @@ def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
         "interpretation_zh": "我理解为选择编号 S-001 的候选，确认后继续。",
         "requires_second_confirmation": True,
     }
+    model_visible_payload = "\n".join(conflict_provider.requests)
+    assert "secret.person@example.test" not in model_visible_payload
+    assert "13812345678" not in model_visible_payload
+    assert "s***@example.test" in model_visible_payload
+    assert "***5678" in model_visible_payload
     interpreted_progress = agent_client.get(f"/api/agent/tasks/{task_id}/graph")
     interpreted_conflict = next(
         gate

@@ -1,5 +1,7 @@
+from types import SimpleNamespace
 from uuid import uuid4
 
+from app.reconciliation import agent_identity
 from app.reconciliation.agent_identity import identity_postings, ordinary_field_differences
 from app.schemas.agent_ingestion import AgentContractRecord, AgentEntityKind, AgentSourceRole
 
@@ -63,3 +65,22 @@ def test_category_aliases_do_not_create_a_false_field_difference() -> None:
     )
 
     assert ordinary_field_differences(authority, target) == ()
+
+
+def test_frozen_identity_candidate_masks_phone_and_email_before_persistence() -> None:
+    candidate = agent_identity._masked_candidate(  # noqa: SLF001
+        SimpleNamespace(
+            id=uuid4(),
+            entity_kind="student",
+            category="学生",
+            name="测试学生",
+            number="S-001",
+            class_name="一班",
+            phone="13812345678",
+            email="secret.person@example.test",
+        )
+    )
+
+    assert candidate["phone"] == "***5678"
+    assert candidate["email"] == "s***@example.test"
+    assert "secret.person" not in str(candidate)
