@@ -284,8 +284,13 @@ select {
 }
 
 .conversation-workspace.has-task-status {
-  grid-template-columns: minmax(0, 1fr) 258px;
+  grid-template-columns: minmax(0, 1fr) 280px;
   align-items: start;
+  transition: grid-template-columns 160ms ease;
+}
+
+.conversation-workspace.has-task-status:has(.task-status-rail.is-collapsed) {
+  grid-template-columns: minmax(0, 1fr) 50px;
 }
 
 .conversation-workspace .conversation-surface {
@@ -300,14 +305,15 @@ select {
 }
 
 .apple-page .conversation-message.assistant {
-  background: var(--codex-assistant);
+  border-color: transparent;
+  background: transparent;
 }
 
 .apple-page .conversation-message.user {
   color: #183563;
   border-color: #d5e2fb;
   background: var(--codex-user);
-  box-shadow: none;
+  box-shadow: 0 1px 2px rgb(25 51 89 / 4%);
 }
 
 .apple-page .conversation-message strong,
@@ -453,7 +459,7 @@ select {
 .task-status-rail {
   position: sticky;
   top: 24px;
-  width: 230px;
+  width: 100%;
   min-width: 0;
   overflow: hidden;
   color: var(--codex-ink);
@@ -1210,6 +1216,7 @@ select {
   }
 
   .conversation-workspace.has-task-status,
+  .conversation-workspace.has-task-status:has(.task-status-rail.is-collapsed),
   .agent-task-detail-page {
     grid-template-columns: minmax(0, 1fr);
   }

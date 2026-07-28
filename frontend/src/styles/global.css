@@ -3249,7 +3249,11 @@ body {
   left: calc(280px + max(24px, calc((100vw - 280px - 1180px) / 2)));
 }
 
-.conversation-create-page,
+.conversation-create-page {
+  width: min(calc(100% - 32px), 1440px);
+  padding-top: 28px;
+}
+
 .external-sync-page {
   width: min(calc(100% - 56px), 980px);
   padding-top: 28px;
@@ -3343,7 +3347,7 @@ body {
 .conversation-messages {
   display: grid;
   align-content: start;
-  gap: 2px;
+  gap: 16px;
   min-height: 0;
   max-height: none;
   padding: 22px 24px;
@@ -3358,15 +3362,30 @@ body {
   border-bottom: 1px solid #edf1ef;
 }
 
-.conversation-message:last-child {
-  border-bottom: 0;
+.conversation-message.assistant {
+  width: min(780px, 92%);
+  justify-self: start;
 }
 
 .conversation-message.user {
+  grid-template-columns: minmax(0, 1fr) 32px;
+  width: fit-content;
+  max-width: min(720px, 78%);
+  justify-self: end;
   margin-block: 5px;
   border: 1px solid #d8e3f1;
   border-radius: 6px;
   background: #f5f8fc;
+}
+
+.conversation-message.user .message-avatar {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.conversation-message.user > div {
+  grid-column: 1;
+  grid-row: 1;
 }
 
 .conversation-message.error {
@@ -3758,6 +3777,96 @@ body {
   font-size: 11px;
 }
 
+.conversation-medium-review {
+  display: grid;
+  gap: 13px;
+  padding: 15px;
+  border: 1px solid #d7dfeb;
+  border-radius: 14px;
+  background: #f9fbff;
+}
+
+.conversation-medium-review-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.conversation-medium-review-header > div {
+  display: grid;
+  gap: 3px;
+}
+
+.conversation-medium-review-header span,
+.conversation-medium-review-header small {
+  color: #65768d;
+  font-size: 11px;
+}
+
+.conversation-medium-review-header strong {
+  color: #28384d;
+  font-size: 14px;
+}
+
+.conversation-medium-review-completed {
+  flex: 0 0 auto;
+  padding: 4px 9px;
+  border-radius: 999px;
+  color: #216e58 !important;
+  background: #e6f5ef;
+  font-weight: 700;
+}
+
+.conversation-medium-review-items {
+  display: grid;
+  gap: 8px;
+}
+
+.conversation-medium-review-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px 12px;
+  padding: 12px;
+  border: 1px solid #e1e7ef;
+  border-radius: 11px;
+  background: #fff;
+}
+
+.conversation-medium-review-item > label {
+  display: inline-flex;
+  grid-row: 1 / span 2;
+  align-items: flex-start;
+  gap: 6px;
+  color: #6b7684;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.conversation-medium-review-item > label input {
+  margin-top: 2px;
+  accent-color: #a94b56;
+}
+
+.conversation-medium-review-item .conversation-risk-changes {
+  grid-column: 2;
+}
+
+.conversation-medium-review-submit {
+  justify-self: start;
+  padding: 8px 13px;
+  border: 1px solid #315f97;
+  border-radius: 8px;
+  color: #fff;
+  background: #315f97;
+  cursor: pointer;
+}
+
+.conversation-medium-review-submit:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .agent-event-error {
   color: #a3473d;
 }
@@ -4107,6 +4216,16 @@ body {
     grid-template-columns: 28px minmax(0, 1fr);
     gap: 9px;
     padding: 12px 8px;
+  }
+
+  .conversation-message.assistant,
+  .conversation-message.user {
+    width: auto;
+    max-width: 92%;
+  }
+
+  .conversation-message.user {
+    grid-template-columns: minmax(0, 1fr) 28px;
   }
 
   .message-avatar {
