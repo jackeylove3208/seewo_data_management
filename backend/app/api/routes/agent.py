@@ -1371,7 +1371,13 @@ def _graph_identity_record_view(
         value = values.get(key)
         return str(value) if value is not None and str(value) else None
 
+    candidate_id_value = text_value("id")
+    try:
+        candidate_id = UUID(candidate_id_value) if candidate_id_value else None
+    except ValueError:
+        candidate_id = None
     return AgentGraphIdentityRecordView(
+        candidate_id=candidate_id,
         entity_kind=text_value("entity_kind") or default_entity_kind,
         category=text_value("category"),
         name=text_value("name"),

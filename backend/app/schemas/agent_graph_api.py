@@ -28,6 +28,7 @@ class AgentGraphApprovalItemView(BaseModel):
 
 
 class AgentGraphIdentityRecordView(BaseModel):
+    candidate_id: UUID | None = None
     entity_kind: str | None = None
     category: str | None = None
     name: str | None = None

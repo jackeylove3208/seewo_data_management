@@ -1227,6 +1227,7 @@ def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
             "status": "pending",
             "summary_zh": "唯一身份字段命中了多个第三方权威候选，Agent 无法安全选择。",
             "subject": {
+                "candidate_id": None,
                 "entity_kind": "student",
                 "category": "student",
                 "name": "测试学生",
@@ -1237,6 +1238,7 @@ def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
             },
             "candidates": [
                 {
+                    "candidate_id": candidate_id,
                     "entity_kind": "student",
                     "category": "student",
                     "name": "测试学生",
@@ -1246,6 +1248,7 @@ def test_identity_conflict_uses_skill_model_and_requires_second_confirmation(
                     "email_masked": "s***@example.test",
                 },
                 {
+                    "candidate_id": second_candidate_id,
                     "entity_kind": "student",
                     "category": "student",
                     "name": "测试学生二号",
