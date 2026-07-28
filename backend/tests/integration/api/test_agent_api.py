@@ -9,7 +9,6 @@ from sqlalchemy import select
 from app.agent_reporting.service import AgentReportingService
 from app.ai.providers.base import LLMRequest, LLMResponse
 from app.api.dependencies import get_operator_context
-from app.core.config import Settings
 from app.core.security import OperatorContext
 from app.main import create_app
 from app.models.agent_analysis import (
@@ -27,6 +26,7 @@ from app.models.agent_runtime import (
 )
 from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import Snapshot, SourceFile
+from tests.settings import build_test_settings
 
 
 class ConversationProvider:
@@ -107,7 +107,7 @@ class IncrementalConversationProvider:
 
 @pytest.fixture
 def agent_client(tmp_path: Path):
-    settings = Settings(
+    settings = build_test_settings(
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'agent-api.db'}",
         upload_root=tmp_path / "uploads",
         snapshot_root=tmp_path / "snapshots",
@@ -124,7 +124,7 @@ def agent_client(tmp_path: Path):
 
 @pytest.fixture
 def graph_agent_client(tmp_path: Path):
-    settings = Settings(
+    settings = build_test_settings(
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'agent-graph-api.db'}",
         upload_root=tmp_path / "uploads",
         snapshot_root=tmp_path / "snapshots",
@@ -142,7 +142,7 @@ def graph_agent_client(tmp_path: Path):
 
 @pytest.fixture
 def graph_agent_v2_client(tmp_path: Path):
-    settings = Settings(
+    settings = build_test_settings(
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'agent-graph-v2-api.db'}",
         upload_root=tmp_path / "uploads",
         snapshot_root=tmp_path / "snapshots",
@@ -500,7 +500,7 @@ def test_sql_pair_creates_durable_task_without_exposing_database_credentials(
         "phone": "phone",
         "email": "email",
     }
-    settings = Settings(
+    settings = build_test_settings(
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'agent-sql-api.db'}",
         upload_root=tmp_path / "uploads",
         snapshot_root=tmp_path / "snapshots",

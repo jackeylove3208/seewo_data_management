@@ -41,7 +41,7 @@ from app.models.executions import (
     GovernancePlanRecord,
     TargetVersionRecord,
 )
-from app.models.mappings import EntityMapping, TargetEntityEmbedding
+from app.models.mappings import EntityMapping, SnapshotEntityEmbedding
 from app.models.proposal_batches import ProposalBatchRecord
 from app.models.proposals import GovernanceProposalRecord
 from app.models.quality import MatchingQualityRecord
@@ -290,10 +290,10 @@ class TaskDeletionService:
             delete(DifferenceRecord).where(DifferenceRecord.id.in_(difference_ids))
         )
         await self.session.execute(
-            delete(TargetEntityEmbedding).where(
+            delete(SnapshotEntityEmbedding).where(
                 or_(
-                    TargetEntityEmbedding.snapshot_id.in_(snapshot_ids),
-                    TargetEntityEmbedding.entity_id.in_(entity_ids),
+                    SnapshotEntityEmbedding.snapshot_id.in_(snapshot_ids),
+                    SnapshotEntityEmbedding.entity_id.in_(entity_ids),
                 )
             )
         )

@@ -140,7 +140,3 @@ class SnapshotEntityEmbedding(Base, TimestampMixin):
             "parent_mapping_id",
         ),
     )
-
-
-# Transitional import compatibility while callers move to the role-aware name.
-TargetEntityEmbedding = SnapshotEntityEmbedding

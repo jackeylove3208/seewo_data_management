@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   allTasks,
+  findTask,
   getStoredTasks,
   removeStoredTask,
   saveStoredTask,
@@ -26,6 +27,11 @@ describe("task history removal", () => {
 
   it("does not inject obsolete demonstration tasks into real history", () => {
     expect(allTasks()).toEqual([]);
+  });
+
+  it("does not resolve removed demonstration task IDs", () => {
+    expect(findTask("demo-001")).toBeUndefined();
+    expect(findTask("demo-002")).toBeUndefined();
   });
 
   it("removes one stored task and publishes a history update", () => {

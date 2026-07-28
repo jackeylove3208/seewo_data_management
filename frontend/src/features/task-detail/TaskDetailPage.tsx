@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Alert, Button, Checkbox, Empty, Progress, Skeleton, Tag } from "antd";
+import { Alert, Button, Empty, Progress, Skeleton, Tag } from "antd";
 import { ArrowRight, Check, CircleDot, FileInput, RotateCcw, ScanSearch, Sparkles, X } from "lucide-react";
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
@@ -8,12 +8,10 @@ import { queryKeys } from "../../api/queryKeys";
 import { agentApi } from "../../api/agent";
 import { reconciliationApi, type WorkflowStage } from "../../api/reconciliation";
 import { BackButton } from "../../components/BackButton";
-import { demoEntitySummaries, differencesFor, entityLabels } from "../../data/demoDifferences";
 import { findTask } from "../../data/taskHistory";
 import type { EntitySummary } from "../../types/domain";
 import { BatchAnalysisModal } from "../analysis/BatchAnalysisModal";
-import { getSelectionState, issueIdsFor, toggleCategory } from "../differences/selection";
-import { useIssueSelection } from "../differences/useIssueSelection";
+import { entityTypeLabels } from "../analysis/localization";
 import { useAnalysisJob } from "../workflow/useAnalysisJob";
 import { useReconciliationWorkflow } from "../workflow/useReconciliationWorkflow";
 import { useRematchingJob } from "../workflow/useRematchingJob";
@@ -58,37 +56,34 @@ export function TaskDetailPage() {
     enabled: shouldQueryAgent,
   });
   const isAgentTask = ["new-agent-v1", "agent-graph-v1"].includes(agentTask.data?.workflow_version ?? "");
-  const demo = Boolean(historyTask?.isDemo);
-  const shouldLoadLegacy = !demo
-    && !isAgentTask
+  const shouldLoadLegacy = !isAgentTask
     && (!shouldQueryAgent || agentTask.isError);
   const workflow = useReconciliationWorkflow(taskId, shouldLoadLegacy);
   const [batchOpen, setBatchOpen] = useState(false);
-  const { selection, setSelection } = useIssueSelection(taskId);
   const task = workflow.task.data;
   const currentWorkflow = task?.workflow;
-  const rematching = useRematchingJob(currentWorkflow?.rematching?.job_id, !demo && Boolean(currentWorkflow?.rematching?.job_id));
+  const rematching = useRematchingJob(currentWorkflow?.rematching?.job_id, Boolean(currentWorkflow?.rematching?.job_id));
   const quality = currentWorkflow?.matching_quality ?? null;
   const analysisJobId = currentWorkflow?.analysis.job_id;
-  const analysisJob = useAnalysisJob(analysisJobId, !demo && Boolean(analysisJobId));
+  const analysisJob = useAnalysisJob(analysisJobId, Boolean(analysisJobId));
   const liveAnalysis = analysisJob.job.data;
   const analysisInProgress = Boolean(liveAnalysis && ["queued", "running"].includes(liveAnalysis.status));
   const terminalJob = Boolean(liveAnalysis && ["completed", "completed_with_failures"].includes(liveAnalysis.status));
   const analysisCanceled = liveAnalysis?.status === "canceled";
-  const analysisTerminal = demo || (analysisJobId ? terminalJob : currentWorkflow?.stage === "complete");
+  const analysisTerminal = analysisJobId ? terminalJob : currentWorkflow?.stage === "complete";
   const summaryQuery = useQuery({
     queryKey: queryKeys.analysisSummary(taskId),
     queryFn: ({ signal }) => reconciliationApi.getAnalysisSummary(taskId, signal),
-    enabled: !demo && analysisTerminal,
+    enabled: analysisTerminal,
   });
 
   if (isAgentTask) return <AgentTaskDetailPage taskId={taskId} initialTask={agentTask.data} />;
 
   const agentLookupPending = shouldQueryAgent && !agentTask.data && !agentTask.isError;
-  if (!demo && !task && (agentLookupPending || workflow.task.isLoading)) {
+  if (!task && (agentLookupPending || workflow.task.isLoading)) {
     return <main className="page-shell task-detail-page apple-page"><BackButton fallback="/tasks" label="返回任务列表" /><Skeleton active paragraph={{ rows: 8 }} /></main>;
   }
-  if ((!historyTask && workflow.task.isError) || (demo && !historyTask)) {
+  if (!historyTask && workflow.task.isError) {
     return (
       <main className="page-shell empty-page apple-page">
         <BackButton fallback="/tasks" label="返回任务列表" />
@@ -99,18 +94,16 @@ export function TaskDetailPage() {
   }
 
   const realSummaries = summaryQuery.data?.entity_types.filter((item) => item.issue_count > 0) ?? [];
-  const summaries: EntitySummary[] = demo
-    ? demoEntitySummaries
-    : realSummaries.map((item) => ({
+  const summaries: EntitySummary[] = realSummaries.map((item) => ({
       type: item.entity_type,
-      label: entityLabels[item.entity_type],
+      label: entityTypeLabels[item.entity_type],
       sourceCount: historyTask?.entityCounts?.[item.entity_type]?.source ?? 0,
       targetCount: historyTask?.entityCounts?.[item.entity_type]?.target ?? 0,
       issueCount: item.issue_count,
     }));
-  const totalIssues = demo ? historyTask!.issueCount : realSummaries.reduce((total, item) => total + item.issue_count, 0);
+  const totalIssues = realSummaries.reduce((total, item) => total + item.issue_count, 0);
   const proposalReady = realSummaries.reduce((total, item) => total + item.proposal_ready, 0);
-  const summaryReady = demo || Boolean(analysisTerminal && summaryQuery.data?.terminal);
+  const summaryReady = Boolean(analysisTerminal && summaryQuery.data?.terminal);
   const taskTitle = historyTask?.title ?? `对账任务 ${taskId.slice(0, 8)}`;
   const sourceFile = historyTask?.sourceFile ?? "三方系统快照";
   const targetFile = historyTask?.targetFile ?? "希沃快照";
@@ -126,7 +119,6 @@ export function TaskDetailPage() {
             <Tag color={currentWorkflow?.status === "failed" ? "error" : analysisCanceled ? "warning" : analysisTerminal ? "success" : "processing"}>
               {currentWorkflow?.status === "failed" ? "处理失败" : analysisCanceled ? "分析已取消" : analysisTerminal ? "分析完成" : "处理中"}
             </Tag>
-            {demo && <Tag>演示差异</Tag>}
           </span>
           <h1>{taskTitle}</h1>
           <p>{sourceFile} <ArrowRight size={13} /> {targetFile}</p>
@@ -143,17 +135,17 @@ export function TaskDetailPage() {
         <Alert className="workflow-alert" type="error" showIcon message="任务处理失败" description="当前阶段未完成，请重试或联系管理员。" action={workflow.canRetry ? <Button icon={<RotateCcw size={14} />} loading={workflow.retrying} onClick={workflow.retry}>重试当前阶段</Button> : undefined} />
       )}
 
-      {!demo && <MatchingRecoveryPanel progress={rematching.job.data ?? currentWorkflow?.rematching ?? null} quality={quality} loadFailed={rematching.job.isError} onReload={() => void rematching.job.refetch()} onRetry={rematching.retry} onCancel={rematching.cancel} onManualMapping={() => navigate(`/tasks/${taskId}/mapping-review`)} />}
+      <MatchingRecoveryPanel progress={rematching.job.data ?? currentWorkflow?.rematching ?? null} quality={quality} loadFailed={rematching.job.isError} onReload={() => void rematching.job.refetch()} onRetry={rematching.retry} onCancel={rematching.cancel} onManualMapping={() => navigate(`/tasks/${taskId}/mapping-review`)} />
 
       <section className="stage-track" aria-label="任务处理阶段">
         {stages.map((stage, index) => {
           const isAnalysis = stage.id === "analysis";
-          const completed = demo || effectiveIndex > index;
-          const active = !demo && !analysisTerminal && !analysisCanceled && (
+          const completed = effectiveIndex > index;
+          const active = !analysisTerminal && !analysisCanceled && (
             (isAnalysis && analysisInProgress)
             || (!analysisJobId && currentIndex === index && currentWorkflow?.status !== "failed")
           );
-          const failed = !demo && currentIndex === index && currentWorkflow?.status === "failed";
+          const failed = currentIndex === index && currentWorkflow?.status === "failed";
           const Icon = stage.icon;
           let statusText = completed ? "已完成" : "等待处理";
           if (active) statusText = isAnalysis ? "AI 分析中" : "正在处理";
@@ -180,24 +172,21 @@ export function TaskDetailPage() {
       {analysisCanceled && <Alert className="workflow-alert" type="warning" showIcon message="分析已取消" description="已完成的结果会保留，继续后只处理尚未完成的差异。" action={<Button icon={<RotateCcw size={14} />} loading={analysisJob.retrying} onClick={analysisJob.retry}>继续分析</Button>} />}
       {liveAnalysis?.status === "completed_with_failures" && liveAnalysis.failed > 0 && <Alert className="workflow-alert" type="warning" showIcon message={`有 ${liveAnalysis.failed} 项分析失败`} description="已成功和人工处理的结果会保留，只重试失败项。" action={<Button icon={<RotateCcw size={14} />} loading={analysisJob.retrying} onClick={analysisJob.retry}>重试失败项</Button>} />}
 
-      {(demo || (analysisTerminal && summaryQuery.data?.terminal)) && <section className="entity-results">
+      {analysisTerminal && summaryQuery.data?.terminal && <section className="entity-results">
         <div className="section-title-row">
           <div><h2>问题类型对照</h2><p>进入具体类型后查看真实差异、AI 成因与待执行治理方案。</p></div>
-          <div className="section-title-actions"><span>{demo && selection.size > 0 ? `已选择 ${selection.size} 个问题` : `共 ${totalIssues} 个问题`}</span>{!demo && proposalReady > 0 && <Button type="primary" icon={<Sparkles size={15} />} onClick={() => setBatchOpen(true)}>AI 一键处理</Button>}</div>
+          <div className="section-title-actions"><span>共 {totalIssues} 个问题</span>{proposalReady > 0 && <Button type="primary" icon={<Sparkles size={15} />} onClick={() => setBatchOpen(true)}>AI 一键处理</Button>}</div>
         </div>
-        {!demo && summaries.length === 0 ? <Empty description="AI 分析完成，未发现需要治理的问题" /> :
+        {summaries.length === 0 ? <Empty description="AI 分析完成，未发现需要治理的问题" /> :
         <div className="entity-table" role="table" aria-label="问题类型对照">
           <div className="entity-row entity-header" role="row">
-            <span>处理</span><span>问题类型</span><span>三方系统</span><span>希沃魔方</span><span>发现问题</span><span>状态</span><span />
+            <span /><span>问题类型</span><span>三方系统</span><span>希沃魔方</span><span>发现问题</span><span>状态</span><span />
           </div>
           {summaries.map((summary) => {
-            const people = demo ? differencesFor(summary.type) : [];
-            const issueIds = issueIdsFor(people);
-            const state = getSelectionState(selection, issueIds);
-            const canInspect = demo ? issueIds.length > 0 : analysisTerminal;
+            const canInspect = analysisTerminal;
             return (
               <div className="entity-row" role="row" key={summary.type}>
-                <Checkbox aria-label={`选择全部${summary.label}问题`} checked={state.checked} indeterminate={state.indeterminate} disabled={!demo || !canInspect} onChange={(event) => setSelection((current) => toggleCategory(current, people, event.target.checked))} />
+                <span />
                 <button className="entity-name" type="button" disabled={!canInspect} onClick={() => navigate(`/tasks/${taskId}/differences/${summary.type}`)}>
                   <strong>{summary.label}</strong><small>{canInspect ? `${summary.issueCount} 个差异` : "等待差异检测"}</small>
                 </button>
@@ -211,7 +200,7 @@ export function TaskDetailPage() {
           })}
         </div>}
       </section>}
-      {!demo && analysisJobId && <BatchAnalysisModal open={batchOpen} taskId={taskId} jobId={analysisJobId} onClose={() => setBatchOpen(false)} onOpenEntityType={(entityType) => { setBatchOpen(false); navigate(`/tasks/${taskId}/differences/${entityType}`); }} />}
+      {analysisJobId && <BatchAnalysisModal open={batchOpen} taskId={taskId} jobId={analysisJobId} onClose={() => setBatchOpen(false)} onOpenEntityType={(entityType) => { setBatchOpen(false); navigate(`/tasks/${taskId}/differences/${entityType}`); }} />}
     </main>
   );
 }

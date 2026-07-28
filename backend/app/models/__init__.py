@@ -50,7 +50,7 @@ from app.models.executions import (
     OperationAttemptRecord,
     TargetVersionRecord,
 )
-from app.models.mappings import EntityMapping, SnapshotEntityEmbedding, TargetEntityEmbedding
+from app.models.mappings import EntityMapping, SnapshotEntityEmbedding
 from app.models.proposal_batches import ProposalBatchRecord
 from app.models.proposals import GovernanceProposalRecord
 from app.models.quality import MatchingQualityRecord
@@ -141,7 +141,6 @@ __all__ = [
     "SchoolTaskLockRecord",
     "SnapshotEntityEmbedding",
     "SourceFile",
-    "TargetEntityEmbedding",
     "TargetVersionRecord",
     "OperationAttemptRecord",
     "WorkflowStageRun",

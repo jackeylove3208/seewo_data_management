@@ -4,12 +4,35 @@ import pytest
 from pydantic import SecretStr
 
 from app.core.config import DEFAULT_ENV_FILE, Settings
+from tests.settings import build_test_settings
 
 
 def test_default_env_file_is_backend_absolute_path() -> None:
     assert DEFAULT_ENV_FILE == Path(__file__).resolve().parents[3] / ".env"
     assert DEFAULT_ENV_FILE.is_absolute()
     assert Settings.model_config["env_file"] == DEFAULT_ENV_FILE
+
+
+def test_build_test_settings_ignores_project_env_file(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            (
+                "RECONCILIATION_NEW_AGENT_ENABLED=true",
+                "RECONCILIATION_AGENT_GRAPH_ENABLED=true",
+                "RECONCILIATION_AGENT_GRAPH_CSV_EXECUTION_ENABLED=true",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="target execution"):
+        Settings(new_agent_enabled=True, new_agent_analysis_only=True, _env_file=env_file)
+
+    settings = build_test_settings(new_agent_enabled=True, new_agent_analysis_only=True)
+
+    assert settings.new_agent_analysis_only is True
+    assert settings.agent_graph_csv_execution_enabled is False
 
 
 def test_new_agent_rollout_is_safe_by_default() -> None:
