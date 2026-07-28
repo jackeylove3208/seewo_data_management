@@ -401,8 +401,8 @@ select {
   align-items: center;
   justify-content: center;
   gap: 7px;
-  min-height: 36px;
-  padding: 0 12px;
+  min-height: 32px;
+  padding: 0 10px;
   color: var(--codex-ink);
   border: 1px solid var(--codex-border-strong);
   border-radius: 8px;

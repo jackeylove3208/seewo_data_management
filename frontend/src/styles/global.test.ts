@@ -3,6 +3,44 @@ import { describe, expect, it } from "vitest";
 import globalCss from "./global.css?inline";
 import appleCss from "./apple.css?inline";
 
+function extractCssBlocks(css: string, marker: string): string[] {
+  const blocks: string[] = [];
+  let searchIndex = 0;
+
+  while (searchIndex < css.length) {
+    const markerIndex = css.indexOf(marker, searchIndex);
+    if (markerIndex === -1) {
+      break;
+    }
+
+    const openingBraceIndex = css.indexOf("{", markerIndex);
+    expect(openingBraceIndex).toBeGreaterThan(markerIndex);
+
+    let depth = 0;
+    let blockClosed = false;
+    for (let index = openingBraceIndex; index < css.length; index += 1) {
+      if (css[index] === "{") {
+        depth += 1;
+      } else if (css[index] === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          blocks.push(css.slice(openingBraceIndex + 1, index));
+          searchIndex = index + 1;
+          blockClosed = true;
+          break;
+        }
+      }
+    }
+
+    if (!blockClosed) {
+      throw new Error(`Unclosed CSS block: ${marker}`);
+    }
+  }
+
+  expect(blocks.length).toBeGreaterThan(0);
+  return blocks;
+}
+
 describe("responsive analysis styles", () => {
   it("defines the flat Codex light workspace visual system", () => {
     expect(appleCss).toMatch(/--codex-canvas:\s*#ffffff/);
@@ -72,6 +110,29 @@ describe("responsive analysis styles", () => {
     );
     expect(appleCss).toMatch(
       /\.conversation-workspace\s*>\s*\.task-status-rail\.is-collapsed\s*\{[^}]*max-height:\s*59px/s,
+    );
+  });
+
+  it("keeps the conversation header compact on desktop and mobile", () => {
+    const mobileCss = extractCssBlocks(globalCss, "@media (max-width: 720px)").join("\n");
+
+    expect(globalCss).toMatch(
+      /\.conversation-create-page\s*\{[^}]*padding:\s*12px 0 14px/s,
+    );
+    expect(globalCss).toMatch(
+      /\.conversation-page-actions\s*\{[^}]*min-height:\s*32px[^}]*margin-bottom:\s*7px/s,
+    );
+    expect(globalCss).toMatch(
+      /\.conversation-page-actions \.conversation-assistant-title\s*\{[^}]*font-size:\s*15px/s,
+    );
+    expect(appleCss).toMatch(
+      /\.conversation-reset-button\s*\{[^}]*min-height:\s*32px[^}]*padding:\s*0 10px/s,
+    );
+    expect(mobileCss).toMatch(
+      /\.conversation-create-page\s*\{[^}]*padding:\s*10px 0/s,
+    );
+    expect(mobileCss).toMatch(
+      /\.conversation-page-actions\s*\{[^}]*margin-bottom:\s*6px/s,
     );
   });
 
