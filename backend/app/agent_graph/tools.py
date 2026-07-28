@@ -99,6 +99,7 @@ GRAPH_NODE_TOOL_NAMES: dict[str, frozenset[str]] = {
     ),
     "normalize_input_batches": frozenset(
         {
+            "inspect_configured_source",
             "read_connector_page",
             "submit_normalized_batch",
             "submit_input_marks",

@@ -42,7 +42,7 @@ include = ["app*"]
 
 [tool.setuptools.package-data]
 "app.normalization" = ["rules.v1.json"]
-"app.ai.skills" = ["*/SKILL.md"]
+"app.ai.skills" = ["*/SKILL.md", "*/agents/*.yaml"]
 "app.reports" = ["templates/*.j2"]
 
 [tool.pytest.ini_options]

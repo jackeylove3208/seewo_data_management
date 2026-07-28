@@ -1,0 +1,4 @@
+interface:
+  display_name: "理解远程组织数据来源"
+  short_description: "用受控已物化 CSV 证据映射固定组织字段合同"
+  default_prompt: "Use $understand-remote-organization-source to map the bounded materialized CSV evidence to the fixed organization contract."

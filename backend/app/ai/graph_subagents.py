@@ -643,13 +643,22 @@ def _tool_arguments_schema(
         "query_identity_postings",
         "read_claim_state",
     }:
+        manifest_resources = (
+            tuple(
+                item
+                for item in manifest.resource_ids
+                if item.startswith("source:")
+            )
+            if manifest is not None
+            and name in {"inspect_configured_source", "read_connector_page"}
+            else (manifest.resource_ids if manifest is not None else None)
+        )
         properties: dict[str, Any] = {
             "resource_id": _manifest_member_schema(
-                manifest.resource_ids if manifest is not None else None
+                manifest_resources
             ),
         }
         if name == "read_connector_page":
-            properties["page_locator"] = {"type": ["string", "null"]}
             properties["limit"] = {"type": "integer", "minimum": 1, "maximum": 50}
         return {
             "type": "object",

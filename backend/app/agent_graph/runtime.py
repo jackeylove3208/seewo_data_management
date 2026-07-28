@@ -689,10 +689,14 @@ class ProductionGraphCandidateProvider:
                     )
                 mapping_required = any(
                     checkpoint.payload.get("mapping_required", False)
-                    or (source_mode == "csv" and not checkpoint.payload.get("recognized", False))
+                    or (
+                        source_mode in {"csv", "remote_csv"}
+                        and not checkpoint.payload.get("recognized", False)
+                    )
                     for checkpoint in inspections
                     if checkpoint is not None
                 )
+                remote_csv = source_mode == "remote_csv"
                 return (
                     _action(
                         (
@@ -707,12 +711,24 @@ class ProductionGraphCandidateProvider:
                             (
                                 "database-schema-mapping"
                                 if source_mode == "database"
-                                else "csv-schema-mapping"
+                                else (
+                                    "remote-csv-schema-mapping"
+                                    if remote_csv
+                                    else "csv-schema-mapping"
+                                )
                             )
                             if mapping_required
                             else None
                         ),
-                        resource_ids=("source-pair:current",),
+                        resource_ids=(
+                            (
+                                "source-pair:current",
+                                "source:authoritative:page:1",
+                                "source:target:page:1",
+                            )
+                            if remote_csv
+                            else ("source-pair:current",)
+                        ),
                         required_evidence=("mapping:fixed-six-field-v2",),
                     ),
                 )
@@ -952,6 +968,13 @@ async def _source_pair_mode(session: AsyncSession, task_id: UUID) -> str:
         and target.get("kind") == "database"
     ):
         return "database"
+    if (
+        isinstance(source, dict)
+        and isinstance(target, dict)
+        and source.get("kind") == "remote_csv"
+        and target.get("kind") == "local"
+    ):
+        return "remote_csv"
     return "csv"
 
 

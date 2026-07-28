@@ -522,7 +522,10 @@ class ProductionGraphActionExecutor:
         action: AllowedActionV1,
     ) -> GraphActionOutcome:
         if context.ingestion_contract_version == "source-ingestion-v2":
-            if action.resource_ids == ("source-pair:current",):
+            if (
+                action.resource_ids
+                and action.resource_ids[0] == "source-pair:current"
+            ):
                 if await self._task_source_mode(context.task_id) == "database":
                     return await self._resolve_database_mapping_v2(context, action)
                 return await self._resolve_csv_mapping_v2(context, action)
@@ -967,6 +970,12 @@ class ProductionGraphActionExecutor:
                     context=context,
                     action=action,
                 )
+                task = await session.get(ReconciliationTask, context.task_id)
+                skill_name = (
+                    "understand-remote-organization-source"
+                    if _task_uses_remote_csv(task)
+                    else "map-csv-organization-schema"
+                )
                 result = await runner.run(
                     GraphSkillInvocation(
                         task_id=context.task_id,
@@ -976,7 +985,7 @@ class ProductionGraphActionExecutor:
                         graph_cursor=context.graph_cursor,
                         action_id=action.action_id,
                         evidence_manifest_id=manifest_id,
-                        skill_name="map-csv-organization-schema",
+                        skill_name=skill_name,
                         skill_version="1.0.0",
                         input_payload=CsvSchemaMappingInput(
                             task_id=context.task_id,
@@ -2766,8 +2775,27 @@ def _validate_csv_mapping_output(
         for role in ("authoritative", "target")
         for field in ("category", "name", "number", "class_name", "phone", "email")
     }
-    if not set(output.unresolved_required_fields) <= allowed_unresolved:
+    unresolved = set(output.unresolved_required_fields)
+    if len(unresolved) != len(output.unresolved_required_fields):
+        raise ValueError("CSV mapping repeats an unresolved field")
+    if not unresolved <= allowed_unresolved:
         raise ValueError("CSV mapping returned an unknown unresolved field")
+    for role, mappings in (
+        ("authoritative", output.authoritative_mappings),
+        ("target", output.target_mappings),
+    ):
+        mapped_fields = {mapping.contract_field for mapping in mappings}
+        unresolved_fields = {
+            item.removeprefix(f"{role}.")
+            for item in unresolved
+            if item.startswith(f"{role}.")
+        }
+        if mapped_fields & unresolved_fields:
+            raise ValueError(f"{role} CSV mapping marks mapped fields unresolved")
+        if mapped_fields | unresolved_fields != _fixed_contract_fields():
+            raise ValueError(
+                f"{role} CSV mapping omitted fields without marking unresolved"
+            )
     return output
 
 
@@ -3006,6 +3034,13 @@ def _task_uses_database(task: ReconciliationTask | None) -> bool:
         if isinstance(selection, dict) and selection.get("kind") == "database":
             return True
     return task.agent_intent.get("source_mode") == "database"
+
+
+def _task_uses_remote_csv(task: ReconciliationTask | None) -> bool:
+    if task is None or not isinstance(task.agent_intent, dict):
+        return False
+    source = task.agent_intent.get("source")
+    return isinstance(source, dict) and source.get("kind") == "remote_csv"
 
 
 def _legacy_context(

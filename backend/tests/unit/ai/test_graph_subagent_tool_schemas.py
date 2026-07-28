@@ -72,3 +72,38 @@ def test_operation_tools_only_accept_frozen_operation_resources(
             "enum": [f"operation:{item}" for item in operation_ids],
         }
     }
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    ("inspect_configured_source", "read_connector_page"),
+)
+def test_remote_csv_read_tools_accept_only_manifest_listed_source_pages(
+    tool_name: str,
+) -> None:
+    manifest = build_evidence_manifest(
+        tenant_ref="tenant-ref:test",
+        task_id=str(uuid4()),
+        run_id=str(uuid4()),
+        graph_node="normalize_input_batches",
+        action_id="resolve_csv_fixed_field_mapping",
+        resource_ids=(
+            "source-pair:current",
+            "source:authoritative:page:1",
+            "source:target:page:1",
+        ),
+        allowed_evidence_refs=("mapping:fixed-six-field-v2",),
+    )
+
+    schema = _tool_arguments_schema(tool_name, manifest=manifest)
+
+    assert schema["additionalProperties"] is False
+    assert schema["properties"]["resource_id"] == {
+        "type": "string",
+        "enum": [
+            "source:authoritative:page:1",
+            "source:target:page:1",
+        ],
+    }
+    assert "url" not in schema["properties"]
+    assert "page_locator" not in schema["properties"]
