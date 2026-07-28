@@ -46,9 +46,32 @@ describe("responsive analysis styles", () => {
     expect(globalCss).toMatch(/\.batch-analysis-modal\s+\.ant-modal-body\s*\{[^}]*max-height:[^;}]+;[^}]*overflow-y:\s*auto/s);
   });
 
-  it("lets the agent conversation fill the available viewport", () => {
-    expect(globalCss).toMatch(/\.conversation-surface\s*\{[^}]*display:\s*grid/s);
-    expect(globalCss).toMatch(/\.conversation-messages\s*\{[^}]*max-height:\s*none/s);
-    expect(globalCss).not.toMatch(/\.conversation-messages\s*\{[^}]*max-height:\s*410px/s);
+  it("keeps the outer conversation page fixed while messages scroll internally", () => {
+    expect(globalCss).toMatch(
+      /\.workspace-main:has\(>\s*\.conversation-create-page\)\s*\{[^}]*height:\s*100dvh[^}]*overflow:\s*hidden/s,
+    );
+    expect(globalCss).toMatch(
+      /\.conversation-create-page\s*\{[^}]*height:\s*100%[^}]*min-height:\s*0[^}]*overflow:\s*hidden/s,
+    );
+    expect(globalCss).toMatch(
+      /\.workspace-main:has\(>\s*\.conversation-create-page\)\s*>\s*\.conversation-create-page\s*\{[^}]*grid-row:\s*2/s,
+    );
+    expect(globalCss).toMatch(/\.conversation-surface\s*\{[^}]*overflow:\s*hidden/s);
+    expect(globalCss).toMatch(/\.conversation-messages\s*\{[^}]*overflow-y:\s*auto/s);
+    expect(appleCss).toMatch(
+      /\.conversation-workspace\s*>\s*\.task-status-rail\s*\{[^}]*align-self:\s*start[^}]*height:\s*auto[^}]*max-height:\s*min\(50dvh,\s*440px\)/s,
+    );
+  });
+
+  it("uses one visual shell for the conversation composer", () => {
+    expect(globalCss).toMatch(
+      /\.conversation-composer\s*\{[^}]*border:\s*1px solid[^}]*border-radius:/s,
+    );
+    expect(globalCss).toMatch(
+      /\.conversation-composer textarea\s*\{[^}]*resize:\s*none[^}]*border:\s*0[^}]*background:\s*transparent/s,
+    );
+    expect(globalCss).toMatch(
+      /\.conversation-composer textarea:focus\s*\{[^}]*box-shadow:\s*none/s,
+    );
   });
 });

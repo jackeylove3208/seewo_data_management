@@ -11,8 +11,8 @@ other business behavior.
 - The workspace must occupy the visible application area without making the outer page
   scroll.
 - The message stream remains vertically scrollable inside the conversation surface.
-- The task status rail remains visible and scrolls internally if its content exceeds the
-  available height.
+- The task status rail stays top-aligned and never exceeds half of the viewport height;
+  it scrolls internally when its content is longer.
 - The top-left visible title is `数据同步助手`; do not render a visible `新建对话`
   heading.
 - Keep the existing `开启新对话` action and all of its behavior.
@@ -40,4 +40,3 @@ other business behavior.
 - Add stylesheet contract assertions for viewport containment, internal message
   scrolling, and the single-shell composer.
 - Run the complete frontend unit suite, lint, typecheck, and production build.
-

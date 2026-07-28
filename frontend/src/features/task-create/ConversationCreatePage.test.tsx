@@ -52,6 +52,7 @@ describe("backend Agent conversation", () => {
       createConversation: vi.fn().mockReturnValue(new Promise(() => undefined)),
     })} />);
 
+    expect(screen.getByRole("heading", { name: "数据同步助手" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "新建对话" })).not.toBeInTheDocument();
     expect(screen.getByRole("region", { name: "新建对话" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "开启新对话" })).toBeInTheDocument();

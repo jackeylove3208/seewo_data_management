@@ -703,6 +703,7 @@ export function ConversationCreatePage({
   return (
     <main className="page-shell conversation-create-page apple-page">
       <div className="conversation-page-actions">
+        <h1 className="conversation-assistant-title">数据同步助手</h1>
         <button
           className={`conversation-reset-button${contextLimitReached ? " is-emphasized" : ""}`}
           type="button"

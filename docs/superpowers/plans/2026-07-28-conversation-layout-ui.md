@@ -13,6 +13,7 @@
 - Modify frontend presentation only; do not change API calls, state transitions, message sending, form values, or task behavior.
 - The visible conversation title is exactly `数据同步助手`.
 - The outer conversation page does not scroll; messages and an overlong task rail scroll internally.
+- The desktop task rail is top-aligned and no taller than `min(50dvh, 440px)`.
 - External-sync fieldsets retain accessible names.
 
 ---
@@ -87,6 +88,13 @@ Keep the existing button props, disabled state, title, and click handler unchang
 
 .conversation-messages {
   min-height: 0;
+  overflow-y: auto;
+}
+
+.conversation-workspace > .task-status-rail {
+  align-self: start;
+  height: auto;
+  max-height: min(50dvh, 440px);
   overflow-y: auto;
 }
 
@@ -223,4 +231,3 @@ change; no API or state behavior changes.
 git add docs frontend
 git commit -m "fix: refine conversation and sync form layout"
 ```
-
