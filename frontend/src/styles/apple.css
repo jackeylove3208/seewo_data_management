@@ -230,6 +230,11 @@ select {
   box-shadow: 0 2px 10px rgb(15 23 42 / 4%);
 }
 
+.apple-page .task-list > .task-list-heading {
+  margin: 0;
+  padding: 18px 20px 14px;
+}
+
 .apple-page .section-title-row h2,
 .apple-page .section-title-row span,
 .apple-page .section-title-row p {
@@ -880,6 +885,18 @@ select {
   background: var(--codex-panel-subtle);
 }
 
+.apple-page .draft-field.sync-setting-card,
+.apple-page .draft-fieldset.sync-setting-card {
+  border-color: var(--codex-border);
+  background: var(--codex-panel-subtle);
+}
+
+.apple-page .sync-setting-card select {
+  color: var(--codex-ink);
+  border-color: var(--codex-border-strong);
+  background: var(--codex-panel);
+}
+
 .apple-page .sync-attachment:hover {
   border-color: #a8bff1;
   background: #f5f8ff;
@@ -1260,6 +1277,13 @@ select {
 
   .conversation-reset-button span {
     display: none;
+  }
+
+  .apple-page .task-list > .task-list-heading {
+    align-items: flex-start;
+    padding: 16px;
+    flex-direction: column;
+    gap: 4px;
   }
 }
 

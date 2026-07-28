@@ -27,6 +27,15 @@ describe("task history", () => {
     expect(screen.getByText("/tasks/new")).toBeInTheDocument();
   });
 
+  it("keeps the recent-task heading inside its padded card header", () => {
+    render(<MemoryRouter><TaskListPage /></MemoryRouter>);
+
+    expect(screen.getByText("最近任务").parentElement).toHaveClass(
+      "task-list-heading",
+    );
+    expect(screen.getByText("点击任意一行查看详情")).toBeInTheDocument();
+  });
+
   it("shows only real task rows and allows an eligible task to be deleted", () => {
     saveStoredTask({
       id: "real-task",

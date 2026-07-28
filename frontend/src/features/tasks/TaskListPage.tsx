@@ -68,7 +68,7 @@ export function TaskListPage() {
       </section>
 
       <section className="task-list" aria-label="历史任务">
-        <div className="section-title-row">
+        <div className="section-title-row task-list-heading">
           <h2>最近任务</h2>
           <span>点击任意一行查看详情</span>
         </div>

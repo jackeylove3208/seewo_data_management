@@ -136,6 +136,7 @@ _ACTIVE_CONVERSATION_RUN_STATUSES = (
     "blocked_model_error",
     "terminating",
 )
+_TERMINAL_CONVERSATION_RUN_STATUSES = ("completed", "terminated", "failed")
 _CONVERSATION_MESSAGE_TOKEN_KEY = "_message_in_flight"
 _CONVERSATION_MESSAGE_LEASE_DURATION = timedelta(minutes=15)
 
@@ -171,6 +172,10 @@ def _message_claim_is_active(context: Mapping[str, Any]) -> bool:
     return datetime.now(UTC) - claimed_at_time.astimezone(UTC) < (
         _CONVERSATION_MESSAGE_LEASE_DURATION
     )
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 _GRAPH_STAGE_BY_NODE = {
     "inspect_sources": "data_ingestion",
@@ -408,6 +413,16 @@ async def get_current_agent_conversation(
     latest_run_is_active = (
         run is not None and run.status in _ACTIVE_CONVERSATION_RUN_STATUSES
     )
+    terminal_run_superseded = bool(
+        run is not None
+        and run.status in _TERMINAL_CONVERSATION_RUN_STATUSES
+        and any(
+            message.role == "user"
+            and _as_utc(message.created_at) > _as_utc(run.updated_at)
+            for message in messages
+        )
+    )
+    visible_run = None if terminal_run_superseded else run
     can_confirm = (
         not latest_run_is_active
         and not _message_claim_is_active(conversation.context)
@@ -432,8 +447,11 @@ async def get_current_agent_conversation(
             entity_types=intent.entity_types,
         )
     task = (
-        await _task_response(AgentTaskService(session, operator=operator), run.task_id)
-        if run is not None
+        await _task_response(
+            AgentTaskService(session, operator=operator),
+            visible_run.task_id,
+        )
+        if visible_run is not None
         else None
     )
     return AgentConversationCurrentResponse(

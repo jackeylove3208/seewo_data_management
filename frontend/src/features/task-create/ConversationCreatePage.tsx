@@ -3,7 +3,6 @@ import {
   ArrowUp,
   Bot,
   MessageSquarePlus,
-  MessageSquareText,
   UserRound,
 } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
@@ -366,6 +365,9 @@ export function ConversationCreatePage({
         }]);
         return;
       }
+      if (task && terminalTaskStatuses.has(task.status)) {
+        setTask(undefined);
+      }
       setConfirmation(undefined);
       const response = await backendApi.sendMessage(
         conversationId ?? await createConversation(),
@@ -700,12 +702,7 @@ export function ConversationCreatePage({
 
   return (
     <main className="page-shell conversation-create-page apple-page">
-      <header className="conversation-page-heading">
-        <span className="page-heading-mark"><MessageSquareText size={20} /></span>
-        <div>
-          <h1>新建对话</h1>
-          <p>当前学校 · 智能数据同步助手</p>
-        </div>
+      <div className="conversation-page-actions">
         <button
           className={`conversation-reset-button${contextLimitReached ? " is-emphasized" : ""}`}
           type="button"
@@ -720,7 +717,7 @@ export function ConversationCreatePage({
           <MessageSquarePlus size={16} />
           <span>开启新对话</span>
         </button>
-      </header>
+      </div>
 
       {newConversationError && (
         <Alert
