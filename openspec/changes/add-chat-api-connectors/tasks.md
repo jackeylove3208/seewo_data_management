@@ -55,6 +55,6 @@
 
 - [x] 8.1 Verify AgentInputRecord to identity claim, work item, AI batch, finding, risk, and plan flow
 - [x] 8.2 Verify MySQL preflight version drift, idempotent SQL execution, write verification, and reporting
-- [ ] 8.3 Add clean PostgreSQL migration smoke coverage for all additive tables
-- [ ] 8.4 Run backend pytest, ruff, mypy, frontend tests, lint, typecheck, build, and strict OpenSpec validation
+- [x] 8.3 Add clean PostgreSQL migration smoke coverage for all additive tables
+- [x] 8.4 Run backend pytest, ruff, mypy, frontend tests, lint, typecheck, build, and strict OpenSpec validation
 - [x] 8.5 Document safe provider configuration, local synthetic testing, and rollout/rollback commands

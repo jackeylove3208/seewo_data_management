@@ -175,7 +175,7 @@ Run only synthetic connector tests during development:
 cd backend
 .venv/bin/pytest tests/contract/test_organization_api_adapters.py \
   tests/integration/api/test_api_connectors.py \
-  tests/integration/api_connectors/test_materializer.py \
+  tests/integration/api_connectors/test_api_authority_materializer.py \
   tests/integration/agent_runtime/test_api_task_binding.py \
   tests/e2e/test_agent_graph_lifecycle.py -q
 ```

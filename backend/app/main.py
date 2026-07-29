@@ -5,13 +5,10 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI
 
+from app.api.routes import api_connectors
 from app.api.routes.agent import router as agent_router
 from app.api.routes.analyses import router as analysis_router
 from app.api.routes.analysis_jobs import router as analysis_job_router
-from app.api.routes.api_connectors import (
-    external_identity_router,
-    router as api_connector_router,
-)
 from app.api.routes.differences import router as difference_router
 from app.api.routes.execution_batches import router as execution_batch_router
 from app.api.routes.execution_records import router as execution_record_router
@@ -68,8 +65,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title=configured.app_name, version="0.1.0", lifespan=lifespan)
     app.include_router(health_router, prefix="/health", tags=["health"])
     app.include_router(agent_router)
-    app.include_router(api_connector_router)
-    app.include_router(external_identity_router)
+    app.include_router(api_connectors.router)
+    app.include_router(api_connectors.external_identity_router)
     app.include_router(analysis_router)
     app.include_router(analysis_job_router)
     app.include_router(difference_router)
