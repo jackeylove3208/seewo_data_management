@@ -88,7 +88,7 @@ async def _drop_migration_test_database(url: URL) -> None:
 
 async def _migration_test_schema_state(
     url: URL,
-) -> tuple[set[str], set[str], set[str], str, int]:
+) -> tuple[set[str], set[str], set[str], str, int, int]:
     engine = create_async_engine(url.set(drivername="postgresql+asyncpg"))
     try:
         async with engine.connect() as connection:
@@ -124,12 +124,22 @@ async def _migration_test_schema_state(
                 )
             )
             assert checkpoint_hash_length is not None
+            source_file_storage_name_length = await connection.scalar(
+                text(
+                    "SELECT character_maximum_length "
+                    "FROM information_schema.columns "
+                    "WHERE table_name = 'source_files' "
+                    "AND column_name = 'storage_name'"
+                )
+            )
+            assert source_file_storage_name_length is not None
             return (
                 versions,
                 extensions,
                 tables,
                 agent_analysis_trigger_function,
                 checkpoint_hash_length,
+                source_file_storage_name_length,
             )
     finally:
         await engine.dispose()
@@ -173,6 +183,7 @@ def test_clean_postgresql_migration_reaches_head(monkeypatch: pytest.MonkeyPatch
             tables,
             trigger_function,
             checkpoint_hash_length,
+            source_file_storage_name_length,
         ) = asyncio.run(
             _migration_test_schema_state(url)
         )
@@ -181,6 +192,7 @@ def test_clean_postgresql_migration_reaches_head(monkeypatch: pytest.MonkeyPatch
         assert "app.task_deletion" in trigger_function
         assert "TG_OP = 'DELETE'" in trigger_function
         assert checkpoint_hash_length == 71
+        assert source_file_storage_name_length == 128
         assert {
             "agent_graph_runs",
             "agent_graph_candidate_sets",
@@ -531,6 +543,13 @@ def test_initial_migration_creates_ingestion_tables(tmp_path: Path) -> None:
         )
     }
     assert checkpoint_columns["input_hash"]["type"].length == 71
+    source_file_columns = {
+        column["name"]: column
+        for column in inspect(create_engine(f"sqlite:///{database_path}")).get_columns(
+            "source_files"
+        )
+    }
+    assert source_file_columns["storage_name"]["type"].length == 128
 
 
 def test_durable_analysis_work_items_include_created_at(tmp_path: Path) -> None:

@@ -29,7 +29,7 @@ class SourceFile(Base, TimestampMixin):
     )
     source_role: Mapped[str] = mapped_column(String(32))
     original_name: Mapped[str] = mapped_column(String(255))
-    storage_name: Mapped[str] = mapped_column(String(80), unique=True)
+    storage_name: Mapped[str] = mapped_column(String(128), unique=True)
     storage_path: Mapped[str] = mapped_column(String(1024))
     managed_storage: Mapped[bool] = mapped_column(
         Boolean,
