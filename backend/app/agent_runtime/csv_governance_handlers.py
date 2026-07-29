@@ -49,6 +49,8 @@ from app.models.agent_runtime import AgentRunRecord
 from app.models.executions import TargetVersionRecord
 from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import Snapshot, SourceFile
+from app.normalization.identifiers import normalize_identifier
+from app.normalization.text import normalize_null
 from app.reconciliation.agent_identity import ordinary_field_differences
 from app.repositories.agent_governance import AgentGovernanceRepository
 from app.repositories.executions import ExecutionRepository
@@ -859,6 +861,7 @@ async def _finding_inputs(
             raw_target_values = raw_target_rows.get(target_input.stable_locator)
             if raw_target_values is None:
                 raise ValueError("field difference target row is missing")
+            _require_target_identity(target_input, raw_target_values)
             before, after = _changed_values(
                 target_input,
                 authority,
@@ -869,10 +872,10 @@ async def _finding_inputs(
             after = _record_values(subject)
             after["source_id"] = subject.number or subject.email or str(subject.id)
         elif work.kind in {"target_extra", "target_duplicate"}:
-            before = raw_target_rows.get(
-                subject.stable_locator,
-                _record_values(subject),
-            )
+            before = raw_target_rows.get(subject.stable_locator)
+            if before is None:
+                raise ValueError("target governance row is missing")
+            _require_target_identity(subject, before)
             target_identifier = subject.stable_locator
         dependencies = frozenset(
             await session.scalars(
@@ -911,6 +914,40 @@ def _record_values(record: AgentInputRecord) -> dict[str, object]:
     if record.entity_kind == "student":
         values["class_name"] = record.class_name
     return values
+
+
+def _require_target_identity(
+    subject: AgentInputRecord,
+    raw_target_values: Mapping[str, object],
+) -> None:
+    def raw_text(field: str) -> str | None:
+        value = raw_target_values.get(field)
+        return str(value) if value is not None else None
+
+    comparisons = {
+        "category": (
+            normalize_null(subject.category),
+            normalize_null(raw_text("category")),
+        ),
+        "name": (
+            normalize_null(subject.name),
+            normalize_null(raw_text("name")),
+        ),
+        "number": (
+            normalize_identifier(subject.number),
+            normalize_identifier(raw_text("number")),
+        ),
+    }
+    mismatches = [
+        field
+        for field, (expected, actual) in comparisons.items()
+        if expected is not None and actual != expected
+    ]
+    if mismatches:
+        raise ValueError(
+            "target stable locator resolved to a different entity: "
+            + ", ".join(mismatches)
+        )
 
 
 def _changed_values(
