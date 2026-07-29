@@ -55,3 +55,61 @@ def test_rejects_unrecognizable_csv_schema(tmp_path: Path) -> None:
             path=path, task_id=uuid4(), run_id=uuid4(), snapshot_id=uuid4(), tenant_id="school-1",
             source_role=AgentSourceRole.TARGET, selected_entities=frozenset(AgentEntityKind),
         )
+
+
+def test_target_uses_persisted_id_as_stable_locator(tmp_path: Path) -> None:
+    path = tmp_path / "target.csv"
+    path.write_text(
+        "id,category,name,number,phone,email\n"
+        "csv:37,teacher,测试教师,T-037,13800138000,t37@example.test\n",
+        encoding="utf-8",
+    )
+
+    outcome = AgentCsvIngestionAdapter().inspect_csv(
+        path=path,
+        task_id=uuid4(),
+        run_id=uuid4(),
+        snapshot_id=uuid4(),
+        tenant_id="school-1",
+        source_role=AgentSourceRole.TARGET,
+        selected_entities=frozenset({AgentEntityKind.TEACHER}),
+    )
+
+    assert outcome.records[0].stable_locator == "csv:37"
+    assert outcome.records[0].number == "T-037"
+
+
+@pytest.mark.parametrize(
+    ("rows", "error"),
+    [
+        (
+            "id,category,name,number\n"
+            ",teacher,甲,T-1\n",
+            "non-empty stable id",
+        ),
+        (
+            "id,category,name,number\n"
+            "same,teacher,甲,T-1\n"
+            "same,teacher,乙,T-2\n",
+            "unique stable row identifiers",
+        ),
+    ],
+)
+def test_target_rejects_invalid_persisted_ids(
+    tmp_path: Path,
+    rows: str,
+    error: str,
+) -> None:
+    path = tmp_path / "target.csv"
+    path.write_text(rows, encoding="utf-8")
+
+    with pytest.raises(AgentContractError, match=error):
+        AgentCsvIngestionAdapter().inspect_csv(
+            path=path,
+            task_id=uuid4(),
+            run_id=uuid4(),
+            snapshot_id=uuid4(),
+            tenant_id="school-1",
+            source_role=AgentSourceRole.TARGET,
+            selected_entities=frozenset(AgentEntityKind),
+        )

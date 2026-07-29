@@ -55,6 +55,12 @@ class AgentContractMapper:
                 for alias in aliases
                 for actual in actual_by_normalized.get(alias.casefold(), ())
             ]
+            if canonical == "number" and len(matches) > 1:
+                explicit_number_matches = [
+                    actual for actual in matches if actual.strip().casefold() != "id"
+                ]
+                if len(explicit_number_matches) == 1:
+                    matches = explicit_number_matches
             if len(matches) > 1:
                 raise AgentContractError(
                     f"ambiguous agent CSV schema: {canonical} has multiple columns"

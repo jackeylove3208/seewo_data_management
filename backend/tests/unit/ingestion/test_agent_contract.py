@@ -140,3 +140,9 @@ def test_deterministic_header_mapping_rejects_two_columns_for_one_contract_field
 
     with pytest.raises(AgentContractError, match="ambiguous"):
         mapper.resolve_header_mapping(("category", "类别", "number"))
+
+
+def test_number_header_wins_over_internal_id_column() -> None:
+    mapping = AgentContractMapper().resolve_header_mapping(("category", "number", "id"))
+
+    assert mapping["number"] == "number"

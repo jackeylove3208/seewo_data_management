@@ -16,6 +16,8 @@ from app.governance.agent_governance import (
     AgentGovernanceOperation,
     AgentOperation,
 )
+from app.ingestion.agent_csv_adapter import AgentCsvIngestionAdapter
+from app.schemas.agent_ingestion import AgentEntityKind, AgentSourceRole
 from app.schemas.canonical_entities import EntityType
 from app.schemas.executions import (
     GovernanceOperation,
@@ -92,6 +94,71 @@ def test_read_target_rows_preserves_raw_values_under_stable_locators(
 
     assert rows["csv:2"]["category"] == "教师"
     assert rows["csv:2"]["phone"] == "+86 13800138000"
+
+
+@pytest.mark.asyncio
+async def test_generated_locator_survives_an_earlier_row_deletion(
+    tmp_path: Path,
+) -> None:
+    original = tmp_path / "target.csv"
+    original.write_text(
+        "category,name,number,phone,email\n"
+        "teacher,甲,T-1,13800138001,t1@example.test\n"
+        "teacher,乙,T-2,13800138002,t2@example.test\n",
+        encoding="utf-8",
+    )
+    first_versioner = CsvTargetVersioner(
+        repository=VersionRepositorySpy(),
+        output_root=tmp_path / "first",
+    )
+    child = await first_versioner.derive(
+        parent_version(original),
+        (
+            operation(
+                OperationType.DISABLE,
+                target="csv:2",
+                before={"number": "T-1"},
+                after={},
+            ).model_copy(
+                update={
+                    "compensation_for": uuid4(),
+                    "restore_absence": True,
+                }
+            ),
+        ),
+        batch_id=uuid4(),
+    )
+
+    outcome = AgentCsvIngestionAdapter().inspect_csv(
+        path=Path(child.storage_path),
+        task_id=uuid4(),
+        run_id=uuid4(),
+        snapshot_id=uuid4(),
+        tenant_id="school-1",
+        source_role=AgentSourceRole.TARGET,
+        selected_entities=frozenset({AgentEntityKind.TEACHER}),
+    )
+
+    assert outcome.records[0].stable_locator == "csv:3"
+
+    second_versioner = CsvTargetVersioner(
+        repository=VersionRepositorySpy(),
+        output_root=tmp_path / "second",
+    )
+    updated = await second_versioner.derive(
+        child,
+        (
+            operation(
+                OperationType.UPDATE,
+                target="csv:3",
+                before={"name": "乙"},
+                after={"name": "乙老师"},
+            ),
+        ),
+        batch_id=uuid4(),
+    )
+
+    assert read_rows(Path(updated.storage_path))[0]["name"] == "乙老师"
 
 
 @pytest.mark.asyncio
