@@ -84,6 +84,7 @@ from app.ai.skills.contracts import (
     SourceInspectionInput,
     SourceInspectionResult,
 )
+from app.api_connectors.materializer import ApiAuthorityMaterializer, ApiSourceFailure
 from app.connectors.configured import (
     ConfiguredApiConnector,
     ConnectorConflictError,
@@ -109,6 +110,7 @@ from app.models.agent_analysis import (
     AgentWorkItemRecord,
 )
 from app.models.agent_graph import AgentEvidenceManifestRecord, AgentHumanGateRecord
+from app.models.api_connectors import ApiAuthoritySourceRecord
 from app.models.executions import TargetVersionRecord
 from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import Snapshot, SourceFile
@@ -136,6 +138,7 @@ class ProductionGraphActionExecutor:
         settings: Settings | None = None,
         database_connectors: DatabaseConnectorResolver | None = None,
         remote_materializer: RemoteSourceMaterializer | None = None,
+        api_materializer: ApiAuthorityMaterializer | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._provider = provider
@@ -154,6 +157,7 @@ class ProductionGraphActionExecutor:
         self._remote_materializer = remote_materializer or (
             RemoteSourceMaterializer(settings) if settings is not None else None
         )
+        self._api_materializer = api_materializer
         self._database_connectors = database_connectors or (
             ConfiguredDatabaseConnectorRuntime(settings)
             if settings is not None and settings.agent_graph_sql_execution_enabled
@@ -177,6 +181,8 @@ class ProductionGraphActionExecutor:
     ) -> GraphActionOutcome:
         action_kind = action.graph_action_kind or action.action_id
         if action_kind == "materialize_remote_authority":
+            if _only(action.resource_ids).startswith("api-source:"):
+                return await self._materialize_api_authority(context, action)
             return await self._materialize_remote_authority(context, action)
         if action_kind in {"inspect_authority", "inspect_target"}:
             return await self._inspect_source(context, action)
@@ -314,6 +320,104 @@ class ProductionGraphActionExecutor:
                             failed,
                             safe_problem_code=error.code,
                         )
+            raise
+        return GraphActionOutcome(
+            action_id=action.action_id,
+            evidence_refs=(expected_evidence,),
+        )
+
+    async def _materialize_api_authority(
+        self,
+        context: GraphWorkContext,
+        action: AllowedActionV1,
+    ) -> GraphActionOutcome:
+        if context.graph_version != "agent-sync-graph-v2":
+            raise GraphGuardRejected("api_materialization_requires_sync_graph_v2")
+        if context.ingestion_contract_version != "source-ingestion-v3":
+            raise GraphGuardRejected("api_materialization_requires_ingestion_v3")
+        if context.current_node != "materialize_sources":
+            raise GraphGuardRejected("api_materialization_outside_materialize_node")
+        if self._api_materializer is None:
+            raise RuntimeError("API authority materializer is not configured")
+        resource_id = _only(action.resource_ids)
+        prefix = "api-source:"
+        if not resource_id.startswith(prefix):
+            raise GraphGuardRejected("api_materialization_resource_invalid")
+        try:
+            api_source_id = UUID(resource_id.removeprefix(prefix))
+        except ValueError as error:
+            raise GraphGuardRejected("api_materialization_resource_invalid") from error
+        expected_evidence = f"{resource_id}:materialized"
+        if action.required_evidence != (expected_evidence,):
+            raise GraphGuardRejected("api_materialization_evidence_invalid")
+        try:
+            async with self._session_factory() as session:
+                async with session.begin():
+                    source = await self._api_materializer.materialize(
+                        session,
+                        task_id=context.task_id,
+                        api_source_id=api_source_id,
+                    )
+                    record = await session.scalar(
+                        select(ApiAuthoritySourceRecord).where(
+                            ApiAuthoritySourceRecord.id == api_source_id,
+                            ApiAuthoritySourceRecord.task_id == context.task_id,
+                            ApiAuthoritySourceRecord.tenant_id == context.tenant_id,
+                        )
+                    )
+                    if (
+                        record is None
+                        or record.state != "ready"
+                        or record.source_file_id != source.id
+                    ):
+                        raise GraphGuardRejected(
+                            "api_materialization_binding_changed"
+                        )
+                    payload = {
+                        "resource_id": resource_id,
+                        "source_file_id": str(source.id),
+                        "snapshot_id": str(record.snapshot_id),
+                        "content_sha256": source.sha256,
+                        "size_bytes": source.size_bytes,
+                        "record_count": record.record_count,
+                        "page_count": record.page_count,
+                        "safe_problem_code": record.safe_problem_code,
+                    }
+                    await AgentRuntimeRepository(session).save_checkpoint(
+                        context.run_id,
+                        phase=AgentPhase.INGEST_AND_NORMALIZE,
+                        checkpoint_key="graph-api-materialization-v1",
+                        input_hash=_hash(
+                            {
+                                "action": action.action_id,
+                                "resource_id": resource_id,
+                            }
+                        ),
+                        payload=payload,
+                    )
+                    await self._record_deterministic_invocation(
+                        session,
+                        context=context,
+                        action=action,
+                        output=payload,
+                    )
+        except ApiSourceFailure as error:
+            async with self._session_factory() as session:
+                async with session.begin():
+                    failed = await session.scalar(
+                        select(ApiAuthoritySourceRecord)
+                        .where(
+                            ApiAuthoritySourceRecord.id == api_source_id,
+                            ApiAuthoritySourceRecord.task_id == context.task_id,
+                            ApiAuthoritySourceRecord.tenant_id == context.tenant_id,
+                        )
+                        .with_for_update()
+                    )
+                    if failed is not None:
+                        failed.state = "failed"
+                        failed.safe_problem_code = error.code
+                        failed.source_file_id = None
+                        failed.snapshot_id = None
             raise
         return GraphActionOutcome(
             action_id=action.action_id,

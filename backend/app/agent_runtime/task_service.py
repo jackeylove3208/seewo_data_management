@@ -10,10 +10,13 @@ from app.agent_reporting.rollback_cycles import target_data_source_from_target
 from app.agent_runtime.observability import agent_observability
 from app.agent_runtime.repository import AgentRuntimeRepository, SchoolLockConflict
 from app.agent_runtime.service import AgentSupervisorService
+from app.api_connectors.contracts import ProviderManifest
+from app.api_connectors.registry import ProviderRegistry
 from app.core.config import Settings
 from app.core.security import OperatorContext
 from app.local_sources.service import LocalSourceService
 from app.models.agent_runtime import AgentRunRecord, SchoolTaskLockRecord
+from app.models.api_connectors import ApiAuthoritySourceRecord, ApiConnectionRecord
 from app.models.reconciliation import ReconciliationTask
 from app.models.remote_sources import RemoteSourceRecord
 from app.models.reporting import AgentReportRecord, AgentRollbackCycleRecord
@@ -47,10 +50,12 @@ class AgentTaskService:
         *,
         operator: OperatorContext,
         settings: Settings | None = None,
+        provider_registry: ProviderRegistry | None = None,
     ) -> None:
         self.session = session
         self.operator = operator
         self.settings = settings
+        self.provider_registry = provider_registry
         self.runtime = AgentRuntimeRepository(session)
 
     async def create(
@@ -62,6 +67,12 @@ class AgentTaskService:
         accept_current_target_baseline: bool = False,
     ) -> tuple[ReconciliationTask, AgentRunRecord]:
         self._validate_connector_runtime(intent, conversation_id=conversation_id)
+        api_connection: ApiConnectionRecord | None = None
+        api_manifest: ProviderManifest | None = None
+        if intent.source.kind == "api" and intent.target.kind == "database":
+            api_connection, api_manifest = await self._load_api_authority_connection(
+                intent
+            )
         payload = intent.model_dump(mode="json")
         request_hash = _hash(
             {
@@ -160,6 +171,16 @@ class AgentTaskService:
                 source_configuration_id=intent.source.configuration_id,
                 target_configuration_id=intent.target.configuration_id,
             )
+        elif intent.source.kind == "api" and intent.target.kind == "database":
+            assert api_connection is not None
+            assert api_manifest is not None
+            assert intent.target.configuration_id is not None
+            await self._bind_api_database_pair(
+                task,
+                connection=api_connection,
+                manifest=api_manifest,
+                target_configuration_id=intent.target.configuration_id,
+            )
         run = await AgentSupervisorService(
             self.session,
             operator=self.operator,
@@ -250,6 +271,9 @@ class AgentTaskService:
         if source_kind == "database" and target_kind == "database":
             self._validate_database_pair(intent)
             return
+        if source_kind == "api" and target_kind == "database":
+            self._validate_api_database_runtime(intent)
+            return
         agent_observability.observe(
             "connector_failed",
             connector_kind=f"{source_kind}+{target_kind}",
@@ -257,8 +281,94 @@ class AgentTaskService:
             error_code="unsupported_or_mixed_connector_pair",
         )
         raise AgentConnectorCapabilityFailure(
-            "Agent task requires CSV-to-CSV or SQL-to-SQL sources"
+            "Agent task requires a supported authoritative and target connector pair"
         )
+
+    def _validate_api_database_runtime(self, intent: AgentTaskIntent) -> None:
+        if (
+            self.settings is None
+            or self.provider_registry is None
+            or not self.settings.new_agent_api_connector_enabled
+            or not self.settings.agent_graph_enabled
+            or not self.settings.source_ingestion_v3_enabled
+            or not self.settings.agent_graph_sql_execution_enabled
+        ):
+            raise AgentConnectorCapabilityFailure(
+                "API authority graph ingestion is disabled"
+            )
+        source_id = intent.source.configuration_id
+        target_id = intent.target.configuration_id
+        if source_id is None or target_id is None:
+            raise AgentConnectorCapabilityFailure(
+                "API authority and database target are required"
+            )
+        try:
+            UUID(source_id)
+        except ValueError as error:
+            raise AgentConnectorCapabilityFailure(
+                "API connection identifier is invalid"
+            ) from error
+        target = self.settings.database_connector_configurations.get(target_id)
+        if target is None:
+            raise AgentConnectorCapabilityFailure(
+                "SQL target connector is not configured by the server"
+            )
+        if target.source_role != "target" or target.dialect != "mysql":
+            raise AgentConnectorCapabilityFailure(
+                "API task target must be a writable MySQL connector"
+            )
+
+    async def _load_api_authority_connection(
+        self,
+        intent: AgentTaskIntent,
+    ) -> tuple[ApiConnectionRecord, ProviderManifest]:
+        assert intent.source.configuration_id is not None
+        assert self.provider_registry is not None
+        connection_id = UUID(intent.source.configuration_id)
+        connection = await self.session.scalar(
+            select(ApiConnectionRecord).where(
+                ApiConnectionRecord.id == connection_id,
+                ApiConnectionRecord.tenant_id == self.operator.tenant_id,
+            )
+        )
+        if connection is None:
+            raise AgentConnectorCapabilityFailure(
+                "API connection is unavailable for this tenant"
+            )
+        if connection.state != "active":
+            raise AgentConnectorCapabilityFailure("API connection is not active")
+        try:
+            manifest = self.provider_registry.manifest(connection.provider_id)
+        except KeyError as error:
+            raise AgentConnectorCapabilityFailure(
+                "API connection provider is unavailable"
+            ) from error
+        if (
+            connection.manifest_version != manifest.manifest_version
+            or connection.adapter_version != manifest.adapter_version
+        ):
+            raise AgentConnectorCapabilityFailure(
+                "API connection provider contract is stale"
+            )
+        selected_entities = tuple(sorted(item.value for item in intent.entity_types))
+        supported = {item.value for item in manifest.supported_entities}
+        if not set(selected_entities) <= supported:
+            raise AgentConnectorCapabilityFailure(
+                "API connection does not support the selected entity type"
+            )
+        if connection.visibility_summary.get("visible") is not True:
+            raise AgentConnectorCapabilityFailure("API connection visibility is empty")
+        for entity_kind in selected_entities:
+            if connection.capabilities.get(f"entity.{entity_kind}.read") is not True:
+                raise AgentConnectorCapabilityFailure(
+                    "API connection lacks a selected entity capability"
+                )
+            count = connection.visibility_summary.get(f"{entity_kind}_count")
+            if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+                raise AgentConnectorCapabilityFailure(
+                    "API connection has no visible selected entity records"
+                )
+        return connection, manifest
 
     async def _load_remote_source(
         self,
@@ -357,6 +467,68 @@ class AgentTaskService:
             (
                 _agent_snapshot(task.id, files[0], mapping_version="agent-sql-v2"),
                 _agent_snapshot(task.id, files[1], mapping_version="agent-sql-v2"),
+            )
+        )
+        await self.session.flush()
+
+    async def _bind_api_database_pair(
+        self,
+        task: ReconciliationTask,
+        *,
+        connection: ApiConnectionRecord,
+        manifest: ProviderManifest,
+        target_configuration_id: str,
+    ) -> None:
+        if self.settings is None:
+            raise ValueError("API Agent task requires server connector settings")
+        target = self.settings.database_connector_configurations[
+            target_configuration_id
+        ]
+        fingerprint = _hash(
+            {
+                "configuration_id": target_configuration_id,
+                "dialect": target.dialect,
+                "table_name": target.table_name,
+                "primary_key": target.primary_key,
+                "version_column": target.version_column,
+                "field_columns": target.field_columns,
+                "allowed_columns": target.allowed_columns,
+                "source_role": target.source_role,
+            }
+        )
+        target_file = SourceFile(
+            id=uuid4(),
+            task_id=task.id,
+            source_role=SourceRole.TARGET.value,
+            original_name=target_configuration_id,
+            storage_name=f"database-{uuid4().hex}",
+            storage_path=f"database://{target_configuration_id}",
+            managed_storage=False,
+            sha256=fingerprint,
+            size_bytes=1,
+            detected_encoding=None,
+        )
+        self.session.add(target_file)
+        await self.session.flush()
+        self.session.add(
+            _agent_snapshot(
+                task.id,
+                target_file,
+                mapping_version="agent-sql-v3",
+            )
+        )
+        selected_entities = sorted(task.entity_types)
+        self.session.add(
+            ApiAuthoritySourceRecord(
+                tenant_id=task.tenant_id,
+                task_id=task.id,
+                connection_id=connection.id,
+                selected_entities=selected_entities,
+                selection_hash=_hash(selected_entities),
+                state="registered",
+                manifest_version=manifest.manifest_version,
+                adapter_version=manifest.adapter_version,
+                projection_version=manifest.projection_version,
             )
         )
         await self.session.flush()

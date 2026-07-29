@@ -29,6 +29,7 @@ from app.models.agent_analysis import (
     AgentModelBatchItemRecord,
     AgentModelBatchRecord,
 )
+from app.models.api_connectors import ApiAuthoritySourceRecord
 from app.models.reconciliation import ReconciliationTask
 from app.models.remote_sources import RemoteSourceRecord
 from app.models.snapshots import Snapshot, SourceFile
@@ -437,6 +438,29 @@ class ProductionGraphCandidateProvider:
         if context.current_node == "inspect_sources":
             return await self._inspection_actions(session, context)
         if context.current_node == "materialize_sources":
+            if context.ingestion_contract_version == "source-ingestion-v3":
+                api_source_id = await session.scalar(
+                    select(ApiAuthoritySourceRecord.id).where(
+                        ApiAuthoritySourceRecord.task_id == context.task_id,
+                        ApiAuthoritySourceRecord.tenant_id == context.tenant_id,
+                        ApiAuthoritySourceRecord.state.in_(
+                            ("registered", "materializing", "ready", "failed")
+                        ),
+                    )
+                )
+                if api_source_id is None:
+                    raise LookupError("Task-bound API authority source is missing")
+                template = _template(context, "materialize_remote_authority")
+                return (
+                    template.model_copy(
+                        update={
+                            "resource_ids": (f"api-source:{api_source_id}",),
+                            "required_evidence": (
+                                f"api-source:{api_source_id}:materialized",
+                            ),
+                        }
+                    ),
+                )
             remote_source_id = await session.scalar(
                 select(RemoteSourceRecord.id).where(
                     RemoteSourceRecord.task_id == context.task_id,

@@ -98,6 +98,15 @@ def test_source_ingestion_v2_requires_agent_graph_runtime() -> None:
         )
 
 
+def test_source_ingestion_v3_requires_agent_graph_runtime() -> None:
+    with pytest.raises(ValueError, match="agent_graph_enabled"):
+        Settings(
+            new_agent_enabled=True,
+            source_ingestion_v3_enabled=True,
+            _env_file=None,
+        )
+
+
 def test_conversation_remote_csv_requires_versioned_graph_ingestion() -> None:
     with pytest.raises(ValueError, match="source_ingestion_v2_enabled"):
         Settings(
@@ -237,6 +246,52 @@ def test_sql_graph_accepts_read_only_postgresql_source_and_writable_mysql_target
     secret = settings.database_connector_credentials["secret://connectors/seewo-mysql"]
     assert isinstance(secret, SecretStr)
     assert "hidden" not in repr(settings)
+
+
+def test_ingestion_v3_sql_graph_accepts_api_authority_and_only_mysql_target() -> None:
+    settings = Settings(
+        new_agent_enabled=True,
+        new_agent_analysis_only=False,
+        new_agent_api_connector_enabled=True,
+        api_connector_secret_key=Fernet.generate_key().decode(),
+        agent_graph_enabled=True,
+        source_ingestion_v3_enabled=True,
+        agent_graph_sql_execution_enabled=True,
+        database_connector_configurations={
+            "seewo-mysql": {
+                "credential_reference": "secret://connectors/seewo-mysql",
+                "dialect": "mysql",
+                "table_name": "organization_people",
+                "primary_key": "id",
+                "version_column": "row_version",
+                "field_columns": {
+                    "category": "category",
+                    "name": "name",
+                    "number": "number",
+                    "class_name": "class_name",
+                    "phone": "phone",
+                    "email": "email",
+                },
+                "source_role": "target",
+                "capabilities": {
+                    "read": True,
+                    "paginated": True,
+                    "create": True,
+                    "update": True,
+                    "delete": True,
+                    "optimistic_version": True,
+                    "read_after_write": True,
+                },
+            }
+        },
+        database_connector_credentials={
+            "secret://connectors/seewo-mysql": "mysql+asyncmy://hidden"
+        },
+        _env_file=None,
+    )
+
+    assert settings.source_ingestion_v3_enabled is True
+    assert tuple(settings.database_connector_configurations) == ("seewo-mysql",)
 
 
 def test_sql_graph_allows_authority_mapping_to_be_resolved_but_requires_target_mapping() -> None:

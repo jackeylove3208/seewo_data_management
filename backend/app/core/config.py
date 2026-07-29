@@ -240,6 +240,8 @@ class Settings(BaseSettings):
             )
         if self.source_ingestion_v2_enabled and not self.agent_graph_enabled:
             raise ValueError("agent_graph_enabled is required for source_ingestion_v2_enabled")
+        if self.source_ingestion_v3_enabled and not self.agent_graph_enabled:
+            raise ValueError("agent_graph_enabled is required for source_ingestion_v3_enabled")
         if self.conversation_remote_csv_enabled and not self.source_ingestion_v2_enabled:
             raise ValueError(
                 "source_ingestion_v2_enabled is required for conversation remote CSV"
@@ -248,8 +250,12 @@ class Settings(BaseSettings):
             raise ValueError(
                 "agent_graph_enabled is required for agent_graph_sql_execution_enabled"
             )
-        if self.agent_graph_sql_execution_enabled and not self.source_ingestion_v2_enabled:
-            raise ValueError("source_ingestion_v2_enabled is required for SQL graph execution")
+        if self.agent_graph_sql_execution_enabled and not (
+            self.source_ingestion_v2_enabled or self.source_ingestion_v3_enabled
+        ):
+            raise ValueError(
+                "versioned source ingestion is required for SQL graph execution"
+            )
         if self.agent_graph_sql_execution_enabled:
             self._validate_sql_graph_connectors()
         if self.new_agent_analysis_only and self.agent_graph_csv_execution_enabled:
@@ -302,7 +308,9 @@ class Settings(BaseSettings):
                     "SQL graph target requires create, update, delete, "
                     "optimistic version, and read-after-write capabilities"
                 )
-        if authoritative_count == 0 or target_count == 0:
+        if target_count == 0 or (
+            authoritative_count == 0 and not self.source_ingestion_v3_enabled
+        ):
             raise ValueError("SQL graph execution requires authoritative and target connectors")
 
     @property

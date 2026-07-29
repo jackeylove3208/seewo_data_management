@@ -16,10 +16,10 @@
 ## 3. Graph v2 API materialization
 
 - [x] 3.1 Select agent-sync-graph-v2 for new API-authority tasks
-- [ ] 3.2 Bind api-source resources during API task creation
-- [ ] 3.3 Extend materialize_sources candidate generation and action dispatch for api-source resources
-- [ ] 3.4 Implement atomic paginated API JSONL capture with hashes, counts, versions, and idempotent replay
-- [ ] 3.5 Add incomplete-pagination, duplicate-ID, retry, tenant-binding, and no-secret materialization tests
+- [x] 3.2 Bind api-source resources during API task creation
+- [x] 3.3 Extend materialize_sources candidate generation and action dispatch for api-source resources
+- [x] 3.4 Implement atomic paginated API JSONL capture with hashes, counts, versions, and idempotent replay
+- [x] 3.5 Add incomplete-pagination, duplicate-ID, retry, tenant-binding, and no-secret materialization tests
 
 ## 4. Agent API ingestion
 

@@ -904,7 +904,12 @@ async def start_conversation_agent_task(
                 "start_confirmation_missing", "Conversation has no confirmed Agent intent"
             ),
         ) from error
-    service = AgentTaskService(session, operator=operator, settings=request.app.state.settings)
+    service = AgentTaskService(
+        session,
+        operator=operator,
+        settings=request.app.state.settings,
+        provider_registry=request.app.state.api_provider_registry,
+    )
     replayed_task = await session.scalar(
         select(ReconciliationTask)
         .join(AgentRunRecord, AgentRunRecord.task_id == ReconciliationTask.id)
@@ -1018,17 +1023,22 @@ async def start_manual_agent_task(
 ) -> AgentTaskResponse:
     _require_enabled(request)
     if (
-        body.source.kind in {"database", "remote_csv"}
-        or body.target.kind in {"database", "remote_csv"}
+        body.source.kind in {"api", "database", "remote_csv"}
+        or body.target.kind in {"api", "database", "remote_csv"}
     ):
         raise HTTPException(
             422,
             detail=_error(
                 "manual_csv_only",
-                "手动同步只支持 CSV；SQL 数据源请通过新建对话发起。",
+                "手动同步只支持 CSV；API 或 SQL 数据源请通过新建对话发起。",
             ),
         )
-    service = AgentTaskService(session, operator=operator, settings=request.app.state.settings)
+    service = AgentTaskService(
+        session,
+        operator=operator,
+        settings=request.app.state.settings,
+        provider_registry=request.app.state.api_provider_registry,
+    )
     try:
         task, _run = await service.create(
             body,
