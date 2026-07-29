@@ -3,6 +3,7 @@
 import hashlib
 import json
 from collections import defaultdict
+from collections.abc import Collection, Iterable
 from typing import Protocol
 from uuid import UUID
 
@@ -50,7 +51,10 @@ def identity_postings(record: AgentContractRecord) -> tuple[tuple[str, str], ...
 
 
 def ordinary_field_differences(
-    authority: AgentIdentityRecord, target: AgentIdentityRecord
+    authority: AgentIdentityRecord,
+    target: AgentIdentityRecord,
+    *,
+    unavailable_fields: Collection[str] = (),
 ) -> tuple[str, ...]:
     """Compare governed ordinary fields after identity correspondence is accepted."""
     fields = ["category", "name", "number"]
@@ -60,9 +64,37 @@ def ordinary_field_differences(
     return tuple(
         field
         for field in fields
+        if field not in unavailable_fields
         if _semantic_field_value(authority, field)
         != _semantic_field_value(target, field)
     )
+
+
+async def unavailable_fields_by_input(
+    session: AsyncSession,
+    input_ids: Iterable[UUID],
+) -> dict[UUID, frozenset[str]]:
+    selected_ids = tuple(set(input_ids))
+    if not selected_ids:
+        return {}
+    rows = await session.execute(
+        select(
+            AgentInputMarkRecord.input_record_id,
+            AgentInputMarkRecord.affected_fields,
+        ).where(
+            AgentInputMarkRecord.input_record_id.in_(selected_ids),
+            AgentInputMarkRecord.reason_code == "authority_field_unavailable",
+            AgentInputMarkRecord.inclusion_state == "included",
+        )
+    )
+    return {
+        input_id: frozenset(
+            str(field)
+            for field in affected_fields
+            if str(field) in {"category", "name", "number", "class_name", "phone", "email"}
+        )
+        for input_id, affected_fields in rows
+    }
 
 
 def _semantic_field_value(record: AgentIdentityRecord, field: str) -> object:
@@ -103,6 +135,10 @@ class AgentIdentityIndexBuilder:
             )
         )
         valid_authority = tuple(record for record in authority if record.id not in excluded_ids)
+        unavailable_by_id = await unavailable_fields_by_input(
+            self._session,
+            (record.id for record in valid_authority),
+        )
         await self._persist_postings(run, source, valid_authority)
         await self._persist_postings(run, target, targets)
         postings = tuple(
@@ -176,7 +212,11 @@ class AgentIdentityIndexBuilder:
                     run, source, target, target_record, "target_duplicate", (str(authority_id),)
                 )
                 continue
-            differences = ordinary_field_differences(authority_record, target_record)
+            differences = ordinary_field_differences(
+                authority_record,
+                target_record,
+                unavailable_fields=unavailable_by_id.get(authority_record.id, ()),
+            )
             kind = "field_difference" if differences else "correct"
             work = await self._persist_work(run, source, target, target_record, kind, differences)
             await self._repository.persist_identity_claim(
@@ -289,7 +329,15 @@ class AgentIdentityIndexBuilder:
                     )
                 )
                 if existing_claim is None:
-                    differences = ordinary_field_differences(authority, subject)
+                    unavailable_by_id = await unavailable_fields_by_input(
+                        self._session,
+                        (authority.id,),
+                    )
+                    differences = ordinary_field_differences(
+                        authority,
+                        subject,
+                        unavailable_fields=unavailable_by_id.get(authority.id, ()),
+                    )
                     resolution_kind = "field_difference" if differences else "correct"
                     primary = await self._persist_work(
                         run,

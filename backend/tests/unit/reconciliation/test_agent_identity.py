@@ -67,6 +67,24 @@ def test_category_aliases_do_not_create_a_false_field_difference() -> None:
     assert ordinary_field_differences(authority, target) == ()
 
 
+def test_provider_unavailable_fields_are_not_ordinary_differences() -> None:
+    authority = _record(
+        source_role=AgentSourceRole.AUTHORITATIVE,
+        number=None,
+        email=None,
+    )
+    target = _record(
+        number="S-TARGET",
+        email="target@example.test",
+    )
+
+    assert ordinary_field_differences(
+        authority,
+        target,
+        unavailable_fields={"number", "email"},
+    ) == ()
+
+
 def test_frozen_identity_candidate_masks_phone_and_email_before_persistence() -> None:
     candidate = agent_identity._masked_candidate(  # noqa: SLF001
         SimpleNamespace(

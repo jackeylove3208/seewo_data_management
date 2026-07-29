@@ -19,6 +19,7 @@ from app.agent_graph.contracts import (
     SingleActionReasonCode,
 )
 from app.agent_graph.worker import GraphCandidatePlan, GraphWorkContext
+from app.agent_runtime.source_bindings import resolve_source_bindings
 from app.agent_runtime.state_machine import AgentPhase
 from app.connectors.database_runtime import DatabaseConnectorResolver
 from app.ingestion.csv_reader import inspect_csv, read_csv_frame
@@ -26,6 +27,7 @@ from app.models.agent_analysis import (
     AgentClarificationRecord,
     AgentGovernanceOperationRecord,
     AgentGovernancePlanRecord,
+    AgentInputRecord,
     AgentModelBatchItemRecord,
     AgentModelBatchRecord,
 )
@@ -635,7 +637,10 @@ class ProductionGraphCandidateProvider:
         ):
             action_id = f"{action_kind}:source"
             if action_id not in completed:
-                if context.ingestion_contract_version == "source-ingestion-v2":
+                if context.ingestion_contract_version in {
+                    "source-ingestion-v2",
+                    "source-ingestion-v3",
+                }:
                     return (
                         _action(
                             action_id,
@@ -675,6 +680,85 @@ class ProductionGraphCandidateProvider:
         context: GraphWorkContext,
     ) -> tuple[AllowedActionV1, ...]:
         completed = set(await session.scalars(select_transition_action_ids(context.graph_run_id)))
+        if context.ingestion_contract_version == "source-ingestion-v3":
+            from app.agent_runtime.repository import AgentRuntimeRepository
+
+            task = await session.get(ReconciliationTask, context.task_id)
+            if task is None:
+                raise LookupError("Agent graph task is missing")
+            bindings = resolve_source_bindings(task)
+            runtime = AgentRuntimeRepository(session)
+            inspections = tuple(
+                [
+                    await runtime.get_checkpoint(
+                        context.run_id,
+                        phase=AgentPhase.INGEST_AND_NORMALIZE,
+                        checkpoint_key=f"graph-source-inspection:{binding.role}",
+                    )
+                    for binding in bindings
+                ]
+            )
+            if any(
+                checkpoint is None
+                or not checkpoint.payload.get("recognized", False)
+                for checkpoint in inspections
+            ):
+                return (
+                    _action(
+                        "validate_normalized_input",
+                        successor="validate_input_contract",
+                    ),
+                )
+            for binding in bindings:
+                mapping = await runtime.get_checkpoint(
+                    context.run_id,
+                    phase=AgentPhase.INGEST_AND_NORMALIZE,
+                    checkpoint_key=binding.mapping_checkpoint_key,
+                )
+                if mapping is None:
+                    return (
+                        _action(
+                            f"resolve_{binding.connector_kind}_{binding.role}_mapping",
+                            graph_action_kind="normalize_next_batch",
+                            successor="normalize_input_batches",
+                            kind="run_deterministic",
+                            resource_ids=(f"source:{binding.role}:mapping",),
+                            required_evidence=(
+                                f"mapping:{binding.connector_kind}:"
+                                f"{binding.role}:v3",
+                            ),
+                        ),
+                    )
+                if not mapping.payload.get("resolved", False):
+                    return (
+                        _action(
+                            "validate_normalized_input",
+                            successor="validate_input_contract",
+                        ),
+                    )
+            for binding in bindings:
+                normalization = await runtime.get_checkpoint(
+                    context.run_id,
+                    phase=AgentPhase.INGEST_AND_NORMALIZE,
+                    checkpoint_key=binding.normalization_checkpoint_key,
+                )
+                if normalization is None:
+                    return (
+                        _action(
+                            f"normalize_{binding.role}_full",
+                            graph_action_kind="normalize_next_batch",
+                            successor="normalize_input_batches",
+                            kind="run_deterministic",
+                            resource_ids=(f"source:{binding.role}:full",),
+                            required_evidence=(f"normalized:{binding.role}:full",),
+                        ),
+                    )
+            return (
+                _action(
+                    "validate_normalized_input",
+                    successor="validate_input_contract",
+                ),
+            )
         if context.ingestion_contract_version == "source-ingestion-v2":
             from app.agent_runtime.repository import AgentRuntimeRepository
 
@@ -830,6 +914,96 @@ class ProductionGraphCandidateProvider:
         from app.agent_runtime.repository import AgentRuntimeRepository
 
         runtime = AgentRuntimeRepository(session)
+        if context.ingestion_contract_version == "source-ingestion-v3":
+            task = await session.get(ReconciliationTask, context.task_id)
+            if task is None:
+                raise LookupError("Agent graph task is missing")
+            bindings = resolve_source_bindings(task)
+            inspections = tuple(
+                [
+                    await runtime.get_checkpoint(
+                        context.run_id,
+                        phase=AgentPhase.INGEST_AND_NORMALIZE,
+                        checkpoint_key=f"graph-source-inspection:{binding.role}",
+                    )
+                    for binding in bindings
+                ]
+            )
+            mappings = tuple(
+                [
+                    await runtime.get_checkpoint(
+                        context.run_id,
+                        phase=AgentPhase.INGEST_AND_NORMALIZE,
+                        checkpoint_key=binding.mapping_checkpoint_key,
+                    )
+                    for binding in bindings
+                ]
+            )
+            normalizations = tuple(
+                [
+                    await runtime.get_checkpoint(
+                        context.run_id,
+                        phase=AgentPhase.INGEST_AND_NORMALIZE,
+                        checkpoint_key=binding.normalization_checkpoint_key,
+                    )
+                    for binding in bindings
+                ]
+            )
+            input_counts = {
+                binding.role: int(
+                    (
+                        await session.scalar(
+                            select(func.count())
+                            .select_from(AgentInputRecord)
+                            .where(
+                                AgentInputRecord.run_id == context.run_id,
+                                AgentInputRecord.task_id == context.task_id,
+                                AgentInputRecord.tenant_id == context.tenant_id,
+                                AgentInputRecord.source_role == binding.role,
+                            )
+                        )
+                    )
+                    or 0
+                )
+                for binding in bindings
+            }
+            snapshot_roles = tuple(
+                await session.scalars(
+                    select(Snapshot.source_role)
+                    .where(Snapshot.task_id == context.task_id)
+                    .order_by(Snapshot.source_role)
+                )
+            )
+            abnormal = (
+                any(
+                    checkpoint is None
+                    or not checkpoint.payload.get("recognized", False)
+                    for checkpoint in inspections
+                )
+                or any(
+                    checkpoint is None
+                    or not checkpoint.payload.get("resolved", False)
+                    for checkpoint in mappings
+                )
+                or any(
+                    checkpoint is None
+                    or checkpoint.payload.get("record_count")
+                    != input_counts[binding.role]
+                    for binding, checkpoint in zip(
+                        bindings,
+                        normalizations,
+                        strict=True,
+                    )
+                )
+                or snapshot_roles != ("authoritative", "target")
+                or input_counts["authoritative"] <= 0
+            )
+            return (
+                _template(
+                    context,
+                    "report_abnormal_input" if abnormal else "build_identity_index",
+                ),
+            )
         if context.ingestion_contract_version == "source-ingestion-v2":
             source_mode = await _source_pair_mode(session, context.task_id)
             mapping = await runtime.get_checkpoint(
@@ -862,9 +1036,9 @@ class ProductionGraphCandidateProvider:
                     "report_abnormal_input" if abnormal else "build_identity_index",
                 ),
             )
-        inspections = []
+        legacy_inspections = []
         for role in ("authoritative", "target"):
-            inspections.append(
+            legacy_inspections.append(
                 await runtime.get_checkpoint(
                     context.run_id,
                     phase=AgentPhase.INGEST_AND_NORMALIZE,
@@ -873,7 +1047,7 @@ class ProductionGraphCandidateProvider:
             )
         abnormal = any(
             checkpoint is None or not checkpoint.payload.get("recognized", False)
-            for checkpoint in inspections
+            for checkpoint in legacy_inspections
         )
         return (
             _template(

@@ -51,7 +51,10 @@ from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import Snapshot, SourceFile
 from app.normalization.identifiers import normalize_identifier
 from app.normalization.text import normalize_null
-from app.reconciliation.agent_identity import ordinary_field_differences
+from app.reconciliation.agent_identity import (
+    ordinary_field_differences,
+    unavailable_fields_by_input,
+)
 from app.repositories.agent_governance import AgentGovernanceRepository
 from app.repositories.executions import ExecutionRepository
 
@@ -862,10 +865,17 @@ async def _finding_inputs(
             if raw_target_values is None:
                 raise ValueError("field difference target row is missing")
             _require_target_identity(target_input, raw_target_values)
+            unavailable_fields = (
+                await unavailable_fields_by_input(
+                    session,
+                    (authority.id,),
+                )
+            ).get(authority.id, frozenset())
             before, after = _changed_values(
                 target_input,
                 authority,
                 raw_target_values=raw_target_values,
+                unavailable_fields=unavailable_fields,
             )
             target_identifier = target_input.stable_locator
         elif work.kind == "target_missing":
@@ -955,10 +965,15 @@ def _changed_values(
     authority: AgentInputRecord,
     *,
     raw_target_values: Mapping[str, object] | None = None,
+    unavailable_fields: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, object], dict[str, object]]:
     target_values = _record_values(target)
     authority_values = _record_values(authority)
-    fields = ordinary_field_differences(authority, target)
+    fields = ordinary_field_differences(
+        authority,
+        target,
+        unavailable_fields=unavailable_fields,
+    )
     raw_values = raw_target_values or target_values
     return (
         {key: raw_values.get(key, target_values.get(key)) for key in fields},

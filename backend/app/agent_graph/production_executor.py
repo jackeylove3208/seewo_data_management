@@ -50,6 +50,7 @@ from app.agent_runtime.csv_rollback_handlers import (
 )
 from app.agent_runtime.local_publication import publish_local_target
 from app.agent_runtime.repository import AgentRuntimeRepository
+from app.agent_runtime.source_bindings import AgentSourceBinding, resolve_source_bindings
 from app.agent_runtime.sql_governance_handlers import SqlGovernanceExecutionHandler
 from app.agent_runtime.sql_rollback_handlers import SqlRollbackExecutionHandler
 from app.agent_runtime.state_machine import AgentPhase
@@ -96,6 +97,7 @@ from app.connectors.database_runtime import (
 )
 from app.core.config import Settings
 from app.core.security import OperatorContext
+from app.ingestion.agent_api_adapter import AgentApiIngestionAdapter, ApiArtifactBinding
 from app.ingestion.agent_contract import AgentContractError, AgentContractMapper
 from app.ingestion.agent_csv_adapter import AgentCsvIngestionAdapter
 from app.ingestion.agent_database_adapter import AgentDatabaseIngestionAdapter
@@ -110,7 +112,7 @@ from app.models.agent_analysis import (
     AgentWorkItemRecord,
 )
 from app.models.agent_graph import AgentEvidenceManifestRecord, AgentHumanGateRecord
-from app.models.api_connectors import ApiAuthoritySourceRecord
+from app.models.api_connectors import ApiAuthoritySourceRecord, ApiConnectionRecord
 from app.models.executions import TargetVersionRecord
 from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import Snapshot, SourceFile
@@ -429,6 +431,18 @@ class ProductionGraphActionExecutor:
         context: GraphWorkContext,
         action: AllowedActionV1,
     ) -> GraphActionOutcome:
+        if context.ingestion_contract_version == "source-ingestion-v3":
+            role = _source_role(_only(action.resource_ids))
+            binding = await self._source_binding(context.task_id, role)
+            if binding.connector_kind == "api":
+                return await self._inspect_api_source_v3(context, action, binding)
+            if binding.connector_kind == "database":
+                return await self._inspect_database_source_v3(
+                    context,
+                    action,
+                    binding,
+                )
+            raise GraphGuardRejected("ingestion_v3_connector_kind_unsupported")
         if context.ingestion_contract_version == "source-ingestion-v2":
             if await self._task_source_mode(context.task_id) == "database":
                 return await self._inspect_database_source_v2(context, action)
@@ -481,10 +495,127 @@ class ProductionGraphActionExecutor:
                 )
         return _outcome(action)
 
+    async def _inspect_api_source_v3(
+        self,
+        context: GraphWorkContext,
+        action: AllowedActionV1,
+        binding: AgentSourceBinding,
+    ) -> GraphActionOutcome:
+        if binding.role != "authoritative" or binding.configuration_id is None:
+            raise GraphGuardRejected("api_authority_binding_invalid")
+        try:
+            connection_id = UUID(binding.configuration_id)
+        except ValueError as error:
+            raise GraphGuardRejected("api_authority_binding_invalid") from error
+        async with self._session_factory() as session:
+            async with session.begin():
+                api_source = await session.scalar(
+                    select(ApiAuthoritySourceRecord).where(
+                        ApiAuthoritySourceRecord.task_id == context.task_id,
+                        ApiAuthoritySourceRecord.tenant_id == context.tenant_id,
+                        ApiAuthoritySourceRecord.connection_id == connection_id,
+                    )
+                )
+                connection = await session.scalar(
+                    select(ApiConnectionRecord).where(
+                        ApiConnectionRecord.id == connection_id,
+                        ApiConnectionRecord.tenant_id == context.tenant_id,
+                    )
+                )
+                snapshot, source = await _source_snapshot(
+                    session,
+                    task_id=context.task_id,
+                    role=binding.role,
+                )
+                if (
+                    api_source is None
+                    or connection is None
+                    or api_source.state != "ready"
+                    or api_source.source_file_id != source.id
+                    or api_source.snapshot_id != snapshot.id
+                    or api_source.content_sha256 != source.sha256
+                ):
+                    raise GraphGuardRejected("api_authority_materialization_incomplete")
+                capabilities = {
+                    str(key): value
+                    for key, value in connection.capabilities.items()
+                    if isinstance(value, bool)
+                }
+                payload = {
+                    "schema_version": "source-ingestion-v3",
+                    "mapping_version": api_source.projection_version,
+                    "connector_kind": "api",
+                    "provider_id": connection.provider_id,
+                    "recognized": True,
+                    "mapping_required": False,
+                    "content_sha256": source.sha256,
+                    "record_count": api_source.record_count,
+                    "safe_problem_codes": [],
+                    "model_calls": 0,
+                }
+                await AgentAnalysisRepository(session).persist_capability(
+                    run_id=context.run_id,
+                    task_id=context.task_id,
+                    tenant_id=context.tenant_id,
+                    source_role=binding.role,
+                    connector_kind="api",
+                    capabilities=capabilities,
+                )
+                await AgentRuntimeRepository(session).save_checkpoint(
+                    context.run_id,
+                    phase=AgentPhase.INGEST_AND_NORMALIZE,
+                    checkpoint_key=f"graph-source-inspection:{binding.role}",
+                    input_hash=_hash(
+                        {
+                            "api_source_id": str(api_source.id),
+                            "content_sha256": source.sha256,
+                            "projection_version": api_source.projection_version,
+                        }
+                    ),
+                    payload=payload,
+                )
+                await self._record_deterministic_invocation(
+                    session,
+                    context=context,
+                    action=action,
+                    output=payload,
+                )
+        return _outcome(action)
+
+    async def _inspect_database_source_v3(
+        self,
+        context: GraphWorkContext,
+        action: AllowedActionV1,
+        binding: AgentSourceBinding,
+    ) -> GraphActionOutcome:
+        if binding.connector_kind != "database":
+            raise GraphGuardRejected("database_target_binding_invalid")
+        return await self._inspect_database_source(
+            context,
+            action,
+            schema_version="source-ingestion-v3",
+            mapping_version="fixed-six-field-sql-mapping-v3",
+        )
+
     async def _inspect_database_source_v2(
         self,
         context: GraphWorkContext,
         action: AllowedActionV1,
+    ) -> GraphActionOutcome:
+        return await self._inspect_database_source(
+            context,
+            action,
+            schema_version="source-ingestion-v2",
+            mapping_version="fixed-six-field-sql-mapping-v2",
+        )
+
+    async def _inspect_database_source(
+        self,
+        context: GraphWorkContext,
+        action: AllowedActionV1,
+        *,
+        schema_version: str,
+        mapping_version: str,
     ) -> GraphActionOutcome:
         role = _source_role(_only(action.resource_ids))
         connector_id = await self._database_connector_id(context.task_id, role)
@@ -505,8 +636,8 @@ class ProductionGraphActionExecutor:
             problem_codes.append("database_schema_mapping_stale")
         mapping_required = bool(missing_contract_fields) and not problem_codes
         payload = {
-            "schema_version": "source-ingestion-v2",
-            "mapping_version": "fixed-six-field-sql-mapping-v2",
+            "schema_version": schema_version,
+            "mapping_version": mapping_version,
             "connector_kind": "database",
             "connector_id": connector_id,
             "dialect": configuration.dialect,
@@ -631,6 +762,37 @@ class ProductionGraphActionExecutor:
         context: GraphWorkContext,
         action: AllowedActionV1,
     ) -> GraphActionOutcome:
+        if context.ingestion_contract_version == "source-ingestion-v3":
+            resource_id = _only(action.resource_ids)
+            role = _source_role(resource_id)
+            binding = await self._source_binding(context.task_id, role)
+            if resource_id.endswith(":mapping"):
+                if binding.connector_kind == "api":
+                    return await self._resolve_api_mapping_v3(
+                        context,
+                        action,
+                        binding,
+                    )
+                if binding.connector_kind == "database":
+                    return await self._resolve_database_mapping_v3(
+                        context,
+                        action,
+                        binding,
+                    )
+            elif resource_id.endswith(":full"):
+                if binding.connector_kind == "api":
+                    return await self._normalize_api_source_v3(
+                        context,
+                        action,
+                        binding,
+                    )
+                if binding.connector_kind == "database":
+                    return await self._normalize_database_source_v3(
+                        context,
+                        action,
+                        binding,
+                    )
+            raise GraphGuardRejected("ingestion_v3_resource_invalid")
         if context.ingestion_contract_version == "source-ingestion-v2":
             if (
                 action.resource_ids
@@ -700,6 +862,322 @@ class ProductionGraphActionExecutor:
                     source_role=AgentSourceRole(role),
                     output=output,
                     resolve_phone_token=tools.resolve_phone_token,
+                )
+        return _outcome(action)
+
+    async def _resolve_api_mapping_v3(
+        self,
+        context: GraphWorkContext,
+        action: AllowedActionV1,
+        binding: AgentSourceBinding,
+    ) -> GraphActionOutcome:
+        async with self._session_factory() as session:
+            async with session.begin():
+                api_source, _connection, _snapshot, source = (
+                    await _api_artifact_materials(
+                        session,
+                        task_id=context.task_id,
+                        tenant_id=context.tenant_id,
+                        binding=binding,
+                    )
+                )
+                payload = {
+                    "schema_version": "source-ingestion-v3",
+                    "mapping_version": api_source.projection_version,
+                    "source_role": binding.role,
+                    "connector_kind": "api",
+                    "resolved": True,
+                    "fixed_fields": sorted(_fixed_contract_fields()),
+                    "content_sha256": source.sha256,
+                    "model_calls": 0,
+                }
+                await AgentRuntimeRepository(session).save_checkpoint(
+                    context.run_id,
+                    phase=AgentPhase.INGEST_AND_NORMALIZE,
+                    checkpoint_key=binding.mapping_checkpoint_key,
+                    input_hash=_hash(
+                        {
+                            "api_source_id": str(api_source.id),
+                            "content_sha256": source.sha256,
+                            "projection_version": api_source.projection_version,
+                        }
+                    ),
+                    payload=payload,
+                )
+                await self._record_deterministic_invocation(
+                    session,
+                    context=context,
+                    action=action,
+                    output=payload,
+                )
+        return _outcome(action)
+
+    async def _resolve_database_mapping_v3(
+        self,
+        context: GraphWorkContext,
+        action: AllowedActionV1,
+        binding: AgentSourceBinding,
+    ) -> GraphActionOutcome:
+        if binding.configuration_id is None:
+            raise GraphGuardRejected("database_target_binding_invalid")
+        connector = await self._database_connector(binding.configuration_id)
+        schema = await connector.discover_schema()
+        version = await connector.version()
+        configuration = connector.configuration
+        if not isinstance(configuration, DatabaseConnectorConfiguration):
+            raise TypeError("SQL task resolved a non-database connector")
+        if configuration.source_role != binding.role:
+            raise GraphGuardRejected("database_target_binding_changed")
+        fixed_fields = _fixed_contract_fields()
+        missing_contract_fields = fixed_fields.difference(
+            configuration.field_columns
+        )
+        missing_physical_fields = set(configuration.field_columns.values()).difference(
+            schema.fields
+        )
+        resolved = not missing_contract_fields and not missing_physical_fields
+        schema_fingerprint = _hash(
+            {
+                "schema": schema.model_dump(mode="json"),
+                "table": configuration.table_name,
+                "primary_key": configuration.primary_key,
+                "version_column": configuration.version_column,
+            }
+        )
+        payload = {
+            "schema_version": "source-ingestion-v3",
+            "mapping_version": "fixed-six-field-sql-mapping-v3",
+            "source_role": binding.role,
+            "connector_kind": "database",
+            "connector_id": binding.configuration_id,
+            "resolved": resolved,
+            "mapping": dict(configuration.field_columns) if resolved else {},
+            "schema_fingerprint": schema_fingerprint,
+            "source_version": version.value,
+            "safe_problem_codes": (
+                []
+                if resolved
+                else ["database_schema_mapping_stale"]
+            ),
+            "model_calls": 0,
+        }
+        async with self._session_factory() as session:
+            async with session.begin():
+                await AgentRuntimeRepository(session).save_checkpoint(
+                    context.run_id,
+                    phase=AgentPhase.INGEST_AND_NORMALIZE,
+                    checkpoint_key=binding.mapping_checkpoint_key,
+                    input_hash=_hash(
+                        {
+                            "connector_id": binding.configuration_id,
+                            "schema_fingerprint": schema_fingerprint,
+                            "source_version": version.value,
+                        }
+                    ),
+                    payload=payload,
+                )
+                await self._record_deterministic_invocation(
+                    session,
+                    context=context,
+                    action=action,
+                    output=payload,
+                )
+        return _outcome(action)
+
+    async def _normalize_api_source_v3(
+        self,
+        context: GraphWorkContext,
+        action: AllowedActionV1,
+        binding: AgentSourceBinding,
+    ) -> GraphActionOutcome:
+        async with self._session_factory() as session:
+            api_source, connection, snapshot, source = await _api_artifact_materials(
+                session,
+                task_id=context.task_id,
+                tenant_id=context.tenant_id,
+                binding=binding,
+            )
+            mapping = await AgentRuntimeRepository(session).get_checkpoint(
+                context.run_id,
+                phase=AgentPhase.INGEST_AND_NORMALIZE,
+                checkpoint_key=binding.mapping_checkpoint_key,
+            )
+            if mapping is None or not mapping.payload.get("resolved", False):
+                raise GraphGuardRejected("api_authority_mapping_unavailable")
+            artifact_binding = ApiArtifactBinding(
+                task_id=context.task_id,
+                tenant_id=context.tenant_id,
+                api_source_id=api_source.id,
+                connection_id=connection.id,
+                provider_id=connection.provider_id,
+                source_file_id=source.id,
+                snapshot_id=snapshot.id,
+                selection_hash=api_source.selection_hash,
+                selected_entities=_selected_agent_entities(
+                    api_source.selected_entities
+                ),
+                manifest_version=api_source.manifest_version,
+                adapter_version=api_source.adapter_version,
+                projection_version=api_source.projection_version,
+                content_sha256=source.sha256,
+                size_bytes=source.size_bytes,
+            )
+        outcome = await AgentApiIngestionAdapter().extract(
+            path=Path(source.storage_path),
+            run_id=context.run_id,
+            binding=artifact_binding,
+        )
+        async with self._session_factory() as session:
+            async with session.begin():
+                repository = AgentAnalysisRepository(session)
+                persisted = await repository.persist_inputs(outcome.records)
+                marks = _bind_api_input_marks(outcome.marks, persisted)
+                await repository.persist_marks(marks)
+                payload = {
+                    "schema_version": "source-ingestion-v3",
+                    "mapping_version": api_source.projection_version,
+                    "source_role": binding.role,
+                    "connector_kind": "api",
+                    "content_sha256": source.sha256,
+                    "record_count": len(persisted),
+                    "mark_count": len(marks),
+                    "model_calls": 0,
+                }
+                await AgentRuntimeRepository(session).save_checkpoint(
+                    context.run_id,
+                    phase=AgentPhase.INGEST_AND_NORMALIZE,
+                    checkpoint_key=binding.normalization_checkpoint_key,
+                    input_hash=_hash(
+                        {
+                            "api_source_id": str(api_source.id),
+                            "content_sha256": source.sha256,
+                            "selection_hash": api_source.selection_hash,
+                        }
+                    ),
+                    payload=payload,
+                )
+                await self._record_deterministic_invocation(
+                    session,
+                    context=context,
+                    action=action,
+                    output=payload,
+                )
+        return _outcome(action)
+
+    async def _normalize_database_source_v3(
+        self,
+        context: GraphWorkContext,
+        action: AllowedActionV1,
+        binding: AgentSourceBinding,
+    ) -> GraphActionOutcome:
+        if binding.configuration_id is None:
+            raise GraphGuardRejected("database_target_binding_invalid")
+        connector = await self._database_connector(binding.configuration_id)
+        async with self._session_factory() as session:
+            task = await session.get(ReconciliationTask, context.task_id)
+            if task is None:
+                raise LookupError("Agent graph task is missing")
+            mapping = await AgentRuntimeRepository(session).get_checkpoint(
+                context.run_id,
+                phase=AgentPhase.INGEST_AND_NORMALIZE,
+                checkpoint_key=binding.mapping_checkpoint_key,
+            )
+            if mapping is None or not mapping.payload.get("resolved", False):
+                raise GraphGuardRejected("database_target_mapping_unavailable")
+            frozen_mapping = mapping.payload.get("mapping")
+            expected_source_version = mapping.payload.get("source_version")
+            if not isinstance(frozen_mapping, dict) or not all(
+                isinstance(field, str) and isinstance(column, str)
+                for field, column in frozen_mapping.items()
+            ):
+                raise GraphGuardRejected("database_target_mapping_invalid")
+            if not isinstance(expected_source_version, str):
+                raise GraphGuardRejected("database_target_version_unavailable")
+            snapshot, _source = await _source_snapshot(
+                session,
+                task_id=context.task_id,
+                role=binding.role,
+            )
+        source_version_before = (await connector.version()).value
+        if source_version_before != expected_source_version:
+            raise ConnectorConflictError(
+                "database target changed after its field mapping was frozen"
+            )
+        outcome = await AgentDatabaseIngestionAdapter().extract(
+            connector=connector,
+            connector_id=binding.configuration_id,
+            task_id=context.task_id,
+            run_id=context.run_id,
+            snapshot_id=snapshot.id,
+            tenant_id=context.tenant_id,
+            source_role=AgentSourceRole(binding.role),
+            selected_entities=_selected_agent_entities(task.entity_types),
+            field_mapping={str(key): str(value) for key, value in frozen_mapping.items()},
+        )
+        source_version = (await connector.version()).value
+        if source_version != source_version_before:
+            raise ConnectorConflictError(
+                "database target changed during bounded extraction"
+            )
+        async with self._session_factory() as session:
+            async with session.begin():
+                repository = AgentAnalysisRepository(session)
+                persisted = await repository.persist_inputs(outcome.records)
+                marks = _bind_input_marks(outcome.marks, persisted)
+                await repository.persist_marks(marks)
+                executions = ExecutionRepository(session)
+                current = await executions.current_target_version(context.task_id)
+                if current is None:
+                    version_hash = SqlGovernanceExecutionHandler.hash_version(
+                        source_version
+                    )
+                    await executions.create_target_version(
+                        task_id=context.task_id,
+                        tenant_id=context.tenant_id,
+                        source_snapshot_id=snapshot.id,
+                        parent_version_id=None,
+                        batch_id=None,
+                        file_sha256=version_hash,
+                        content_hash=_raw_hash(
+                            {
+                                "connector_id": binding.configuration_id,
+                                "source_version": source_version,
+                            }
+                        ),
+                        storage_path=(
+                            f"database://{binding.configuration_id}/version/"
+                            f"{version_hash}"
+                        ),
+                    )
+                payload = {
+                    "schema_version": "source-ingestion-v3",
+                    "mapping_version": "fixed-six-field-sql-mapping-v3",
+                    "source_role": binding.role,
+                    "connector_kind": "database",
+                    "connector_id": binding.configuration_id,
+                    "source_version": source_version,
+                    "record_count": len(persisted),
+                    "mark_count": len(marks),
+                    "model_calls": 0,
+                }
+                await AgentRuntimeRepository(session).save_checkpoint(
+                    context.run_id,
+                    phase=AgentPhase.INGEST_AND_NORMALIZE,
+                    checkpoint_key=binding.normalization_checkpoint_key,
+                    input_hash=_hash(
+                        {
+                            "connector_id": binding.configuration_id,
+                            "source_version": source_version,
+                            "selected_entities": sorted(task.entity_types),
+                        }
+                    ),
+                    payload=payload,
+                )
+                await self._record_deterministic_invocation(
+                    session,
+                    context=context,
+                    action=action,
+                    output=payload,
                 )
         return _outcome(action)
 
@@ -1015,6 +1493,20 @@ class ProductionGraphActionExecutor:
                 if isinstance(source, dict) and source.get("kind") == "database"
                 else "csv"
             )
+
+    async def _source_binding(
+        self,
+        task_id: UUID,
+        role: str,
+    ) -> AgentSourceBinding:
+        async with self._session_factory() as session:
+            task = await session.get(ReconciliationTask, task_id)
+            if task is None:
+                raise LookupError("Agent graph task is missing")
+            for binding in resolve_source_bindings(task):
+                if binding.role == role:
+                    return binding
+        raise GraphGuardRejected("source_role_binding_invalid")
 
     async def _database_connector_id(self, task_id: UUID, role: str) -> str:
         async with self._session_factory() as session:
@@ -2803,6 +3295,60 @@ async def _source_snapshot(
     return row[0], row[1]
 
 
+async def _api_artifact_materials(
+    session: AsyncSession,
+    *,
+    task_id: UUID,
+    tenant_id: str,
+    binding: AgentSourceBinding,
+) -> tuple[
+    ApiAuthoritySourceRecord,
+    ApiConnectionRecord,
+    Snapshot,
+    SourceFile,
+]:
+    if (
+        binding.role != "authoritative"
+        or binding.connector_kind != "api"
+        or binding.configuration_id is None
+    ):
+        raise GraphGuardRejected("api_authority_binding_invalid")
+    try:
+        connection_id = UUID(binding.configuration_id)
+    except ValueError as error:
+        raise GraphGuardRejected("api_authority_binding_invalid") from error
+    api_source = await session.scalar(
+        select(ApiAuthoritySourceRecord).where(
+            ApiAuthoritySourceRecord.task_id == task_id,
+            ApiAuthoritySourceRecord.tenant_id == tenant_id,
+            ApiAuthoritySourceRecord.connection_id == connection_id,
+        )
+    )
+    connection = await session.scalar(
+        select(ApiConnectionRecord).where(
+            ApiConnectionRecord.id == connection_id,
+            ApiConnectionRecord.tenant_id == tenant_id,
+        )
+    )
+    snapshot, source = await _source_snapshot(
+        session,
+        task_id=task_id,
+        role=binding.role,
+    )
+    if (
+        api_source is None
+        or connection is None
+        or api_source.state != "ready"
+        or api_source.source_file_id != source.id
+        or api_source.snapshot_id != snapshot.id
+        or api_source.content_sha256 != source.sha256
+        or snapshot.file_hash != source.sha256
+        or snapshot.mapping_version != api_source.projection_version
+    ):
+        raise GraphGuardRejected("api_authority_artifact_binding_invalid")
+    return api_source, connection, snapshot, source
+
+
 def _selected_agent_entities(values: list[str]) -> frozenset[AgentEntityKind]:
     aliases = {
         "department": AgentEntityKind.DEPARTMENT,
@@ -2825,6 +3371,22 @@ def _bind_input_marks(
         if not isinstance(row_number, int) or row_number not in by_row:
             raise ValueError("ingestion mark does not correspond to a persisted input")
         result.append(mark.model_copy(update={"input_record_id": by_row[row_number]}))
+    return tuple(result)
+
+
+def _bind_api_input_marks(
+    marks: tuple[AgentInputMark, ...],
+    persisted: tuple[AgentInputRecord, ...],
+) -> tuple[AgentInputMark, ...]:
+    by_order = {record.stable_order: record.id for record in persisted}
+    result: list[AgentInputMark] = []
+    for mark in marks:
+        stable_order = mark.safe_evidence.get("row_number")
+        if not isinstance(stable_order, int) or stable_order not in by_order:
+            raise ValueError("API ingestion mark does not correspond to a persisted input")
+        result.append(
+            mark.model_copy(update={"input_record_id": by_order[stable_order]})
+        )
     return tuple(result)
 
 

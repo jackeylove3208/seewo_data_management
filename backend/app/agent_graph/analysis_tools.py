@@ -27,7 +27,10 @@ from app.models.agent_analysis import (
     AgentWorkItemRecord,
 )
 from app.models.snapshots import Snapshot, SourceFile
-from app.reconciliation.agent_identity import ordinary_field_differences
+from app.reconciliation.agent_identity import (
+    ordinary_field_differences,
+    unavailable_fields_by_input,
+)
 
 _ALLOWED_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
     "target_extra": ("delete",),
@@ -319,8 +322,20 @@ class GraphAnalysisEvidenceTools:
             f"input:{candidate_id}" for candidate_id in sorted(candidate_ids, key=str)
         )
         conflicts = candidate_refs if work.kind == "identity_conflict" else ()
+        unavailable_fields: frozenset[str] = frozenset()
+        if authority is not None:
+            unavailable_fields = (
+                await unavailable_fields_by_input(
+                    self._session,
+                    (authority.id,),
+                )
+            ).get(authority.id, frozenset())
         differences = (
-            ordinary_field_differences(authority, target)
+            ordinary_field_differences(
+                authority,
+                target,
+                unavailable_fields=unavailable_fields,
+            )
             if authority is not None and target is not None
             else ()
         )

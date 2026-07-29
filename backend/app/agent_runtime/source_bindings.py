@@ -9,7 +9,8 @@ _CONNECTOR_KINDS = frozenset({"csv", "local", "remote_csv", "database", "api"})
 
 
 class _TaskWithIntent(Protocol):
-    agent_intent: object
+    @property
+    def agent_intent(self) -> object: ...
 
 
 @dataclass(frozen=True, slots=True)

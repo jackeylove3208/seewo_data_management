@@ -1,11 +1,13 @@
 from collections.abc import AsyncIterator, Mapping
+from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from cryptography.fernet import Fernet
-from sqlalchemy import select
+from sqlalchemy import func, select
 
+from app.agent_graph.contracts import AllowedActionV1
 from app.agent_graph.production_executor import ProductionGraphActionExecutor
 from app.agent_graph.repository import AgentGraphRepository
 from app.agent_graph.runtime import ProductionGraphCandidateProvider
@@ -25,12 +27,26 @@ from app.api_connectors.contracts import (
 from app.api_connectors.materializer import ApiAuthorityMaterializer, ApiSourceFailure
 from app.api_connectors.registry import ProviderRegistry
 from app.api_connectors.secrets import EncryptedDatabaseSecretStore
+from app.connectors.configured import ConfiguredApiConnector
 from app.core.security import OperatorContext
+from app.models.agent_analysis import (
+    AgentInputMarkRecord,
+    AgentInputRecord,
+    AgentWorkItemRecord,
+)
 from app.models.api_connectors import ApiAuthoritySourceRecord, ApiConnectionRecord
+from app.models.mappings import EntityMapping
 from app.models.reconciliation import ReconciliationTask
-from app.models.snapshots import Snapshot, SourceFile
+from app.models.snapshots import (
+    CanonicalEntityRecord,
+    RawSnapshotRow,
+    Snapshot,
+    SourceFile,
+)
+from app.reconciliation.agent_identity import AgentIdentityIndexBuilder
 from app.schemas.agent_api import AgentTaskIntent
 from app.schemas.agent_ingestion import AgentContractRecord, AgentEntityKind
+from tests.fixtures.connector_store import InMemoryConnectorStore
 from tests.settings import build_test_settings
 
 MANIFEST = ProviderManifest(
@@ -105,10 +121,10 @@ class CaptureAdapter(AdapterMustNotRun):
                         "name": "周明远",
                         "number": None,
                         "class_name": None,
-                        "phone": None,
+                        "phone": "138 0000 0001",
                         "email": None,
                     },
-                    unavailable_fields=("email", "number", "phone"),
+                    unavailable_fields=("email", "number"),
                 ),
             ),
             next_cursor=None,
@@ -131,6 +147,33 @@ class FailingCaptureAdapter(AdapterMustNotRun):
 class ModelMustNotRun:
     async def complete_json_once(self, _request):
         raise AssertionError("API materialization must not call a model")
+
+
+class StaticDatabaseConnectorRuntime:
+    def __init__(self, connector: ConfiguredApiConnector) -> None:
+        self.connector_instance = connector
+
+    async def connector(self, connector_id: str) -> ConfiguredApiConnector:
+        assert connector_id == "seewo-mysql"
+        return self.connector_instance
+
+
+def _action(
+    action_id: str,
+    graph_action_kind: str,
+    resource_id: str,
+    evidence: str,
+) -> AllowedActionV1:
+    return AllowedActionV1(
+        action_id=action_id,
+        graph_action_kind=graph_action_kind,
+        kind="run_deterministic",
+        resource_ids=(resource_id,),
+        required_evidence=(evidence,),
+        risk="low",
+        requires_human=False,
+        successor_node="inspect_sources",
+    )
 
 
 def _settings(fernet_key: bytes):
@@ -492,3 +535,193 @@ async def test_graph_api_materialization_failure_persists_only_safe_code(
         assert persisted is not None and persisted.state == "failed"
         assert persisted.safe_problem_code == "connector_timeout"
         assert authority is None
+
+
+async def test_ingestion_v3_routes_api_authority_and_database_target_to_agent_inputs(
+    database,
+    tmp_path: Path,
+) -> None:
+    key = Fernet.generate_key()
+    settings = _settings(key).model_copy(
+        update={"upload_root": tmp_path / "uploads"}
+    )
+    adapter = CaptureAdapter()
+    registry = ProviderRegistry()
+    registry.register(MANIFEST, adapter)
+    async with database.session_factory() as session:
+        async with session.begin():
+            connection = await _seed_connection(session, fernet_key=key)
+            task, run = await AgentTaskService(
+                session,
+                operator=OperatorContext(
+                    operator_id="operator-1",
+                    tenant_id="school-1",
+                ),
+                settings=settings,
+                provider_registry=registry,
+            ).create(
+                _intent(connection.id),
+                idempotency_key="api-task-ingestion-v3",
+            )
+            graph = await AgentGraphRepository(session).get_run_state_for_agent_run(
+                run.id
+            )
+            api_source = await session.scalar(
+                select(ApiAuthoritySourceRecord).where(
+                    ApiAuthoritySourceRecord.task_id == task.id
+                )
+            )
+            assert graph is not None and api_source is not None
+    materializer = ApiAuthorityMaterializer(
+        settings,
+        registry=registry,
+        fernet_key=key,
+    )
+    async with database.session_factory() as session:
+        async with session.begin():
+            await materializer.materialize(
+                session,
+                task_id=task.id,
+                api_source_id=api_source.id,
+            )
+
+    target_connector = ConfiguredApiConnector(
+        configuration=settings.database_connector_configurations["seewo-mysql"],
+        store=InMemoryConnectorStore(
+            records=[
+                {
+                    "id": "target-teacher-1",
+                    "row_version": "v1",
+                    "category": "教师",
+                    "name": "周明远",
+                    "number": None,
+                    "class_name": None,
+                    "phone": "13800000001",
+                    "email": "target@example.test",
+                }
+            ]
+        ),
+    )
+    database_connectors = StaticDatabaseConnectorRuntime(target_connector)
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=ModelMustNotRun(),
+        tokenization_secret="test-tokenization-secret",
+        settings=settings,
+        database_connectors=database_connectors,
+    )
+    context = GraphWorkContext(
+        worker_id="api-ingestion-v3-worker",
+        run_id=run.id,
+        task_id=task.id,
+        tenant_id=task.tenant_id,
+        graph_run_id=graph.id,
+        graph_version=graph.graph_version,
+        current_node="inspect_sources",
+        graph_cursor=graph.cursor,
+        attempt_count=run.attempt_count,
+        lease_token=uuid4(),
+        ingestion_contract_version=run.ingestion_contract_version,
+        execution_contract_version=run.execution_contract_version,
+    )
+    plan = await ProductionGraphCandidateProvider(
+        database.session_factory,
+        database_connectors=database_connectors,
+    )(context)
+    authority_inspection = next(
+        item.action for item in plan.candidate_evaluations if item.passed
+    )
+    assert authority_inspection.kind == "run_deterministic"
+    assert authority_inspection.resource_ids == ("source:authoritative:full",)
+    await executor(context, authority_inspection)
+    await executor(
+        context,
+        _action(
+            "inspect_target:source",
+            "inspect_target",
+            "source:target:full",
+            "source:target:inspection",
+        ),
+    )
+
+    normalization_context = replace(
+        context,
+        current_node="normalize_input_batches",
+    )
+    expected_resources = (
+        "source:authoritative:mapping",
+        "source:target:mapping",
+        "source:authoritative:full",
+        "source:target:full",
+    )
+    for expected_resource in expected_resources:
+        plan = await ProductionGraphCandidateProvider(
+            database.session_factory,
+            database_connectors=database_connectors,
+        )(normalization_context)
+        action = next(
+            item.action for item in plan.candidate_evaluations if item.passed
+        )
+        assert action.resource_ids == (expected_resource,)
+        await executor(normalization_context, action)
+
+    validation_plan = await ProductionGraphCandidateProvider(
+        database.session_factory,
+        database_connectors=database_connectors,
+    )(
+        replace(
+            context,
+            current_node="validate_input_contract",
+        )
+    )
+    validation_action = next(
+        item.action
+        for item in validation_plan.candidate_evaluations
+        if item.passed
+    )
+    assert validation_action.graph_action_kind == "build_identity_index"
+
+    async with database.session_factory() as session:
+        async with session.begin():
+            await AgentIdentityIndexBuilder(session).build(run_id=run.id)
+        inputs = tuple(
+            await session.scalars(
+                select(AgentInputRecord)
+                .where(AgentInputRecord.run_id == run.id)
+                .order_by(AgentInputRecord.source_role)
+            )
+        )
+        marks = tuple(await session.scalars(select(AgentInputMarkRecord)))
+        work_items = tuple(
+            await session.scalars(
+                select(AgentWorkItemRecord).where(
+                    AgentWorkItemRecord.run_id == run.id
+                )
+            )
+        )
+        assert [item.source_role for item in inputs] == [
+            "authoritative",
+            "target",
+        ]
+        authority = inputs[0]
+        assert authority.stable_locator == (
+            f"api:{connection.id}:teacher:teacher-1"
+        )
+        assert authority.number is None
+        assert marks[0].reason_code == "authority_field_unavailable"
+        assert marks[0].inclusion_state == "included"
+        assert [item.kind for item in work_items] == ["correct"]
+        assert (
+            await session.scalar(select(func.count()).select_from(RawSnapshotRow))
+            == 0
+        )
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(CanonicalEntityRecord)
+            )
+            == 0
+        )
+        assert (
+            await session.scalar(select(func.count()).select_from(EntityMapping))
+            == 0
+        )
