@@ -189,6 +189,10 @@ class AgentRollbackCycleService:
 def target_data_source(task: ReconciliationTask) -> TargetDataSource | None:
     intent = task.agent_intent if isinstance(task.agent_intent, dict) else {}
     target = intent.get("target")
+    return target_data_source_from_target(target)
+
+
+def target_data_source_from_target(target: object) -> TargetDataSource | None:
     if not isinstance(target, dict):
         return None
     kind = target.get("kind")

@@ -1,5 +1,6 @@
 """Independent, school-exclusive rollback handlers for verified Agent CSV facts."""
 
+import asyncio
 import hashlib
 import json
 from dataclasses import replace
@@ -9,7 +10,10 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent_reporting.service import AgentReportingService
+from app.agent_reporting.service import (
+    AgentReportingService,
+    rollback_terminal_state,
+)
 from app.agent_runtime.csv_governance_handlers import AgentTargetVersionRepository
 from app.agent_runtime.local_publication import publish_local_target
 from app.agent_runtime.observability import agent_observability
@@ -27,6 +31,8 @@ from app.executions.csv_versioning import (
     read_target_rows,
 )
 from app.governance.agent_governance import AgentGovernanceOperation, AgentOperation
+from app.local_sources.publisher import copy_managed_initial_version
+from app.local_sources.service import LocalSourceService
 from app.models.executions import TargetVersionRecord
 from app.models.reconciliation import ReconciliationTask
 from app.repositories.executions import ExecutionRepository
@@ -53,6 +59,11 @@ class CsvRollbackHandlers:
         )
         if current is None:
             raise LookupError("current rollback target version is missing")
+        current = await self._ensure_live_comparison_version(
+            session,
+            task=task,
+            current=current,
+        )
         try:
             current_path = Path(current.storage_path)
             current_rows = read_target_rows(current_path)
@@ -91,6 +102,60 @@ class CsvRollbackHandlers:
             },
         )
         return AgentWorkResult(next_phase=AgentPhase.CLARIFY_RESTORE_CONFLICTS)
+
+    async def _ensure_live_comparison_version(
+        self,
+        session: AsyncSession,
+        *,
+        task: ReconciliationTask,
+        current: TargetVersionRecord,
+    ) -> TargetVersionRecord:
+        target_intent = (task.agent_intent or {}).get("target", {})
+        if (
+            self._settings is None
+            or not isinstance(target_intent, dict)
+            or target_intent.get("kind") != "local"
+        ):
+            return current
+        source_ref = target_intent.get("source_ref")
+        if not isinstance(source_ref, str):
+            raise LookupError("rollback local target reference is missing")
+        material = LocalSourceService(
+            self._settings
+        ).describe_target_for_write(source_ref)
+        current_path = Path(current.storage_path)
+        if await asyncio.to_thread(
+            _matches_version_file,
+            current_path,
+            material.sha256,
+        ):
+            return current
+
+        managed = copy_managed_initial_version(
+            material.path,
+            output_root=self._output_root / "rollback-baselines",
+            task_id=task.id,
+            expected_sha256=material.sha256,
+        )
+        rows = read_target_rows(managed.path)
+        content_hash = hashlib.sha256(
+            json.dumps(
+                rows,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        return await ExecutionRepository(session).create_target_version(
+            task_id=current.task_id,
+            tenant_id=current.tenant_id,
+            source_snapshot_id=current.source_snapshot_id,
+            parent_version_id=current.id,
+            batch_id=None,
+            file_sha256=managed.sha256,
+            content_hash=content_hash,
+            storage_path=managed.path,
+        )
 
     async def clarify(self, _session: AsyncSession, _context: AgentWorkContext) -> AgentWorkResult:
         return AgentWorkResult(next_phase=AgentPhase.APPROVE_RESTORE)
@@ -382,11 +447,12 @@ class CsvRollbackHandlers:
                     else None
                 ),
             )
+        terminal_state = rollback_terminal_state(facts)
         report = await AgentReportingService(session).generate(
             task_id=task.id,
             tenant_id=task.tenant_id,
             kind="rollback",
-            terminal_state="completed",
+            terminal_state=terminal_state,
             facts=facts,
         )
         task.status = "completed"
@@ -394,7 +460,7 @@ class CsvRollbackHandlers:
         await AgentRuntimeRepository(session).append_event(
             context.run_id,
             "report_ready",
-            {"report_id": str(report.id), "terminal_state": "completed"},
+            {"report_id": str(report.id), "terminal_state": terminal_state},
         )
         agent_observability.observe(
             "rollback_completed",
@@ -402,7 +468,7 @@ class CsvRollbackHandlers:
             run_id=context.run_id,
             phase=AgentPhase.REPORT_RESTORE.value,
             mutation_count=len(facts.get("mutations", [])),
-            outcome="completed",
+            outcome=terminal_state,
         )
         return AgentWorkResult(next_phase=AgentPhase.TERMINAL)
 
@@ -623,6 +689,22 @@ def _fact_mapping(value: object) -> dict[str, object]:
     if not isinstance(value, dict):
         return {}
     return {str(field): item for field, item in value.items()}
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _matches_version_file(path: Path, expected_sha256: str) -> bool:
+    return (
+        path.is_file()
+        and not path.is_symlink()
+        and _file_sha256(path) == expected_sha256
+    )
 
 
 def _complete_record(

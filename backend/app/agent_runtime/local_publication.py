@@ -143,7 +143,11 @@ async def _expected_destination_hash(
     source_task: ReconciliationTask,
 ) -> str:
     if task.task_kind == "rollback":
-        target_version_id = (task.agent_intent or {}).get("target_version_id")
+        intent = task.agent_intent or {}
+        target_version_id = intent.get(
+            "comparison_target_version_id",
+            intent.get("target_version_id"),
+        )
         if target_version_id is None:
             raise LookupError("rollback publication input version is missing")
         input_version = await session.get(

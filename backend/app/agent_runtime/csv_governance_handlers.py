@@ -255,6 +255,34 @@ class CsvGovernanceHandlers:
             rejected_finding_ids=frozenset(rejected_findings),
             confirmed_conflicts=confirmed,
         )
+        if not plan.operations:
+            await runtime.save_checkpoint(
+                run.id,
+                phase=AgentPhase.COMPILE_EXECUTION_PLAN,
+                checkpoint_key="agent-no-executable-plan-v1",
+                input_hash=_hash([str(item.finding_id) for item in eligible]),
+                payload={
+                    "operation_count": 0,
+                    "duplicate_identifier_finding_ids": [
+                        str(item)
+                        for item in sorted(
+                            plan.excluded_finding_ids,
+                            key=str,
+                        )
+                    ],
+                },
+            )
+            await runtime.append_event(
+                run.id,
+                "agent_plan_compiled",
+                {
+                    "operation_count": 0,
+                    "duplicate_identifier_count": len(
+                        plan.excluded_finding_ids
+                    ),
+                },
+            )
+            return AgentWorkResult(next_phase=AgentPhase.EXECUTE_AND_VERIFY)
         operations = [_operation_payload(operation) for operation in plan.operations]
         content_hash = _hash(operations)
         await AgentGovernanceRepository(session).save_plan(
