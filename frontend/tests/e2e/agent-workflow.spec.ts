@@ -456,7 +456,11 @@ test("a chat link shows only its cleaned origin and manual sync has no remote co
   await expect(
     page.getByText("请同步 [远程CSV来源:data.example.test] 的学生"),
   ).toBeVisible();
-  await expect(page.getByText("第三方来源：data.example.test")).toBeVisible();
+  const startConfirmation = page.getByRole("article", { name: "开始确认" });
+  await expect(startConfirmation.getByText("第三方对象")).toBeVisible();
+  await expect(
+    startConfirmation.getByText("data.example.test", { exact: true }),
+  ).toBeVisible();
   await expect(page.locator("body")).not.toContainText("secret=value");
   await page.getByRole("button", { name: "确认开始同步" }).click();
   await expect.poll(() => taskRequest).toEqual({

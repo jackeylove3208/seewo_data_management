@@ -4,6 +4,7 @@ import {
   allTasks,
   findTask,
   getStoredTasks,
+  groupTasksByTargetSource,
   removeStoredTask,
   saveStoredTask,
   TASK_HISTORY_UPDATED_EVENT,
@@ -65,8 +66,87 @@ describe("task history removal", () => {
       issue_summary: { total: 0, excluded: 0 },
       operation_summary: { succeeded: 0, failed: 0, blocked: 0 },
       entity_types: ["student"],
+      target_source: {
+        key: "target-source-1",
+        name: "希沃组织主库",
+        kind: "database",
+        identified: true,
+      },
     });
 
     expect(task.status).toBe("terminated");
+    expect(task.targetSourceKey).toBe("target-source-1");
+    expect(task.targetSourceName).toBe("希沃组织主库");
+  });
+});
+
+describe("task history target source grouping", () => {
+  it("puts sync and rollback tasks for one target into one newest-first group", () => {
+    const groups = groupTasksByTargetSource([
+      {
+        ...baseTask,
+        id: "sync-old",
+        taskKind: "sync",
+        targetSourceKey: "source-a",
+        targetSourceName: "希沃组织主库",
+        targetSourceKind: "database",
+        targetSourceIdentified: true,
+      },
+      {
+        ...baseTask,
+        id: "rollback-new",
+        taskKind: "rollback",
+        createdAt: "2026-07-22T08:00:00Z",
+        targetSourceKey: "source-a",
+        targetSourceName: "希沃组织主库",
+        targetSourceKind: "database",
+        targetSourceIdentified: true,
+      },
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].taskCount).toBe(2);
+    expect(groups[0].tasks.map((task) => task.id)).toEqual([
+      "rollback-new",
+      "sync-old",
+    ]);
+    expect(groups[0].lastActivityAt).toBe("2026-07-22T08:00:00Z");
+  });
+
+  it("keeps equal display names separate when stable source keys differ", () => {
+    const groups = groupTasksByTargetSource([
+      {
+        ...baseTask,
+        id: "first-upload",
+        targetSourceKey: "upload-a",
+        targetSourceName: "临时上传 · students.csv",
+        targetSourceKind: "upload",
+        targetSourceIdentified: true,
+      },
+      {
+        ...baseTask,
+        id: "second-upload",
+        targetSourceKey: "upload-b",
+        targetSourceName: "临时上传 · students.csv",
+        targetSourceKind: "upload",
+        targetSourceIdentified: true,
+      },
+    ]);
+
+    expect(groups.map((group) => group.key)).toEqual(["upload-a", "upload-b"]);
+  });
+
+  it("places old cached tasks without source facts in the unknown group", () => {
+    const groups = groupTasksByTargetSource([
+      { ...baseTask, id: "legacy-task" },
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({
+      key: "unknown-history-source",
+      name: "其他历史任务",
+      kind: "unknown",
+      identified: false,
+    });
   });
 });

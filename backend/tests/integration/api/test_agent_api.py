@@ -263,8 +263,16 @@ def test_manual_csv_task_uses_agent_runtime_and_exposes_persisted_events(
 
     history = agent_client.get("/api/agent/history")
     assert history.status_code == 200
-    assert history.json()["items"][0]["id"] == task["id"]
-    assert history.json()["items"][0]["completed_at"] is None
+    history_item = history.json()["items"][0]
+    assert history_item["id"] == task["id"]
+    assert history_item["completed_at"] is None
+    assert history_item["target_source"] == {
+        "key": history_item["target_source"]["key"],
+        "name": "临时上传 · target.csv",
+        "kind": "upload",
+        "identified": True,
+    }
+    assert target_id.replace("-", "") not in history_item["target_source"]["key"]
 
     fetched = agent_client.get(f"/api/agent/tasks/{task['id']}")
     assert fetched.status_code == 200
@@ -705,6 +713,13 @@ def test_sql_pair_creates_durable_task_without_exposing_database_credentials(
 
         assert response.status_code == 202, response.text
         task_id = UUID(response.json()["id"])
+        history_item = client.get("/api/agent/history").json()["items"][0]
+        assert history_item["target_source"] == {
+            "key": history_item["target_source"]["key"],
+            "name": "seewo-mysql",
+            "kind": "database",
+            "identified": True,
+        }
 
         async def load_facts() -> tuple[ReconciliationTask, tuple[SourceFile, ...]]:
             async with client.app.state.database.session_factory() as session:

@@ -25,6 +25,7 @@ from app.agent_reporting.rollback_cycles import (
     is_fully_successful_sync,
 )
 from app.agent_reporting.service import AgentReportingService
+from app.agent_runtime.history_sources import resolve_history_target_sources
 from app.agent_runtime.observability import agent_observability
 from app.agent_runtime.repository import (
     AgentRuntimeRepository,
@@ -75,6 +76,7 @@ from app.models.agent_runtime import (
 )
 from app.models.reconciliation import ReconciliationTask
 from app.models.reporting import AgentReportRecord
+from app.models.snapshots import SourceFile
 from app.remote_sources.links import (
     RemoteSourceRegistrationError,
     extract_conversation_link,
@@ -2488,6 +2490,38 @@ async def get_agent_history(
             )
         ).all()
     )
+    tasks = tuple(row[0] for row in rows)
+    target_upload_ids: set[UUID] = set()
+    for task in tasks:
+        intent = task.agent_intent
+        target = intent.get("target") if isinstance(intent, dict) else None
+        if (
+            task.task_kind != "rollback"
+            and isinstance(target, dict)
+            and target.get("kind") == "csv"
+        ):
+            try:
+                target_upload_ids.add(UUID(str(target.get("upload_id"))))
+            except (TypeError, ValueError):
+                pass
+    upload_names = (
+        {
+            source_file.id: source_file.original_name
+            for source_file in await session.scalars(
+                select(SourceFile).where(
+                    SourceFile.id.in_(target_upload_ids),
+                    SourceFile.task_id.in_(tuple(task.id for task in tasks)),
+                    SourceFile.source_role == "target",
+                )
+            )
+        }
+        if target_upload_ids
+        else {}
+    )
+    target_sources = resolve_history_target_sources(
+        tasks,
+        upload_names=upload_names,
+    )
     items: list[AgentHistoryItem] = []
     rollback_cycles = AgentRollbackCycleService(session)
     for task, run, report, termination_requested, live_finding_count in rows:
@@ -2536,6 +2570,7 @@ async def get_agent_history(
                 rollback_blocked_reason=rollback_blocked_reason,
                 deletion_eligible=report.deletion_eligible if report is not None else True,
                 entity_types=tuple(task.entity_types),
+                target_source=target_sources[task.id],
             )
         )
     return AgentHistoryPage(items=tuple(items), next_cursor=None)

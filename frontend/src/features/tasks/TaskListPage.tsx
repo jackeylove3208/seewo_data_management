@@ -1,9 +1,20 @@
 import { Button, Tag } from "antd";
-import { ArrowRight, CircleCheck, Clock3, FileCheck2, Plus, RefreshCcw, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import {
+  ArrowRight,
+  ChevronDown,
+  CircleCheck,
+  Clock3,
+  Database,
+  FileCheck2,
+  FileSpreadsheet,
+  Plus,
+  RefreshCcw,
+  Trash2,
+} from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { allTasks } from "../../data/taskHistory";
+import { allTasks, groupTasksByTargetSource } from "../../data/taskHistory";
 import { agentApi } from "../../api/agent";
 import { toTaskHistoryItem } from "../../data/taskHistory";
 import { useTaskDeletion } from "./useTaskDeletion";
@@ -38,6 +49,9 @@ export function TaskListPage() {
     return () => controller.abort();
   }, []);
   const tasks = backendTasks ?? allTasks();
+  const groups = useMemo(() => groupTasksByTargetSource(tasks), [tasks]);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const operatorAdjustedGroups = useRef(false);
   const issueCount = tasks
     .filter((task) => task.status !== "ready")
     .reduce((sum, task) => sum + task.issueCount, 0);
@@ -46,6 +60,31 @@ export function TaskListPage() {
   const operationSuccessRate = syncTasks.length
     ? `${Math.round((completedSyncTasks / syncTasks.length) * 100)}%`
     : "暂无数据";
+
+  useEffect(() => {
+    setExpandedGroups((current) => {
+      const knownKeys = new Set(groups.map((group) => group.key));
+      const next = new Set([...current].filter((key) => knownKeys.has(key)));
+      if (
+        !operatorAdjustedGroups.current
+        && next.size === 0
+        && groups[0]
+      ) {
+        next.add(groups[0].key);
+      }
+      return setsMatch(current, next) ? current : next;
+    });
+  }, [groups]);
+
+  function toggleGroup(key: string) {
+    operatorAdjustedGroups.current = true;
+    setExpandedGroups((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
 
   return (
     <main className="page-shell task-list-page apple-page">
@@ -72,54 +111,113 @@ export function TaskListPage() {
           <h2>最近任务</h2>
           <span>点击任意一行查看详情</span>
         </div>
-        {tasks.map((task) => {
-          const status = statusCopy[task.status];
+        <div className="task-source-groups">
+        {groups.map((group) => {
+          const expanded = expandedGroups.has(group.key);
+          const panelId = `task-source-${safeDomId(group.key)}`;
           return (
-            <div className="task-row-wrapper" key={task.id}>
-            <button
-              className="task-row"
-              type="button"
-              onClick={() => navigate(`/tasks/${task.id}`)}
-            >
-              <span className="task-state-dot" data-status={task.status} />
-              <span className="task-main">
-                <span className="task-title-line">
-                  <strong>{task.title}</strong>
-                </span>
-                <span className="task-file-line">
-                  {task.sourceFile} <ArrowRight size={13} /> {task.targetFile}
-                </span>
-              </span>
-              <span className="task-counts">
-                <span>三方 {task.sourceAccepted}</span>
-                <span>魔方 {task.targetAccepted}</span>
-                <strong>{task.issueCount} 个问题</strong>
-              </span>
-              <span className="task-meta">
-                <Tag color={status.color}>{status.label}</Tag>
-                <span><Clock3 size={13} /> {formatTime(task.createdAt)}</span>
-              </span>
-              <ArrowRight className="task-arrow" size={18} />
-            </button>
-            {task.deletionEligible !== false && (
+            <section className="task-source-group" key={group.key} aria-label={`${group.name}任务`}>
               <button
-                className="task-delete-button"
+                className="task-source-toggle"
                 type="button"
-                aria-label={`删除${task.title}`}
-                title={`删除${task.title}`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  deletion.requestDelete(task);
-                }}
+                aria-expanded={expanded}
+                aria-controls={panelId}
+                aria-label={`${expanded ? "收起" : "展开"}${group.name}任务列表`}
+                onClick={() => toggleGroup(group.key)}
               >
-                <Trash2 size={16} />
+                <span className="task-source-icon">
+                  {group.kind === "database"
+                    ? <Database size={17} />
+                    : <FileSpreadsheet size={17} />}
+                </span>
+                <span className="task-source-main">
+                  <strong>{group.name}</strong>
+                  <small>{sourceKindLabel(group.kind)} · 最近活动于 {formatTime(group.lastActivityAt)}</small>
+                </span>
+                <span className="task-source-summary">
+                  <strong>{group.taskCount} 个任务</strong>
+                  <small>{groupStatusLabel(group)}</small>
+                </span>
+                <ChevronDown className={`task-source-chevron${expanded ? " is-open" : ""}`} size={18} />
               </button>
-            )}
-            </div>
+              {expanded && (
+                <div className="task-source-tasks" id={panelId}>
+                  {group.tasks.map((task) => {
+                    const status = statusCopy[task.status];
+                    return (
+                      <div className="task-row-wrapper" key={task.id}>
+                        <button
+                          className="task-row"
+                          type="button"
+                          onClick={() => navigate(`/tasks/${task.id}`)}
+                        >
+                          <span className="task-state-dot" data-status={task.status} />
+                          <span className="task-main">
+                            <span className="task-title-line">
+                              <span className="task-kind-badge">{task.taskKind === "rollback" ? "回滚" : "同步"}</span>
+                              <strong>{task.title}</strong>
+                            </span>
+                            <span className="task-file-line">
+                              {task.sourceFile} <ArrowRight size={13} /> {task.targetFile}
+                            </span>
+                          </span>
+                          <span className="task-counts">
+                            <span>三方 {task.sourceAccepted}</span>
+                            <span>魔方 {task.targetAccepted}</span>
+                            <strong>{task.issueCount} 个问题</strong>
+                          </span>
+                          <span className="task-meta">
+                            <Tag color={status.color}>{status.label}</Tag>
+                            <span><Clock3 size={13} /> {formatTime(task.createdAt)}</span>
+                          </span>
+                          <ArrowRight className="task-arrow" size={18} />
+                        </button>
+                        {task.deletionEligible !== false && (
+                          <button
+                            className="task-delete-button"
+                            type="button"
+                            aria-label={`删除${task.title}`}
+                            title={`删除${task.title}`}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              deletion.requestDelete(task);
+                            }}
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
           );
         })}
+        </div>
       </section>
       {deletion.confirmation}
     </main>
   );
+}
+
+function sourceKindLabel(kind: "database" | "local" | "upload" | "unknown") {
+  if (kind === "database") return "数据库";
+  if (kind === "local") return "本地授权 CSV";
+  if (kind === "upload") return "临时上传 CSV";
+  return "未识别数据源";
+}
+
+function groupStatusLabel(group: ReturnType<typeof groupTasksByTargetSource>[number]) {
+  if (group.processingCount) return `${group.processingCount} 个进行中`;
+  if (group.failedCount) return `${group.failedCount} 个失败`;
+  return "全部已结束";
+}
+
+function setsMatch(left: Set<string>, right: Set<string>) {
+  return left.size === right.size && [...left].every((item) => right.has(item));
+}
+
+function safeDomId(value: string) {
+  return value.replace(/[^a-zA-Z0-9_-]/g, "-");
 }
