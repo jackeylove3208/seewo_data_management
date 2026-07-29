@@ -111,11 +111,33 @@ class AgentStartConfirmation(BaseModel):
     entity_types: tuple[AgentEntityType, ...]
 
 
+class AgentApiConnectionCard(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider_id: str
+    state: Literal[
+        "configuration_required",
+        "pending",
+        "active",
+        "invalid",
+        "disabled",
+    ]
+    required_secret_fields: tuple[str, ...]
+    connection_id: UUID | None = None
+    display_name: str | None = None
+    capabilities: dict[str, bool] = Field(default_factory=dict)
+    visibility_summary: dict[str, str | int | bool | None] = Field(
+        default_factory=dict
+    )
+    safe_error_code: str | None = None
+
+
 class AgentMessageResponse(BaseModel):
     accepted_message: str
     message: str
     intent: AgentIntentView
     start_confirmation: AgentStartConfirmation | None = None
+    api_connection: AgentApiConnectionCard | None = None
 
 
 class AgentTaskResponse(BaseModel):
@@ -137,6 +159,7 @@ class AgentConversationCurrentResponse(AgentConversationResponse):
     messages: tuple[AgentConversationMessageView, ...]
     intent: AgentIntentView | None = None
     start_confirmation: AgentStartConfirmation | None = None
+    api_connection: AgentApiConnectionCard | None = None
     task: AgentTaskResponse | None = None
 
 

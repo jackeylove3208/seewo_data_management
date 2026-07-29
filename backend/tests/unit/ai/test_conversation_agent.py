@@ -50,7 +50,7 @@ async def test_supervisor_uses_versioned_skill_and_returns_confirmation() -> Non
 
     assert decision.kind == "start_confirmation"
     assert decision.source_ref == "third-party/roster.csv"
-    assert "converse-school-data-sync@1.2.0" in provider.requests[0].messages[0].content
+    assert "converse-school-data-sync@1.3.0" in provider.requests[0].messages[0].content
     assert "不可信证据" in provider.requests[0].messages[0].content
 
 
@@ -326,6 +326,133 @@ async def test_supervisor_accepts_server_listed_postgresql_to_mysql_pair() -> No
     assert decision.kind == "start_confirmation"
     assert decision.source_configuration_id == "authority-postgres"
     assert decision.target_configuration_id == "seewo-mysql"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_accepts_eligible_api_authority_with_mysql_target() -> None:
+    connection_id = uuid4()
+    provider = CapturingProvider(
+        {
+            "result": {
+                "kind": "start_confirmation",
+                "title": "钉钉教师同步",
+                "entity_types": ["teacher"],
+                "source_api_connection_id": str(connection_id),
+                "target_configuration_id": "seewo-mysql",
+                "message_zh": "已确认钉钉只读权威来源和 MySQL 希沃目标。",
+            }
+        }
+    )
+
+    decision = await ConversationSupervisorAgent(provider).reply(
+        _context(
+            available_source_refs=(),
+            available_api_connections=(
+                {
+                    "connection_id": connection_id,
+                    "provider_id": "dingtalk",
+                    "display_name": "学校钉钉",
+                    "state": "active",
+                    "capabilities": {"entity.teacher.read": True},
+                    "visibility_summary": {
+                        "visible": True,
+                        "teacher_count": 5,
+                    },
+                },
+            ),
+            available_database_connectors=(
+                {
+                    "connector_id": "seewo-mysql",
+                    "dialect": "mysql",
+                    "source_role": "target",
+                },
+            ),
+        )
+    )
+
+    assert decision.kind == "start_confirmation"
+    assert decision.source_api_connection_id == connection_id
+    assert decision.target_configuration_id == "seewo-mysql"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_can_request_safe_api_configuration_card() -> None:
+    provider = CapturingProvider(
+        {
+            "result": {
+                "kind": "api_configuration",
+                "api_provider_id": "dingtalk",
+                "message_zh": "需要先安全配置钉钉应用凭据。",
+            }
+        }
+    )
+
+    decision = await ConversationSupervisorAgent(provider).reply(
+        _context(
+            available_source_refs=(),
+            available_api_providers=(
+                {
+                    "provider_id": "dingtalk",
+                    "supported_entities": ["department", "student", "teacher"],
+                    "required_secret_fields": ["app_key", "app_secret"],
+                },
+            ),
+        )
+    )
+
+    assert decision.kind == "api_configuration"
+    assert decision.api_provider_id == "dingtalk"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_rejects_api_connection_without_selected_visibility() -> None:
+    connection_id = uuid4()
+    provider = CapturingProvider(
+        {
+            "result": {
+                "kind": "start_confirmation",
+                "title": "不可启动的钉钉学生同步",
+                "entity_types": ["student"],
+                "source_api_connection_id": str(connection_id),
+                "target_configuration_id": "seewo-mysql",
+                "message_zh": "已确认。",
+            }
+        }
+    )
+
+    decision = await ConversationSupervisorAgent(provider).reply(
+        _context(
+            available_source_refs=(),
+            available_api_connections=(
+                {
+                    "connection_id": connection_id,
+                    "provider_id": "dingtalk",
+                    "display_name": "学校钉钉",
+                    "state": "active",
+                    "capabilities": {
+                        "entity.teacher.read": True,
+                        "entity.student.read": False,
+                    },
+                    "visibility_summary": {
+                        "visible": True,
+                        "teacher_count": 5,
+                        "student_count": 0,
+                    },
+                },
+            ),
+            available_database_connectors=(
+                {
+                    "connector_id": "seewo-mysql",
+                    "dialect": "mysql",
+                    "source_role": "target",
+                },
+            ),
+        )
+    )
+
+    assert decision.kind == "clarification"
+    assert decision.source_api_connection_id is None
+    assert "权限或可见范围" in decision.message_zh
 
 
 @pytest.mark.asyncio

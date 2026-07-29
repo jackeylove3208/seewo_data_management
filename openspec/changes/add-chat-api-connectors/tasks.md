@@ -46,10 +46,10 @@
 
 ## 7. Conversational configuration
 
-- [ ] 7.1 Extend conversation contracts and intent state with safe API connection selection
-- [ ] 7.2 Add secure configuration-session and connection-status cards without secret echo
-- [ ] 7.3 Create one idempotent api-authority/database-target task after explicit confirmation
-- [ ] 7.4 Add frontend and backend tests for configuration, permission, visibility, retry, and task start
+- [x] 7.1 Extend conversation contracts and intent state with safe API connection selection
+- [x] 7.2 Add secure configuration-session and connection-status cards without secret echo
+- [x] 7.3 Create one idempotent api-authority/database-target task after explicit confirmation
+- [x] 7.4 Add frontend and backend tests for configuration, permission, visibility, retry, and task start
 
 ## 8. End-to-end governance and delivery gates
 

@@ -130,7 +130,7 @@ NEW_AGENT_SKILLS = {
 }
 
 NEW_AGENT_SKILL_VERSIONS = {
-    "converse-school-data-sync": "1.2.0",
+    "converse-school-data-sync": "1.3.0",
     "assess-agent-rollback-impact": "2.1.0",
     "execute-approved-rollback": "2.1.0",
 }
@@ -207,7 +207,7 @@ def test_remote_source_understanding_skill_has_only_bounded_read_tools() -> None
 
 
 def test_conversation_skill_advertises_direct_remote_csv_ingestion() -> None:
-    skill = SkillRegistry().load("converse-school-data-sync", "1.2.0")
+    skill = SkillRegistry().load("converse-school-data-sync", "1.3.0")
 
     for term in (
         "`conversation_remote_csv_enabled`",
@@ -237,6 +237,23 @@ def test_conversation_skill_advertises_direct_remote_csv_ingestion() -> None:
         "`remote_url_end`",
         "选择链接边界",
         "后端校验",
+    ):
+        assert term in skill.instructions
+
+
+def test_conversation_skill_selects_only_server_listed_api_connections() -> None:
+    skill = SkillRegistry().load("converse-school-data-sync", "1.3.0")
+
+    for term in (
+        "`available_api_providers`",
+        "`available_api_connections`",
+        "`api_configuration`",
+        "`api_provider_id`",
+        "`source_api_connection_id`",
+        "MySQL",
+        "不得在对话中索要",
+        "权限",
+        "可见范围",
     ):
         assert term in skill.instructions
 

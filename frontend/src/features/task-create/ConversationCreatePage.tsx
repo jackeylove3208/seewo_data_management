@@ -9,6 +9,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import {
   agentApi as defaultAgentApi,
+  type AgentApiConnectionCard,
   type AgentClarificationSubmission,
   type AgentConversationApi,
   type AgentEntityType,
@@ -24,6 +25,7 @@ import { TASK_HISTORY_UPDATED_EVENT } from "../../data/taskHistory";
 import { IdentityConflictClarificationCard } from "../../components/IdentityConflictClarificationCard";
 import { TaskStatusRail } from "../../components/TaskStatusRail";
 import { presentAgentEvent, presentAgentPhase } from "../agent-events/presentation";
+import { ConversationApiConnectionCard } from "./ConversationApiConnectionCard";
 import { ConversationMediumRiskReviewCard } from "./ConversationMediumRiskReviewCard";
 import { ConversationRiskApprovalCard } from "./ConversationRiskApprovalCard";
 
@@ -128,6 +130,7 @@ export function ConversationCreatePage({
   const [conversationId, setConversationId] = useState<string>();
   const [confirmation, setConfirmation] = useState<AgentStartConfirmation>();
   const [agentIntent, setAgentIntent] = useState<AgentIntent>();
+  const [apiConnection, setApiConnection] = useState<AgentApiConnectionCard>();
   const [task, setTask] = useState<AgentTask>();
   const [events, setEvents] = useState<AgentTaskEvent[]>([]);
   const [eventCursor, setEventCursor] = useState<string>();
@@ -162,6 +165,7 @@ export function ConversationCreatePage({
           setConversationId(current.id);
           setMessages(current.messages.length ? current.messages : initialMessages);
           setAgentIntent(current.intent ?? undefined);
+          setApiConnection(current.api_connection ?? undefined);
           const restoredTask = current.task ?? undefined;
           setConfirmation(
             restoredTask && !terminalTaskStatuses.has(restoredTask.status)
@@ -382,6 +386,7 @@ export function ConversationCreatePage({
       );
       setContextLimitReached(false);
       setAgentIntent(response.intent);
+      setApiConnection(response.api_connection ?? undefined);
       setMessages((current) => [
         ...current.map((item) => (
           item.id === submittedMessageId
@@ -433,6 +438,7 @@ export function ConversationCreatePage({
       setState("idle");
       setConfirmation(undefined);
       setAgentIntent(undefined);
+      setApiConnection(undefined);
       setTask(undefined);
       setEvents([]);
       setEventCursor(undefined);
@@ -729,6 +735,13 @@ export function ConversationCreatePage({
               </div>
             </article>
           ))}
+          {apiConnection && !taskActive && (
+            <ConversationApiConnectionCard
+              connection={apiConnection}
+              configure={backendApi.configureApiConnection}
+              onChange={setApiConnection}
+            />
+          )}
           {confirmation && !taskActive && (
             <article className="conversation-card start-confirmation" aria-label="开始确认">
               <strong className="start-confirmation-title">开始同步前确认</strong>

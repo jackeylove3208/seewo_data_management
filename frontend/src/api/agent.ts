@@ -24,6 +24,25 @@ interface AgentConversation {
   status: "active" | "closed";
 }
 
+export interface AgentApiConnectionCard {
+  provider_id: string;
+  state: "configuration_required" | "pending" | "active" | "invalid" | "disabled";
+  required_secret_fields: string[];
+  connection_id?: string | null;
+  display_name?: string | null;
+  capabilities: Record<string, boolean>;
+  visibility_summary: Record<string, string | number | boolean | null>;
+  safe_error_code?: string | null;
+}
+
+export interface AgentApiConnectionConfiguration {
+  provider_id: string;
+  display_name: string;
+  required_secret_fields: string[];
+  secret: Record<string, string>;
+  connection_id?: string | null;
+}
+
 export interface AgentIntent {
   title: string;
   entity_types: AgentEntityType[];
@@ -51,6 +70,7 @@ interface AgentMessageResponse {
   message: string;
   intent: AgentIntent;
   start_confirmation?: AgentStartConfirmation;
+  api_connection?: AgentApiConnectionCard | null;
 }
 
 interface AgentConversationMessage {
@@ -65,6 +85,7 @@ interface AgentConversationCurrent extends AgentConversation {
   messages: AgentConversationMessage[];
   intent?: AgentIntent | null;
   start_confirmation?: AgentStartConfirmation | null;
+  api_connection?: AgentApiConnectionCard | null;
   task?: AgentTask | null;
 }
 
@@ -223,6 +244,9 @@ export interface AgentConversationApi {
   createConversation(): Promise<AgentConversation>;
   resetConversation(idempotencyKey: string): Promise<AgentConversation>;
   sendMessage(conversationId: string, message: string): Promise<AgentMessageResponse>;
+  configureApiConnection?(
+    configuration: AgentApiConnectionConfiguration,
+  ): Promise<AgentApiConnectionCard>;
   startTask(
     conversationId: string,
     intent: AgentIntent,
@@ -363,6 +387,71 @@ async function sendMessage(conversationId: string, message: string) {
     headers: jsonHeaders,
     body: JSON.stringify({ message }),
   });
+}
+
+interface ApiConnectionResponse {
+  id: string;
+  provider_id: string;
+  display_name: string;
+  state: "pending" | "active" | "invalid" | "disabled";
+  capabilities: Record<string, boolean>;
+  visibility_summary: Record<string, string | number | boolean | null>;
+  last_safe_error_code?: string | null;
+}
+
+async function configureApiConnection(
+  configuration: AgentApiConnectionConfiguration,
+): Promise<AgentApiConnectionCard> {
+  let connectionId = configuration.connection_id ?? undefined;
+  if (connectionId) {
+    await requestJson(`/api/connectors/connections/${connectionId}/rotate-secret`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ secret: configuration.secret }),
+    });
+  } else {
+    const session = await requestJson<{ id: string }>(
+      "/api/connectors/configuration-sessions",
+      {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({ provider_id: configuration.provider_id }),
+      },
+    );
+    const connection = await requestJson<ApiConnectionResponse>(
+      "/api/connectors/connections",
+      {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({
+          configuration_session_id: session.id,
+          provider_id: configuration.provider_id,
+          display_name: configuration.display_name,
+          public_configuration: { person_entity_kind: "teacher" },
+          secret: configuration.secret,
+        }),
+      },
+    );
+    connectionId = connection.id;
+  }
+  const tested = await requestJson<ApiConnectionResponse>(
+    `/api/connectors/connections/${connectionId}/test`,
+    {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({}),
+    },
+  );
+  return {
+    provider_id: tested.provider_id,
+    state: tested.state,
+    required_secret_fields: configuration.required_secret_fields,
+    connection_id: tested.id,
+    display_name: tested.display_name,
+    capabilities: tested.capabilities,
+    visibility_summary: tested.visibility_summary,
+    safe_error_code: tested.last_safe_error_code,
+  };
 }
 
 async function startTask(
@@ -597,6 +686,7 @@ export const agentApi: AgentConversationApi & AgentManualTaskApi & {
   createConversation,
   resetConversation,
   sendMessage,
+  configureApiConnection,
   startTask,
   startManualTask,
   events,

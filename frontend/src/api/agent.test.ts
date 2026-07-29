@@ -84,6 +84,54 @@ describe("Agent API", () => {
     expect(JSON.parse(String((request as RequestInit).body))).toEqual({});
   });
 
+  it("keeps API credentials on the secure connector endpoints", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: "configuration-session-1",
+        provider_id: "dingtalk",
+        required_secret_fields: ["app_key", "app_secret"],
+        expires_at: "2026-07-29T12:00:00Z",
+      }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: "connection-1",
+        provider_id: "dingtalk",
+        display_name: "学校钉钉",
+        state: "pending",
+        capabilities: {},
+        visibility_summary: {},
+      }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: "connection-1",
+        provider_id: "dingtalk",
+        display_name: "学校钉钉",
+        state: "active",
+        capabilities: { "entity.teacher.read": true },
+        visibility_summary: { visible: true, teacher_count: 5 },
+      }), { status: 200 }));
+
+    const result = await agentApi.configureApiConnection?.({
+      provider_id: "dingtalk",
+      display_name: "学校钉钉",
+      required_secret_fields: ["app_key", "app_secret"],
+      secret: { app_key: "ding-app", app_secret: "ding-secret" },
+    });
+
+    const calls = vi.mocked(fetch).mock.calls;
+    expect(calls.map(([path]) => path)).toEqual([
+      "/api/connectors/configuration-sessions",
+      "/api/connectors/connections",
+      "/api/connectors/connections/connection-1/test",
+    ]);
+    expect(JSON.parse(String((calls[1]?.[1] as RequestInit).body))).toEqual({
+      configuration_session_id: "configuration-session-1",
+      provider_id: "dingtalk",
+      display_name: "学校钉钉",
+      public_configuration: { person_entity_kind: "teacher" },
+      secret: { app_key: "ding-app", app_secret: "ding-secret" },
+    });
+    expect(result?.state).toBe("active");
+  });
+
   it("reads persisted task events and sends only control commands", async () => {
     await agentApi.events("task-1", "cursor-2");
     await agentApi.terminate("task-1");

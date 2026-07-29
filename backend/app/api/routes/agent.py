@@ -25,6 +25,10 @@ from app.agent_reporting.rollback_cycles import (
     is_fully_successful_sync,
 )
 from app.agent_reporting.service import AgentReportingService
+from app.agent_runtime.conversation_connectors import (
+    ConversationApiCatalog,
+    load_conversation_api_catalog,
+)
 from app.agent_runtime.history_sources import resolve_history_target_sources
 from app.agent_runtime.observability import agent_observability
 from app.agent_runtime.repository import (
@@ -91,6 +95,7 @@ from app.repositories.agent_governance import (
 )
 from app.schemas.agent_api import (
     AgentActiveLockResponse,
+    AgentApiConnectionCard,
     AgentApprovalGroupView,
     AgentClarificationView,
     AgentCommandResponse,
@@ -419,6 +424,11 @@ async def get_current_agent_conversation(
         created_by=operator.operator_id,
         conversation_id=conversation.id,
     )
+    api_catalog = await _conversation_api_catalog(
+        request,
+        session,
+        tenant_id=operator.tenant_id,
+    )
     run = await session.scalar(
         select(AgentRunRecord)
         .where(
@@ -499,6 +509,7 @@ async def get_current_agent_conversation(
         ),
         intent=intent,
         start_confirmation=confirmation,
+        api_connection=_api_card_from_context(conversation.context, api_catalog),
         task=task,
     )
 
@@ -592,6 +603,11 @@ async def send_agent_message(
         if key != _CONVERSATION_MESSAGE_TOKEN_KEY
     }
     sources = LocalSourceService(request.app.state.settings).list_sources()
+    api_catalog = await _conversation_api_catalog(
+        request,
+        session,
+        tenant_id=operator.tenant_id,
+    )
     provider = getattr(
         request.app.state,
         "conversation_provider",
@@ -660,6 +676,8 @@ async def send_agent_message(
                     )
                     if request.app.state.settings.agent_graph_sql_execution_enabled
                 ),
+                available_api_providers=api_catalog.providers,
+                available_api_connections=api_catalog.connections,
                 current_intent=current_intent,
             )
         )
@@ -795,6 +813,10 @@ async def send_agent_message(
         for key, value in conversation.context.items()
         if key != _CONVERSATION_MESSAGE_TOKEN_KEY
     }
+    api_connection = api_catalog.card(
+        provider_id=decision.api_provider_id,
+        connection_id=decision.source_api_connection_id,
+    )
     intent = {
         "title": decision.title or previous_intent.get("title") or "全校组织数据同步",
         "entity_types": (
@@ -810,6 +832,11 @@ async def send_agent_message(
             if decision.remote_source_id is not None
             else {"kind": "local", "source_ref": decision.source_ref}
             if decision.source_ref is not None
+            else {
+                "kind": "api",
+                "configuration_id": str(decision.source_api_connection_id),
+            }
+            if decision.source_api_connection_id is not None
             else {
                 "kind": "database",
                 "configuration_id": decision.source_configuration_id,
@@ -828,6 +855,11 @@ async def send_agent_message(
             else previous_intent.get("target")
         ),
         "decision_kind": decision.kind,
+        "api_provider_id": (
+            api_connection.provider_id
+            if api_connection is not None
+            else previous_intent.get("api_provider_id")
+        ),
     }
     conversation.context = intent
     await repository.append_conversation_message(
@@ -861,6 +893,7 @@ async def send_agent_message(
         message=decision.message_zh,
         intent=view,
         start_confirmation=confirmation,
+        api_connection=api_connection,
     )
 
 
@@ -3460,6 +3493,39 @@ _PHONE_PATTERN = re.compile(r"(?<!\d)1\d{10}(?!\d)")
 _EMAIL_PATTERN = re.compile(
     r"\b([A-Za-z0-9._%+-])([A-Za-z0-9._%+-]*)@([A-Za-z0-9.-]+\.[A-Za-z]{2,})\b"
 )
+
+
+async def _conversation_api_catalog(
+    request: Request,
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+) -> ConversationApiCatalog:
+    if not request.app.state.settings.new_agent_api_connector_enabled:
+        return ConversationApiCatalog(providers=(), connections=())
+    return await load_conversation_api_catalog(
+        session,
+        tenant_id=tenant_id,
+        registry=request.app.state.api_provider_registry,
+    )
+
+
+def _api_card_from_context(
+    context: Mapping[str, Any],
+    catalog: ConversationApiCatalog,
+) -> AgentApiConnectionCard | None:
+    provider_id = context.get("api_provider_id")
+    source = context.get("source")
+    connection_id = None
+    if isinstance(source, dict) and source.get("kind") == "api":
+        try:
+            connection_id = UUID(str(source.get("configuration_id")))
+        except ValueError:
+            connection_id = None
+    return catalog.card(
+        provider_id=provider_id if isinstance(provider_id, str) else None,
+        connection_id=connection_id,
+    )
 
 
 def _intent_view(
