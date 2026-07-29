@@ -86,4 +86,83 @@ describe("Agent synchronization report", () => {
     expect(container.querySelector(".agent-report-page.apple-page")).not.toBeNull();
     client.clear();
   });
+
+  it("shows a no-write rollback as already restored instead of skipped", async () => {
+    vi.spyOn(agentApi, "report").mockResolvedValue({
+      id: "report-rollback-restored",
+      task_id: "task-report-1",
+      kind: "rollback",
+      terminal_state: "completed",
+      rollback_eligible: false,
+      deletion_eligible: true,
+      created_at: "2026-07-29T02:00:00Z",
+      content: { narrative: {} },
+      facts: {
+        findings: [],
+        mutations: [{
+          id: "rollback-operation-1",
+          operation: "update",
+          entity_kind: "student",
+          status: "already_restored",
+        }],
+        mutation_summary: {
+          succeeded: 0,
+          already_restored: 1,
+          conflict_skipped: 0,
+          failed: 0,
+        },
+        publication: {
+          status: "no_changes",
+          source_ref: "seewo/current.csv",
+        },
+      },
+    });
+
+    const { client } = renderPage();
+
+    expect(await screen.findByText("回滚完成")).toBeInTheDocument();
+    expect(screen.getByText("已处于原状态")).toBeInTheDocument();
+    expect(screen.getByText("无需再次写入本地 CSV")).toBeInTheDocument();
+    expect(screen.getByText("1", { selector: "strong" })).toBeInTheDocument();
+    client.clear();
+  });
+
+  it("surfaces rollback conflicts instead of reporting successful completion", async () => {
+    vi.spyOn(agentApi, "report").mockResolvedValue({
+      id: "report-rollback-conflict",
+      task_id: "task-report-1",
+      kind: "rollback",
+      terminal_state: "completed_with_conflicts",
+      rollback_eligible: false,
+      deletion_eligible: false,
+      created_at: "2026-07-29T02:00:00Z",
+      content: { narrative: {} },
+      facts: {
+        findings: [],
+        mutations: [{
+          id: "rollback-operation-1",
+          operation: "update",
+          entity_kind: "student",
+          status: "conflict_skipped",
+        }],
+        mutation_summary: {
+          succeeded: 0,
+          already_restored: 0,
+          conflict_skipped: 1,
+          failed: 0,
+        },
+        publication: {
+          status: "no_changes",
+          source_ref: "seewo/current.csv",
+        },
+      },
+    });
+
+    const { client } = renderPage();
+
+    expect(await screen.findByText("回滚存在冲突")).toBeInTheDocument();
+    expect(screen.getByText("因当前值冲突而跳过")).toBeInTheDocument();
+    expect(screen.queryByText("回滚完成")).not.toBeInTheDocument();
+    client.clear();
+  });
 });

@@ -3,6 +3,7 @@ from uuid import uuid4
 
 import pytest
 
+from app.agent_reporting.service import AgentReportingService
 from app.agent_runtime.csv_rollback_handlers import (
     CsvRollbackHandlers,
     _rollback_operation,
@@ -12,6 +13,7 @@ from app.agent_runtime.csv_rollback_handlers import (
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentPhase
 from app.agent_runtime.worker import AgentWorkContext
+from app.core.config import Settings
 from app.executions.agent_service import AgentExecutionService
 from app.models.executions import TargetVersionRecord
 from app.models.reconciliation import ReconciliationTask
@@ -127,6 +129,157 @@ async def test_rollback_plan_uses_current_values_when_target_version_advanced(
             ],
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_rollback_plan_recovers_missing_version_artifact_from_live_local_target(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    task_id = uuid4()
+    source_task_id = uuid4()
+    missing_path = tmp_path / "missing-version.csv"
+    live_path = tmp_path / "live-target.csv"
+    live_path.write_text(
+        "id,姓名,手机号\nstudent-1,张三,13800000000\n",
+        encoding="utf-8",
+    )
+    target = SimpleNamespace(
+        id=uuid4(),
+        task_id=source_task_id,
+        tenant_id="school-1",
+        source_snapshot_id=uuid4(),
+        file_sha256="a" * 64,
+        storage_path=str(missing_path),
+    )
+    mutation_id = uuid4()
+    task = SimpleNamespace(
+        id=task_id,
+        parent_task_id=source_task_id,
+        request_hash="request-hash",
+        agent_intent={
+            "target_version_id": str(target.id),
+            "target": {
+                "kind": "local",
+                "source_ref": live_path.name,
+            },
+            "operations": [
+                {
+                    "id": str(mutation_id),
+                    "operation": "update",
+                    "entity_kind": "student",
+                    "target_source_identifier": "student-1",
+                    "before": {"phone": "13800000000"},
+                    "after": {"phone": "13900000000"},
+                }
+            ],
+        },
+    )
+    saved_payload = None
+    created_version_values = None
+    recovered = SimpleNamespace(
+        id=uuid4(),
+        task_id=source_task_id,
+        tenant_id="school-1",
+        source_snapshot_id=target.source_snapshot_id,
+        file_sha256="recovered",
+        storage_path="",
+    )
+
+    async def current_target_version(_repository, _task_id):
+        return target
+
+    async def create_target_version(_repository, **values):
+        nonlocal created_version_values
+        created_version_values = values
+        recovered.file_sha256 = values["file_sha256"]
+        recovered.storage_path = str(values["storage_path"])
+        return recovered
+
+    async def save_checkpoint(_repository, *_args, **kwargs):
+        nonlocal saved_payload
+        saved_payload = kwargs["payload"]
+        return SimpleNamespace(payload=saved_payload)
+
+    monkeypatch.setattr(
+        ExecutionRepository,
+        "current_target_version",
+        current_target_version,
+    )
+    monkeypatch.setattr(
+        ExecutionRepository,
+        "create_target_version",
+        create_target_version,
+    )
+    monkeypatch.setattr(AgentRuntimeRepository, "save_checkpoint", save_checkpoint)
+
+    settings = Settings(
+        agent_local_read_roots=(tmp_path,),
+        agent_local_write_roots=(tmp_path,),
+    )
+    result = await CsvRollbackHandlers(
+        output_root=tmp_path / "versions",
+        settings=settings,
+    ).plan(
+        _Session(task, target),  # type: ignore[arg-type]
+        _context(task_id),
+    )
+
+    assert result.next_phase == AgentPhase.CLARIFY_RESTORE_CONFLICTS
+    assert created_version_values is not None
+    assert created_version_values["parent_version_id"] == target.id
+    assert created_version_values["storage_path"] != live_path
+    assert created_version_values["storage_path"].read_bytes() == live_path.read_bytes()
+    assert saved_payload["comparison_target_version_id"] == str(recovered.id)
+    assert saved_payload["restore_comparisons"][0]["disposition"] == "already_restored"
+
+
+@pytest.mark.asyncio
+async def test_rollback_report_does_not_mark_conflict_skips_completed(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    task_id = uuid4()
+    task = SimpleNamespace(
+        id=task_id,
+        tenant_id="school-1",
+        status="running",
+        stage="execute_restore",
+    )
+    checkpoint = SimpleNamespace(
+        payload={
+            "mutations": [
+                {
+                    "id": str(uuid4()),
+                    "status": "conflict_skipped",
+                    "verification": {"valid": False},
+                }
+            ]
+        }
+    )
+    generated_terminal_state = None
+
+    async def get_checkpoint(_repository, *_args, **_kwargs):
+        return checkpoint
+
+    async def generate(_service, **kwargs):
+        nonlocal generated_terminal_state
+        generated_terminal_state = kwargs["terminal_state"]
+        return SimpleNamespace(id=uuid4(), terminal_state=generated_terminal_state)
+
+    async def append_event(_repository, *_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(AgentRuntimeRepository, "get_checkpoint", get_checkpoint)
+    monkeypatch.setattr(AgentRuntimeRepository, "append_event", append_event)
+    monkeypatch.setattr(AgentReportingService, "generate", generate)
+
+    await CsvRollbackHandlers(output_root=tmp_path).report(
+        _Session(task, None),  # type: ignore[arg-type]
+        _context(task_id),
+    )
+
+    assert generated_terminal_state == "completed_with_conflicts"
 
 
 def test_update_comparison_distinguishes_after_before_and_conflict_by_affected_fields() -> None:

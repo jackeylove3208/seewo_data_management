@@ -3,7 +3,7 @@ from pathlib import Path as FileSystemPath
 from uuid import UUID
 
 from anyio import Path as AsyncPath
-from sqlalchemy import delete, exists, or_, select, text
+from sqlalchemy import delete, exists, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent_reporting.service import AgentReportingService
@@ -53,7 +53,7 @@ from app.models.rematching import (
     EntityRematchWorkItemRecord,
 )
 from app.models.remote_sources import RemoteSourceRecord
-from app.models.reporting import AgentReportRecord
+from app.models.reporting import AgentReportRecord, AgentRollbackCycleRecord
 from app.models.snapshots import (
     CanonicalEntityRecord,
     IngestionIssueRecord,
@@ -327,6 +327,14 @@ class TaskDeletionService:
             delete(RemoteSourceRecord).where(RemoteSourceRecord.id.in_(remote_source_ids))
         )
         await self.session.execute(delete(SourceFile).where(SourceFile.id.in_(source_file_ids)))
+        await self.session.execute(
+            update(AgentRollbackCycleRecord)
+            .where(AgentRollbackCycleRecord.completed_rollback_task_id == task_id)
+            .values(
+                completed_rollback_task_id=None,
+                completed_rollback_at=None,
+            )
+        )
         await self.session.execute(
             delete(ReconciliationTask).where(ReconciliationTask.id == task_id)
         )

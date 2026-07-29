@@ -1080,6 +1080,50 @@ describe("backend Agent conversation", () => {
     expect(screen.getByRole("button", { name: "确认开始同步" })).toBeInTheDocument();
   });
 
+  it("asks before accepting a target file changed outside the Agent", async () => {
+    const startTask = vi.fn()
+      .mockRejectedValueOnce(
+        new ApiError(
+          "希沃目标文件已在 Agent 之外发生变化",
+          409,
+          "target_baseline_drift",
+        ),
+      )
+      .mockResolvedValueOnce({
+        id: "task-accepted-baseline",
+        workflow_version: "agent-graph-v1",
+        phase: "ingest_and_normalize",
+        status: "running",
+      });
+    const backend = api({ startTask });
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    await waitForComposer();
+    await user.type(screen.getByLabelText("对账目标"), "重新同步全校教师");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await user.click(await screen.findByRole("button", { name: "确认开始同步" }));
+
+    expect(
+      await screen.findByText("希沃目标文件已在 Agent 之外发生变化"),
+    ).toBeInTheDocument();
+    expect(startTask).toHaveBeenCalledTimes(1);
+
+    await user.click(
+      screen.getByRole("button", { name: "将当前文件作为新基线继续" }),
+    );
+
+    expect(startTask).toHaveBeenLastCalledWith(
+      "conversation-1",
+      expect.objectContaining({ title: "全校教师同步" }),
+      expect.any(String),
+      { acceptCurrentTargetBaseline: true },
+    );
+    expect(
+      await screen.findByText("任务已开始，我会持续同步后端进度。普通输入已锁定。"),
+    ).toBeInTheDocument();
+  });
+
   it("restores backend messages and active task after the page remounts", async () => {
     const backend = api({
       currentConversation: vi.fn().mockResolvedValue({

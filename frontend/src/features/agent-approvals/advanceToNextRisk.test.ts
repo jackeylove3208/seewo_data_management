@@ -20,6 +20,45 @@ afterEach(() => {
 });
 
 describe("advanceToNextPendingRiskHeading", () => {
+  it("aligns the next card heading with the top of the conversation viewport", () => {
+    const viewport = document.createElement("div");
+    viewport.className = "conversation-messages";
+    Object.defineProperty(viewport, "scrollTop", {
+      configurable: true,
+      value: 40,
+      writable: true,
+    });
+    viewport.getBoundingClientRect = vi.fn().mockReturnValue({
+      top: 100,
+    });
+    viewport.scrollTo = vi.fn();
+    document.body.append(viewport);
+
+    const firstCard = document.createElement("section");
+    firstCard.dataset.riskApprovalId = "gate-1";
+    firstCard.dataset.riskApprovalStatus = "pending";
+    firstCard.dataset.riskApprovalSelectable = "true";
+    viewport.append(firstCard);
+    const nextHeading = riskCard("gate-2", "pending");
+    viewport.append(nextHeading.parentElement!);
+    nextHeading.getBoundingClientRect = vi.fn().mockReturnValue({
+      top: 260,
+    });
+    nextHeading.focus = vi.fn();
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: vi.fn().mockReturnValue({ matches: false }),
+    });
+
+    advanceToNextPendingRiskHeading("gate-1");
+
+    expect(viewport.scrollTo).toHaveBeenCalledWith({
+      behavior: "smooth",
+      top: 200,
+    });
+    expect(nextHeading.focus).toHaveBeenCalledWith({ preventScroll: true });
+  });
+
   it("smoothly scrolls and focuses the next pending risk heading", () => {
     riskCard("gate-1", "pending");
     riskCard("gate-2", "approved");

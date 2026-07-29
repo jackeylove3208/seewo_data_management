@@ -66,7 +66,11 @@ from app.schemas.agent_ingestion import (
 
 
 class ModelMustNotRun:
+    def __init__(self) -> None:
+        self.calls = 0
+
     async def complete_json_once(self, _request):
+        self.calls += 1
         raise AssertionError("deterministic preflight called a model")
 
 
@@ -437,6 +441,149 @@ async def _preflight_context(database, tmp_path: Path) -> GraphWorkContext:
                 attempt_count=run.attempt_count,
                 lease_token=uuid4(),
             )
+
+
+@pytest.mark.asyncio
+async def test_termination_report_uses_verified_facts_without_calling_model(
+    database,
+    tmp_path: Path,
+) -> None:
+    context = replace(
+        await _preflight_context(database, tmp_path),
+        current_node="termination_report",
+    )
+    action = AllowedActionV1(
+        action_id="finish_termination_report",
+        kind="dispatch_sub_agent",
+        sub_agent="governance-reporting",
+        resource_ids=(),
+        required_evidence=(),
+        risk="low",
+        requires_human=False,
+        successor_node="terminal",
+    )
+    provider = ModelMustNotRun()
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=provider,
+        tokenization_secret="test-tokenization-secret",
+    )
+
+    outcome = await executor._generate_report(context, action)
+
+    assert outcome.action_id == action.action_id
+    async with database.session_factory() as session:
+        report = await session.scalar(
+            select(AgentReportRecord).where(
+                AgentReportRecord.task_id == context.task_id
+            )
+        )
+    assert report is not None
+    assert report.terminal_state == "terminated"
+    assert report.generated_by == "agent-graph-termination-fallback-v1"
+    assert provider.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_terminal_report_falls_back_after_one_model_attempt(
+    database,
+    tmp_path: Path,
+) -> None:
+    context = replace(
+        await _preflight_context(database, tmp_path),
+        current_node="generate_terminal_report",
+    )
+    action = AllowedActionV1(
+        action_id="generate_terminal_report",
+        kind="dispatch_sub_agent",
+        sub_agent="governance-reporting",
+        resource_ids=(),
+        required_evidence=(),
+        risk="low",
+        requires_human=False,
+        successor_node="terminal",
+    )
+    provider = ModelMustNotRun()
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=provider,
+        tokenization_secret="test-tokenization-secret",
+    )
+
+    outcome = await executor._generate_report(context, action)
+
+    assert outcome.action_id == action.action_id
+    assert provider.calls == 1
+    async with database.session_factory() as session:
+        report = await session.scalar(
+            select(AgentReportRecord).where(
+                AgentReportRecord.task_id == context.task_id
+            )
+        )
+    assert report is not None
+    assert report.terminal_state == "completed"
+    assert report.generated_by == "agent-graph-report-fallback-v1"
+
+
+@pytest.mark.asyncio
+async def test_rollback_report_exposes_conflicts_and_falls_back_after_one_attempt(
+    database,
+    tmp_path: Path,
+) -> None:
+    context = replace(
+        await _preflight_context(database, tmp_path),
+        current_node="generate_rollback_report",
+    )
+    async with database.session_factory() as session:
+        async with session.begin():
+            task = await session.get(ReconciliationTask, context.task_id)
+            assert task is not None
+            task.task_kind = "rollback"
+            await AgentRuntimeRepository(session).save_checkpoint(
+                context.run_id,
+                phase=AgentPhase.EXECUTE_RESTORE,
+                checkpoint_key="agent-csv-rollback-execution-v1",
+                input_hash="rollback-report",
+                payload={
+                    "mutations": [
+                        {
+                            "id": str(uuid4()),
+                            "status": "conflict_skipped",
+                            "verification": {"valid": False},
+                        }
+                    ]
+                },
+            )
+    action = AllowedActionV1(
+        action_id="generate_rollback_report",
+        kind="dispatch_sub_agent",
+        sub_agent="governance-reporting",
+        resource_ids=(),
+        required_evidence=(),
+        risk="low",
+        requires_human=False,
+        successor_node="terminal",
+    )
+    provider = ModelMustNotRun()
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=provider,
+        tokenization_secret="test-tokenization-secret",
+    )
+
+    outcome = await executor._generate_rollback_report(context, action)
+
+    assert outcome.action_id == action.action_id
+    assert provider.calls == 1
+    async with database.session_factory() as session:
+        report = await session.scalar(
+            select(AgentReportRecord).where(
+                AgentReportRecord.task_id == context.task_id
+            )
+        )
+    assert report is not None
+    assert report.terminal_state == "completed_with_conflicts"
+    assert report.generated_by == "agent-graph-rollback-report-fallback-v1"
 
 
 async def _ingestion_v2_context(

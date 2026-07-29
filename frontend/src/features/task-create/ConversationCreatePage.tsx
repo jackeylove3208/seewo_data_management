@@ -148,6 +148,7 @@ export function ConversationCreatePage({
   const [newConversationLoading, setNewConversationLoading] = useState(false);
   const [newConversationError, setNewConversationError] = useState<string>();
   const [contextLimitReached, setContextLimitReached] = useState(false);
+  const [targetBaselineDrift, setTargetBaselineDrift] = useState(false);
 
   const backendApi = agentApi ?? defaultAgentApi;
 
@@ -465,16 +466,21 @@ export function ConversationCreatePage({
     return conversation.id;
   }
 
-  async function startTask() {
+  async function startTask(acceptCurrentTargetBaseline = false) {
     if (!confirmation || !conversationId || taskActive) return;
     setState("submitting");
     try {
-      const created = await backendApi.startTask(conversationId, {
+      const intent = {
         title: agentIntent?.title || confirmation.title,
         entity_types: confirmation.entity_types,
         source: agentIntent?.source,
         target: agentIntent?.target,
-      }, sessionKey());
+      };
+      const created = acceptCurrentTargetBaseline
+        ? await backendApi.startTask(conversationId, intent, sessionKey(), {
+          acceptCurrentTargetBaseline: true,
+        })
+        : await backendApi.startTask(conversationId, intent, sessionKey());
       setEvents([]);
       setEventCursor(undefined);
       setClarificationOpen(false);
@@ -484,6 +490,7 @@ export function ConversationCreatePage({
       setGraphCursor(undefined);
       setTask(created);
       setConfirmation(undefined);
+      setTargetBaselineDrift(false);
       setState("created");
       window.dispatchEvent(new Event(TASK_HISTORY_UPDATED_EVENT));
       setMessages((current) => [...current, {
@@ -493,12 +500,17 @@ export function ConversationCreatePage({
       }]);
     } catch (error) {
       setState("failed");
+      const baselineDrift = error instanceof ApiError
+        && error.code === "target_baseline_drift";
+      setTargetBaselineDrift(baselineDrift);
       setMessages((current) => [...current, {
         id: messageId(),
         role: "assistant",
-        text: error instanceof ApiError && error.code === "school_lock_conflict"
-          ? "当前学校已有同步或回滚任务正在运行，请先在左侧任务记录中打开并完成或终止该任务。"
-          : "任务启动失败，现有需求仍然保留，可以重试。",
+        text: baselineDrift && error instanceof Error
+          ? error.message
+          : error instanceof ApiError && error.code === "school_lock_conflict"
+            ? "当前学校已有同步或回滚任务正在运行，请先在左侧任务记录中打开并完成或终止该任务。"
+            : "任务启动失败，现有需求仍然保留，可以重试。",
         kind: "error",
       }]);
     }
@@ -731,6 +743,14 @@ export function ConversationCreatePage({
                 </div>
               </dl>
               <button type="button" onClick={() => void startTask()}>确认开始同步</button>
+              {targetBaselineDrift && (
+                <button
+                  type="button"
+                  onClick={() => void startTask(true)}
+                >
+                  将当前文件作为新基线继续
+                </button>
+              )}
             </article>
           )}
           {task && (

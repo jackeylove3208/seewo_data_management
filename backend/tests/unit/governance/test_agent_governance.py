@@ -1,3 +1,4 @@
+from dataclasses import replace
 from uuid import uuid4
 
 import pytest
@@ -143,6 +144,52 @@ def test_compiled_plan_supports_mixed_per_finding_decisions() -> None:
     )
 
     assert [item.finding_id for item in plan.operations] == [approved.finding_id]
+
+
+def test_compiled_plan_excludes_all_creates_with_the_same_target_identifier() -> None:
+    duplicate_a = replace(
+        finding(kind="target_missing", operation="create"),
+        target_source_identifier=None,
+        after={"source_id": "S036", "name": "学生甲"},
+    )
+    duplicate_b = replace(
+        finding(kind="target_missing", operation="create"),
+        target_source_identifier=None,
+        after={"source_id": "S036", "name": "学生乙"},
+    )
+    independent = replace(
+        finding(kind="target_missing", operation="create"),
+        target_source_identifier=None,
+        after={"source_id": "S037", "name": "学生丙"},
+    )
+    findings = (duplicate_a, duplicate_b, independent)
+
+    plan = compile_agent_plan(
+        findings,
+        approved_group_ids=frozenset(),
+        approved_finding_ids=frozenset(item.finding_id for item in findings),
+        confirmed_conflicts=frozenset(),
+    )
+
+    assert [item.finding_id for item in plan.operations] == [
+        independent.finding_id
+    ]
+    assert plan.excluded_finding_ids == frozenset(
+        {duplicate_a.finding_id, duplicate_b.finding_id}
+    )
+
+    duplicate_only_plan = compile_agent_plan(
+        (duplicate_a, duplicate_b),
+        approved_group_ids=frozenset(),
+        approved_finding_ids=frozenset(
+            {duplicate_a.finding_id, duplicate_b.finding_id}
+        ),
+        confirmed_conflicts=frozenset(),
+    )
+    assert duplicate_only_plan.operations == ()
+    assert duplicate_only_plan.excluded_finding_ids == frozenset(
+        {duplicate_a.finding_id, duplicate_b.finding_id}
+    )
 
 
 def test_conflict_remains_non_executable_until_confirmed_work_item_is_present() -> None:

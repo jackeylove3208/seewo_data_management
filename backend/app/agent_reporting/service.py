@@ -324,6 +324,22 @@ def _rollback_preview_state(run: AgentRunRecord) -> tuple[str, str, bool]:
     return "ended", "该回滚任务已经结束，不能再次执行。", False
 
 
+def rollback_terminal_state(facts: Mapping[str, Any]) -> str:
+    mutations = facts.get("mutations")
+    if not isinstance(mutations, list) or not mutations:
+        return "completed_with_conflicts"
+    successful_statuses = {"succeeded", "already_restored"}
+    return (
+        "completed"
+        if all(
+            isinstance(mutation, Mapping)
+            and str(mutation.get("status")) in successful_statuses
+            for mutation in mutations
+        )
+        else "completed_with_conflicts"
+    )
+
+
 def _facts(facts: Mapping[str, Any], terminal_state: str) -> dict[str, Any]:
     mutations = list(facts.get("mutations", []))
     counts = {status: 0 for status in ("succeeded", "failed", "blocked", "rejected", "skipped")}

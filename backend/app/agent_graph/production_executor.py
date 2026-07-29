@@ -36,6 +36,10 @@ from app.agent_graph.rollback_executors import (
 from app.agent_graph.tools import GraphPhaseToolGateway
 from app.agent_graph.worker import GraphActionOutcome, GraphWorkContext
 from app.agent_reporting.rollback_cycles import has_fully_verified_mutations
+from app.agent_reporting.service import (
+    AgentReportingService,
+    rollback_terminal_state,
+)
 from app.agent_runtime.csv_governance_handlers import (
     CsvGovernanceHandlers,
     build_agent_report_facts,
@@ -1655,6 +1659,33 @@ class ProductionGraphActionExecutor:
                     else "completed"
                 )
                 fact_ref = f"report-facts:{context.run_id}:{context.graph_cursor}"
+                if terminal_state == "terminated":
+                    await AgentReportingService(session).generate(
+                        task_id=context.task_id,
+                        tenant_id=context.tenant_id,
+                        kind="sync",
+                        terminal_state=terminal_state,
+                        facts=facts,
+                        narrative={
+                            "title_zh": "任务终止报告",
+                            "summary_zh": (
+                                "任务已按操作人要求终止。"
+                                "本报告仅保留服务端已验证事实。"
+                            ),
+                            "fact_refs": [fact_ref],
+                            "degraded": False,
+                        },
+                        generated_by="agent-graph-termination-fallback-v1",
+                    )
+                    await AgentRuntimeRepository(session).append_event(
+                        context.run_id,
+                        "termination.report.deterministic",
+                        {
+                            "phase": AgentPhase.GENERATE_REPORT.value,
+                            "status": "terminated",
+                        },
+                    )
+                    return _outcome(action)
                 bound_action = action.model_copy(
                     update={
                         "resource_ids": (fact_ref,),
@@ -1687,7 +1718,7 @@ class ProductionGraphActionExecutor:
                         tools=fact_tools.handlers(),
                     ),
                     operator=operator,
-                    max_retries=self._max_retries,
+                    max_retries=0,
                 )
                 rollback_eligible = has_fully_verified_mutations(
                     terminal_state,
@@ -1722,10 +1753,6 @@ class ProductionGraphActionExecutor:
                         expected_rollback_eligible=rollback_eligible,
                     )
                 except GraphSubAgentFailure:
-                    if terminal_state != "terminated":
-                        raise
-                    from app.agent_reporting.service import AgentReportingService
-
                     await AgentReportingService(session).generate(
                         task_id=context.task_id,
                         tenant_id=context.tenant_id,
@@ -1733,23 +1760,27 @@ class ProductionGraphActionExecutor:
                         terminal_state=terminal_state,
                         facts=facts,
                         narrative={
-                            "title_zh": "任务终止报告",
+                            "title_zh": (
+                                "输入异常报告"
+                                if terminal_state == "abnormal_input"
+                                else "数据同步分析报告"
+                            ),
                             "summary_zh": (
-                                "任务已按操作人要求终止。模型报告暂不可用，"
+                                "模型报告暂不可用，"
                                 "本报告仅保留服务端已验证事实。"
                             ),
                             "fact_refs": [fact_ref],
                             "degraded": True,
                         },
-                        generated_by="agent-graph-termination-fallback-v1",
+                        generated_by="agent-graph-report-fallback-v1",
                     )
                     await AgentRuntimeRepository(session).append_event(
                         context.run_id,
-                        "termination.report.fallback",
+                        "report.fallback",
                         {
                             "phase": AgentPhase.GENERATE_REPORT.value,
-                            "status": "terminating",
-                            "safe_error_code": "termination_report_model_unavailable",
+                            "status": terminal_state,
+                            "safe_error_code": "report_model_unavailable",
                         },
                     )
         return _outcome(action)
@@ -2333,37 +2364,72 @@ class ProductionGraphActionExecutor:
                         tools=tools.handlers(),
                     ),
                     operator=operator,
-                    max_retries=self._max_retries,
+                    max_retries=0,
                 )
-                rollback_eligible = any(
-                    item.get("status") == "succeeded" for item in facts.get("mutations", [])
+                terminal_state = rollback_terminal_state(facts)
+                rollback_eligible = has_fully_verified_mutations(
+                    terminal_state,
+                    facts,
                 )
-                await GraphReportExecutor(session, runner=runner).generate(
-                    GraphSkillInvocation(
+                invocation = GraphSkillInvocation(
+                    task_id=context.task_id,
+                    run_id=context.run_id,
+                    graph_run_id=context.graph_run_id,
+                    graph_node=context.current_node,
+                    graph_cursor=context.graph_cursor,
+                    action_id=action.action_id,
+                    evidence_manifest_id=manifest_id,
+                    skill_name="generate-agent-governance-report",
+                    skill_version="1.0.0",
+                    input_payload=GovernanceReportInput(
                         task_id=context.task_id,
                         run_id=context.run_id,
-                        graph_run_id=context.graph_run_id,
-                        graph_node=context.current_node,
-                        graph_cursor=context.graph_cursor,
-                        action_id=action.action_id,
-                        evidence_manifest_id=manifest_id,
-                        skill_name="generate-agent-governance-report",
-                        skill_version="1.0.0",
-                        input_payload=GovernanceReportInput(
-                            task_id=context.task_id,
-                            run_id=context.run_id,
-                            phase=AgentPhase.GENERATE_REPORT,
-                            evidence_refs=(fact_ref,),
-                            outcome="completed",
-                            fact_refs=(fact_ref,),
-                        ).model_dump(mode="json"),
-                    ),
-                    tenant_id=context.tenant_id,
-                    kind="rollback",
-                    terminal_state="completed",
-                    facts=facts,
-                    expected_rollback_eligible=rollback_eligible,
+                        phase=AgentPhase.GENERATE_REPORT,
+                        evidence_refs=(fact_ref,),
+                        outcome=(
+                            "failed"
+                            if terminal_state == "completed_with_conflicts"
+                            else terminal_state
+                        ),
+                        fact_refs=(fact_ref,),
+                    ).model_dump(mode="json"),
                 )
+                try:
+                    await GraphReportExecutor(session, runner=runner).generate(
+                        invocation,
+                        tenant_id=context.tenant_id,
+                        kind="rollback",
+                        terminal_state=terminal_state,
+                        facts=facts,
+                        expected_rollback_eligible=rollback_eligible,
+                    )
+                except GraphSubAgentFailure:
+                    await AgentReportingService(session).generate(
+                        task_id=context.task_id,
+                        tenant_id=context.tenant_id,
+                        kind="rollback",
+                        terminal_state=terminal_state,
+                        facts=facts,
+                        narrative={
+                            "title_zh": "数据回滚报告",
+                            "summary_zh": (
+                                "模型报告暂不可用，"
+                                "本报告仅保留服务端已验证的回滚事实。"
+                            ),
+                            "fact_refs": [fact_ref],
+                            "degraded": True,
+                        },
+                        generated_by="agent-graph-rollback-report-fallback-v1",
+                    )
+                    await AgentRuntimeRepository(session).append_event(
+                        context.run_id,
+                        "rollback.report.fallback",
+                        {
+                            "phase": AgentPhase.REPORT_RESTORE.value,
+                            "status": terminal_state,
+                            "safe_error_code": "report_model_unavailable",
+                        },
+                    )
         return _outcome(action)
 
     async def _record_guarded_noop(

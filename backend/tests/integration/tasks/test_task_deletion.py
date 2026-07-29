@@ -36,7 +36,7 @@ from app.models.rematching import (
     EntityRematchJobRecord,
 )
 from app.models.remote_sources import RemoteSourceRecord
-from app.models.reporting import AgentReportRecord
+from app.models.reporting import AgentReportRecord, AgentRollbackCycleRecord
 from app.models.snapshots import Snapshot, SourceFile
 from app.models.workflow import WorkflowStageRun
 from app.tasks.deletion_service import (
@@ -277,6 +277,36 @@ async def test_agent_deletion_service_allows_report_without_verified_mutation(se
 
     await deletion_service(session).delete(pending.id, "school-1")
     assert await session.get(ReconciliationTask, pending.id) is None
+
+
+@pytest.mark.asyncio
+async def test_deleting_no_write_rollback_releases_rollback_cycle_reference(session) -> None:
+    source = task()
+    source.workflow_version = "agent-graph-v1"
+    rollback = task()
+    rollback.workflow_version = "agent-graph-v1"
+    rollback.task_kind = "rollback"
+    rollback.parent_task_id = source.id
+    session.add_all([source, rollback])
+    await session.flush()
+    cycle = AgentRollbackCycleRecord(
+        tenant_id="school-1",
+        data_source_key="target:csv:test",
+        target_kind="csv",
+        generation=1,
+        latest_successful_sync_task_id=source.id,
+        completed_rollback_task_id=rollback.id,
+        completed_rollback_at=datetime.now(UTC),
+    )
+    session.add(cycle)
+    await session.flush()
+
+    await deletion_service(session).delete(rollback.id, "school-1")
+
+    assert await session.get(ReconciliationTask, rollback.id) is None
+    await session.refresh(cycle)
+    assert cycle.completed_rollback_task_id is None
+    assert cycle.completed_rollback_at is None
 
 
 @pytest.mark.asyncio

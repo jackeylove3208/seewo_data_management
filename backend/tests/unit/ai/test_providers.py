@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import httpx
@@ -103,6 +104,28 @@ async def test_llm_single_attempt_maps_transport_failure_to_transient_error() ->
             await provider.complete_json_once(
                 LLMRequest(messages=(Message(role="user", content="analyze"),))
             )
+
+
+@pytest.mark.asyncio
+async def test_llm_single_attempt_enforces_a_wall_clock_deadline() -> None:
+    class SlowClient:
+        async def post(self, *_args, **_kwargs):
+            await asyncio.sleep(0.2)
+            raise AssertionError("request exceeded its wall-clock deadline")
+
+    provider = HttpLLMProvider(
+        settings=Settings(
+            llm_url="https://model.example.test/v1/analyze",
+            llm_api_key="secret-token",
+            llm_timeout_seconds=0.01,
+        ),
+        client=SlowClient(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(TransientModelError, match="transport failed"):
+        await provider.complete_json_once(
+            LLMRequest(messages=(Message(role="user", content="analyze"),))
+        )
 
 
 @pytest.mark.asyncio

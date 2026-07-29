@@ -35,6 +35,7 @@ from app.agent_runtime.service import AgentSupervisorService
 from app.agent_runtime.state_machine import AgentPhase, AgentRunStatus
 from app.agent_runtime.task_service import (
     AgentConnectorCapabilityFailure,
+    AgentTargetBaselineDrift,
     AgentTaskConflict,
     AgentTaskService,
 )
@@ -826,6 +827,10 @@ async def start_conversation_agent_task(
     session: Annotated[AsyncSession, Depends(get_session)],
     operator: Annotated[OperatorContext, Depends(get_operator_context)],
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=128)],
+    accept_current_target_baseline: Annotated[
+        bool,
+        Header(alias="X-Accept-Current-Target-Baseline"),
+    ] = False,
 ) -> AgentTaskResponse:
     _require_enabled(request)
     del body
@@ -871,7 +876,10 @@ async def start_conversation_agent_task(
         )
     try:
         task, _run = await service.create(
-            intent, idempotency_key=idempotency_key, conversation_id=conversation_id
+            intent,
+            idempotency_key=idempotency_key,
+            conversation_id=conversation_id,
+            accept_current_target_baseline=accept_current_target_baseline,
         )
         conversation.context = {
             **{
@@ -894,6 +902,15 @@ async def start_conversation_agent_task(
     except AgentConnectorCapabilityFailure as error:
         raise HTTPException(
             422, detail=_error("connector_capability_failure", str(error))
+        ) from error
+    except AgentTargetBaselineDrift as error:
+        raise HTTPException(
+            409,
+            detail=_error(
+                "target_baseline_drift",
+                str(error),
+                source_ref=error.source_ref,
+            ),
         ) from error
     except (AgentTaskConflict, ValueError) as error:
         raise HTTPException(409, detail=_error("invalid_state", str(error))) from error
@@ -945,6 +962,10 @@ async def start_manual_agent_task(
     session: Annotated[AsyncSession, Depends(get_session)],
     operator: Annotated[OperatorContext, Depends(get_operator_context)],
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=128)],
+    accept_current_target_baseline: Annotated[
+        bool,
+        Header(alias="X-Accept-Current-Target-Baseline"),
+    ] = False,
 ) -> AgentTaskResponse:
     _require_enabled(request)
     if (
@@ -960,7 +981,11 @@ async def start_manual_agent_task(
         )
     service = AgentTaskService(session, operator=operator, settings=request.app.state.settings)
     try:
-        task, _run = await service.create(body, idempotency_key=idempotency_key)
+        task, _run = await service.create(
+            body,
+            idempotency_key=idempotency_key,
+            accept_current_target_baseline=accept_current_target_baseline,
+        )
         return await _task_response(service, task.id)
     except SchoolLockConflict as error:
         raise HTTPException(
@@ -976,6 +1001,15 @@ async def start_manual_agent_task(
     except AgentConnectorCapabilityFailure as error:
         raise HTTPException(
             422, detail=_error("connector_capability_failure", str(error))
+        ) from error
+    except AgentTargetBaselineDrift as error:
+        raise HTTPException(
+            409,
+            detail=_error(
+                "target_baseline_drift",
+                str(error),
+                source_ref=error.source_ref,
+            ),
         ) from error
     except LookupError as error:
         raise HTTPException(404, detail=_error("resource_not_found", str(error))) from error

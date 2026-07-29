@@ -223,7 +223,12 @@ export interface AgentConversationApi {
   createConversation(): Promise<AgentConversation>;
   resetConversation(idempotencyKey: string): Promise<AgentConversation>;
   sendMessage(conversationId: string, message: string): Promise<AgentMessageResponse>;
-  startTask(conversationId: string, intent: AgentIntent, idempotencyKey: string): Promise<AgentTask>;
+  startTask(
+    conversationId: string,
+    intent: AgentIntent,
+    idempotencyKey: string,
+    options?: AgentTaskStartOptions,
+  ): Promise<AgentTask>;
   task?(taskId: string, signal?: AbortSignal): Promise<AgentTask>;
   events(taskId: string, cursor?: string, signal?: AbortSignal): Promise<AgentEventPage>;
   graph?(taskId: string, signal?: AbortSignal): Promise<AgentGraphProgress>;
@@ -255,8 +260,16 @@ export interface AgentConversationApi {
 }
 
 export interface AgentManualTaskApi {
-  startManualTask(intent: AgentIntent, idempotencyKey: string): Promise<AgentTask>;
+  startManualTask(
+    intent: AgentIntent,
+    idempotencyKey: string,
+    options?: AgentTaskStartOptions,
+  ): Promise<AgentTask>;
   localSources?(): Promise<AgentLocalSource[]>;
+}
+
+export interface AgentTaskStartOptions {
+  acceptCurrentTargetBaseline?: boolean;
 }
 
 export interface AgentLocalSource {
@@ -346,7 +359,12 @@ async function sendMessage(conversationId: string, message: string) {
   });
 }
 
-async function startTask(conversationId: string, intent: AgentIntent, idempotencyKey: string) {
+async function startTask(
+  conversationId: string,
+  intent: AgentIntent,
+  idempotencyKey: string,
+  options?: AgentTaskStartOptions,
+) {
   const requestIntent = {
     ...intent,
     source: requestConnector(intent.source),
@@ -354,7 +372,7 @@ async function startTask(conversationId: string, intent: AgentIntent, idempotenc
   };
   return requestJson<AgentTask>(`/api/agent/conversations/${conversationId}/tasks`, {
     method: "POST",
-    headers: { ...jsonHeaders, "Idempotency-Key": idempotencyKey },
+    headers: taskStartHeaders(idempotencyKey, options),
     body: JSON.stringify(requestIntent),
   });
 }
@@ -366,12 +384,29 @@ function requestConnector(connector?: AgentConnectorSelection) {
   return requestSelection;
 }
 
-async function startManualTask(intent: AgentIntent, idempotencyKey: string) {
+async function startManualTask(
+  intent: AgentIntent,
+  idempotencyKey: string,
+  options?: AgentTaskStartOptions,
+) {
   return requestJson<AgentTask>("/api/agent/tasks", {
     method: "POST",
-    headers: { ...jsonHeaders, "Idempotency-Key": idempotencyKey },
+    headers: taskStartHeaders(idempotencyKey, options),
     body: JSON.stringify(intent),
   });
+}
+
+function taskStartHeaders(
+  idempotencyKey: string,
+  options?: AgentTaskStartOptions,
+) {
+  return {
+    ...jsonHeaders,
+    "Idempotency-Key": idempotencyKey,
+    ...(options?.acceptCurrentTargetBaseline
+      ? { "X-Accept-Current-Target-Baseline": "true" }
+      : {}),
+  };
 }
 
 async function events(taskId: string, cursor?: string, signal?: AbortSignal) {

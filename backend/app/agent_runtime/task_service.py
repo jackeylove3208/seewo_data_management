@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent_reporting.rollback_cycles import target_data_source_from_target
 from app.agent_runtime.observability import agent_observability
 from app.agent_runtime.repository import AgentRuntimeRepository, SchoolLockConflict
 from app.agent_runtime.service import AgentSupervisorService
@@ -15,7 +16,7 @@ from app.local_sources.service import LocalSourceService
 from app.models.agent_runtime import AgentRunRecord, SchoolTaskLockRecord
 from app.models.reconciliation import ReconciliationTask
 from app.models.remote_sources import RemoteSourceRecord
-from app.models.reporting import AgentReportRecord
+from app.models.reporting import AgentReportRecord, AgentRollbackCycleRecord
 from app.models.snapshots import Snapshot, SourceFile
 from app.remote_sources.repository import RemoteSourceRepository
 from app.repositories.files import FileRepository
@@ -25,6 +26,14 @@ from app.schemas.canonical_entities import SourceRole
 
 class AgentTaskConflict(ValueError):
     pass
+
+
+class AgentTargetBaselineDrift(ValueError):
+    def __init__(self, *, source_ref: str) -> None:
+        super().__init__(
+            "希沃目标文件已在 Agent 之外发生变化；请确认将当前文件作为新基线后再继续"
+        )
+        self.source_ref = source_ref
 
 
 class AgentConnectorCapabilityFailure(ValueError):
@@ -50,6 +59,7 @@ class AgentTaskService:
         *,
         idempotency_key: str,
         conversation_id: UUID | None = None,
+        accept_current_target_baseline: bool = False,
     ) -> tuple[ReconciliationTask, AgentRunRecord]:
         self._validate_connector_runtime(intent, conversation_id=conversation_id)
         payload = intent.model_dump(mode="json")
@@ -86,6 +96,14 @@ class AgentTaskService:
         if active_lock is not None:
             raise SchoolLockConflict(active_lock.owner_task_id)
 
+        accepted_target_baseline_sha256 = await self._check_local_target_baseline(
+            intent,
+            accept_current=accept_current_target_baseline,
+        )
+        if accepted_target_baseline_sha256 is not None:
+            payload["accepted_target_baseline_sha256"] = (
+                accepted_target_baseline_sha256
+            )
         workflow_version = (
             self.settings.new_task_workflow_version if self.settings is not None else "new-agent-v1"
         )
@@ -149,6 +167,61 @@ class AgentTaskService:
             settings=self.settings,
         ).start(task_id=task.id, conversation_id=conversation_id)
         return task, run
+
+    async def _check_local_target_baseline(
+        self,
+        intent: AgentTaskIntent,
+        *,
+        accept_current: bool,
+    ) -> str | None:
+        if (
+            self.settings is None
+            or intent.target.kind != "local"
+            or intent.target.source_ref is None
+        ):
+            return None
+        identity = target_data_source_from_target(
+            intent.target.model_dump(mode="json")
+        )
+        if identity is None:
+            return None
+        cycle = await self.session.scalar(
+            select(AgentRollbackCycleRecord).where(
+                AgentRollbackCycleRecord.tenant_id == self.operator.tenant_id,
+                AgentRollbackCycleRecord.data_source_key == identity.key,
+            )
+        )
+        if cycle is None or cycle.completed_rollback_task_id is not None:
+            return None
+        report = await self.session.scalar(
+            select(AgentReportRecord).where(
+                AgentReportRecord.task_id
+                == cycle.latest_successful_sync_task_id,
+                AgentReportRecord.tenant_id == self.operator.tenant_id,
+            )
+        )
+        publication = (
+            report.facts.get("publication")
+            if report is not None and isinstance(report.facts, dict)
+            else None
+        )
+        expected_sha256 = (
+            publication.get("published_sha256")
+            if isinstance(publication, dict)
+            else None
+        )
+        if not isinstance(expected_sha256, str):
+            return None
+        material = LocalSourceService(self.settings).describe_target_for_write(
+            intent.target.source_ref
+        )
+        if material.sha256 == expected_sha256:
+            return None
+        if not accept_current:
+            raise AgentTargetBaselineDrift(
+                source_ref=material.source_ref,
+            )
+        return material.sha256
 
     def _validate_connector_runtime(
         self,

@@ -10,6 +10,7 @@ import {
   type AgentLocalSource,
   type AgentManualTaskApi,
 } from "../../api/agent";
+import { ApiError } from "../../api/client";
 import { ingestionApi } from "../../api/ingestion";
 import { summarizeCsv, type CsvSummary } from "./csvSummary";
 
@@ -104,6 +105,7 @@ export function TaskCreatePage({
   });
   const [submissionState, setSubmissionState] = useState<SubmissionState>("idle");
   const [submitError, setSubmitError] = useState<string>();
+  const [targetBaselineDrift, setTargetBaselineDrift] = useState(false);
   const [localSources, setLocalSources] = useState<AgentLocalSource[]>([]);
   const [localSourcesError, setLocalSourcesError] = useState<string>();
   const [localSourcesLoading, setLocalSourcesLoading] = useState(false);
@@ -167,22 +169,34 @@ export function TaskCreatePage({
     }));
   }
 
-  async function createTask() {
+  async function createTask(acceptCurrentTargetBaseline = false) {
     if (!draft.title.trim() || !draft.entityTypes.length || !readyConnector(draft.source) || !readyConnector(draft.target) || submissionState === "submitting") return;
     setSubmissionState("submitting");
     setSubmitError(undefined);
+    if (!acceptCurrentTargetBaseline) {
+      setTargetBaselineDrift(false);
+    }
     try {
       const source = await uploadConnector(draft.source!, "authoritative");
       const target = await uploadConnector(draft.target!, "target");
-      const task = await api.startManualTask({
+      const intent = {
         title: draft.title.trim(),
         entity_types: draft.entityTypes,
         source,
         target,
-      }, sessionKey());
+      };
+      const task = acceptCurrentTargetBaseline
+        ? await api.startManualTask(intent, sessionKey(), {
+          acceptCurrentTargetBaseline: true,
+        })
+        : await api.startManualTask(intent, sessionKey());
       setSubmissionState("created");
+      setTargetBaselineDrift(false);
       navigate(`/tasks/${task.id}`);
     } catch (error) {
+      setTargetBaselineDrift(
+        error instanceof ApiError && error.code === "target_baseline_drift",
+      );
       setSubmitError(error instanceof Error ? error.message : "任务创建失败，请稍后重试");
       setSubmissionState("failed");
     }
@@ -278,7 +292,22 @@ export function TaskCreatePage({
             })}
             <fieldset className="draft-fieldset entity-checks sync-setting-card"><legend className="sync-setting-legend">同步对象</legend><span className="sync-setting-title" aria-hidden="true">同步对象</span><div className="draft-entity-grid">{entityTypes.map((entityType) => <Checkbox key={entityType} aria-label={entityLabels[entityType]} checked={draft.entityTypes.includes(entityType)} disabled={isSubmitting} onChange={(event) => toggleType(entityType, event.target.checked)}>{entityLabels[entityType]}</Checkbox>)}</div><button className="text-button" type="button" disabled={isSubmitting} onClick={() => setDraft((current) => ({ ...current, entityTypes: [] }))}>清空选择</button></fieldset>
           </div>
-          {submitError && <Alert className="draft-error" type="error" showIcon message={submitError} />}
+          {submitError && (
+            <Alert
+              className="draft-error"
+              type={targetBaselineDrift ? "warning" : "error"}
+              showIcon
+              message={submitError}
+              action={targetBaselineDrift ? (
+                <Button
+                  disabled={isSubmitting}
+                  onClick={() => void createTask(true)}
+                >
+                  将当前文件作为新基线继续
+                </Button>
+              ) : undefined}
+            />
+          )}
           <Button className="sync-start-button" type="primary" size="large" loading={isSubmitting} disabled={!ready || isSubmitting} onClick={() => void createTask()}>开始同步</Button>
           <p className="draft-footnote">提交后由后端 Agent 执行；审批通过的治理结果会原子写回所选希沃原文件，不再生成需要下载的治理副本。</p>
         </section>

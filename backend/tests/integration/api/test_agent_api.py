@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
@@ -1219,6 +1220,114 @@ def test_uploaded_authority_can_bind_to_a_writable_local_target(
     )
 
     assert repeated.status_code == 202, repeated.text
+
+
+def test_local_task_requires_explicit_acceptance_when_target_changed_outside_agent(
+    graph_agent_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "drifted-local-target"
+    authority = root / "data/authority.csv"
+    target = root / "seewo/target.csv"
+    authority.parent.mkdir(parents=True)
+    target.parent.mkdir(parents=True)
+    authority.write_text("编号,姓名\n001,新姓名\n", encoding="utf-8")
+    published_content = "编号,姓名\n001,新姓名\n"
+    target.write_text(published_content, encoding="utf-8")
+    graph_agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
+    graph_agent_client.app.state.settings.agent_local_write_roots = (
+        (root / "seewo").resolve(),
+    )
+
+    async def seed_last_successful_sync() -> None:
+        async with graph_agent_client.app.state.database.session_factory() as session:
+            task = ReconciliationTask(
+                tenant_id="school-1",
+                scope_id="all",
+                snapshot_mode="full",
+                entity_types=["student"],
+                status="completed",
+                stage="terminal",
+                workflow_version="agent-graph-v1",
+                task_kind="sync",
+                title="上一次成功同步",
+                agent_intent={
+                    "target": {
+                        "kind": "local",
+                        "source_ref": "seewo/target.csv",
+                    }
+                },
+                idempotency_key=f"drift-source-{uuid4()}",
+                request_hash="d" * 64,
+            )
+            session.add(task)
+            await session.flush()
+            await AgentReportingService(session).generate(
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                kind="sync",
+                terminal_state="completed",
+                facts={
+                    "mutations": [{
+                        "id": str(uuid4()),
+                        "status": "succeeded",
+                        "verification": {"valid": True},
+                    }],
+                    "publication": {
+                        "status": "published",
+                        "source_ref": "seewo/target.csv",
+                        "published_sha256": hashlib.sha256(
+                            published_content.encode()
+                        ).hexdigest(),
+                    },
+                },
+            )
+            await session.commit()
+
+    graph_agent_client.portal.call(seed_last_successful_sync)
+    target.write_text("编号,姓名\n001,旧姓名\n", encoding="utf-8")
+    intent = {
+        "title": "再次同步",
+        "entity_types": ["student"],
+        "source": {"kind": "local", "source_ref": "data/authority.csv"},
+        "target": {"kind": "local", "source_ref": "seewo/target.csv"},
+    }
+
+    blocked = graph_agent_client.post(
+        "/api/agent/tasks",
+        headers={"Idempotency-Key": "drifted-local-target"},
+        json=intent,
+    )
+
+    assert blocked.status_code == 409, blocked.text
+    assert blocked.json()["detail"]["code"] == "target_baseline_drift"
+    assert blocked.json()["detail"]["source_ref"] == "seewo/target.csv"
+
+    accepted = graph_agent_client.post(
+        "/api/agent/tasks",
+        headers={
+            "Idempotency-Key": "drifted-local-target",
+            "X-Accept-Current-Target-Baseline": "true",
+        },
+        json=intent,
+    )
+
+    assert accepted.status_code == 202, accepted.text
+
+    async def accepted_baseline() -> str | None:
+        async with graph_agent_client.app.state.database.session_factory() as session:
+            task = await session.get(
+                ReconciliationTask,
+                UUID(accepted.json()["id"]),
+            )
+            assert task is not None
+            return (task.agent_intent or {}).get(
+                "accepted_target_baseline_sha256"
+            )
+
+    assert graph_agent_client.portal.call(accepted_baseline) == hashlib.sha256(
+        target.read_bytes()
+    ).hexdigest()
 
 
 def test_conversation_returns_sanitized_error_for_invalid_model_output(

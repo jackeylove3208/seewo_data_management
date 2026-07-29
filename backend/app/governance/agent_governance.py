@@ -222,6 +222,7 @@ class AgentGovernancePlan:
     id: UUID
     target_version: str
     operations: tuple[AgentGovernanceOperation, ...]
+    excluded_finding_ids: frozenset[UUID] = frozenset()
 
 
 def compile_agent_plan(
@@ -267,6 +268,28 @@ def compile_agent_plan(
         and finding.finding_id not in rejected_finding_ids
         and finding.operation not in {AgentOperation.RETAIN, AgentOperation.SKIP}
     ]
+    create_targets: dict[str, list[UUID]] = {}
+    for finding in executable_findings:
+        if finding.operation != AgentOperation.CREATE:
+            continue
+        identifier = str(
+            (finding.after or {}).get("source_id")
+            or finding.target_source_identifier
+            or ""
+        ).strip()
+        if identifier:
+            create_targets.setdefault(identifier, []).append(finding.finding_id)
+    excluded_finding_ids = frozenset(
+        finding_id
+        for finding_ids in create_targets.values()
+        if len(finding_ids) > 1
+        for finding_id in finding_ids
+    )
+    executable_findings = [
+        finding
+        for finding in executable_findings
+        if finding.finding_id not in excluded_finding_ids
+    ]
     operation_ids = {
         finding.finding_id: uuid5(
             NAMESPACE_URL, f"agent-operation:{finding.finding_id}:{finding.target_version}"
@@ -303,7 +326,7 @@ def compile_agent_plan(
                 target_version=finding.target_version,
             )
         )
-    if not operations:
+    if not operations and not excluded_finding_ids:
         raise ValueError("no executable Agent operations remain")
     target_version = next(iter(target_versions))
     plan_hash = sha256(
@@ -312,10 +335,12 @@ def compile_agent_plan(
                 (str(operation.id), operation.operation, sorted(operation.dependencies))
                 for operation in operations
             ]
+            + [("excluded", sorted(str(item) for item in excluded_finding_ids))]
         ).encode()
     ).hexdigest()
     return AgentGovernancePlan(
         id=uuid5(NAMESPACE_URL, f"agent-plan:{target_version}:{plan_hash}"),
         target_version=target_version,
         operations=tuple(operations),
+        excluded_finding_ids=excluded_finding_ids,
     )
