@@ -116,6 +116,8 @@ class Settings(BaseSettings):
     new_agent_database_connector_enabled: bool = False
     conversation_remote_csv_enabled: bool = False
     api_connector_secret_key: SecretStr | None = None
+    api_connector_connect_timeout_seconds: PositiveFloat = 10
+    api_connector_read_timeout_seconds: PositiveFloat = 30
     remote_source_max_redirects: int = Field(default=3, ge=0, le=5)
     remote_source_connect_timeout_seconds: PositiveFloat = 10
     remote_source_read_timeout_seconds: PositiveFloat = 30
@@ -215,8 +217,6 @@ class Settings(BaseSettings):
             raise ValueError("new_agent_enabled is required for Agent rollout flags")
         if self.new_agent_analysis_only and any(child_flags):
             raise ValueError("new_agent_analysis_only cannot enable target execution")
-        if self.new_agent_api_connector_enabled and not self.api_connector_configurations:
-            raise ValueError("API connector configuration is required before enabling execution")
         if self.new_agent_api_connector_enabled:
             if self.api_connector_secret_key is None:
                 raise ValueError(

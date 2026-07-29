@@ -115,5 +115,4 @@ def test_safe_connection_rejects_secret_bearing_public_configuration() -> None:
             capabilities={},
             visibility_summary={},
             state="pending",
-            secret_configured=True,
         )

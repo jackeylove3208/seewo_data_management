@@ -2,11 +2,13 @@ import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI
 
 from app.api.routes.agent import router as agent_router
 from app.api.routes.analyses import router as analysis_router
 from app.api.routes.analysis_jobs import router as analysis_job_router
+from app.api.routes.api_connectors import router as api_connector_router
 from app.api.routes.differences import router as difference_router
 from app.api.routes.execution_batches import router as execution_batch_router
 from app.api.routes.execution_records import router as execution_record_router
@@ -17,6 +19,9 @@ from app.api.routes.rematching_jobs import router as rematching_router
 from app.api.routes.reports import router as report_router
 from app.api.routes.restores import router as restore_router
 from app.api.routes.uploads import router as upload_router
+from app.api_connectors.dingtalk import DingtalkOrganizationAdapter
+from app.api_connectors.registry import build_default_provider_registry
+from app.api_connectors.wecom import WeComOrganizationAdapter
 from app.core.config import Settings, get_settings
 from app.core.database import Database
 from app.models import Base
@@ -36,17 +41,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             else secrets.token_bytes(32)
         )
         app.state.database = Database(configured.database_url)
+        timeout = httpx.Timeout(
+            configured.api_connector_read_timeout_seconds,
+            connect=configured.api_connector_connect_timeout_seconds,
+        )
+        dingtalk_client = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
+        wecom_client = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
+        app.state.api_provider_registry = build_default_provider_registry(
+            dingtalk_adapter=DingtalkOrganizationAdapter(dingtalk_client),
+            wecom_adapter=WeComOrganizationAdapter(wecom_client),
+        )
+        app.state.api_configuration_sessions = {}
         if configured.auto_create_schema:
             async with app.state.database.engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
         try:
             yield
         finally:
+            await dingtalk_client.aclose()
+            await wecom_client.aclose()
             await app.state.database.dispose()
 
     app = FastAPI(title=configured.app_name, version="0.1.0", lifespan=lifespan)
     app.include_router(health_router, prefix="/health", tags=["health"])
     app.include_router(agent_router)
+    app.include_router(api_connector_router)
     app.include_router(analysis_router)
     app.include_router(analysis_job_router)
     app.include_router(difference_router)

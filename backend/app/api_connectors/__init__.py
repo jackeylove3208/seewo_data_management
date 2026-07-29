@@ -2,6 +2,7 @@
 
 from app.api_connectors.contracts import (
     AgentProjectionContext,
+    ApiProviderError,
     CapturedApiPage,
     CaptureResult,
     ConnectionTestResult,
@@ -10,7 +11,7 @@ from app.api_connectors.contracts import (
     ProviderManifest,
     SafeApiConnection,
 )
-from app.api_connectors.registry import ProviderRegistry
+from app.api_connectors.registry import ProviderRegistry, build_default_provider_registry
 from app.api_connectors.secrets import (
     EncryptedDatabaseSecretStore,
     SecretReferenceError,
@@ -18,6 +19,7 @@ from app.api_connectors.secrets import (
 
 __all__ = [
     "AgentProjectionContext",
+    "ApiProviderError",
     "CapturedApiPage",
     "CaptureResult",
     "ConnectionTestResult",
@@ -28,4 +30,5 @@ __all__ = [
     "ProviderRegistry",
     "SafeApiConnection",
     "SecretReferenceError",
+    "build_default_provider_registry",
 ]

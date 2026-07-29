@@ -10,12 +10,12 @@
 - [x] 2.1 Add API connection, task-bound API authority source, and external identity binding models and migration
 - [x] 2.2 Implement provider manifest registry and deterministic Adapter protocol
 - [x] 2.3 Implement backend-only secret resolver and safe connection views
-- [ ] 2.4 Add tenant-scoped connection create/list/read/test/rotate/delete services and API routes
-- [ ] 2.5 Add capability, visibility, sanitized-error, and cross-tenant security tests
+- [x] 2.4 Add tenant-scoped connection create/list/read/test/rotate/delete services and API routes
+- [x] 2.5 Add capability, visibility, sanitized-error, and cross-tenant security tests
 
 ## 3. Graph v2 API materialization
 
-- [ ] 3.1 Select agent-sync-graph-v2 for new API-authority tasks
+- [x] 3.1 Select agent-sync-graph-v2 for new API-authority tasks
 - [ ] 3.2 Bind api-source resources during API task creation
 - [ ] 3.3 Extend materialize_sources candidate generation and action dispatch for api-source resources
 - [ ] 3.4 Implement atomic paginated API JSONL capture with hashes, counts, versions, and idempotent replay
@@ -39,10 +39,10 @@
 
 ## 6. Provider adapters
 
-- [ ] 6.1 Implement DingTalk authentication, capability probing, pagination, safe errors, and field projection
-- [ ] 6.2 Run the shared provider contract suite against a synthetic DingTalk server
-- [ ] 6.3 Implement WeCom authentication, capability probing, pagination, safe errors, and field projection
-- [ ] 6.4 Run the same provider contract suite against a synthetic WeCom server without Graph changes
+- [x] 6.1 Implement DingTalk authentication, capability probing, pagination, safe errors, and field projection
+- [x] 6.2 Run the shared provider contract suite against a synthetic DingTalk server
+- [x] 6.3 Implement WeCom authentication, capability probing, pagination, safe errors, and field projection
+- [x] 6.4 Run the same provider contract suite against a synthetic WeCom server without Graph changes
 
 ## 7. Conversational configuration
 

@@ -92,6 +92,19 @@ class EncryptedDatabaseSecretStore:
         await self._session.flush()
         return new_ref
 
+    async def delete(
+        self,
+        *,
+        tenant_id: str,
+        secret_ref: str,
+    ) -> None:
+        record = await self._owned_secret(
+            tenant_id=_validated_tenant_id(tenant_id),
+            secret_ref=secret_ref,
+        )
+        await self._session.delete(record)
+        await self._session.flush()
+
     async def _owned_secret(
         self,
         *,

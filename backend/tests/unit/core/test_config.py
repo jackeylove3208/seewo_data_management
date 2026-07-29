@@ -132,34 +132,16 @@ def test_analysis_only_mode_rejects_target_execution() -> None:
         )
 
 
-def test_connector_execution_flags_require_server_side_connector_configuration() -> None:
-    with pytest.raises(ValueError, match="API connector configuration"):
-        Settings(
-            new_agent_enabled=True,
-            new_agent_analysis_only=False,
-            new_agent_api_connector_enabled=True,
-            _env_file=None,
-        )
-
+def test_api_connector_execution_uses_dynamic_connection_store() -> None:
     configured = Settings(
         new_agent_enabled=True,
         new_agent_analysis_only=False,
         new_agent_api_connector_enabled=True,
         api_connector_secret_key=Fernet.generate_key().decode(),
-        api_connector_configurations={
-            "seewo": {
-                "credential_reference": "secret://connectors/seewo-api",
-                "endpoint": "https://connector.example.test/v1/people",
-                "record_id_field": "id",
-                "version_field": "etag",
-            }
-        },
         _env_file=None,
     )
 
-    assert configured.api_connector_configurations["seewo"].credential_reference.endswith(
-        "seewo-api"
-    )
+    assert configured.api_connector_configurations == {}
 
 
 def test_api_connector_execution_requires_valid_encryption_key() -> None:

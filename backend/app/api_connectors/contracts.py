@@ -8,6 +8,14 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.schemas.agent_ingestion import AgentContractRecord, AgentEntityKind
 
 
+class ApiProviderError(RuntimeError):
+    """Provider failure translated to a stable code without response details."""
+
+    def __init__(self, safe_code: str) -> None:
+        self.safe_code = safe_code
+        super().__init__(safe_code)
+
+
 class ProviderManifest(BaseModel):
     """Immutable, audited contract for one provider Adapter implementation."""
 
@@ -68,7 +76,6 @@ class SafeApiConnection(BaseModel):
     capabilities: dict[str, bool] = Field(default_factory=dict)
     visibility_summary: dict[str, str | int | bool | None] = Field(default_factory=dict)
     state: str = Field(pattern=r"^(pending|active|invalid|disabled)$")
-    secret_configured: bool
     last_tested_at: datetime | None = None
     last_safe_error_code: str | None = Field(default=None, max_length=128)
 
@@ -96,7 +103,8 @@ class FrozenApiRecord(BaseModel):
 
     external_id: str = Field(min_length=1, max_length=512)
     entity_kind: AgentEntityKind
-    provider_fields: dict[str, str | int | bool | None] = Field(default_factory=dict)
+    provider_fields: dict[str, object] = Field(default_factory=dict)
+    projected_fields: dict[str, str | None] = Field(default_factory=dict)
     unavailable_fields: tuple[str, ...] = ()
 
 

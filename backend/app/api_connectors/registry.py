@@ -36,3 +36,14 @@ class ProviderRegistry:
             return self._providers[provider_id]
         except KeyError as error:
             raise KeyError(f"provider {provider_id!r} is not registered") from error
+
+
+def build_default_provider_registry(
+    *,
+    dingtalk_adapter: OrganizationApiAdapter,
+    wecom_adapter: OrganizationApiAdapter,
+) -> ProviderRegistry:
+    registry = ProviderRegistry()
+    registry.register(dingtalk_adapter.manifest, dingtalk_adapter)
+    registry.register(wecom_adapter.manifest, wecom_adapter)
+    return registry
