@@ -501,41 +501,17 @@ class ProductionGraphActionExecutor:
         action: AllowedActionV1,
         binding: AgentSourceBinding,
     ) -> GraphActionOutcome:
-        if binding.role != "authoritative" or binding.configuration_id is None:
-            raise GraphGuardRejected("api_authority_binding_invalid")
-        try:
-            connection_id = UUID(binding.configuration_id)
-        except ValueError as error:
-            raise GraphGuardRejected("api_authority_binding_invalid") from error
         async with self._session_factory() as session:
             async with session.begin():
-                api_source = await session.scalar(
-                    select(ApiAuthoritySourceRecord).where(
-                        ApiAuthoritySourceRecord.task_id == context.task_id,
-                        ApiAuthoritySourceRecord.tenant_id == context.tenant_id,
-                        ApiAuthoritySourceRecord.connection_id == connection_id,
+                api_source, connection, _snapshot, source = (
+                    await _api_source_materials(
+                        session,
+                        task_id=context.task_id,
+                        tenant_id=context.tenant_id,
+                        binding=binding,
+                        invalid_code="api_authority_materialization_incomplete",
                     )
                 )
-                connection = await session.scalar(
-                    select(ApiConnectionRecord).where(
-                        ApiConnectionRecord.id == connection_id,
-                        ApiConnectionRecord.tenant_id == context.tenant_id,
-                    )
-                )
-                snapshot, source = await _source_snapshot(
-                    session,
-                    task_id=context.task_id,
-                    role=binding.role,
-                )
-                if (
-                    api_source is None
-                    or connection is None
-                    or api_source.state != "ready"
-                    or api_source.source_file_id != source.id
-                    or api_source.snapshot_id != snapshot.id
-                    or api_source.content_sha256 != source.sha256
-                ):
-                    raise GraphGuardRejected("api_authority_materialization_incomplete")
                 capabilities = {
                     str(key): value
                     for key, value in connection.capabilities.items()
@@ -3307,6 +3283,34 @@ async def _api_artifact_materials(
     Snapshot,
     SourceFile,
 ]:
+    api_source, connection, snapshot, source = await _api_source_materials(
+        session,
+        task_id=task_id,
+        tenant_id=tenant_id,
+        binding=binding,
+        invalid_code="api_authority_artifact_binding_invalid",
+    )
+    if (
+        snapshot.file_hash != source.sha256
+        or snapshot.mapping_version != api_source.projection_version
+    ):
+        raise GraphGuardRejected("api_authority_artifact_binding_invalid")
+    return api_source, connection, snapshot, source
+
+
+async def _api_source_materials(
+    session: AsyncSession,
+    *,
+    task_id: UUID,
+    tenant_id: str,
+    binding: AgentSourceBinding,
+    invalid_code: str,
+) -> tuple[
+    ApiAuthoritySourceRecord,
+    ApiConnectionRecord,
+    Snapshot,
+    SourceFile,
+]:
     if (
         binding.role != "authoritative"
         or binding.connector_kind != "api"
@@ -3342,10 +3346,8 @@ async def _api_artifact_materials(
         or api_source.source_file_id != source.id
         or api_source.snapshot_id != snapshot.id
         or api_source.content_sha256 != source.sha256
-        or snapshot.file_hash != source.sha256
-        or snapshot.mapping_version != api_source.projection_version
     ):
-        raise GraphGuardRejected("api_authority_artifact_binding_invalid")
+        raise GraphGuardRejected(invalid_code)
     return api_source, connection, snapshot, source
 
 
@@ -3364,28 +3366,43 @@ def _bind_input_marks(
     marks: tuple[AgentInputMark, ...],
     persisted: tuple[AgentInputRecord, ...],
 ) -> tuple[AgentInputMark, ...]:
-    by_row = {record.raw_row_number: record.id for record in persisted}
-    result: list[AgentInputMark] = []
-    for mark in marks:
-        row_number = mark.safe_evidence.get("row_number")
-        if not isinstance(row_number, int) or row_number not in by_row:
-            raise ValueError("ingestion mark does not correspond to a persisted input")
-        result.append(mark.model_copy(update={"input_record_id": by_row[row_number]}))
-    return tuple(result)
+    return _bind_marks(
+        marks,
+        {
+            record.raw_row_number: record.id
+            for record in persisted
+            if record.raw_row_number is not None
+        },
+        error_message="ingestion mark does not correspond to a persisted input",
+    )
 
 
 def _bind_api_input_marks(
     marks: tuple[AgentInputMark, ...],
     persisted: tuple[AgentInputRecord, ...],
 ) -> tuple[AgentInputMark, ...]:
-    by_order = {record.stable_order: record.id for record in persisted}
+    return _bind_marks(
+        marks,
+        {record.stable_order: record.id for record in persisted},
+        error_message="API ingestion mark does not correspond to a persisted input",
+    )
+
+
+def _bind_marks(
+    marks: tuple[AgentInputMark, ...],
+    input_ids_by_position: dict[int, UUID],
+    *,
+    error_message: str,
+) -> tuple[AgentInputMark, ...]:
     result: list[AgentInputMark] = []
     for mark in marks:
-        stable_order = mark.safe_evidence.get("row_number")
-        if not isinstance(stable_order, int) or stable_order not in by_order:
-            raise ValueError("API ingestion mark does not correspond to a persisted input")
+        position = mark.safe_evidence.get("row_number")
+        if not isinstance(position, int) or position not in input_ids_by_position:
+            raise ValueError(error_message)
         result.append(
-            mark.model_copy(update={"input_record_id": by_order[stable_order]})
+            mark.model_copy(
+                update={"input_record_id": input_ids_by_position[position]}
+            )
         )
     return tuple(result)
 

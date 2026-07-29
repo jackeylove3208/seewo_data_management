@@ -2,7 +2,6 @@ import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-import httpx
 from fastapi import FastAPI
 
 from app.api.routes import api_connectors
@@ -19,9 +18,7 @@ from app.api.routes.rematching_jobs import router as rematching_router
 from app.api.routes.reports import router as report_router
 from app.api.routes.restores import router as restore_router
 from app.api.routes.uploads import router as upload_router
-from app.api_connectors.dingtalk import DingtalkOrganizationAdapter
-from app.api_connectors.registry import build_default_provider_registry
-from app.api_connectors.wecom import WeComOrganizationAdapter
+from app.api_connectors.registry import build_default_provider_runtime
 from app.core.config import Settings, get_settings
 from app.core.database import Database
 from app.models import Base
@@ -41,15 +38,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             else secrets.token_bytes(32)
         )
         app.state.database = Database(configured.database_url)
-        timeout = httpx.Timeout(
-            configured.api_connector_read_timeout_seconds,
-            connect=configured.api_connector_connect_timeout_seconds,
-        )
-        dingtalk_client = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
-        wecom_client = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
-        app.state.api_provider_registry = build_default_provider_registry(
-            dingtalk_adapter=DingtalkOrganizationAdapter(dingtalk_client),
-            wecom_adapter=WeComOrganizationAdapter(wecom_client),
+        app.state.api_provider_registry, provider_clients = (
+            build_default_provider_runtime(
+                connect_timeout=configured.api_connector_connect_timeout_seconds,
+                read_timeout=configured.api_connector_read_timeout_seconds,
+            )
         )
         app.state.api_configuration_sessions = {}
         if configured.auto_create_schema:
@@ -58,8 +51,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
-            await dingtalk_client.aclose()
-            await wecom_client.aclose()
+            for client in provider_clients:
+                await client.aclose()
             await app.state.database.dispose()
 
     app = FastAPI(title=configured.app_name, version="0.1.0", lifespan=lifespan)

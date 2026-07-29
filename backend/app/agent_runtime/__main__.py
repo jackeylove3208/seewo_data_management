@@ -15,10 +15,8 @@ from app.agent_runtime.worker import AgentWorker
 from app.ai.graph_supervisor import GraphSupervisorAgent
 from app.ai.providers.llm import HttpLLMProvider
 from app.ai.worker import WorkerRunner, run_worker_loop
-from app.api_connectors.dingtalk import DingtalkOrganizationAdapter
 from app.api_connectors.materializer import ApiAuthorityMaterializer
-from app.api_connectors.registry import build_default_provider_registry
-from app.api_connectors.wecom import WeComOrganizationAdapter
+from app.api_connectors.registry import build_default_provider_runtime
 from app.connectors.database_runtime import ConfiguredDatabaseConnectorRuntime
 from app.core.config import get_settings
 from app.core.database import Database
@@ -49,17 +47,9 @@ async def run() -> None:
     api_materializer: ApiAuthorityMaterializer | None = None
     if settings.new_agent_api_connector_enabled:
         assert settings.api_connector_secret_key is not None
-        timeout = httpx.Timeout(
-            settings.api_connector_read_timeout_seconds,
-            connect=settings.api_connector_connect_timeout_seconds,
-        )
-        api_clients = (
-            httpx.AsyncClient(timeout=timeout, follow_redirects=False),
-            httpx.AsyncClient(timeout=timeout, follow_redirects=False),
-        )
-        provider_registry = build_default_provider_registry(
-            dingtalk_adapter=DingtalkOrganizationAdapter(api_clients[0]),
-            wecom_adapter=WeComOrganizationAdapter(api_clients[1]),
+        provider_registry, api_clients = build_default_provider_runtime(
+            connect_timeout=settings.api_connector_connect_timeout_seconds,
+            read_timeout=settings.api_connector_read_timeout_seconds,
         )
         api_materializer = ApiAuthorityMaterializer(
             settings,

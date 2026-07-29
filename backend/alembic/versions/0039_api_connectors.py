@@ -83,6 +83,8 @@ def upgrade() -> None:
         sa.Column("tenant_id", sa.String(length=128), nullable=False),
         sa.Column("task_id", sa.Uuid(), nullable=False),
         sa.Column("connection_id", sa.Uuid(), nullable=False),
+        sa.Column("frozen_public_configuration", sa.JSON(), nullable=False),
+        sa.Column("frozen_secret_ref", sa.String(length=128), nullable=False),
         sa.Column("selected_entities", sa.JSON(), nullable=False),
         sa.Column("selection_hash", sa.String(length=64), nullable=False),
         sa.Column("state", sa.String(length=32), nullable=False),

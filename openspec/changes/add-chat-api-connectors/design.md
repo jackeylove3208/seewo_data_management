@@ -57,9 +57,9 @@ or human-gate topology changes.
 ### Route ingestion by role binding
 
 Ingestion v3 resolves one immutable binding for `authoritative` and one for `target`. Each binding
-contains role, connector kind, configuration ID, snapshot ID, mapping checkpoint key, and
-normalization checkpoint key. API authority and database target inspection, mapping, and
-normalization are selected independently.
+contains role, connector kind, configuration ID, mapping checkpoint key, and normalization
+checkpoint key. API authority and database target snapshots are resolved from their persisted
+task-bound resources; inspection, mapping, and normalization are selected independently.
 
 Alternative considered: extend `_source_pair_mode()` with an `api_database` value. Rejected because
 it preserves the coupling that will fail again when another source/target combination is added.

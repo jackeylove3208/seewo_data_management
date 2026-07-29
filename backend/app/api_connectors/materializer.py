@@ -1,6 +1,6 @@
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -85,21 +85,21 @@ class ApiAuthorityMaterializer:
             connection = await self._connection(session, record)
             adapter = self._adapter(record, connection)
             selected_entities = _selected_entities(record)
-            secret = await self._secret(
+            secret = await EncryptedDatabaseSecretStore(
                 session,
+                fernet_key=self._fernet_key,
+            ).get(
                 tenant_id=record.tenant_id,
                 secret_ref=record.frozen_secret_ref,
             )
-            pages = tuple(
-                [
-                    page
-                    async for page in adapter.capture(
-                        record.frozen_public_configuration,
-                        secret,
-                        selected_entities,
-                    )
-                ]
-            )
+            pages = [
+                page
+                async for page in adapter.capture(
+                    record.frozen_public_configuration,
+                    secret,
+                    selected_entities,
+                )
+            ]
             frozen_records = _validate_capture(
                 pages,
                 selected_entities=selected_entities,
@@ -231,18 +231,6 @@ class ApiAuthorityMaterializer:
             raise ApiSourceFailure("connector_provider_contract_stale")
         return adapter
 
-    async def _secret(
-        self,
-        session: AsyncSession,
-        *,
-        tenant_id: str,
-        secret_ref: str,
-    ) -> dict[str, str]:
-        return await EncryptedDatabaseSecretStore(
-            session,
-            fernet_key=self._fernet_key,
-        ).get(tenant_id=tenant_id, secret_ref=secret_ref)
-
     @staticmethod
     async def _ready_source(
         session: AsyncSession,
@@ -302,7 +290,7 @@ def _selected_entities(
 
 
 def _validate_capture(
-    pages: tuple[CapturedApiPage, ...],
+    pages: Sequence[CapturedApiPage],
     *,
     selected_entities: frozenset[AgentEntityKind],
     maximum_pages: int,

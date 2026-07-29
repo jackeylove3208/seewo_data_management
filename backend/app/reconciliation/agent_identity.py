@@ -231,10 +231,7 @@ class AgentIdentityIndexBuilder:
             if (
                 target_record is None
                 or authority_record.entity_kind != binding.entity_kind
-                or (
-                    target_record is not None
-                    and target_record.entity_kind != binding.entity_kind
-                )
+                or target_record.entity_kind != binding.entity_kind
             ):
                 await self._mark_identity_exception(
                     authority_record,

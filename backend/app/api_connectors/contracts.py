@@ -116,14 +116,6 @@ class CapturedApiPage(BaseModel):
     next_cursor: str | None = Field(default=None, max_length=2048)
 
 
-class CaptureResult(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    records: tuple[FrozenApiRecord, ...]
-    page_count: int = Field(ge=0)
-    record_count: int = Field(ge=0)
-
-
 class AgentProjectionContext(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 

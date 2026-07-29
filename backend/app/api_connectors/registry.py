@@ -1,4 +1,8 @@
+import httpx
+
 from app.api_connectors.contracts import OrganizationApiAdapter, ProviderManifest
+from app.api_connectors.dingtalk import DingtalkOrganizationAdapter
+from app.api_connectors.wecom import WeComOrganizationAdapter
 
 
 class ProviderRegistry:
@@ -38,12 +42,19 @@ class ProviderRegistry:
             raise KeyError(f"provider {provider_id!r} is not registered") from error
 
 
-def build_default_provider_registry(
+def build_default_provider_runtime(
     *,
-    dingtalk_adapter: OrganizationApiAdapter,
-    wecom_adapter: OrganizationApiAdapter,
-) -> ProviderRegistry:
+    connect_timeout: float,
+    read_timeout: float,
+) -> tuple[ProviderRegistry, tuple[httpx.AsyncClient, ...]]:
+    timeout = httpx.Timeout(read_timeout, connect=connect_timeout)
+    clients = (
+        httpx.AsyncClient(timeout=timeout, follow_redirects=False),
+        httpx.AsyncClient(timeout=timeout, follow_redirects=False),
+    )
+    dingtalk = DingtalkOrganizationAdapter(clients[0])
+    wecom = WeComOrganizationAdapter(clients[1])
     registry = ProviderRegistry()
-    registry.register(dingtalk_adapter.manifest, dingtalk_adapter)
-    registry.register(wecom_adapter.manifest, wecom_adapter)
-    return registry
+    registry.register(dingtalk.manifest, dingtalk)
+    registry.register(wecom.manifest, wecom)
+    return registry, clients
