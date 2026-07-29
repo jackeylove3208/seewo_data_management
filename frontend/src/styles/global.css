@@ -221,7 +221,9 @@ button {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   gap: 12px;
+  min-height: 0;
   height: 100%;
+  overflow: hidden;
 }
 
 .workspace-brand-row {
@@ -355,6 +357,7 @@ button {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   min-height: 0;
+  overflow: hidden;
 }
 
 .workspace-section-title {
@@ -371,22 +374,29 @@ button {
 .workspace-history-list {
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
   scrollbar-width: thin;
 }
 
 .workspace-source-groups {
-  display: grid;
-  align-content: start;
+  display: flex;
+  flex-direction: column;
   gap: 5px;
 }
 
 .workspace-source-group {
+  flex: 0 0 auto;
   overflow: hidden;
   border: 1px solid transparent;
   border-radius: 9px;
 }
 
 .workspace-source-group:has(.workspace-source-tasks) {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 112px;
+  flex: 1 1 0;
   border-color: #dfe5e3;
   background: rgba(255, 255, 255, 0.64);
 }
@@ -455,8 +465,13 @@ button {
 }
 
 .workspace-source-tasks {
+  min-height: 0;
   padding: 0 4px 4px;
+  overflow-y: auto;
   border-top: 1px solid #e7ebe9;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
 }
 
 .workspace-history-row {
