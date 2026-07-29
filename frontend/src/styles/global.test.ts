@@ -136,6 +136,21 @@ describe("responsive analysis styles", () => {
     );
   });
 
+  it("uses Codex message colors and uniform confirmation metadata", () => {
+    expect(appleCss).toMatch(
+      /\.apple-page \.conversation-message p\s*\{[^}]*color:\s*var\(--codex-ink\)/s,
+    );
+    expect(appleCss).toMatch(
+      /\.apple-page \.conversation-message\.user\s*\{[^}]*border-color:\s*var\(--codex-border\)[^}]*background:\s*var\(--codex-panel-muted\)/s,
+    );
+    expect(appleCss).toMatch(
+      /\.apple-page \.start-confirmation\s*\{[^}]*font-size:\s*13px/s,
+    );
+    expect(appleCss).toMatch(
+      /\.start-confirmation-details\s*\{[^}]*display:\s*grid/s,
+    );
+  });
+
   it("uses one visual shell for the conversation composer", () => {
     expect(globalCss).toMatch(
       /\.conversation-composer\s*\{[^}]*border:\s*1px solid[^}]*border-radius:/s,

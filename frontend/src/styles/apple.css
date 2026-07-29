@@ -329,10 +329,10 @@ select {
 }
 
 .apple-page .conversation-message.user {
-  color: #183563;
-  border-color: #d5e2fb;
-  background: var(--codex-user);
-  box-shadow: 0 1px 2px rgb(25 51 89 / 4%);
+  color: var(--codex-ink);
+  border-color: var(--codex-border);
+  background: var(--codex-panel-muted);
+  box-shadow: 0 1px 2px rgb(32 33 35 / 4%);
 }
 
 .apple-page .conversation-message strong,
@@ -340,18 +340,18 @@ select {
   color: var(--codex-ink);
 }
 
-.apple-page .conversation-message p,
 .apple-page .conversation-card p,
 .apple-page .conversation-card small {
   color: var(--codex-ink-soft);
 }
 
-.apple-page .conversation-message.user strong {
-  color: #183563;
+.apple-page .conversation-message p {
+  color: var(--codex-ink);
 }
 
+.apple-page .conversation-message.user strong,
 .apple-page .conversation-message.user p {
-  color: #2b4a78;
+  color: var(--codex-ink);
 }
 
 .apple-page .conversation-message.assistant .message-avatar {
@@ -360,8 +360,8 @@ select {
 }
 
 .apple-page .conversation-message.user .message-avatar {
-  color: #234c91;
-  background: #d7e5ff;
+  color: #4f5358;
+  background: #e2e4e7;
 }
 
 .apple-page .conversation-card {
@@ -369,6 +369,46 @@ select {
   border-color: var(--codex-border);
   border-radius: 12px;
   background: var(--codex-panel-subtle);
+}
+
+.apple-page .start-confirmation {
+  font-size: 13px;
+}
+
+.apple-page .start-confirmation-title,
+.apple-page .start-confirmation button {
+  font-size: 13px;
+}
+
+.start-confirmation-details {
+  display: grid;
+  gap: 8px;
+  margin: 2px 0 4px;
+}
+
+.start-confirmation-details > div {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 12px;
+}
+
+.start-confirmation-details dt,
+.start-confirmation-details dd {
+  min-width: 0;
+  margin: 0;
+  font-size: inherit;
+  line-height: 1.5;
+}
+
+.start-confirmation-details dt {
+  color: var(--codex-ink-soft);
+  font-weight: 600;
+}
+
+.start-confirmation-details dd {
+  color: var(--codex-ink);
+  overflow-wrap: anywhere;
 }
 
 .apple-page .conversation-card.agent-progress {

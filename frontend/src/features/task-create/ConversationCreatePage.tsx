@@ -11,6 +11,7 @@ import {
   agentApi as defaultAgentApi,
   type AgentClarificationSubmission,
   type AgentConversationApi,
+  type AgentEntityType,
   type AgentGraphHumanGate,
   type AgentGraphProgress,
   type AgentIntent,
@@ -47,6 +48,33 @@ const agentTaskStages = [
   { id: "generate_report", label: "报告生成" },
 ];
 const terminalTaskStatuses = new Set(["completed", "terminated", "failed"]);
+const confirmationEntityOrder: AgentEntityType[] = ["department", "teacher", "student"];
+const confirmationEntityLabel: Record<AgentEntityType, string> = {
+  department: "部门",
+  teacher: "教师",
+  student: "学生",
+};
+
+function confirmationSourceLabel(intent?: AgentIntent) {
+  const source = intent?.source;
+  if (!source) return "已选择的第三方数据";
+  if (source.kind === "remote_csv" && source.display_origin) {
+    return source.display_origin;
+  }
+  if (source.source_ref) {
+    const segments = source.source_ref.split(/[\\/]/).filter(Boolean);
+    return segments[segments.length - 1] ?? source.source_ref;
+  }
+  return source.configuration_id ?? "已选择的第三方数据";
+}
+
+function confirmationEntities(entityTypes: AgentEntityType[]) {
+  const selected = new Set(entityTypes);
+  return confirmationEntityOrder
+    .filter((entityType) => selected.has(entityType))
+    .map((entityType) => confirmationEntityLabel[entityType])
+    .join("、");
+}
 
 function taskStageIndex(phase: AgentTask["phase"]) {
   if (phase === "terminal" || phase === "report_restore") return agentTaskStages.length;
@@ -691,13 +719,17 @@ export function ConversationCreatePage({
           ))}
           {confirmation && !taskActive && (
             <article className="conversation-card start-confirmation" aria-label="开始确认">
-              <strong>开始同步前确认</strong>
-              <p>{confirmation.summary}</p>
-              {agentIntent?.source?.kind === "remote_csv"
-                && agentIntent.source.display_origin && (
-                <small>第三方来源：{agentIntent.source.display_origin}</small>
-              )}
-              <small>对象：{confirmation.entity_types.join("、")}</small>
+              <strong className="start-confirmation-title">开始同步前确认</strong>
+              <dl className="start-confirmation-details">
+                <div>
+                  <dt>第三方对象</dt>
+                  <dd>{confirmationSourceLabel(agentIntent)}</dd>
+                </div>
+                <div>
+                  <dt>同步数据</dt>
+                  <dd>{confirmationEntities(confirmation.entity_types)}</dd>
+                </div>
+              </dl>
               <button type="button" onClick={() => void startTask()}>确认开始同步</button>
             </article>
           )}

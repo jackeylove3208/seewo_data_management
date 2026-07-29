@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -18,7 +18,18 @@ function api(overrides: Partial<AgentConversationApi> = {}): AgentConversationAp
     sendMessage: vi.fn().mockResolvedValue({
       accepted_message: "同步全校教师",
       message: "已整理好全校教师同步需求。",
-      intent: { title: "全校教师同步", entity_types: ["teacher"] },
+      intent: {
+        title: "全校教师同步",
+        entity_types: ["teacher"],
+        source: {
+          kind: "local",
+          source_ref: "third-party/teacher-roster.csv",
+        },
+        target: {
+          kind: "local",
+          source_ref: "seewo/teacher-roster.csv",
+        },
+      },
       start_confirmation: {
         title: "全校教师同步",
         summary: "将同步三方系统与希沃魔方的教师数据",
@@ -234,7 +245,18 @@ describe("backend Agent conversation", () => {
     await waitForComposer();
     await user.type(screen.getByLabelText("对账目标"), "同步全校教师");
     await user.click(screen.getByRole("button", { name: "发送" }));
-    await user.click(await screen.findByRole("button", { name: "确认开始同步" }));
+
+    const confirmationCard = await screen.findByLabelText("开始确认");
+    expect(within(confirmationCard).getByText("第三方对象")).toBeInTheDocument();
+    expect(within(confirmationCard).getByText("teacher-roster.csv")).toBeInTheDocument();
+    expect(within(confirmationCard).getByText("同步数据")).toBeInTheDocument();
+    expect(within(confirmationCard).getByText("教师")).toBeInTheDocument();
+    expect(
+      within(confirmationCard).queryByText("将同步三方系统与希沃魔方的教师数据"),
+    ).not.toBeInTheDocument();
+    expect(within(confirmationCard).queryByText("teacher")).not.toBeInTheDocument();
+
+    await user.click(within(confirmationCard).getByRole("button", { name: "确认开始同步" }));
 
     expect((await screen.findAllByText(/数据接入/)).length).toBeGreaterThan(0);
     expect(
@@ -286,7 +308,12 @@ describe("backend Agent conversation", () => {
     expect(
       await screen.findByText("请同步 [远程CSV来源:data.example.test] 的学生"),
     ).toBeInTheDocument();
-    expect(screen.getByText("第三方来源：data.example.test")).toBeInTheDocument();
+    const confirmationCard = screen.getByLabelText("开始确认");
+    expect(within(confirmationCard).getByText("第三方对象")).toBeInTheDocument();
+    expect(within(confirmationCard).getByText("data.example.test")).toBeInTheDocument();
+    expect(
+      within(confirmationCard).queryByText("第三方来源：data.example.test"),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText(/secret=value/)).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "确认开始同步" }));
@@ -1031,11 +1058,22 @@ describe("backend Agent conversation", () => {
           { id: "message-1", role: "user", kind: "normal", text: "同步全校学生", created_at: "" },
           { id: "message-2", role: "assistant", kind: "normal", text: "已确认同步需求。", created_at: "" },
         ],
-        intent: { title: "全校学生同步", entity_types: ["student"] },
+        intent: {
+          title: "全校数据同步",
+          entity_types: ["student", "department", "teacher"],
+          source: {
+            kind: "local",
+            source_ref: "third-party/all-school-data.csv",
+          },
+          target: {
+            kind: "local",
+            source_ref: "seewo/all-school-data.csv",
+          },
+        },
         start_confirmation: {
-          title: "全校学生同步",
+          title: "全校数据同步",
           summary: "已确认同步需求。",
-          entity_types: ["student"],
+          entity_types: ["student", "department", "teacher"],
         },
         task: null,
       }),
@@ -1044,7 +1082,11 @@ describe("backend Agent conversation", () => {
     render(<ConversationCreatePage agentApi={backend} />);
 
     expect(await screen.findByRole("button", { name: "确认开始同步" })).toBeInTheDocument();
-    expect(screen.getAllByText("已确认同步需求。")).toHaveLength(2);
+    const confirmationCard = screen.getByLabelText("开始确认");
+    expect(within(confirmationCard).getByText("all-school-data.csv")).toBeInTheDocument();
+    expect(within(confirmationCard).getByText("部门、教师、学生")).toBeInTheDocument();
+    expect(within(confirmationCard).queryByText("已确认同步需求。")).not.toBeInTheDocument();
+    expect(screen.getAllByText("已确认同步需求。")).toHaveLength(1);
   });
 
   it("keeps a failed task visible and unlocks the conversation without a new confirmation", async () => {
