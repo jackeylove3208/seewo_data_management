@@ -1203,6 +1203,13 @@ select {
   gap: 16px;
 }
 
+.agent-report-status-tags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
 .agent-report-finding-heading span {
   color: var(--codex-accent);
   font-size: 11px;
@@ -1248,10 +1255,27 @@ select {
   padding: 15px 17px;
 }
 
+.agent-report-exclusions > li {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 .agent-report-mutations > li {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.agent-report-metrics article.agent-report-metric-error {
+  border-color: #efc6c1;
+  background: var(--codex-danger-soft);
+}
+
+.agent-report-metric-error span,
+.agent-report-metric-error strong {
+  color: var(--codex-danger);
 }
 
 .agent-report-page .ant-empty-description,

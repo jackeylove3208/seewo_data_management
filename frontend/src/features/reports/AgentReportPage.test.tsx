@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -50,6 +50,7 @@ describe("Agent synchronization report", () => {
             analysis_zh: "第三方权威手机号与希沃记录不一致。",
             solution_zh: "已按审核结果更新希沃手机号。",
             operator_decision: "approved",
+            execution_status: "succeeded",
           },
         ],
         excluded_findings: [],
@@ -84,6 +85,71 @@ describe("Agent synchronization report", () => {
     expect(screen.getByText("已写回本地 CSV")).toBeInTheDocument();
     expect(screen.getByText("seewo/current.csv")).toBeInTheDocument();
     expect(container.querySelector(".agent-report-page.apple-page")).not.toBeNull();
+    const finding = container.querySelector(".agent-report-findings > li");
+    expect(finding).not.toBeNull();
+    expect(within(finding as HTMLElement).getByText("已同意")).toBeInTheDocument();
+    expect(within(finding as HTMLElement).getByText("执行成功")).toBeInTheDocument();
+    client.clear();
+  });
+
+  it("shows approved failures, input anomalies, and partial completion prominently", async () => {
+    vi.spyOn(agentApi, "report").mockResolvedValue({
+      id: "report-partial",
+      task_id: "task-report-1",
+      kind: "sync",
+      terminal_state: "completed",
+      rollback_eligible: false,
+      deletion_eligible: false,
+      created_at: "2026-07-29T08:00:00Z",
+      content: {
+        narrative: {
+          title_zh: "部分执行同步报告",
+          summary_zh: "部分获批变更未能完成。",
+        },
+      },
+      facts: {
+        findings: [{
+          id: "finding-failed",
+          category_zh: "多余教师",
+          entity_name: "测试教师",
+          operator_decision: "approved",
+          execution_status: "failed",
+        }],
+        excluded_findings: [{
+          reason: "目标记录缺少身份字段",
+          disposition: "target_extra",
+        }],
+        mutations: [{
+          id: "operation-failed",
+          operation: "delete",
+          entity_kind: "teacher",
+          status: "failed",
+        }],
+        mutation_summary: {
+          succeeded: 0,
+          failed: 1,
+          verification_failed: 0,
+        },
+        publication: {
+          status: "no_changes",
+          source_ref: "seewo/current.csv",
+        },
+      },
+    });
+
+    const { client, container } = renderPage();
+
+    expect(await screen.findByText("部分完成")).toBeInTheDocument();
+    const finding = container.querySelector(".agent-report-findings > li");
+    expect(finding).not.toBeNull();
+    expect(within(finding as HTMLElement).getByText("已同意")).toBeInTheDocument();
+    expect(within(finding as HTMLElement).getByText("执行失败")).toBeInTheDocument();
+    const exclusion = container.querySelector(".agent-report-exclusions > li");
+    expect(exclusion).not.toBeNull();
+    expect(
+      within(exclusion as HTMLElement).getByText("输入异常"),
+    ).toBeInTheDocument();
+    expect(container.querySelector(".agent-report-metric-error")).not.toBeNull();
     client.clear();
   });
 

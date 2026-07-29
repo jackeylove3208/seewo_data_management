@@ -24,6 +24,11 @@ function text(value: unknown, fallback = "—") {
   return typeof value === "string" || typeof value === "number" ? String(value) : fallback;
 }
 
+function count(value: unknown) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
 const terminalLabels: Record<string, string> = {
   completed: "同步完成",
   completed_with_conflicts: "回滚存在冲突",
@@ -59,11 +64,14 @@ const decisionLabels: Record<string, string> = {
   conflict_skipped: "因当前值冲突而跳过",
 };
 
-function mutationTagColor(status: string) {
-  if (status === "succeeded" || status === "already_restored") {
+function reportStatusColor(status: string) {
+  if (status === "approved" || status === "succeeded" || status === "already_restored") {
     return "success";
   }
-  return status === "conflict_skipped" ? "warning" : "error";
+  if (status === "blocked" || status === "conflict_skipped" || status === "not_executed") {
+    return "warning";
+  }
+  return "error";
 }
 
 export function AgentReportPage() {
@@ -103,6 +111,9 @@ export function AgentReportPage() {
       : "Agent 已完成本次数据核验，没有发现需要治理的问题。",
   );
   const publicationStatus = text(publication.status, "not_applicable");
+  const failedMutationCount = count(mutationSummary.failed)
+    + count(mutationSummary.verification_failed);
+  const hasFailedMutations = failedMutationCount > 0;
 
   return (
     <main className="page-shell apple-page agent-report-page">
@@ -113,8 +124,16 @@ export function AgentReportPage() {
           <h1>{reportTitle}</h1>
           <p className="agent-report-lead">{reportSummary}</p>
         </div>
-        <Tag color={report.data.terminal_state === "completed" ? "success" : "warning"}>
-          {isRollback && report.data.terminal_state === "completed"
+        <Tag
+          color={hasFailedMutations
+            ? "error"
+            : report.data.terminal_state === "completed"
+              ? "success"
+              : "warning"}
+        >
+          {hasFailedMutations
+            ? "部分完成"
+            : isRollback && report.data.terminal_state === "completed"
             ? "回滚完成"
             : terminalLabels[report.data.terminal_state] ?? report.data.terminal_state}
         </Tag>
@@ -126,14 +145,18 @@ export function AgentReportPage() {
             <article><span>实际恢复</span><strong>{text(mutationSummary.succeeded, "0")}</strong></article>
             <article><span>已处于原状态</span><strong>{text(mutationSummary.already_restored, "0")}</strong></article>
             <article><span>冲突跳过</span><strong>{text(mutationSummary.conflict_skipped, "0")}</strong></article>
-            <article><span>恢复失败</span><strong>{text(mutationSummary.failed, "0")}</strong></article>
+            <article className={hasFailedMutations ? "agent-report-metric-error" : undefined}>
+              <span>恢复失败</span><strong>{failedMutationCount}</strong>
+            </article>
           </>
         ) : (
           <>
             <article><span>需要处理</span><strong>{findings.length}</strong></article>
             <article><span>输入异常</span><strong>{excluded.length}</strong></article>
             <article><span>成功变更</span><strong>{text(mutationSummary.succeeded, "0")}</strong></article>
-            <article><span>失败变更</span><strong>{text(mutationSummary.failed, "0")}</strong></article>
+            <article className={hasFailedMutations ? "agent-report-metric-error" : undefined}>
+              <span>失败变更</span><strong>{failedMutationCount}</strong>
+            </article>
           </>
         )}
       </section>
@@ -168,9 +191,12 @@ export function AgentReportPage() {
                 text(item.class_name, ""),
               ].filter(Boolean).join(" · ");
               const operatorDecision = text(item.operator_decision, "");
-              const state = operatorDecision && operatorDecision !== "not_required"
-                ? operatorDecision
-                : text(item.execution_status, operatorDecision);
+              const executionStatus = text(item.execution_status, "");
+              const states = [...new Set(
+                [operatorDecision, executionStatus].filter(
+                  (state) => state && state !== "not_required",
+                ),
+              )];
               return (
                 <li key={text(item.id, `finding-${index}`)}>
                   <div className="agent-report-finding-heading">
@@ -178,7 +204,15 @@ export function AgentReportPage() {
                       <span>问题 {index + 1}</span>
                       <h3>{text(item.category_zh ?? item.kind, "未分类问题")}</h3>
                     </div>
-                    {state && <Tag color={state === "rejected" || state === "failed" ? "error" : "success"}>{decisionLabels[state] ?? state}</Tag>}
+                    {states.length > 0 && (
+                      <div className="agent-report-status-tags">
+                        {states.map((state) => (
+                          <Tag key={state} color={reportStatusColor(state)}>
+                            {decisionLabels[state] ?? state}
+                          </Tag>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   {identity && <p className="agent-report-identity">{identity}</p>}
                   <p>{text(item.analysis_zh ?? item.reason, "Agent 已记录结构化问题证据。")}</p>
@@ -204,7 +238,10 @@ export function AgentReportPage() {
           <ul className="agent-report-exclusions">
             {excluded.map((item, index) => (
               <li key={`${text(item.source, "input")}-${index}`}>
-                {text(item.reason ?? item.disposition ?? item.source, "输入数据不符合规范")}
+                <span>
+                  {text(item.reason ?? item.disposition ?? item.source, "输入数据不符合规范")}
+                </span>
+                <Tag color="orange">输入异常</Tag>
               </li>
             ))}
           </ul>
@@ -220,7 +257,7 @@ export function AgentReportPage() {
           <ul className="agent-report-mutations">
             {mutations.map((item, index) => (
               <li key={text(item.id, `mutation-${index}`)}>
-                <Tag color={mutationTagColor(text(item.status))}>
+                <Tag color={reportStatusColor(text(item.status))}>
                   {decisionLabels[text(item.status)] ?? text(item.status)}
                 </Tag>
                 <span>
