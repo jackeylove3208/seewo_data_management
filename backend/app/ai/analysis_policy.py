@@ -4,7 +4,6 @@ from app.governance.field_policy import editable_fields
 from app.schemas.differences import DifferenceItem, DifferenceType
 from app.schemas.governance import (
     AutoExecutableResolution,
-    CauseAnalysis,
     CauseAnalysisV2,
     CauseAnalysisV3,
     ManualResolution,
@@ -47,18 +46,6 @@ ACTION_POLICY: dict[DifferenceType, frozenset[RecommendedAction]] = {
         {RecommendedAction.SKIP, RecommendedAction.MANUAL_REVIEW}
     ),
 }
-
-
-def validate_analysis_action(
-    difference: DifferenceItem,
-    analysis: CauseAnalysis,
-) -> None:
-    if analysis.recommended_action not in ACTION_POLICY[difference.difference_type]:
-        raise AnalysisPolicyError(
-            f"{analysis.recommended_action.value} is not allowed for "
-            f"{difference.difference_type.value}"
-        )
-
 
 def validate_analysis_options(
     difference: DifferenceItem,

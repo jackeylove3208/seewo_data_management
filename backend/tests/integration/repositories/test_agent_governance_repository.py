@@ -135,6 +135,73 @@ async def test_approval_groups_with_different_changed_fields_have_distinct_keys(
 
 
 @pytest.mark.asyncio
+async def test_approval_group_key_is_bounded_when_many_fields_are_changed(
+    session,
+) -> None:
+    task, run, _snapshots = await _context(session)
+    repository = AgentGovernanceRepository(session)
+    changed_fields = (
+        "category",
+        "class_name",
+        "class_source_id",
+        "container_id",
+        "container_source_id",
+        "department_source_id",
+        "email",
+        "id",
+        "member_id",
+        "member_source_id",
+        "name",
+        "number",
+        "parent_id",
+        "parent_source_id",
+        "phone",
+        "source_id",
+        "姓名",
+        "班级",
+        "电话",
+        "类别",
+        "编号",
+        "邮箱",
+    )
+    group = AgentApprovalGroup(
+        id=uuid4(),
+        finding_ids=(uuid4(),),
+        issue_kind="target_duplicate",
+        entity_kind="student",
+        operation="delete",
+        policy_version="agent-risk-v1",
+        membership_hash="f" * 64,
+        changed_fields=changed_fields,
+    )
+
+    saved = await repository.save_approval_group(run=run, task=task, group=group)
+
+    assert len(saved.group_key) <= 255
+    assert saved.group_key.startswith(
+        "target_duplicate:student:delete:agent-risk-v1:fields-sha256:"
+    )
+    replayed = await repository.save_approval_group(run=run, task=task, group=group)
+    assert replayed.id == saved.id
+    different_group = AgentApprovalGroup(
+        id=uuid4(),
+        finding_ids=(uuid4(),),
+        issue_kind=group.issue_kind,
+        entity_kind=group.entity_kind,
+        operation=group.operation,
+        policy_version=group.policy_version,
+        membership_hash="0" * 64,
+        changed_fields=(*changed_fields, "extra_field"),
+    )
+    different_saved = await repository.save_approval_group(
+        run=run,
+        task=task,
+        group=different_group,
+    )
+    assert different_saved.group_key != saved.group_key
+
+
+@pytest.mark.asyncio
 async def test_clarification_requires_interpretation_then_second_confirmation(session) -> None:
     task, run, snapshots = await _context(session)
     repository = AgentGovernanceRepository(session)

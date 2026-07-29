@@ -1,7 +1,6 @@
 """Outer retry policy for durable new Agent model batches."""
 
 import asyncio
-from collections.abc import Awaitable, Callable
 from uuid import UUID
 
 import httpx
@@ -21,18 +20,6 @@ from app.models.agent_analysis import (
     AgentWorkItemRecord,
 )
 from app.repositories.agent_analysis import AgentAnalysisRepository
-
-
-async def analyze_with_four_total_attempts[T](operation: Callable[[], Awaitable[T]]) -> T:
-    """Run one initial model attempt plus at most three retries."""
-    last_error: Exception | None = None
-    for _attempt in range(4):
-        try:
-            return await operation()
-        except Exception as error:
-            last_error = error
-    assert last_error is not None
-    raise last_error
 
 
 class DurableAgentBatchAnalyzer:

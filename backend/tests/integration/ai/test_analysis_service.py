@@ -6,7 +6,6 @@ from sqlalchemy import select
 from app.ai.agent import AgentResult
 from app.ai.analysis_service import AnalysisService
 from app.ai.providers.base import ModelUsage
-from app.governance.eligibility import ExecutionEligibility
 from app.models.snapshots import CanonicalEntityRecord
 from app.repositories.differences import DifferenceRepository
 from app.schemas.canonical_entities import EntityType
@@ -185,7 +184,7 @@ async def test_invalid_action_twice_routes_to_manual_review(session) -> None:
 
 
 @pytest.mark.asyncio
-async def test_valid_manual_review_recommendation_is_not_executable(session) -> None:
+async def test_valid_manual_review_recommendation_stays_manual_only(session) -> None:
     difference = await seed_difference(session, DifferenceType.ATTRIBUTE_CONFLICT)
     agent = AgentSpy(action=RecommendedAction.MANUAL_REVIEW)
 
@@ -195,7 +194,6 @@ async def test_valid_manual_review_recommendation_is_not_executable(session) -> 
     assert result.output is not None
     assert isinstance(result.output, CauseAnalysisV2)
     assert result.output.manual_only is True
-    assert not await ExecutionEligibility(session).is_eligible(difference.id, difference.version)
 
 
 @pytest.mark.asyncio

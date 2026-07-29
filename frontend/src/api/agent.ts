@@ -19,7 +19,7 @@ export type AgentPhase =
   | "report_restore"
   | "terminal";
 
-export interface AgentConversation {
+interface AgentConversation {
   id: string;
   status: "active" | "closed";
 }
@@ -46,14 +46,14 @@ export interface AgentStartConfirmation {
   entity_types: AgentEntityType[];
 }
 
-export interface AgentMessageResponse {
+interface AgentMessageResponse {
   accepted_message: string;
   message: string;
   intent: AgentIntent;
   start_confirmation?: AgentStartConfirmation;
 }
 
-export interface AgentConversationMessage {
+interface AgentConversationMessage {
   id: string;
   role: "assistant" | "user";
   kind: "normal" | "guardrail" | "error";
@@ -61,7 +61,7 @@ export interface AgentConversationMessage {
   created_at: string;
 }
 
-export interface AgentConversationCurrent extends AgentConversation {
+interface AgentConversationCurrent extends AgentConversation {
   messages: AgentConversationMessage[];
   intent?: AgentIntent | null;
   start_confirmation?: AgentStartConfirmation | null;
@@ -96,7 +96,7 @@ export interface AgentTaskEvent {
   created_at: string;
 }
 
-export interface AgentEventPage {
+interface AgentEventPage {
   cursor: string;
   events: AgentTaskEvent[];
 }
@@ -152,7 +152,7 @@ export interface AgentGraphHumanGate {
   conflicts?: AgentGraphIdentityConflict[];
 }
 
-export interface AgentGraphApprovalChange {
+interface AgentGraphApprovalChange {
   field: string;
   field_zh: string;
   before?: string | null;
@@ -210,7 +210,7 @@ export interface AgentClarificationConfirmation {
   status: string;
 }
 
-export interface StructuredClarificationSelectionInput {
+interface StructuredClarificationSelectionInput {
   decision: "select_candidate" | "treat_as_extra";
   selected_candidate_id: string | null;
   note: string | null;
@@ -268,7 +268,7 @@ export interface AgentManualTaskApi {
   localSources?(): Promise<AgentLocalSource[]>;
 }
 
-export interface AgentTaskStartOptions {
+interface AgentTaskStartOptions {
   acceptCurrentTargetBaseline?: boolean;
 }
 
@@ -278,20 +278,20 @@ export interface AgentLocalSource {
   writable_as_target: boolean;
 }
 
-export interface AgentGraphGateReview {
+interface AgentGraphGateReview {
   approved_finding_ids: string[];
   rejected_finding_ids: string[];
   graph_cursor: number;
   membership_hash: string;
 }
 
-export interface AgentGraphGateDecisionResult {
+interface AgentGraphGateDecisionResult {
   gate_id: string;
   status: "approved" | "rejected";
   graph_cursor: number;
 }
 
-export interface AgentGraphGateBatchDecision {
+interface AgentGraphGateBatchDecision {
   gate_id: string;
   decision: "approve" | "reject";
   reason?: string;
@@ -318,12 +318,12 @@ export interface AgentHistoryItem extends AgentTask {
   };
 }
 
-export interface AgentHistoryPage {
+interface AgentHistoryPage {
   items: AgentHistoryItem[];
   next_cursor: string | null;
 }
 
-export interface AgentReport {
+interface AgentReport {
   id: string;
   task_id: string;
   kind: "sync" | "rollback";

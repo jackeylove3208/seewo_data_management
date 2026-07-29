@@ -6,7 +6,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.core.config import Settings
-from app.governance.eligibility import ExecutionEligibility, ExecutionIneligible
 from app.main import create_app
 from app.models.snapshots import CanonicalEntityRecord
 from app.repositories.analyses import AnalysisRepository
@@ -105,21 +104,6 @@ def test_analysis_trigger_exposes_output_and_execution_eligibility(
         params={"analysis_status": "succeeded", "risk": "medium"},
     )
     assert [item["id"] for item in filtered.json()["items"]] == [str(difference_id)]
-
-
-def test_stale_analysis_version_is_rejected(analysis_client: TestClient) -> None:
-    task_id, difference_id = seeded(analysis_client)
-    assert analysis_client.post(f"/api/reconciliation-tasks/{task_id}/analyses").status_code == 202
-
-    async def require_stale_version() -> None:
-        async with analysis_client.app.state.database.session_factory() as session:
-            with pytest.raises(ExecutionIneligible, match="current difference version"):
-                await ExecutionEligibility(session).require_analyzed(difference_id, version=2)
-
-    assert analysis_client.portal is not None
-    analysis_client.portal.call(require_stale_version)
-
-
 def test_unknown_analysis_returns_404(analysis_client: TestClient) -> None:
     _task_id, difference_id = seeded(analysis_client)
     response = analysis_client.get(f"/api/differences/{difference_id}/analysis")

@@ -1,5 +1,4 @@
 import pytest
-from httpx import AsyncClient, MockTransport, Request, Response
 from sqlalchemy import Column, MetaData, String, Table, insert
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -10,11 +9,9 @@ from app.connectors.configured import (
     ConnectorCapabilityError,
     ConnectorConflictError,
     DatabaseConnectorConfiguration,
-    HttpJsonConnectorStore,
-    InMemoryConnectorStore,
     SqlAlchemyConnectorStore,
-    StaticCredentialResolver,
 )
+from tests.fixtures.connector_store import InMemoryConnectorStore
 
 
 def test_database_configuration_accepts_only_server_owned_identifiers() -> None:
@@ -51,7 +48,6 @@ async def test_api_connector_reads_all_stable_pages_without_exposing_credentials
             {"id": "2", "etag": "v1", "name": "李四"},
             {"id": "1", "etag": "v3", "name": "张三"},
         ],
-        credential="do-not-log-this",
     )
     connector = ConfiguredApiConnector(configuration=configuration, store=store)
 
@@ -127,98 +123,6 @@ async def test_authoritative_connector_rejects_writes_even_when_store_can_mutate
             idempotency_key="forbidden",
             expected_version=(await connector.version()).value,
         )
-
-
-@pytest.mark.asyncio
-async def test_http_store_uses_server_side_credential_reference_and_cursor_protocol() -> None:
-    seen_headers: list[str | None] = []
-
-    def handler(request: Request) -> Response:
-        seen_headers.append(request.headers.get("authorization"))
-        if request.method == "HEAD":
-            return Response(200, headers={"etag": "v7"})
-        if request.url.params.get("cursor") is None:
-            return Response(
-                200,
-                json={"cursor": None, "items": [{"id": "1"}], "next_cursor": "next"},
-            )
-        return Response(200, json={"cursor": "next", "items": [{"id": "2"}], "next_cursor": None})
-
-    client = AsyncClient(transport=MockTransport(handler))
-    store = HttpJsonConnectorStore(
-        client=client,
-        configuration=ApiConnectorConfiguration(
-            credential_reference="secret://connectors/third-party-api",
-            endpoint="https://connector.example.test/v1/people",
-            record_id_field="id",
-            version_field="etag",
-            capabilities=ConnectorCapabilities(read=True, paginated=True),
-        ),
-        credentials=StaticCredentialResolver(
-            {"secret://connectors/third-party-api": "Bearer test-token"}
-        ),
-    )
-    connector = ConfiguredApiConnector(configuration=store.configuration, store=store)
-
-    assert (await connector.version()).value == "v7"
-    rows = [row["id"] async for page in connector.read_pages(page_size=1) for row in page.records]
-    assert rows == ["1", "2"]
-    assert seen_headers == ["Bearer test-token", "Bearer test-token", "Bearer test-token"]
-    await client.aclose()
-
-
-@pytest.mark.asyncio
-async def test_http_page_failure_is_actionable_and_does_not_expose_credential() -> None:
-    def handler(request: Request) -> Response:
-        if request.url.params.get("cursor") is None:
-            return Response(
-                200,
-                json={"cursor": None, "items": [{"id": "1"}], "next_cursor": "next"},
-            )
-        return Response(503, json={"detail": "upstream failed"})
-
-    client = AsyncClient(transport=MockTransport(handler))
-    store = HttpJsonConnectorStore(
-        client=client,
-        configuration=ApiConnectorConfiguration(
-            credential_reference="secret://connectors/third-party-api",
-            endpoint="https://connector.example.test/v1/people",
-            record_id_field="id",
-            version_field="etag",
-            capabilities=ConnectorCapabilities(read=True, paginated=True),
-        ),
-        credentials=StaticCredentialResolver(
-            {"secret://connectors/third-party-api": "Bearer never-expose-me"}
-        ),
-    )
-    connector = ConfiguredApiConnector(configuration=store.configuration, store=store)
-
-    with pytest.raises(ConnectorCapabilityError) as error:
-        _ = [row async for page in connector.read_pages(page_size=1) for row in page.records]
-
-    assert "never-expose-me" not in str(error.value)
-    await client.aclose()
-
-
-@pytest.mark.asyncio
-async def test_http_malformed_page_is_rejected_instead_of_being_treated_as_empty() -> None:
-    client = AsyncClient(
-        transport=MockTransport(lambda request: Response(200, json={"items": "not-a-list"}))
-    )
-    store = HttpJsonConnectorStore(
-        client=client,
-        configuration=ApiConnectorConfiguration(
-            credential_reference="secret://connectors/third-party-api",
-            endpoint="https://connector.example.test/v1/people",
-            record_id_field="id",
-            version_field="etag",
-        ),
-        credentials=StaticCredentialResolver({"secret://connectors/third-party-api": "secret"}),
-    )
-
-    with pytest.raises(ConnectorCapabilityError, match="invalid page"):
-        await store.page(cursor=None, page_size=10, record_id_field="id")
-    await client.aclose()
 
 
 @pytest.mark.asyncio

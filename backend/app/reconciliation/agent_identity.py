@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.models.agent_analysis import (
+    AgentClarificationRecord,
+    AgentIdentityClaimRecord,
     AgentIdentityPostingRecord,
     AgentInputMarkRecord,
     AgentInputRecord,
@@ -119,6 +121,7 @@ class AgentIdentityIndexBuilder:
                 )
         authority_by_id = {record.id: record for record in valid_authority}
         claimed_authority: set[UUID] = set()
+        conflicted_authority: set[UUID] = set()
         for target_record in targets:
             candidate_ids = {
                 candidate
@@ -164,6 +167,7 @@ class AgentIdentityIndexBuilder:
                         "allowed_outcomes": clarification.allowed_outcomes,
                     },
                 )
+                conflicted_authority.update(candidate_ids)
                 continue
             authority_id = next(iter(candidate_ids))
             authority_record = authority_by_id[authority_id]
@@ -186,7 +190,10 @@ class AgentIdentityIndexBuilder:
             )
             claimed_authority.add(authority_id)
         for authority_record in valid_authority:
-            if authority_record.id not in claimed_authority:
+            if (
+                authority_record.id not in claimed_authority
+                and authority_record.id not in conflicted_authority
+            ):
                 await self._persist_work(
                     run, source, target, authority_record, "target_missing", ("unclaimed",)
                 )
@@ -195,6 +202,182 @@ class AgentIdentityIndexBuilder:
                 await self._persist_work(
                     run, source, target, authority_record, "authority_invalid", ("excluded",)
                 )
+
+    async def resolve_confirmed_conflicts(
+        self,
+        *,
+        run_id: UUID,
+    ) -> tuple[AgentWorkItemRecord, ...]:
+        run = await self._session.get(AgentRunRecord, run_id)
+        if run is None:
+            raise LookupError(f"agent run not found: {run_id}")
+        snapshots = tuple(
+            await self._session.scalars(select(Snapshot).where(Snapshot.task_id == run.task_id))
+        )
+        by_role = {snapshot.source_role: snapshot for snapshot in snapshots}
+        source = by_role.get("authoritative")
+        target = by_role.get("target")
+        if source is None or target is None:
+            raise ValueError("identity resolution requires paired snapshots")
+        clarifications = tuple(
+            await self._session.scalars(
+                select(AgentClarificationRecord)
+                .where(
+                    AgentClarificationRecord.run_id == run_id,
+                    AgentClarificationRecord.status == "confirmed",
+                )
+                .order_by(
+                    AgentClarificationRecord.created_at,
+                    AgentClarificationRecord.id,
+                )
+            )
+        )
+        resolved_by_id: dict[UUID, AgentWorkItemRecord] = {}
+        for clarification in clarifications:
+            interpretation = dict(clarification.interpretation or {})
+            replay_ids = interpretation.get("resolved_work_item_ids")
+            if isinstance(replay_ids, list) and replay_ids:
+                replayed = [
+                    await self._session.get(AgentWorkItemRecord, UUID(str(work_id)))
+                    for work_id in replay_ids
+                ]
+                if any(item is None or item.run_id != run_id for item in replayed):
+                    raise ValueError("identity resolution replay is incomplete")
+                resolved_by_id.update(
+                    (item.id, item) for item in replayed if item is not None
+                )
+                continue
+
+            conflict = await self._session.get(
+                AgentWorkItemRecord,
+                clarification.work_item_id,
+            )
+            if (
+                conflict is None
+                or conflict.run_id != run_id
+                or conflict.kind != "identity_conflict"
+            ):
+                raise ValueError("confirmed clarification has no identity conflict work")
+            subject = await self._session.get(AgentInputRecord, conflict.subject_input_id)
+            if subject is None or subject.source_role != "target":
+                raise ValueError("identity conflict target record is missing")
+            candidate_ids = tuple(
+                UUID(str(candidate["id"]))
+                for candidate in clarification.masked_candidates
+                if candidate.get("id") is not None
+            )
+            outcome = interpretation.get("outcome")
+            selected_candidate_id = (
+                UUID(str(interpretation["candidate_id"]))
+                if interpretation.get("candidate_id")
+                else None
+            )
+            if outcome == "use_candidate":
+                if selected_candidate_id not in candidate_ids:
+                    raise ValueError("confirmed identity candidate is outside frozen evidence")
+                authority = await self._session.get(AgentInputRecord, selected_candidate_id)
+                if (
+                    authority is None
+                    or authority.run_id != run_id
+                    or authority.source_role != "authoritative"
+                ):
+                    raise ValueError("confirmed identity candidate is unavailable")
+                existing_claim = await self._session.scalar(
+                    select(AgentIdentityClaimRecord).where(
+                        AgentIdentityClaimRecord.run_id == run_id,
+                        AgentIdentityClaimRecord.authority_input_id == authority.id,
+                    )
+                )
+                if existing_claim is None:
+                    differences = ordinary_field_differences(authority, subject)
+                    resolution_kind = "field_difference" if differences else "correct"
+                    primary = await self._persist_work(
+                        run,
+                        source,
+                        target,
+                        subject,
+                        resolution_kind,
+                        (
+                            "confirmed_identity_candidate",
+                            str(clarification.id),
+                            str(authority.id),
+                            *differences,
+                        ),
+                    )
+                    await self._repository.persist_identity_claim(
+                        run_id=run.id,
+                        task_id=run.task_id,
+                        source_snapshot_id=source.id,
+                        target_snapshot_id=target.id,
+                        authority_input_id=authority.id,
+                        target_input_id=subject.id,
+                        work_item_id=primary.id,
+                    )
+                else:
+                    resolution_kind = "target_duplicate"
+                    primary = await self._persist_work(
+                        run,
+                        source,
+                        target,
+                        subject,
+                        resolution_kind,
+                        (
+                            "confirmed_identity_candidate_already_claimed",
+                            str(clarification.id),
+                            str(authority.id),
+                        ),
+                    )
+            elif outcome == "target_extra":
+                resolution_kind = "target_extra"
+                primary = await self._persist_work(
+                    run,
+                    source,
+                    target,
+                    subject,
+                    resolution_kind,
+                    ("confirmed_identity_target_extra", str(clarification.id)),
+                )
+            else:
+                raise ValueError("confirmed clarification has no supported outcome")
+
+            resolution_items = [primary]
+            claimed_ids = set(
+                await self._session.scalars(
+                    select(AgentIdentityClaimRecord.authority_input_id).where(
+                        AgentIdentityClaimRecord.run_id == run_id
+                    )
+                )
+            )
+            for candidate_id in candidate_ids:
+                if candidate_id in claimed_ids:
+                    continue
+                authority = await self._session.get(AgentInputRecord, candidate_id)
+                if (
+                    authority is None
+                    or authority.run_id != run_id
+                    or authority.source_role != "authoritative"
+                ):
+                    raise ValueError("frozen identity candidate is unavailable")
+                resolution_items.append(
+                    await self._persist_work(
+                        run,
+                        source,
+                        target,
+                        authority,
+                        "target_missing",
+                        ("unclaimed_after_identity_resolution",),
+                    )
+                )
+
+            interpretation["resolved_kind"] = resolution_kind
+            interpretation["resolved_work_item_id"] = str(primary.id)
+            interpretation["resolved_work_item_ids"] = [
+                str(item.id) for item in resolution_items
+            ]
+            clarification.interpretation = interpretation
+            resolved_by_id.update((item.id, item) for item in resolution_items)
+        await self._session.flush()
+        return tuple(resolved_by_id.values())
 
     async def _persist_postings(
         self, run: AgentRunRecord, snapshot: Snapshot, records: tuple[AgentInputRecord, ...]

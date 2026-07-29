@@ -50,7 +50,7 @@ async def test_supervisor_uses_versioned_skill_and_returns_confirmation() -> Non
 
     assert decision.kind == "start_confirmation"
     assert decision.source_ref == "third-party/roster.csv"
-    assert "converse-school-data-sync@1.1.0" in provider.requests[0].messages[0].content
+    assert "converse-school-data-sync@1.2.0" in provider.requests[0].messages[0].content
     assert "不可信证据" in provider.requests[0].messages[0].content
 
 
@@ -129,6 +129,109 @@ async def test_supervisor_accepts_server_listed_remote_source_with_local_target(
     assert decision.kind == "start_confirmation"
     assert decision.remote_source_id == remote_source_id
     assert decision.target_ref == "seewo/roster.csv"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_accepts_model_selected_remote_link_boundary() -> None:
+    provider = CapturingProvider(
+        {
+            "result": {
+                "kind": "start_confirmation",
+                "title": "远程学生同步",
+                "entity_types": ["student"],
+                "remote_url_start": 3,
+                "remote_url_end": 46,
+                "target_ref": "seewo/roster.csv",
+                "message_zh": "已确认链接边界和希沃目标。",
+            }
+        }
+    )
+
+    decision = await ConversationSupervisorAgent(provider).reply(
+        _context(
+            message="请同步 [待识别远程CSV链接] 的学生",
+            conversation_remote_csv_enabled=True,
+            remote_link_candidates=(
+                {
+                    "start": 3,
+                    "end": 46,
+                    "display_url": "https://data.example.test/roster.csv",
+                    "trailing_text": "的数据",
+                },
+            ),
+        )
+    )
+
+    assert decision.kind == "start_confirmation"
+    assert decision.remote_url_start == 3
+    assert decision.remote_url_end == 46
+
+
+@pytest.mark.asyncio
+async def test_supervisor_rejects_unlisted_remote_link_boundary() -> None:
+    provider = CapturingProvider(
+        {
+            "result": {
+                "kind": "start_confirmation",
+                "title": "越界远程同步",
+                "entity_types": ["student"],
+                "remote_url_start": 4,
+                "remote_url_end": 47,
+                "target_ref": "seewo/roster.csv",
+                "message_zh": "已确认。",
+            }
+        }
+    )
+
+    decision = await ConversationSupervisorAgent(provider).reply(
+        _context(
+            conversation_remote_csv_enabled=True,
+            remote_link_candidates=(
+                {
+                    "start": 3,
+                    "end": 46,
+                    "display_url": "https://data.example.test/roster.csv",
+                    "trailing_text": "的数据",
+                },
+            ),
+        )
+    )
+
+    assert decision.kind == "clarification"
+    assert decision.remote_url_start is None
+    assert decision.remote_url_end is None
+
+
+@pytest.mark.asyncio
+async def test_supervisor_requires_model_to_select_one_remote_link_boundary() -> None:
+    provider = CapturingProvider(
+        {
+            "result": {
+                "kind": "start_confirmation",
+                "title": "缺少链接边界",
+                "entity_types": ["student"],
+                "target_ref": "seewo/roster.csv",
+                "message_zh": "已确认。",
+            }
+        }
+    )
+
+    decision = await ConversationSupervisorAgent(provider).reply(
+        _context(
+            conversation_remote_csv_enabled=True,
+            remote_link_candidates=(
+                {
+                    "start": 3,
+                    "end": 46,
+                    "display_url": "https://data.example.test/roster.csv",
+                    "trailing_text": "的数据",
+                },
+            ),
+        )
+    )
+
+    assert decision.kind == "clarification"
+    assert "链接边界" in decision.message_zh
 
 
 @pytest.mark.asyncio

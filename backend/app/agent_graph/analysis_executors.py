@@ -249,22 +249,6 @@ class GraphAnalysisResultWriter:
         await self._repository.persist_marks(tuple(marks))
         return tuple(records)
 
-
-def partition_bounded_resources(
-    resources: Sequence[str],
-    *,
-    max_items: int = 50,
-) -> tuple[tuple[str, ...], ...]:
-    if not 1 <= max_items <= 50:
-        raise ValueError("graph model batch size must be between one and fifty")
-    if len(set(resources)) != len(resources):
-        raise ValueError("graph model resources must be unique")
-    return tuple(
-        tuple(resources[start : start + max_items])
-        for start in range(0, len(resources), max_items)
-    )
-
-
 def validate_normalized_output(
     expected_locators: Sequence[str],
     output: NormalizedOrganizationBatch,

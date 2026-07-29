@@ -1,32 +1,6 @@
-from enum import StrEnum
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-
-class IdentityKeyKind(StrEnum):
-    NUMBER = "number"
-    PHONE = "phone"
-    EMAIL = "email"
-
-
-class WorkItemKind(StrEnum):
-    RESOLVED = "resolved"
-    IDENTITY_CONFLICT = "identity_conflict"
-    TARGET_EXTRA = "target_extra"
-    TARGET_DUPLICATE = "target_duplicate"
-    TARGET_MISSING = "target_missing"
-    FIELD_DIFFERENCE = "field_difference"
-    AUTHORITY_INVALID = "authority_invalid"
-    CORRECT = "correct"
-
-
-class WorkItemState(StrEnum):
-    PENDING = "pending"
-    CLAIMED = "claimed"
-    AWAITING_CLARIFICATION = "awaiting_clarification"
-    ANALYZED = "analyzed"
-    BLOCKED = "blocked"
 
 
 class AgentSolutionPayload(BaseModel):

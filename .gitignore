@@ -17,3 +17,4 @@ backend/storage/quarantine/*
 *.db
 *.sqlite3
 *.egg-info/
+backend/storage/exports/*

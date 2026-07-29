@@ -14,11 +14,11 @@ from app.connectors.configured import (
     ConnectorCapabilities,
     ConnectorConflictError,
     DatabaseConnectorConfiguration,
-    InMemoryConnectorStore,
 )
 from app.models.executions import TargetVersionRecord
 from app.models.reconciliation import ReconciliationTask
 from app.repositories.executions import ExecutionRepository
+from tests.fixtures.connector_store import InMemoryConnectorStore
 
 
 class _Session:

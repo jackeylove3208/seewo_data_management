@@ -10,7 +10,6 @@ from app.connectors.configured import (
     ConfiguredApiConnector,
     ConnectorCapabilities,
     DatabaseConnectorConfiguration,
-    InMemoryConnectorStore,
 )
 from app.models.agent_analysis import (
     AgentFindingRecord,
@@ -24,6 +23,7 @@ from app.models.agent_runtime import AgentRunRecord
 from app.models.executions import TargetVersionRecord
 from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import Snapshot, SourceFile
+from tests.fixtures.connector_store import InMemoryConnectorStore
 
 
 class StaticResolver:

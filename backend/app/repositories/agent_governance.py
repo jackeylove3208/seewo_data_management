@@ -1,6 +1,7 @@
 """Persistence for the Conversation 3 governance boundary."""
 
 from datetime import UTC, datetime
+from hashlib import sha256
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
@@ -22,6 +23,27 @@ class GovernanceReplayConflict(ValueError):
     pass
 
 
+_MAX_APPROVAL_GROUP_KEY_LENGTH = 255
+
+
+def _approval_group_key(group: AgentApprovalGroup) -> str:
+    prefix = (
+        f"{group.issue_kind}:{group.entity_kind}:{group.operation}:"
+        f"{group.policy_version}"
+    )
+    field_names = ",".join(group.changed_fields) or "none"
+    raw_key = f"{prefix}:fields:{field_names}:segment:{group.segment_index}"
+    if len(raw_key) <= _MAX_APPROVAL_GROUP_KEY_LENGTH:
+        return raw_key
+    fields_digest = sha256("\0".join(group.changed_fields).encode("utf-8")).hexdigest()
+    bounded_key = (
+        f"{prefix}:fields-sha256:{fields_digest}:segment:{group.segment_index}"
+    )
+    if len(bounded_key) <= _MAX_APPROVAL_GROUP_KEY_LENGTH:
+        return bounded_key
+    return f"approval-sha256:{sha256(raw_key.encode('utf-8')).hexdigest()}"
+
+
 class AgentGovernanceRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -35,11 +57,7 @@ class AgentGovernanceRepository:
     ) -> AgentApprovalGroupRecord:
         if run.task_id != task.id or run.tenant_id != task.tenant_id:
             raise GovernanceReplayConflict("approval context is cross-task or cross-tenant")
-        group_key = (
-            f"{group.issue_kind}:{group.entity_kind}:{group.operation}:"
-            f"{group.policy_version}:fields:"
-            f"{','.join(group.changed_fields) or 'none'}:segment:{group.segment_index}"
-        )
+        group_key = _approval_group_key(group)
         existing = await self.session.scalar(
             select(AgentApprovalGroupRecord).where(
                 AgentApprovalGroupRecord.run_id == run.id,

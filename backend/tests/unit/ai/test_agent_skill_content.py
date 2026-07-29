@@ -130,7 +130,7 @@ NEW_AGENT_SKILLS = {
 }
 
 NEW_AGENT_SKILL_VERSIONS = {
-    "converse-school-data-sync": "1.1.0",
+    "converse-school-data-sync": "1.2.0",
     "assess-agent-rollback-impact": "2.1.0",
     "execute-approved-rollback": "2.1.0",
 }
@@ -140,7 +140,6 @@ LEGACY_SKILLS = {
     "assess-rollback-impact",
     "generate-governance-plan",
     "generate-governance-report",
-    "resolve-entity-rematching",
 }
 
 REQUIRED_SECTIONS = (
@@ -208,7 +207,7 @@ def test_remote_source_understanding_skill_has_only_bounded_read_tools() -> None
 
 
 def test_conversation_skill_advertises_direct_remote_csv_ingestion() -> None:
-    skill = SkillRegistry().load("converse-school-data-sync", "1.1.0")
+    skill = SkillRegistry().load("converse-school-data-sync", "1.2.0")
 
     for term in (
         "`conversation_remote_csv_enabled`",
@@ -233,6 +232,11 @@ def test_conversation_skill_advertises_direct_remote_csv_ingestion() -> None:
         "当前部署未启用",
         "不得根据文件名或单侧来源猜测",
         "不代表",
+        "`remote_link_candidates`",
+        "`remote_url_start`",
+        "`remote_url_end`",
+        "选择链接边界",
+        "后端校验",
     ):
         assert term in skill.instructions
 

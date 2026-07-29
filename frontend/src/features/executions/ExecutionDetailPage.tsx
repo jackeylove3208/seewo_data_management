@@ -3,7 +3,7 @@ import { Download, ExternalLink, FileText, RotateCcw } from "lucide-react";
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { apiUrl } from "../../api/client";
+import { resolveApiUrl } from "../../api/client";
 import { reportingApi, type RestorePreview } from "../../api/reporting";
 import { BackButton } from "../../components/BackButton";
 
@@ -106,8 +106,8 @@ export function ExecutionDetailPage() {
           {reports.data?.map((report) => (
             <div className="report-row" key={report.id}>
               <span><strong>报告 v{report.version}</strong><small>{report.content.summary}</small></span>
-              <a href={apiUrl(reportingApi.reportHtmlUrl(report.id))} target="_blank" rel="noreferrer" title="查看 HTML 报告"><ExternalLink size={16} /></a>
-              <a href={apiUrl(reportingApi.reportDownloadUrl(report.id))} title="下载 HTML 报告"><Download size={16} /></a>
+              <a href={resolveApiUrl(reportingApi.reportHtmlUrl(report.id))} target="_blank" rel="noreferrer" title="查看 HTML 报告"><ExternalLink size={16} /></a>
+              <a href={resolveApiUrl(reportingApi.reportDownloadUrl(report.id))} title="下载 HTML 报告"><Download size={16} /></a>
             </div>
           ))}
           {reports.data?.length === 0 && <p>尚未生成报告</p>}

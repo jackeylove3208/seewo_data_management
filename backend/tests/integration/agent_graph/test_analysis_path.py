@@ -4,7 +4,6 @@ import pytest
 
 from app.agent_graph.analysis_executors import (
     compile_analysis_payloads,
-    partition_bounded_resources,
     validate_normalized_output,
 )
 from app.ai.skills.contracts import (
@@ -15,16 +14,6 @@ from app.ai.skills.contracts import (
     NormalizedOrganizationBatch,
     NormalizedRecord,
 )
-
-
-def test_normalization_resources_are_partitioned_at_fifty() -> None:
-    resources = tuple(f"row:{index}" for index in range(1, 52))
-
-    batches = partition_bounded_resources(resources)
-
-    assert tuple(len(batch) for batch in batches) == (50, 1)
-    assert batches[0][0] == "row:1"
-    assert batches[1][0] == "row:51"
 
 
 def test_normalized_output_must_exactly_cover_manifest_rows() -> None:

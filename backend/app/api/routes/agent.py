@@ -70,6 +70,7 @@ from app.models.agent_analysis import (
 )
 from app.models.agent_graph import AgentGraphRunRecord, AgentHumanGateRecord
 from app.models.agent_runtime import (
+    AgentConversationMessageRecord,
     AgentConversationRecord,
     AgentRunRecord,
     SchoolTaskLockRecord,
@@ -79,6 +80,7 @@ from app.models.reporting import AgentReportRecord
 from app.models.snapshots import SourceFile
 from app.remote_sources.links import (
     RemoteSourceRegistrationError,
+    conversation_link_candidates,
     extract_conversation_link,
     redact_conversation_links,
 )
@@ -118,6 +120,7 @@ from app.schemas.agent_conversation import (
     ConversationAgentContext,
     ConversationDatabaseConnector,
     ConversationHistoryMessage,
+    ConversationLinkBoundaryCandidate,
     ConversationRemoteSource,
 )
 from app.schemas.agent_graph_api import (
@@ -541,27 +544,15 @@ async def send_agent_message(
             ),
         )
     try:
-        extracted_link = extract_conversation_link(body.message)
+        link_candidates = conversation_link_candidates(body.message)
     except RemoteSourceRegistrationError as error:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=_error(error.code, error.safe_message),
         ) from error
-    safe_message = (
-        extracted_link.redacted_message
-        if extracted_link is not None
-        else redact_conversation_links(body.message)
-    )
+    safe_message = redact_conversation_links(body.message)
     remote_source_repository = RemoteSourceRepository(session)
     remote_csv_enabled = request.app.state.settings.conversation_remote_csv_enabled
-    if extracted_link is not None and remote_csv_enabled:
-        await remote_source_repository.register(
-            tenant_id=operator.tenant_id,
-            created_by=operator.operator_id,
-            conversation_id=conversation.id,
-            original_url=extracted_link.original_url,
-            display_origin=extracted_link.display_origin,
-        )
     remote_sources = (
         await remote_source_repository.list_for_conversation(
             tenant_id=operator.tenant_id,
@@ -576,12 +567,13 @@ async def send_agent_message(
         **conversation.context,
         _CONVERSATION_MESSAGE_TOKEN_KEY: _message_claim(message_token),
     }
-    await repository.append_conversation_message(
+    user_message = await repository.append_conversation_message(
         conversation_id=conversation.id,
         tenant_id=operator.tenant_id,
         role="user",
         text=safe_message,
     )
+    user_message_id = user_message.id
     messages = await repository.list_conversation_messages(
         conversation_id=conversation.id,
         tenant_id=operator.tenant_id,
@@ -641,6 +633,15 @@ async def send_agent_message(
                 history=history,
                 available_source_refs=tuple(source.source_ref for source in sources),
                 conversation_remote_csv_enabled=remote_csv_enabled,
+                remote_link_candidates=tuple(
+                    ConversationLinkBoundaryCandidate(
+                        start=candidate.start,
+                        end=candidate.end,
+                        display_url=candidate.display_url,
+                        trailing_text=candidate.trailing_text,
+                    )
+                    for candidate in link_candidates
+                ),
                 available_remote_sources=tuple(
                     ConversationRemoteSource(
                         remote_source_id=remote_source.id,
@@ -700,6 +701,21 @@ async def send_agent_message(
         await clear_message_claim()
         await session.commit()
         raise
+    selected_link = None
+    if decision.remote_url_start is not None and decision.remote_url_end is not None:
+        try:
+            selected_link = extract_conversation_link(
+                body.message,
+                start=decision.remote_url_start,
+                end=decision.remote_url_end,
+            )
+        except RemoteSourceRegistrationError as error:
+            await clear_message_claim()
+            await session.commit()
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=_error(error.code, error.safe_message),
+            ) from error
     conversation = await repository.get_active_conversation(
         conversation_id,
         tenant_id=operator.tenant_id,
@@ -742,6 +758,37 @@ async def send_agent_message(
                 "conversation_request_superseded",
                 "Conversation changed while the model was processing",
             ),
+        )
+    if selected_link is not None:
+        remote_source = await remote_source_repository.register(
+            tenant_id=operator.tenant_id,
+            created_by=operator.operator_id,
+            conversation_id=conversation.id,
+            original_url=selected_link.original_url,
+            display_origin=selected_link.display_origin,
+        )
+        decision = decision.model_copy(
+            update={
+                "remote_source_id": remote_source.id,
+                "remote_url_start": None,
+                "remote_url_end": None,
+            }
+        )
+        safe_message = selected_link.redacted_message
+        persisted_user_message = await session.get(
+            AgentConversationMessageRecord,
+            user_message_id,
+        )
+        if (
+            persisted_user_message is not None
+            and persisted_user_message.conversation_id == conversation.id
+            and persisted_user_message.tenant_id == operator.tenant_id
+        ):
+            persisted_user_message.text = safe_message
+        remote_sources = await remote_source_repository.list_for_conversation(
+            tenant_id=operator.tenant_id,
+            created_by=operator.operator_id,
+            conversation_id=conversation.id,
         )
     previous_intent = {
         key: value

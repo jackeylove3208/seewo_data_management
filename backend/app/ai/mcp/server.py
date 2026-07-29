@@ -1,13 +1,9 @@
-from collections.abc import Callable
 from typing import Any
 from uuid import UUID, uuid4
 
-from mcp.server.fastmcp import Context, FastMCP
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.mcp.agent_authorization import AgentCapability, AgentToolContext
-from app.ai.mcp.agent_gateway import AgentPhaseToolGateway
 from app.ai.mcp.authorization import (
     ToolAuthorizationError,
     ToolContext,
@@ -88,111 +84,6 @@ class MCPToolGateway:
     async def close_read_transaction(self) -> None:
         if self.session.in_transaction():
             await self.session.rollback()
-
-
-ToolContextProvider = Callable[[Context[Any, Any, Any]], ToolContext]
-AgentToolContextProvider = Callable[[Context[Any, Any, Any]], AgentToolContext]
-
-
-def create_fastmcp_server(
-    gateway: MCPToolGateway,
-    context_provider: ToolContextProvider,
-) -> FastMCP[Any]:
-    server: FastMCP[Any] = FastMCP(
-        "organization-reconciliation-context",
-        instructions="Read-only reconciliation evidence tools",
-    )
-
-    @server.tool(name="difference_context")
-    async def difference_context(difference_id: str, ctx: Context[Any, Any, Any]) -> dict[str, Any]:
-        result = await gateway.call(
-            "difference_context",
-            {"difference_id": difference_id},
-            context_provider(ctx),
-        )
-        return result.payload
-
-    @server.tool(name="candidate_search")
-    async def candidate_search(
-        difference_id: str,
-        query: str,
-        top_k: int,
-        ctx: Context[Any, Any, Any],
-    ) -> dict[str, Any]:
-        result = await gateway.call(
-            "candidate_search",
-            {"difference_id": difference_id, "query": query, "top_k": top_k},
-            context_provider(ctx),
-        )
-        return result.payload
-
-    @server.tool(name="rematch_candidate_evidence")
-    async def rematch_candidate_evidence(
-        difference_id: str,
-        work_item_id: str,
-        ctx: Context[Any, Any, Any],
-    ) -> dict[str, Any]:
-        result = await gateway.call(
-            "rematch_candidate_evidence",
-            {"difference_id": difference_id, "work_item_id": work_item_id},
-            context_provider(ctx),
-        )
-        return result.payload
-
-    @server.tool(name="mapping_rules")
-    async def mapping_rules(difference_id: str, ctx: Context[Any, Any, Any]) -> dict[str, Any]:
-        result = await gateway.call(
-            "mapping_rules",
-            {"difference_id": difference_id},
-            context_provider(ctx),
-        )
-        return result.payload
-
-    @server.tool(name="execution_context")
-    async def execution_context(
-        difference_id: str,
-        ctx: Context[Any, Any, Any],
-    ) -> dict[str, Any]:
-        result = await gateway.call(
-            "execution_context",
-            {"difference_id": difference_id},
-            context_provider(ctx),
-        )
-        return result.payload
-
-    return server
-
-
-def create_agent_fastmcp_server(
-    gateway: AgentPhaseToolGateway,
-    context_provider: AgentToolContextProvider,
-) -> FastMCP[Any]:
-    """Expose only server-registered, phase-authorized ``new-agent-v1`` capabilities."""
-    server: FastMCP[Any] = FastMCP(
-        "organization-reconciliation-agent",
-        instructions="Phase-scoped new-agent-v1 tools; no generic infrastructure access",
-    )
-
-    def register(capability: AgentCapability) -> None:
-        @server.tool(name=capability.value)
-        async def phase_tool(
-            arguments: dict[str, Any],
-            ctx: Context[Any, Any, Any],
-            resource_id: str | None = None,
-            connector_id: str | None = None,
-        ) -> dict[str, Any]:
-            parsed_resource = UUID(resource_id) if resource_id is not None else None
-            return await gateway.call(
-                capability,
-                context=context_provider(ctx),
-                arguments=arguments,
-                resource_id=parsed_resource,
-                connector_id=connector_id,
-            )
-
-    for capability in AgentCapability:
-        register(capability)
-    return server
 
 
 def _difference_id(arguments: dict[str, Any]) -> UUID:

@@ -3,7 +3,7 @@ from uuid import uuid4
 import pytest
 
 from app.ai.mcp.authorization import ToolAuthorizationError, ToolContext
-from app.ai.mcp.server import MCPToolGateway, create_fastmcp_server
+from app.ai.mcp.server import MCPToolGateway
 from app.differences.service import DifferenceDetectionService
 from app.matching.service import EntityResolutionService
 from app.models.reconciliation import ReconciliationTask
@@ -116,14 +116,6 @@ async def test_candidate_search_queries_target_snapshot_entities(session) -> Non
     assert result.payload["total"] == 1
     assert result.payload["items"][0]["source_id"] == "sw-t1"
     assert result.payload["items"][0]["source_role"] == "target"
-
-
-@pytest.mark.asyncio
-async def test_fastmcp_registers_only_gateway_tools(session, difference) -> None:
-    gateway = MCPToolGateway(session)
-    server = create_fastmcp_server(gateway, lambda _ctx: context_for(difference))
-
-    assert {tool.name for tool in await server.list_tools()} == gateway.tool_names
 
 
 @pytest.mark.asyncio

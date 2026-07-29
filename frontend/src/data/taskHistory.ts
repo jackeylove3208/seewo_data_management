@@ -3,7 +3,7 @@ import type { AgentHistoryItem } from "../api/agent";
 
 const STORAGE_KEY = "mofa-reconciliation-tasks";
 export const TASK_HISTORY_UPDATED_EVENT = "mofa-task-history-updated";
-export const UNKNOWN_TARGET_SOURCE_KEY = "unknown-history-source";
+const UNKNOWN_TARGET_SOURCE_KEY = "unknown-history-source";
 
 export interface TargetSourceTaskGroup {
   key: string;

@@ -32,14 +32,16 @@ from app.connectors.configured import (
     ConnectorCapabilities,
     ConnectorConflictError,
     DatabaseConnectorConfiguration,
-    InMemoryConnectorStore,
 )
 from app.core.config import Settings
 from app.models.agent_analysis import (
     AgentClarificationRecord,
     AgentGovernancePlanRecord,
+    AgentIdentityClaimRecord,
     AgentInputRecord,
+    AgentModelBatchItemRecord,
     AgentModelBatchRecord,
+    AgentWorkItemRecord,
 )
 from app.models.agent_graph import (
     AgentEvidenceManifestRecord,
@@ -53,6 +55,7 @@ from app.models.reconciliation import ReconciliationTask
 from app.models.remote_sources import RemoteSourceRecord
 from app.models.reporting import AgentReportRecord
 from app.models.snapshots import Snapshot, SourceFile
+from app.reconciliation.agent_identity import AgentIdentityIndexBuilder
 from app.remote_sources.materializer import RemoteSourceMaterializer
 from app.remote_sources.network import DownloadedRemoteCsv, RemoteSourceFailure
 from app.repositories.agent_analysis import AgentAnalysisRepository
@@ -63,6 +66,7 @@ from app.schemas.agent_ingestion import (
     AgentEntityKind,
     AgentSourceRole,
 )
+from tests.fixtures.connector_store import InMemoryConnectorStore
 
 
 class ModelMustNotRun:
@@ -1942,6 +1946,159 @@ async def test_pending_identity_conflict_preempts_analysis_and_confirmation_resu
     assert len(resumed) == 1
     assert resumed[0].graph_action_kind == "analyze_next_batch"
     assert resumed[0].successor_node == "analyze_actionable_batches"
+
+
+@pytest.mark.asyncio
+async def test_confirmed_identity_conflict_is_materialized_before_analysis_resumes(
+    database,
+    tmp_path: Path,
+) -> None:
+    context = replace(
+        await _preflight_context(database, tmp_path),
+        current_node="resolve_identity_conflicts",
+    )
+    async with database.session_factory() as session:
+        async with session.begin():
+            task = await session.get(ReconciliationTask, context.task_id)
+            run = await AgentRuntimeRepository(session).get_run(context.run_id)
+            snapshots = tuple(
+                await session.scalars(
+                    select(Snapshot).where(Snapshot.task_id == context.task_id)
+                )
+            )
+            assert task is not None
+            assert run is not None
+            snapshots_by_role = {item.source_role: item for item in snapshots}
+            authority_a, _authority_b, _conflict_target, _claimed_target = (
+                await AgentAnalysisRepository(session).persist_inputs(
+                    (
+                        AgentContractRecord(
+                            task_id=task.id,
+                            run_id=run.id,
+                            snapshot_id=snapshots_by_role["authoritative"].id,
+                            tenant_id=task.tenant_id,
+                            source_role=AgentSourceRole.AUTHORITATIVE,
+                            stable_locator="csv:authority:2",
+                            stable_order=1,
+                            entity_kind=AgentEntityKind.STUDENT,
+                            category="学生",
+                            name="候选甲",
+                            number="S-001",
+                            class_name="一班",
+                            phone="13800138001",
+                            email="a@example.test",
+                        ),
+                        AgentContractRecord(
+                            task_id=task.id,
+                            run_id=run.id,
+                            snapshot_id=snapshots_by_role["authoritative"].id,
+                            tenant_id=task.tenant_id,
+                            source_role=AgentSourceRole.AUTHORITATIVE,
+                            stable_locator="csv:authority:3",
+                            stable_order=2,
+                            entity_kind=AgentEntityKind.STUDENT,
+                            category="学生",
+                            name="候选乙",
+                            number="S-002",
+                            class_name="二班",
+                            phone="13800138002",
+                            email="b@example.test",
+                        ),
+                        AgentContractRecord(
+                            task_id=task.id,
+                            run_id=run.id,
+                            snapshot_id=snapshots_by_role["target"].id,
+                            tenant_id=task.tenant_id,
+                            source_role=AgentSourceRole.TARGET,
+                            stable_locator="csv:target:2",
+                            stable_order=1,
+                            entity_kind=AgentEntityKind.STUDENT,
+                            category="学生",
+                            name="候选甲",
+                            number="S-001",
+                            class_name="一班",
+                            phone="13800138002",
+                            email="b@example.test",
+                        ),
+                        AgentContractRecord(
+                            task_id=task.id,
+                            run_id=run.id,
+                            snapshot_id=snapshots_by_role["target"].id,
+                            tenant_id=task.tenant_id,
+                            source_role=AgentSourceRole.TARGET,
+                            stable_locator="csv:target:3",
+                            stable_order=2,
+                            entity_kind=AgentEntityKind.STUDENT,
+                            category="学生",
+                            name="候选乙",
+                            number="S-002",
+                            class_name="二班",
+                            phone="13800138002",
+                            email="b@example.test",
+                        ),
+                    )
+                )
+            )
+            await AgentIdentityIndexBuilder(session).build(run_id=run.id)
+            clarification = await session.scalar(
+                select(AgentClarificationRecord).where(
+                    AgentClarificationRecord.run_id == run.id
+                )
+            )
+            assert clarification is not None
+            governance = AgentGovernanceRepository(session)
+            await governance.record_structured_clarification_selection(
+                clarification.id,
+                tenant_id=task.tenant_id,
+                decision="select_candidate",
+                selected_candidate_id=authority_a.id,
+                note=None,
+                interpretation_zh="你选择了第三方候选 A，确认后继续。",
+                idempotency_key="production-identity-resolution",
+                actor_id="operator-1",
+            )
+            await governance.confirm_clarification(
+                clarification.id,
+                actor_id="operator-1",
+                confirmed=True,
+            )
+
+    plan = await ProductionGraphCandidateProvider(database.session_factory)(context)
+    action = next(
+        evaluation.action
+        for evaluation in plan.candidate_evaluations
+        if evaluation.passed
+    )
+    assert action.graph_action_kind == "resume_analysis_after_identity_conflicts"
+
+    await ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=ModelMustNotRun(),
+        tokenization_secret="test-tokenization-secret",
+    )(context, action)
+
+    async with database.session_factory() as session:
+        resolved = await session.scalar(
+            select(AgentWorkItemRecord)
+            .join(
+                AgentIdentityClaimRecord,
+                AgentIdentityClaimRecord.work_item_id == AgentWorkItemRecord.id,
+            )
+            .where(
+                AgentWorkItemRecord.run_id == context.run_id,
+                AgentIdentityClaimRecord.authority_input_id == authority_a.id,
+            )
+        )
+        assert resolved is not None
+        assert resolved.kind == "field_difference"
+        batch_items = tuple(
+            await session.scalars(
+                select(AgentModelBatchItemRecord).where(
+                    AgentModelBatchItemRecord.work_item_id == resolved.id
+                )
+            )
+        )
+        assert len(batch_items) == 1
 
 
 @pytest.mark.asyncio

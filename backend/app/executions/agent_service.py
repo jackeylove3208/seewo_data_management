@@ -6,12 +6,6 @@ from uuid import UUID
 
 from pydantic import JsonValue
 
-from app.connectors.base import ConnectorVersion
-from app.connectors.configured import (
-    ConfiguredApiConnector,
-    ConnectorCapabilityError,
-    ConnectorConflictError,
-)
 from app.executions.csv_versioning import (
     CsvMutationError,
     CsvTargetVersioner,
@@ -230,71 +224,6 @@ class _CsvAgentTargetSession:
 
     async def abort(self) -> None:
         await self._session.abort()
-
-
-class ConfiguredConnectorAgentTarget:
-    """Bind a capability-gated API/database target to the Agent executor contract."""
-
-    def __init__(self, connector: ConfiguredApiConnector) -> None:
-        self._connector = connector
-
-    async def begin(self, target_version: str, *, plan_id: UUID) -> AgentTargetSession:
-        return _ConfiguredConnectorSession(
-            connector=self._connector,
-            current_version=target_version,
-            plan_id=plan_id,
-        )
-
-
-class _ConfiguredConnectorSession:
-    def __init__(
-        self,
-        *,
-        connector: ConfiguredApiConnector,
-        current_version: str,
-        plan_id: UUID,
-    ) -> None:
-        self._connector = connector
-        self._current_version = current_version
-        self._plan_id = plan_id
-
-    async def apply_operation(self, operation: GovernanceOperation) -> None:
-        kind = {
-            OperationType.CREATE: "create",
-            OperationType.UPDATE: "update",
-            OperationType.DISABLE: "delete",
-        }.get(operation.operation_type)
-        after = dict(operation.after or {})
-        identifier = operation.target_source_identifier
-        if kind == "create":
-            identifier = str(after.pop("source_id", "") or "")
-        if kind is None or not identifier:
-            raise AgentTargetError("configured connector operation is invalid")
-        try:
-            output = await self._connector.apply(
-                [
-                    {
-                        "operation": kind,
-                        "id": identifier,
-                        "before": operation.before or {},
-                        "after": after,
-                    }
-                ],
-                idempotency_key=f"agent:{self._plan_id}:{operation.id}",
-                expected_version=self._current_version,
-            )
-        except (ConnectorCapabilityError, ConnectorConflictError) as error:
-            raise AgentTargetError(str(error)) from error
-        self._current_version = output.value
-
-    async def read_entity(self, identifier: str) -> dict[str, object] | None:
-        return await self._connector.read_record(identifier)
-
-    async def finalize(self) -> ConnectorVersion:
-        return ConnectorVersion(value=self._current_version)
-
-    async def abort(self) -> None:
-        return None
 
 
 def _to_governance_operation(operation: AgentGovernanceOperation) -> GovernanceOperation:
