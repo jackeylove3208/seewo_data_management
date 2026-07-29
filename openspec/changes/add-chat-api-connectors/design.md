@@ -133,6 +133,10 @@ Connection records store public configuration and an opaque `secret_ref`. Only t
 resolves secrets. Graph state, task intent, checkpoints, Skill payloads, MCP arguments, events,
 errors, and logs contain only safe connection views and sanitized codes.
 
+Task creation copies the safe public configuration and opaque secret version reference into the
+task-bound API source. Secret rotation retains encrypted versions while a task references them, so
+materialization never rereads mutable connection inputs or silently changes organizations.
+
 Connection testing and secure configuration occur outside a sync Graph and never write target data.
 
 ## Risks / Trade-offs

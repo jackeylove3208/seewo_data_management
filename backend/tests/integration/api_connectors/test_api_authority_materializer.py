@@ -59,7 +59,8 @@ class FakeCaptureAdapter:
         secret: Mapping[str, str],
         selected_entities: frozenset[AgentEntityKind],
     ) -> AsyncIterator[CapturedApiPage]:
-        del public_configuration, selected_entities
+        assert public_configuration == {"person_entity_kind": "teacher"}
+        del selected_entities
         assert secret == {"client_id": "client", "client_secret": "secret"}
         self.capture_calls += 1
         for page in self.pages:
@@ -140,6 +141,8 @@ async def _seed_source(
         tenant_id=task.tenant_id,
         task_id=task.id,
         connection_id=connection.id,
+        frozen_public_configuration=dict(connection.public_configuration),
+        frozen_secret_ref=connection.secret_ref,
         selected_entities=["teacher"],
         selection_hash=_selection_hash(("teacher",)),
         state="registered",

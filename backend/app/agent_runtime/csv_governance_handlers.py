@@ -627,12 +627,20 @@ async def build_agent_report_facts(
         if findings
         else {}
     )
-    marks = tuple(
-        await session.scalars(
-            select(AgentInputMarkRecord)
-            .join(AgentInputRecord)
-            .where(AgentInputRecord.run_id == run_id)
-        )
+    mark_rows = tuple(
+        (row[0], row[1])
+        for row in (
+            await session.execute(
+                select(AgentInputMarkRecord, AgentInputRecord.source_role)
+                .join(AgentInputRecord)
+                .where(AgentInputRecord.run_id == run_id)
+                .order_by(
+                    AgentInputRecord.source_role,
+                    AgentInputRecord.stable_order,
+                    AgentInputMarkRecord.reason_code,
+                )
+            )
+        ).all()
     )
     operations = tuple(
         await session.scalars(
@@ -688,8 +696,17 @@ async def build_agent_report_facts(
             for item in findings
         ],
         "excluded_findings": [
-            {"reason": item.reason_code, "disposition": item.report_disposition} for item in marks
+            {
+                "source_role": source_role,
+                "reason": mark.reason_code,
+                "affected_fields": sorted(set(mark.affected_fields)),
+                "inclusion_state": mark.inclusion_state,
+                "disposition": mark.report_disposition,
+                "safe_evidence": dict(mark.safe_evidence),
+            }
+            for mark, source_role in mark_rows
         ],
+        "input_diagnostics": _input_diagnostics(mark_rows),
         "mutations": [
             {
                 "id": str(item.id),
@@ -718,6 +735,34 @@ async def build_agent_report_facts(
     if checkpoint is not None:
         facts.update(checkpoint.payload)
     return facts
+
+
+def _input_diagnostics(
+    mark_rows: tuple[tuple[AgentInputMarkRecord, str], ...],
+) -> dict[str, Any]:
+    marked_inputs: dict[str, set[UUID]] = {
+        "authoritative": set(),
+        "target": set(),
+    }
+    reason_counts: dict[str, int] = {}
+    unavailable_field_counts: dict[str, int] = {}
+    identity_absent_inputs: set[UUID] = set()
+    for mark, source_role in mark_rows:
+        marked_inputs[source_role].add(mark.input_record_id)
+        reason_counts[mark.reason_code] = reason_counts.get(mark.reason_code, 0) + 1
+        if mark.reason_code == "authority_field_unavailable":
+            for field in set(mark.affected_fields):
+                unavailable_field_counts[field] = unavailable_field_counts.get(field, 0) + 1
+        elif mark.reason_code == "authority_identity_absent":
+            identity_absent_inputs.add(mark.input_record_id)
+    return {
+        "marked_input_counts": {
+            role: len(input_ids) for role, input_ids in marked_inputs.items()
+        },
+        "reason_counts": dict(sorted(reason_counts.items())),
+        "unavailable_field_counts": dict(sorted(unavailable_field_counts.items())),
+        "identity_absent_count": len(identity_absent_inputs),
+    }
 
 
 def _report_finding(

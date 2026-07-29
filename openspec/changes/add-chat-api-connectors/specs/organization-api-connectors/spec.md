@@ -48,6 +48,8 @@ only sanitized results.
 For an API authority task, the system SHALL capture every selected provider page after the school
 lock is acquired, validate pagination closure and external-ID uniqueness, and atomically publish one
 task-bound managed source file and authoritative snapshot before source inspection.
+The task-bound source SHALL freeze the safe public configuration and opaque secret version selected
+at task creation; later connection rotation SHALL affect only later tasks.
 
 #### Scenario: Capture succeeds
 - **WHEN** all selected organization resources reach a valid terminal cursor

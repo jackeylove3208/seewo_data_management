@@ -329,7 +329,7 @@ class AgentTaskService:
             select(ApiConnectionRecord).where(
                 ApiConnectionRecord.id == connection_id,
                 ApiConnectionRecord.tenant_id == self.operator.tenant_id,
-            )
+            ).with_for_update()
         )
         if connection is None:
             raise AgentConnectorCapabilityFailure(
@@ -523,6 +523,8 @@ class AgentTaskService:
                 tenant_id=task.tenant_id,
                 task_id=task.id,
                 connection_id=connection.id,
+                frozen_public_configuration=dict(connection.public_configuration),
+                frozen_secret_ref=connection.secret_ref,
                 selected_entities=selected_entities,
                 selection_hash=_hash(selected_entities),
                 state="registered",

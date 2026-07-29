@@ -88,6 +88,11 @@ class ApiAuthoritySourceRecord(Base, TimestampMixin):
         ForeignKey("api_connections.id", ondelete="RESTRICT"),
         index=True,
     )
+    frozen_public_configuration: Mapped[dict[str, Any]] = mapped_column(
+        _json(),
+        default=dict,
+    )
+    frozen_secret_ref: Mapped[str] = mapped_column(String(128))
     selected_entities: Mapped[list[str]] = mapped_column(_json(), default=list)
     selection_hash: Mapped[str] = mapped_column(String(64))
     state: Mapped[str] = mapped_column(String(32), default="registered", index=True)

@@ -88,13 +88,13 @@ class ApiAuthorityMaterializer:
             secret = await self._secret(
                 session,
                 tenant_id=record.tenant_id,
-                secret_ref=connection.secret_ref,
+                secret_ref=record.frozen_secret_ref,
             )
             pages = tuple(
                 [
                     page
                     async for page in adapter.capture(
-                        connection.public_configuration,
+                        record.frozen_public_configuration,
                         secret,
                         selected_entities,
                     )
@@ -201,8 +201,6 @@ class ApiAuthorityMaterializer:
         )
         if connection is None:
             raise ApiSourceFailure("connector_connection_unavailable")
-        if connection.state != "active":
-            raise ApiSourceFailure("connector_connection_inactive")
         return connection
 
     def _adapter(

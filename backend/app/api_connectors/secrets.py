@@ -8,7 +8,11 @@ from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.api_connectors import ApiConnectionRecord, ApiConnectionSecretRecord
+from app.models.api_connectors import (
+    ApiAuthoritySourceRecord,
+    ApiConnectionRecord,
+    ApiConnectionSecretRecord,
+)
 
 _SECRET_REFERENCE_PREFIX = "db-secret:"
 
@@ -75,20 +79,30 @@ class EncryptedDatabaseSecretStore:
             select(ApiConnectionRecord).where(
                 ApiConnectionRecord.id == connection_id,
                 ApiConnectionRecord.tenant_id == validated_tenant_id,
-            )
+            ).with_for_update()
         )
         if connection is None:
             _unavailable_secret()
+        old_secret_ref = connection.secret_ref
         old_secret = await self._owned_secret(
             tenant_id=validated_tenant_id,
-            secret_ref=connection.secret_ref,
+            secret_ref=old_secret_ref,
         )
         new_ref = await self.put(
             tenant_id=validated_tenant_id,
             payload=payload,
         )
         connection.secret_ref = new_ref
-        await self._session.delete(old_secret)
+        bound_source_id = await self._session.scalar(
+            select(ApiAuthoritySourceRecord.id)
+            .where(
+                ApiAuthoritySourceRecord.tenant_id == validated_tenant_id,
+                ApiAuthoritySourceRecord.frozen_secret_ref == old_secret_ref,
+            )
+            .limit(1)
+        )
+        if bound_source_id is None:
+            await self._session.delete(old_secret)
         await self._session.flush()
         return new_ref
 

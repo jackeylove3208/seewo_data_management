@@ -407,6 +407,29 @@ async def test_graph_api_materialization_action_publishes_task_bound_authority(
                 )
             )
             assert api_source is not None
+            assert api_source.frozen_public_configuration == {
+                "person_entity_kind": "teacher"
+            }
+            frozen_secret_ref = api_source.frozen_secret_ref
+
+    async with database.session_factory() as session:
+        async with session.begin():
+            connection = await session.get(ApiConnectionRecord, connection.id)
+            assert connection is not None
+            await EncryptedDatabaseSecretStore(
+                session,
+                fernet_key=key,
+            ).rotate(
+                tenant_id=connection.tenant_id,
+                connection_id=connection.id,
+                payload={
+                    "client_id": "replacement-client",
+                    "client_secret": "replacement-secret",
+                },
+            )
+            connection.public_configuration = {"person_entity_kind": "student"}
+            connection.state = "pending"
+            assert connection.secret_ref != frozen_secret_ref
 
     context = GraphWorkContext(
         worker_id="api-materialization-worker",

@@ -165,8 +165,9 @@ The safe connector control plane is:
 - `DELETE /api/connectors/connections/{id}`
 
 Provider access is always read-only. A confirmed task freezes
-`agent-sync-graph-v2`, `source-ingestion-v3`, and `deterministic-execution-v2`, captures complete
-paginated API evidence, then reuses the existing identity, AI analysis, governance, MySQL
+`agent-sync-graph-v2`, `source-ingestion-v3`, `deterministic-execution-v2`, and its safe connection
+configuration/opaque secret version. Secret rotation affects later tasks only. The task captures
+complete paginated API evidence, then reuses the existing identity, AI analysis, governance, MySQL
 preflight, idempotent mutation, write-verification, reporting, and rollback pipeline.
 
 Run only synthetic connector tests during development:
