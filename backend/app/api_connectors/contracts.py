@@ -5,7 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.schemas.agent_ingestion import AgentContractRecord, AgentEntityKind
+from app.schemas.agent_ingestion import AgentEntityKind
 
 
 class ApiProviderError(RuntimeError):
@@ -116,17 +116,6 @@ class CapturedApiPage(BaseModel):
     next_cursor: str | None = Field(default=None, max_length=2048)
 
 
-class AgentProjectionContext(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    task_id: UUID
-    run_id: UUID
-    snapshot_id: UUID
-    tenant_id: str = Field(min_length=1, max_length=128)
-    connection_id: UUID
-    stable_order: int = Field(ge=1)
-
-
 class OrganizationApiAdapter(Protocol):
     """Deterministic provider boundary; secrets never cross beyond this protocol."""
 
@@ -144,12 +133,6 @@ class OrganizationApiAdapter(Protocol):
         secret: Mapping[str, str],
         selected_entities: frozenset[AgentEntityKind],
     ) -> AsyncIterator[CapturedApiPage]: ...
-
-    def project(
-        self,
-        record: FrozenApiRecord,
-        context: AgentProjectionContext,
-    ) -> AgentContractRecord: ...
 
 
 def _validate_safe_configuration(value: object) -> None:

@@ -1,15 +1,11 @@
 import json
 from collections.abc import Callable
 from urllib.parse import parse_qs
-from uuid import UUID
 
 import httpx
 import pytest
 
-from app.api_connectors.contracts import (
-    AgentProjectionContext,
-    ApiProviderError,
-)
+from app.api_connectors.contracts import ApiProviderError
 from app.api_connectors.dingtalk import DingtalkOrganizationAdapter
 from app.api_connectors.wecom import WeComOrganizationAdapter
 from app.schemas.agent_ingestion import AgentEntityKind
@@ -192,23 +188,8 @@ async def test_adapter_contract_closes_pagination_and_keeps_external_id_out_of_n
         for record in page.records
         if record.entity_kind is AgentEntityKind.TEACHER
     )
-    projected = adapter.project(
-        teacher,
-        AgentProjectionContext(
-            task_id=UUID(int=1),
-            run_id=UUID(int=2),
-            snapshot_id=UUID(int=3),
-            tenant_id="school-1",
-            connection_id=UUID(int=4),
-            stable_order=1,
-        ),
-    )
-    assert projected.stable_locator.startswith(
-        f"api:{UUID(int=4)}:teacher:",
-    )
-    assert "%2F" in projected.stable_locator
-    assert projected.number != teacher.external_id
-    assert projected.name == "周明远"
+    assert teacher.projected_fields["number"] != teacher.external_id
+    assert teacher.projected_fields["name"] == "周明远"
 
 
 @pytest.mark.parametrize(

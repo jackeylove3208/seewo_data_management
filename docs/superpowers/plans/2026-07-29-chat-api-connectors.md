@@ -467,10 +467,6 @@ class OrganizationApiAdapter(Protocol):
         secret: Mapping[str, str],
         selected_entities: frozenset[AgentEntityKind],
     ) -> AsyncIterator[CapturedApiPage]: ...
-
-    def project(
-        self, record: FrozenApiRecord, context: AgentProjectionContext
-    ) -> AgentContractRecord: ...
 ```
 
 - [ ] **Step 4: Implement registry and encrypted store**
@@ -542,9 +538,8 @@ async def test_adapter_contract_closes_pagination_and_keeps_external_id_out_of_n
         )
     ]
     assert pages[-1].next_cursor is None
-    record = adapter.project(pages[0].records[0], projection_context())
-    assert record.stable_locator.startswith("api:")
-    assert record.number != pages[0].records[0].external_id
+    record = pages[0].records[0]
+    assert record.projected_fields["number"] != record.external_id
 
 
 async def test_connection_response_never_returns_secret(client) -> None:
@@ -823,7 +818,7 @@ Expected: missing Adapter and unsupported `unavailable_fields` argument.
 
 Parse the materializer's versioned JSONL header and records. Validate task/snapshot/connection,
 Adapter/projection version, selected entity set, sorted unique locators, and maximum locator length.
-For each record call `adapter.project()` and set deterministic stable order.
+Use `AgentContractMapper` for each frozen record and set deterministic stable order.
 
 Add one included input mark per affected record:
 

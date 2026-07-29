@@ -4,7 +4,6 @@ from typing import Any
 import httpx
 
 from app.api_connectors.contracts import (
-    AgentProjectionContext,
     ApiProviderError,
     CapturedApiPage,
     ConnectionTestResult,
@@ -18,7 +17,6 @@ from app.api_connectors.provider_runtime import (
     department_memberships,
     person_kind,
     positive_int,
-    project_record,
     projected_fields,
     record_dict,
     request_json,
@@ -26,7 +24,7 @@ from app.api_connectors.provider_runtime import (
     required_string,
     summarize_connection_test,
 )
-from app.schemas.agent_ingestion import AgentContractRecord, AgentEntityKind
+from app.schemas.agent_ingestion import AgentEntityKind
 
 WECOM_MANIFEST = ProviderManifest(
     provider_id="wecom",
@@ -184,13 +182,6 @@ class WeComOrganizationAdapter:
                 records=batch,
                 next_cursor=f"capture:{page_number + 1}" if has_next else None,
             )
-
-    def project(
-        self,
-        record: FrozenApiRecord,
-        context: AgentProjectionContext,
-    ) -> AgentContractRecord:
-        return project_record(record, context)
 
     async def _access_token(self, secret: Mapping[str, str]) -> str:
         if set(secret) != set(self.manifest.required_secret_fields):

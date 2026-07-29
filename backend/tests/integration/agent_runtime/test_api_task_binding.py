@@ -17,7 +17,6 @@ from app.agent_runtime.task_service import (
     AgentTaskService,
 )
 from app.api_connectors.contracts import (
-    AgentProjectionContext,
     ApiProviderError,
     CapturedApiPage,
     ConnectionTestResult,
@@ -45,7 +44,7 @@ from app.models.snapshots import (
 )
 from app.reconciliation.agent_identity import AgentIdentityIndexBuilder
 from app.schemas.agent_api import AgentTaskIntent
-from app.schemas.agent_ingestion import AgentContractRecord, AgentEntityKind
+from app.schemas.agent_ingestion import AgentEntityKind
 from tests.fixtures.connector_store import InMemoryConnectorStore
 from tests.settings import build_test_settings
 
@@ -87,16 +86,6 @@ class AdapterMustNotRun:
         self.calls += 1
         raise AssertionError("task binding must not call provider")
         yield
-
-    def project(
-        self,
-        record: FrozenApiRecord,
-        context: AgentProjectionContext,
-    ) -> AgentContractRecord:
-        del record, context
-        self.calls += 1
-        raise AssertionError("task binding must not call provider")
-
 
 class CaptureAdapter(AdapterMustNotRun):
     async def capture(

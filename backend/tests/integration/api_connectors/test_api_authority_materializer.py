@@ -10,7 +10,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api_connectors.contracts import (
-    AgentProjectionContext,
     CapturedApiPage,
     ConnectionTestResult,
     FrozenApiRecord,
@@ -23,7 +22,7 @@ from app.core.config import Settings
 from app.models.api_connectors import ApiAuthoritySourceRecord, ApiConnectionRecord
 from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import Snapshot, SourceFile
-from app.schemas.agent_ingestion import AgentContractRecord, AgentEntityKind
+from app.schemas.agent_ingestion import AgentEntityKind
 
 MANIFEST = ProviderManifest(
     provider_id="fake-org",
@@ -65,15 +64,6 @@ class FakeCaptureAdapter:
         self.capture_calls += 1
         for page in self.pages:
             yield page
-
-    def project(
-        self,
-        record: FrozenApiRecord,
-        context: AgentProjectionContext,
-    ) -> AgentContractRecord:
-        del record, context
-        raise NotImplementedError
-
 
 def _teacher(external_id: str, name: str = "周明远") -> FrozenApiRecord:
     return FrozenApiRecord(

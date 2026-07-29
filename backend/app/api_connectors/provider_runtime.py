@@ -1,23 +1,18 @@
 import json
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 
 import httpx
 
 from app.api_connectors.contracts import (
-    AgentProjectionContext,
     ApiProviderError,
     CapturedApiPage,
     ConnectionTestResult,
     FrozenApiRecord,
     ProviderManifest,
 )
-from app.schemas.agent_ingestion import (
-    AgentContractRecord,
-    AgentEntityKind,
-    AgentSourceRole,
-)
+from app.schemas.agent_ingestion import AgentEntityKind
 
 
 async def request_json(
@@ -228,37 +223,6 @@ async def summarize_connection_test(
             **{f"{kind}_count": count for kind, count in counts.items()},
         },
         safe_error_code=None if visible else "connector_visibility_empty",
-    )
-
-
-def project_record(
-    record: FrozenApiRecord,
-    context: AgentProjectionContext,
-) -> AgentContractRecord:
-    fields = record.projected_fields
-    return AgentContractRecord(
-        task_id=context.task_id,
-        run_id=context.run_id,
-        snapshot_id=context.snapshot_id,
-        tenant_id=context.tenant_id,
-        source_role=AgentSourceRole.AUTHORITATIVE,
-        stable_locator=(
-            f"api:{context.connection_id}:{record.entity_kind}:"
-            f"{quote(record.external_id, safe='')}"
-        ),
-        stable_order=context.stable_order,
-        entity_kind=record.entity_kind,
-        category=fields.get("category"),
-        name=fields.get("name"),
-        number=fields.get("number"),
-        class_name=(
-            fields.get("class_name")
-            if record.entity_kind is AgentEntityKind.STUDENT
-            else None
-        ),
-        phone=fields.get("phone"),
-        email=fields.get("email"),
-        raw_row_number=None,
     )
 
 

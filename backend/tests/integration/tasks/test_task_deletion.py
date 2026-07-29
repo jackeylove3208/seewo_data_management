@@ -179,9 +179,14 @@ async def test_deletes_materialized_api_source_before_its_task(
 ) -> None:
     removable = task()
     removable.workflow_version = "agent-graph-v1"
-    secret = ApiConnectionSecretRecord(
+    frozen_secret = ApiConnectionSecretRecord(
         tenant_id=removable.tenant_id,
         ciphertext=b"encrypted",
+        key_version="fernet-v1",
+    )
+    current_secret = ApiConnectionSecretRecord(
+        tenant_id=removable.tenant_id,
+        ciphertext=b"rotated",
         key_version="fernet-v1",
     )
     connection = ApiConnectionRecord(
@@ -198,9 +203,9 @@ async def test_deletes_materialized_api_source_before_its_task(
         created_by="operator-1",
         updated_by="operator-1",
     )
-    session.add_all([removable, secret])
+    session.add_all([removable, frozen_secret, current_secret])
     await session.flush()
-    connection.secret_ref = str(secret.id)
+    connection.secret_ref = f"db-secret:{current_secret.id}"
     session.add(connection)
     await session.flush()
     artifact = tmp_path / "api-authority.jsonl"
@@ -235,7 +240,7 @@ async def test_deletes_materialized_api_source_before_its_task(
         task_id=removable.id,
         connection_id=connection.id,
         frozen_public_configuration={},
-        frozen_secret_ref=connection.secret_ref,
+        frozen_secret_ref=f"db-secret:{frozen_secret.id}",
         selected_entities=["teacher"],
         selection_hash="d" * 64,
         state="ready",
@@ -256,6 +261,8 @@ async def test_deletes_materialized_api_source_before_its_task(
     assert await session.get(ApiAuthoritySourceRecord, api_source.id) is None
     assert await session.get(ReconciliationTask, removable.id) is None
     assert await session.get(ApiConnectionRecord, connection.id) is not None
+    assert await session.get(ApiConnectionSecretRecord, frozen_secret.id) is None
+    assert await session.get(ApiConnectionSecretRecord, current_secret.id) is not None
     assert not artifact.exists()
 
 

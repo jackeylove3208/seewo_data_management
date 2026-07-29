@@ -8,17 +8,15 @@ from fastapi.testclient import TestClient
 
 from app.api.dependencies import get_operator_context
 from app.api_connectors.contracts import (
-    AgentProjectionContext,
     ApiProviderError,
     CapturedApiPage,
     ConnectionTestResult,
-    FrozenApiRecord,
     ProviderManifest,
 )
 from app.api_connectors.registry import ProviderRegistry
 from app.core.security import OperatorContext
 from app.main import create_app
-from app.schemas.agent_ingestion import AgentContractRecord, AgentEntityKind
+from app.schemas.agent_ingestion import AgentEntityKind
 from tests.integration.repositories.test_agent_external_identity import (
     _seed_context,
 )
@@ -75,15 +73,6 @@ class FakeDingTalkAdapter:
         del public_configuration, secret, selected_entities
         if False:
             yield CapturedApiPage(page_number=1, records=(), next_cursor=None)
-
-    def project(
-        self,
-        record: FrozenApiRecord,
-        context: AgentProjectionContext,
-    ) -> AgentContractRecord:
-        del record, context
-        raise NotImplementedError
-
 
 @pytest.fixture
 def connector_client(tmp_path: Path):

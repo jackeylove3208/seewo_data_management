@@ -5,7 +5,7 @@ from uuid import UUID
 
 from cryptography.fernet import Fernet, InvalidToken
 from pydantic import SecretStr
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.api_connectors import (
@@ -84,7 +84,7 @@ class EncryptedDatabaseSecretStore:
         if connection is None:
             _unavailable_secret()
         old_secret_ref = connection.secret_ref
-        old_secret = await self._owned_secret(
+        await self._owned_secret(
             tenant_id=validated_tenant_id,
             secret_ref=old_secret_ref,
         )
@@ -93,16 +93,12 @@ class EncryptedDatabaseSecretStore:
             payload=payload,
         )
         connection.secret_ref = new_ref
-        bound_source_id = await self._session.scalar(
-            select(ApiAuthoritySourceRecord.id)
-            .where(
-                ApiAuthoritySourceRecord.tenant_id == validated_tenant_id,
-                ApiAuthoritySourceRecord.frozen_secret_ref == old_secret_ref,
-            )
-            .limit(1)
+        await self._session.flush()
+        await delete_unreferenced_secret(
+            self._session,
+            tenant_id=validated_tenant_id,
+            secret_ref=old_secret_ref,
         )
-        if bound_source_id is None:
-            await self._session.delete(old_secret)
         await self._session.flush()
         return new_ref
 
@@ -135,6 +131,43 @@ class EncryptedDatabaseSecretStore:
         if record is None:
             _unavailable_secret()
         return record
+
+
+async def delete_unreferenced_secret(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    secret_ref: str,
+) -> None:
+    """Delete a stored secret after its last connection or frozen task releases it."""
+    validated_tenant_id = _validated_tenant_id(tenant_id)
+    secret = await session.scalar(
+        select(ApiConnectionSecretRecord)
+        .where(
+            ApiConnectionSecretRecord.id == _parse_secret_reference(secret_ref),
+            ApiConnectionSecretRecord.tenant_id == validated_tenant_id,
+        )
+        .with_for_update()
+    )
+    if secret is None:
+        return
+    connection_reference, source_reference = (
+        await session.execute(
+            select(
+                exists().where(
+                    ApiConnectionRecord.tenant_id == validated_tenant_id,
+                    ApiConnectionRecord.secret_ref == secret_ref,
+                ),
+                exists().where(
+                    ApiAuthoritySourceRecord.tenant_id == validated_tenant_id,
+                    ApiAuthoritySourceRecord.frozen_secret_ref == secret_ref,
+                ),
+            )
+        )
+    ).one()
+    if connection_reference or source_reference:
+        return
+    await session.delete(secret)
 
 
 def _build_fernet(value: bytes | str | SecretStr) -> Fernet:

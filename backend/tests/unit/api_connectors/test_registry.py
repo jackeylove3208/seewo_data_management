@@ -3,15 +3,13 @@ from collections.abc import AsyncIterator, Mapping
 import pytest
 
 from app.api_connectors.contracts import (
-    AgentProjectionContext,
     CapturedApiPage,
     ConnectionTestResult,
-    FrozenApiRecord,
     ProviderManifest,
     SafeApiConnection,
 )
 from app.api_connectors.registry import ProviderRegistry
-from app.schemas.agent_ingestion import AgentContractRecord, AgentEntityKind
+from app.schemas.agent_ingestion import AgentEntityKind
 
 DINGTALK_MANIFEST = ProviderManifest(
     provider_id="dingtalk",
@@ -56,15 +54,6 @@ class FakeAdapter:
         del public_configuration, secret, selected_entities
         if False:
             yield CapturedApiPage(page_number=1, records=(), next_cursor=None)
-
-    def project(
-        self,
-        record: FrozenApiRecord,
-        context: AgentProjectionContext,
-    ) -> AgentContractRecord:
-        del record, context
-        raise NotImplementedError
-
 
 def test_registry_resolves_audited_manifest_and_adapter() -> None:
     adapter = FakeAdapter()
