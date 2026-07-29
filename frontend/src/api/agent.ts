@@ -310,6 +310,12 @@ export interface AgentHistoryItem extends AgentTask {
   rollback_eligible: boolean;
   deletion_eligible: boolean;
   entity_types?: AgentEntityType[];
+  target_source?: {
+    key: string;
+    name: string;
+    kind: "database" | "local" | "upload" | "unknown";
+    identified: boolean;
+  };
 }
 
 export interface AgentHistoryPage {

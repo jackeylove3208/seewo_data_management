@@ -173,6 +173,15 @@ class AgentActiveLockResponse(BaseModel):
     heartbeat_at: datetime | None = None
 
 
+class AgentHistoryTargetSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=1, max_length=96)
+    name: str = Field(min_length=1, max_length=255)
+    kind: Literal["database", "local", "upload", "unknown"]
+    identified: bool
+
+
 class AgentHistoryItem(AgentTaskResponse):
     created_at: datetime
     completed_at: datetime | None = None
@@ -182,6 +191,7 @@ class AgentHistoryItem(AgentTaskResponse):
     rollback_eligible: bool
     deletion_eligible: bool
     entity_types: tuple[AgentEntityType, ...]
+    target_source: AgentHistoryTargetSource
 
 
 class AgentHistoryPage(BaseModel):

@@ -107,6 +107,26 @@ select {
   border-radius: 8px;
 }
 
+.apple-sidebar .workspace-source-group:has(.workspace-source-tasks) {
+  border-color: var(--codex-border);
+  background: rgb(255 255 255 / 58%);
+}
+
+.apple-sidebar .workspace-source-toggle {
+  color: var(--codex-ink);
+  border-radius: 8px;
+}
+
+.apple-sidebar .workspace-source-toggle:hover {
+  background: #e9ebee;
+}
+
+.apple-sidebar .workspace-source-icon,
+.apple-sidebar .history-task-kind {
+  color: var(--codex-ink-soft);
+  background: #e4e6e9;
+}
+
 .apple-sidebar .workspace-history-item {
   color: var(--codex-ink);
   border: 1px solid transparent;
@@ -233,6 +253,35 @@ select {
 .apple-page .task-list > .task-list-heading {
   margin: 0;
   padding: 18px 20px 14px;
+}
+
+.apple-page .task-source-group {
+  border-color: var(--codex-border);
+  background: var(--codex-panel);
+}
+
+.apple-page .task-source-toggle {
+  color: var(--codex-ink);
+  background: var(--codex-panel-subtle);
+}
+
+.apple-page .task-source-toggle:hover {
+  background: #f0f1f3;
+}
+
+.apple-page .task-source-icon,
+.apple-page .task-kind-badge {
+  color: var(--codex-ink-soft);
+  background: #e8e9eb;
+}
+
+.apple-page .task-source-main small,
+.apple-page .task-source-summary small {
+  color: var(--codex-ink-faint);
+}
+
+.apple-page .task-source-tasks {
+  border-color: var(--codex-border);
 }
 
 .apple-page .section-title-row h2,
@@ -1368,6 +1417,19 @@ select {
     padding: 16px;
     flex-direction: column;
     gap: 4px;
+  }
+
+  .task-source-groups {
+    padding: 0 10px 12px;
+  }
+
+  .task-source-toggle {
+    grid-template-columns: 36px minmax(0, 1fr) 18px;
+    padding: 10px 12px;
+  }
+
+  .task-source-summary {
+    display: none;
   }
 }
 

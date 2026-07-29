@@ -84,4 +84,85 @@ describe("task history", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("已终止同步").closest(".task-row")).toHaveTextContent("已终止");
   });
+
+  it("renders source accordions with sync and rollback in one group", () => {
+    const common = {
+      sourceFile: "后端连接器",
+      targetFile: "希沃组织主库",
+      sourceAccepted: 0,
+      targetAccepted: 0,
+      selectedEntityTypes: ["student" as const],
+      issueCount: 1,
+      status: "ready" as const,
+      targetSourceKey: "source-a",
+      targetSourceName: "希沃组织主库",
+      targetSourceKind: "database" as const,
+      targetSourceIdentified: true,
+    };
+    saveStoredTask({
+      ...common,
+      id: "sync-task",
+      title: "全校组织同步",
+      taskKind: "sync",
+      createdAt: "2026-07-28T08:00:00Z",
+    });
+    saveStoredTask({
+      ...common,
+      id: "rollback-task",
+      title: "回滚教师电话",
+      taskKind: "rollback",
+      createdAt: "2026-07-29T08:00:00Z",
+    });
+    saveStoredTask({
+      ...common,
+      id: "other-task",
+      title: "另一数据源同步",
+      taskKind: "sync",
+      createdAt: "2026-07-27T08:00:00Z",
+      targetFile: "seewo/current.csv",
+      targetSourceKey: "source-b",
+      targetSourceName: "seewo/current.csv",
+      targetSourceKind: "local",
+    });
+
+    render(<MemoryRouter><TaskListPage /></MemoryRouter>);
+
+    expect(screen.getByRole("button", {
+      name: "收起希沃组织主库任务列表",
+    })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("全校组织同步")).toBeInTheDocument();
+    expect(screen.getByText("回滚教师电话")).toBeInTheDocument();
+    expect(screen.getByRole("button", {
+      name: "展开seewo/current.csv任务列表",
+    })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("另一数据源同步")).not.toBeInTheDocument();
+  });
+
+  it("keeps a cached source group collapsed after the operator closes it", async () => {
+    const user = userEvent.setup();
+    saveStoredTask({
+      id: "cached-task",
+      title: "离线缓存任务",
+      taskKind: "sync",
+      createdAt: "2026-07-29T08:00:00Z",
+      sourceFile: "后端连接器",
+      targetFile: "希沃目标",
+      sourceAccepted: 0,
+      targetAccepted: 0,
+      selectedEntityTypes: ["student"],
+      issueCount: 1,
+      status: "ready",
+    });
+
+    render(<MemoryRouter><TaskListPage /></MemoryRouter>);
+
+    await user.click(screen.getByRole("button", {
+      name: "收起其他历史任务任务列表",
+    }));
+
+    expect(screen.getByRole("button", {
+      name: "展开其他历史任务任务列表",
+    })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("离线缓存任务")).not.toBeInTheDocument();
+  });
 });

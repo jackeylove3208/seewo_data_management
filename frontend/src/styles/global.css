@@ -374,6 +374,91 @@ button {
   scrollbar-width: thin;
 }
 
+.workspace-source-groups {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+}
+
+.workspace-source-group {
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 9px;
+}
+
+.workspace-source-group:has(.workspace-source-tasks) {
+  border-color: #dfe5e3;
+  background: rgba(255, 255, 255, 0.64);
+}
+
+.workspace-source-toggle {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) 15px;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 8px;
+  border: 0;
+  color: #26332f;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workspace-source-toggle:hover {
+  background: #edf1f0;
+}
+
+.workspace-source-icon {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: 7px;
+  color: #64716d;
+  background: #e7ecea;
+}
+
+.workspace-source-copy,
+.workspace-source-copy strong,
+.workspace-source-copy small {
+  min-width: 0;
+}
+
+.workspace-source-copy strong,
+.workspace-source-copy small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-source-copy strong {
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.workspace-source-copy small {
+  margin-top: 2px;
+  color: #818b87;
+  font-size: 9px;
+}
+
+.workspace-source-chevron {
+  color: #88928e;
+  transition: transform 150ms ease;
+}
+
+.workspace-source-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+.workspace-source-tasks {
+  padding: 0 4px 4px;
+  border-top: 1px solid #e7ebe9;
+}
+
 .workspace-history-row {
   position: relative;
   display: grid;
@@ -466,6 +551,18 @@ button {
   white-space: nowrap;
 }
 
+.history-task-kind {
+  display: inline-block;
+  margin-right: 5px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  color: #65706c;
+  background: #e8edeb;
+  font-size: 8px;
+  font-weight: 700;
+  vertical-align: 1px;
+}
+
 .history-copy small {
   display: flex;
   gap: 7px;
@@ -554,6 +651,10 @@ button {
   min-height: 40px;
   margin: 4px auto;
   place-items: center;
+}
+
+.workspace-sidebar.is-collapsed .workspace-source-groups {
+  display: none;
 }
 
 .workspace-mobile-header,
@@ -685,6 +786,98 @@ button.connection-state {
   display: grid;
 }
 
+.task-source-groups {
+  display: grid;
+  gap: 10px;
+  padding: 0 16px 18px;
+}
+
+.task-source-group {
+  overflow: hidden;
+  border: 1px solid #e1e7e5;
+  border-radius: 11px;
+  background: #fff;
+}
+
+.task-source-toggle {
+  display: grid;
+  grid-template-columns: 38px minmax(220px, 1fr) minmax(100px, auto) 20px;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 66px;
+  padding: 11px 16px;
+  border: 0;
+  color: #17211f;
+  background: #f8faf9;
+  text-align: left;
+  cursor: pointer;
+}
+
+.task-source-toggle:hover {
+  background: #f2f6f4;
+}
+
+.task-source-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 10px;
+  color: #55625e;
+  background: #e8edeb;
+}
+
+.task-source-main,
+.task-source-main strong,
+.task-source-main small,
+.task-source-summary {
+  min-width: 0;
+}
+
+.task-source-main strong,
+.task-source-main small,
+.task-source-summary strong,
+.task-source-summary small {
+  display: block;
+}
+
+.task-source-main strong {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-source-main small,
+.task-source-summary small {
+  margin-top: 4px;
+  color: #7e8985;
+  font-size: 10px;
+}
+
+.task-source-summary {
+  text-align: right;
+}
+
+.task-source-summary strong {
+  font-size: 11px;
+}
+
+.task-source-chevron {
+  color: #7e8985;
+  transition: transform 150ms ease;
+}
+
+.task-source-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+.task-source-tasks {
+  border-top: 1px solid #e1e7e5;
+}
+
 .task-row-wrapper {
   position: relative;
   border-top: 1px solid #e1e7e5;
@@ -748,6 +941,22 @@ button.connection-state {
   display: flex;
   flex-direction: column;
   gap: 7px;
+}
+
+.task-title-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.task-kind-badge {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border-radius: 5px;
+  color: #53615d;
+  background: #e8edeb;
+  font-size: 9px;
+  font-weight: 700;
 }
 
 .task-title-line,

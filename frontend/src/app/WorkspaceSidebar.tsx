@@ -1,18 +1,32 @@
 import {
   Activity,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Database,
+  FileSpreadsheet,
   History,
   MessageSquarePlus,
   PanelLeftClose,
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useState, type RefObject } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 import { NavLink, useLocation } from "react-router-dom";
 
 import { ConnectionStatus } from "../components/ConnectionStatus";
-import { allTasks, TASK_HISTORY_UPDATED_EVENT, toTaskHistoryItem } from "../data/taskHistory";
+import {
+  allTasks,
+  groupTasksByTargetSource,
+  TASK_HISTORY_UPDATED_EVENT,
+  toTaskHistoryItem,
+} from "../data/taskHistory";
 import { agentApi } from "../api/agent";
 import type { TaskStatus } from "../types/domain";
 import { useTaskDeletion } from "../features/tasks/useTaskDeletion";
@@ -46,6 +60,14 @@ export function WorkspaceSidebar({
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSED_KEY) === "true");
   const [tasks, setTasks] = useState(() => allTasks().slice(0, RECENT_TASK_LIMIT));
+  const groups = useMemo(() => groupTasksByTargetSource(tasks), [tasks]);
+  const currentTaskId = /^\/tasks\/([^/]+)$/.exec(location.pathname)?.[1];
+  const currentGroupKey = groups.find((group) => (
+    group.tasks.some((task) => task.id === currentTaskId)
+  ))?.key;
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const operatorAdjustedGroups = useRef(false);
+  const previousCurrentGroupKey = useRef<string | undefined>(undefined);
   const deletion = useTaskDeletion((taskId) => {
     setTasks((current) => current.filter((task) => task.id !== taskId));
   });
@@ -74,6 +96,28 @@ export function WorkspaceSidebar({
   }, [location.pathname]);
 
   useEffect(() => {
+    if (previousCurrentGroupKey.current !== currentGroupKey) {
+      operatorAdjustedGroups.current = false;
+      previousCurrentGroupKey.current = currentGroupKey;
+    }
+    setExpandedGroups((current) => {
+      const knownKeys = new Set(groups.map((group) => group.key));
+      const next = new Set([...current].filter((key) => knownKeys.has(key)));
+      const preferred = currentGroupKey ?? groups[0]?.key;
+      if (!operatorAdjustedGroups.current && currentGroupKey) {
+        next.add(currentGroupKey);
+      } else if (
+        !operatorAdjustedGroups.current
+        && next.size === 0
+        && preferred
+      ) {
+        next.add(preferred);
+      }
+      return setsMatch(current, next) ? current : next;
+    });
+  }, [currentGroupKey, groups]);
+
+  useEffect(() => {
     if (mobileOpen) closeButtonRef?.current?.focus();
   }, [closeButtonRef, mobileOpen]);
 
@@ -81,6 +125,16 @@ export function WorkspaceSidebar({
     setCollapsed((current) => {
       const next = !current;
       localStorage.setItem(COLLAPSED_KEY, String(next));
+      return next;
+    });
+  }
+
+  function toggleGroup(key: string) {
+    operatorAdjustedGroups.current = true;
+    setExpandedGroups((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   }
@@ -123,40 +177,74 @@ export function WorkspaceSidebar({
             <span className="workspace-label">历史记录</span>
             <History size={15} />
           </div>
-          <div className="workspace-history-list">
-            {tasks.map((task) => (
-              <div className="workspace-history-row" key={task.id}>
-                <NavLink
-                  className="workspace-history-item"
-                  to={`/tasks/${task.id}`}
-                  title={task.title}
-                  aria-label={`${task.title}，${statusLabels[task.status]}，${task.issueCount} 个问题`}
-                  onClick={onMobileClose}
-                >
-                  <span className="history-status-dot" data-status={task.status} />
-                  <span className="workspace-label history-copy">
-                    <strong>{task.title}</strong>
-                    <small><span>{formatTime(task.createdAt)}</span><span>{statusLabels[task.status]}</span><span>{task.issueCount} 个问题</span></small>
-                  </span>
-                  <ChevronRight className="workspace-label" size={14} />
-                </NavLink>
-                {task.deletionEligible !== false && (
+          <div className="workspace-history-list workspace-source-groups">
+            {groups.map((group) => {
+              const expanded = expandedGroups.has(group.key);
+              const panelId = `workspace-source-${safeDomId(group.key)}`;
+              return (
+                <div className="workspace-source-group" key={group.key}>
                   <button
-                    className="history-delete-button"
+                    className="workspace-source-toggle"
                     type="button"
-                    aria-label={`删除${task.title}`}
-                    title={`删除${task.title}`}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      deletion.requestDelete(task);
-                    }}
+                    aria-expanded={expanded}
+                    aria-controls={panelId}
+                    aria-label={`${expanded ? "收起" : "展开"}${group.name}任务列表`}
+                    onClick={() => toggleGroup(group.key)}
                   >
-                    <Trash2 size={14} />
+                    <span className="workspace-source-icon">
+                      {group.kind === "database"
+                        ? <Database size={13} />
+                        : <FileSpreadsheet size={13} />}
+                    </span>
+                    <span className="workspace-label workspace-source-copy">
+                      <strong>{group.name}</strong>
+                      <small>{group.taskCount} 个任务</small>
+                    </span>
+                    <ChevronDown
+                      className={`workspace-label workspace-source-chevron${expanded ? " is-open" : ""}`}
+                      size={14}
+                    />
                   </button>
-                )}
-              </div>
-            ))}
+                  {expanded && (
+                    <div className="workspace-source-tasks" id={panelId}>
+                      {group.tasks.map((task) => (
+                        <div className="workspace-history-row" key={task.id}>
+                          <NavLink
+                            className="workspace-history-item"
+                            to={`/tasks/${task.id}`}
+                            title={task.title}
+                            aria-label={`${task.title}，${statusLabels[task.status]}，${task.issueCount} 个问题`}
+                            onClick={onMobileClose}
+                          >
+                            <span className="history-status-dot" data-status={task.status} />
+                            <span className="workspace-label history-copy">
+                              <strong><span className="history-task-kind">{task.taskKind === "rollback" ? "回滚" : "同步"}</span>{task.title}</strong>
+                              <small><span>{formatTime(task.createdAt)}</span><span>{statusLabels[task.status]}</span><span>{task.issueCount} 个问题</span></small>
+                            </span>
+                            <ChevronRight className="workspace-label" size={14} />
+                          </NavLink>
+                          {task.deletionEligible !== false && (
+                            <button
+                              className="history-delete-button"
+                              type="button"
+                              aria-label={`删除${task.title}`}
+                              title={`删除${task.title}`}
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                deletion.requestDelete(task);
+                              }}
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
           <NavLink className="workspace-all-history" to="/executions" onClick={onMobileClose}>
             <History size={16} /><span className="workspace-label">查看全部历史</span>
@@ -180,4 +268,12 @@ export function WorkspaceSidebar({
       <span className="sr-only">当前路径：{location.pathname}</span>
     </aside>
   );
+}
+
+function setsMatch(left: Set<string>, right: Set<string>) {
+  return left.size === right.size && [...left].every((item) => right.has(item));
+}
+
+function safeDomId(value: string) {
+  return value.replace(/[^a-zA-Z0-9_-]/g, "-");
 }

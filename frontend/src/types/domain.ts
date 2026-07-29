@@ -43,6 +43,10 @@ export interface TaskHistoryItem {
   rollbackEligible?: boolean;
   deletionEligible?: boolean;
   operationSummary?: { succeeded: number; failed: number; blocked: number };
+  targetSourceKey?: string;
+  targetSourceName?: string;
+  targetSourceKind?: "database" | "local" | "upload" | "unknown";
+  targetSourceIdentified?: boolean;
 }
 
 export interface EntitySummary {

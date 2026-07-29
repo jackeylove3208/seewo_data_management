@@ -5,7 +5,46 @@ import { afterEach, vi } from "vitest";
 
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { agentApi } from "../api/agent";
-import { saveStoredTask } from "../data/taskHistory";
+import type { AgentHistoryItem } from "../api/agent";
+import {
+  saveStoredTask,
+  TASK_HISTORY_UPDATED_EVENT,
+} from "../data/taskHistory";
+
+function historyItem(
+  id: string,
+  title: string,
+  taskKind: "sync" | "rollback",
+  sourceKey: string,
+  sourceName: string,
+): AgentHistoryItem {
+  return {
+    id,
+    workflow_version: "agent-graph-v1",
+    task_kind: taskKind,
+    parent_task_id: taskKind === "rollback" ? "sync-task" : null,
+    phase: "terminal",
+    status: "completed",
+    title,
+    report_id: null,
+    rollback_eligible: false,
+    deletion_eligible: true,
+    created_at: taskKind === "rollback"
+      ? "2026-07-29T09:00:00Z"
+      : "2026-07-28T09:00:00Z",
+    completed_at: "2026-07-29T10:00:00Z",
+    termination_requested: false,
+    issue_summary: { total: 1, excluded: 0 },
+    operation_summary: { succeeded: 1, failed: 0, blocked: 0 },
+    entity_types: ["student"],
+    target_source: {
+      key: sourceKey,
+      name: sourceName,
+      kind: "database",
+      identified: true,
+    },
+  };
+}
 
 describe("workspace sidebar", () => {
   beforeEach(() => {
@@ -155,5 +194,72 @@ describe("workspace sidebar", () => {
       expect(screen.queryByRole("link", { name: /已经从后端删除的旧任务/ })).not.toBeInTheDocument();
     });
     expect(agentApi.history).toHaveBeenCalledTimes(2);
+  });
+
+  it("groups sync and rollback history by target source and expands the active group", async () => {
+    vi.spyOn(agentApi, "history").mockResolvedValue({
+      items: [
+        historyItem("rollback-task", "回滚教师电话", "rollback", "source-a", "希沃组织主库"),
+        historyItem("sync-task", "全校组织同步", "sync", "source-a", "希沃组织主库"),
+        historyItem("other-task", "临时学生同步", "sync", "source-b", "另一希沃目标"),
+      ],
+      next_cursor: null,
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/tasks/rollback-task"]}>
+        <WorkspaceSidebar mobileOpen={false} onMobileClose={() => undefined} />
+      </MemoryRouter>,
+    );
+
+    const activeGroup = await screen.findByRole("button", {
+      name: "收起希沃组织主库任务列表",
+    });
+    expect(activeGroup).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("link", { name: /回滚教师电话/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /全校组织同步/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", {
+      name: "展开另一希沃目标任务列表",
+    })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("link", { name: /临时学生同步/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps a source group collapsed when history refreshes", async () => {
+    const user = userEvent.setup();
+    const history = vi.spyOn(agentApi, "history")
+      .mockResolvedValueOnce({
+        items: [
+          historyItem("sync-task", "全校组织同步", "sync", "source-a", "希沃组织主库"),
+        ],
+        next_cursor: null,
+      })
+      .mockResolvedValueOnce({
+        items: [
+          historyItem("sync-task", "全校组织同步", "sync", "source-a", "希沃组织主库"),
+          historyItem("rollback-task", "回滚教师电话", "rollback", "source-a", "希沃组织主库"),
+        ],
+        next_cursor: null,
+      });
+
+    render(
+      <MemoryRouter initialEntries={["/tasks"]}>
+        <WorkspaceSidebar mobileOpen={false} onMobileClose={() => undefined} />
+      </MemoryRouter>,
+    );
+
+    await user.click(await screen.findByRole("button", {
+      name: "收起希沃组织主库任务列表",
+    }));
+    expect(screen.getByRole("button", {
+      name: "展开希沃组织主库任务列表",
+    })).toHaveAttribute("aria-expanded", "false");
+
+    act(() => window.dispatchEvent(new Event(TASK_HISTORY_UPDATED_EVENT)));
+    await waitFor(() => expect(history).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("2 个任务")).toBeInTheDocument();
+
+    expect(screen.getByRole("button", {
+      name: "展开希沃组织主库任务列表",
+    })).toHaveAttribute("aria-expanded", "false");
   });
 });
