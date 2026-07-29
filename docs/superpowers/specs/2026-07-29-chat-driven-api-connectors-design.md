@@ -1,1009 +1,1123 @@
 # 聊天驱动的第三方 API 连接器与同步设计
 
-## 背景
+## 文档状态
 
-当前系统已经具备完整的学校组织数据对账链路：
+本文描述在当前已经落地的 Agent Graph 架构上，接入钉钉、企业微信等第三方 API，
+并把数据同步到模拟希沃的 MySQL 目标库。
 
-```text
-对话确认同步意图
-  -> 创建持久化任务
-  -> 获取学校范围锁
-  -> 固化并检查来源
-  -> 规范化组织数据
-  -> 构建身份对应
-  -> 分析差异
-  -> 风险审批
-  -> 编译并执行希沃目标操作
-  -> 验证、审计、回滚和报告
-```
+本版修正了早期设计中最重要的模型错位：
 
-现有来源主要是本地 CSV、对话中的远程 CSV 和已配置的数据库连接器。Schema 层已经出现
-`api` 连接器类型，但当前任务创建会拒绝 API 与数据库的组合，Agent Graph 的来源模式也只
-区分 CSV 与数据库，尚无真实钉钉或企业微信运行时。
+- 第三方 API 数据不进入旧的 `CanonicalEntityRecord / EntityMapping` 主流程。
+- 所有来源最终都归一化为 `AgentInputRecord`。
+- 身份对应由当前 Graph 的身份索引、`AgentWorkItemRecord` 和
+  `AgentIdentityClaimRecord` 完成。
+- AI 只分析身份索引产生的待分析小任务，不负责认证、HTTP 请求、分页或随意决定身份。
+- API 来源复用 `agent-sync-graph-v2` 已有的 `materialize_sources` 节点。
+- 新能力以 `source-ingestion-v3` 发布，不复制一份完整的 Graph v3。
 
-本功能希望实现以下用户体验：
+本文是设计合同，不代表功能已经实现。
 
-1. 用户在聊天中说明要接入钉钉、企业微信等第三方组织数据。
-2. LLM 从服务端提供的受信任供应商目录中选择正确的供应商配置。
-3. 对话界面展示供应商对应的安全凭据表单。
-4. 用户填写钉钉 AppKey/AppSecret，或企业微信 CorpID/Secret。
-5. 后端测试连接并保存租户可复用的连接实例。
-6. 用户通过聊天选择该连接、同步实体和希沃 MySQL 目标。
-7. 用户确认后创建同步任务，复用现有对账、审批、执行、验证、回滚和报告链路。
+## 结论
 
-## 设计结论
+采用“通用连接器内核 + 供应商专用 Adapter + 现有 Graph v2”的方案。
 
-采用“通用连接器内核 + 供应商专用 Adapter + 通用 Agent Graph”的方案。
+对用户而言，流程是：
 
-- 新增一个学校连接时，只创建连接配置，不发布代码或 Graph。
-- 新增一个符合现有能力合同的供应商时，只增加 Adapter、供应商清单和合同测试。
-- 只有同步工作流、节点、证据或安全语义发生变化时，才发布新的 Graph 版本。
-- 第一版为通用 API 来源能力发布一次 `agent-sync-graph-v3`。
-- `agent-sync-graph-v3` 复用 v2 的节点，不新增钉钉或企微专用节点。
-- 在现有 `materialize_sources` 节点下增加
-  `capture_api_authority_snapshot` Action。
-- 数据接入运行时由“整项任务只有一种来源模式”改为“按 authoritative/target 角色分别解析
-  connector kind”，从而明确支持 API 权威来源与数据库目标的混合配对。
-- 连接配置与连接测试发生在同步 Graph 外，不获取学校锁，也不创建同步任务。
-- AppSecret、Secret 和 access token 不进入聊天记录、LLM 上下文、Skill 输入、MCP 参数、
-  Graph checkpoint、报告或普通日志。
-- 第三方 API 始终是只读权威来源；希沃 MySQL 是唯一治理目标。
+1. 在聊天中说“连接钉钉并同步到希沃 MySQL”。
+2. Agent 识别供应商、目标连接和需要的实体类型。
+3. 系统通过安全配置界面收集该供应商要求的参数；密钥不进入聊天。
+4. 后端测试连接、权限和通讯录可见范围。
+5. 用户确认同步范围后，只创建一个 `api + database` 任务。
+6. Graph 获取学校锁，固化 API 来源，归一化两端数据，构建身份索引。
+7. Graph 把差异拆成小任务，交给 AI 批量分析。
+8. 治理层聚合风险、获取必要审批、编译执行计划。
+9. 目标版本检查通过后写入 MySQL，并逐项验证和生成报告。
+
+新增钉钉或企业微信时需要新增 Provider Manifest 和 Adapter，但不新增供应商专用 Graph
+节点，也不发布一条供应商专用链路。
+
+## 本版修正
+
+| 主题 | 早期设计问题 | 本版设计 |
+| --- | --- | --- |
+| 规范数据 | 复用 `CanonicalEntityRecord` | Adapter 产生 `AgentContractRecord`，仓储持久化为 `AgentInputRecord` |
+| 身份对应 | 复用旧 `EntityMapping` | 当前任务使用身份索引和 `AgentIdentityClaimRecord`；跨任务外部绑定使用新的 Agent 身份绑定合同 |
+| Graph 版本 | 为 API 复制 `agent-sync-graph-v3` | 复用已有 `agent-sync-graph-v2` 拓扑，新增 `source-ingestion-v3` |
+| API + Database | 用一个来源模式描述两端 | 按 `authoritative` 和 `target` 两个角色分别解析连接器类型、检查、映射和归一化 |
+| 物化 | 物化后进入旧快照行和规范实体流程 | `SourceFile / Snapshot` 只保存证据与版本；业务记录直接进入 `AgentInputRecord` |
+| Skill | 把来源检查和归一化都描述成 Skill 工作 | 已知 API Adapter 全程确定性执行；只有目标数据库字段映射确实不明确时才使用现有 Schema Skill |
+| 外部 userid | 当成旧映射键或业务编号 | 只用于 API 稳定定位；不会默认写入 `number`，也不会成为普通身份 posting |
+| 目标锁 | 把目标数据库描述成全程持锁 | 学校锁覆盖整个运行；目标库使用冻结版本、执行前版本检查、乐观并发和写后验证 |
+| 验收 | 只检查连接和快照 | 覆盖 `AgentInputRecord → 身份索引 → work item → AI 批量分析 → 治理执行` 的完整事实链 |
 
 ## 目标
 
-- 支持在 AI 对话中选择钉钉和企业微信组织数据来源。
-- 根据供应商自动展示正确的凭据字段，不要求用户理解 API 地址和认证流程。
-- 连接测试成功后按租户保存并复用连接。
-- 允许 `api` 权威来源与 `database` 希沃目标组成一次任务。
-- 把一次 API 全量读取冻结为可重放、可审计、内容哈希稳定的不可变来源快照。
-- 复用现有 `SourceFile`、`Snapshot`、`RawSnapshotRow`、`CanonicalEntityRecord` 和
-  `EntityMapping`。
-- 复用现有差异分析、风险审批、目标执行、读后验证、审计、回滚和报告能力。
-- 新供应商接入不要求复制 Graph、状态机、审批和执行链路。
-- 对认证失败、权限不足、限流、分页异常、部分读取和连接吊销执行失败关闭。
-- 保证供应商原始数据中的提示注入文本不能改变 Agent、Graph 或工具权限。
+- 支持聊天驱动地选择、配置、测试并使用钉钉和企业微信连接器。
+- 第一版支持第三方 API 作为权威来源、MySQL 作为目标。
+- 目标 MySQL 用于模拟暂无真实 API 的希沃数据。
+- 接入数据符合当前固定六字段 Agent 输入合同。
+- 接入新供应商时不复制 Graph，不改后续分析和治理主链路。
+- 连接器认证、限流、分页、重试、可见范围和错误翻译由确定性后端完成。
+- 敏感凭据不进入 LLM、Skill、Graph checkpoint、日志或任务意图。
+- 每个运行都可重放、可审计，并能说明数据来自哪个连接、哪个快照和哪个 Adapter 版本。
 
 ## 非目标
 
-- 不允许 LLM 实时上网搜索 API 文档并生成任意 URL、请求方法或认证代码。
-- 不允许用户在普通聊天消息中提交明文 AppSecret 或其他密钥。
-- 不提供通用 `raw_http_request`、任意 URL、任意请求头或任意脚本连接器。
-- 第一版不支持用户仅靠一份未知 API 文档就动态生成生产连接器。
-- 不为钉钉、企微或以后新增的普通供应商复制 Agent Graph。
-- 不修改第三方组织数据，不支持双向同步。
-- 不保证所有供应商都支持部门、学生、老师三个实体；以经过测试的 Adapter 能力为准。
-- 不把钉钉 `userid`、企微 `userid` 或部门 ID 冒充为希沃工号、学号或部门业务编号。
-- 不在 API 快照未完整读取时继续差异分析，避免把未读取记录误判为希沃冗余数据。
-- 不在本次设计中加入定时调度；连接实例和同步任务必须为未来调度保留稳定引用。
-
-## 需求满足度
-
-| 用户要求 | 设计结论 | 满足情况 |
-| --- | --- | --- |
-| 在聊天中说明接入钉钉或企微 | 对话 Agent 从服务端供应商目录选择 `provider_id` | 满足 |
-| LLM 找到对应配置 | LLM 只能选择版本化、审核过的 Provider Manifest | 满足 |
-| 用户只填写必要凭据 | 钉钉显示 AppKey/AppSecret；企微显示 CorpID/Secret | 满足 |
-| 填写后自动连接 | 后端提交凭据、认证、检查权限并读取有界样本 | 满足 |
-| 连接后创建同步 | 测试成功后生成同步确认卡，用户确认才创建任务 | 满足 |
-| 新增学校连接不发布 Graph | 连接实例是租户级数据库记录 | 满足 |
-| 新增普通供应商不复制链路 | 新 Adapter 实现同一合同并复用 Graph v3 | 满足 |
-| API 数据进入现有对账流程 | API 全量读取固化为现有 Snapshot 和规范实体 | 满足 |
-| 希沃暂时由 MySQL 模拟 | API 权威来源与 MySQL 目标配对 | 满足 |
-| 支持真实权限和分页问题 | Adapter、快照 Action 和稳定错误码负责 | 满足 |
-| 任意未知公司无需开发即可接入 | 第一版明确不支持任意动态 HTTP | 不满足且有意排除 |
-| 所有平台天然都有学生数据 | 由供应商能力清单决定，不作虚假承诺 | 条件满足 |
-
-结论：本设计满足钉钉、企业微信等已实现供应商的聊天配置和同步要求，同时有意不满足
-“LLM 临时搜索任意 API 并立即执行”的高风险要求。
-
-## 三种方案比较
-
-### 方案一：每个供应商一条 Graph
-
-钉钉、企微分别增加认证、分页、读取、规范化节点。
-
-优点是单个供应商流程直观。缺点是节点、Guard、恢复、测试和版本数量随供应商线性增长，
-后续审批和执行链路也容易分叉。本方案不采用。
-
-### 方案二：Graph 不变，在来源检查时直接请求 API
-
-来源检查 sub-agent 运行时直接分页读取第三方 API。
-
-改动看似较少，但同一任务的不同阶段可能读到不同版本的数据；模型重试会重复请求网络；
-部分分页失败难以证明快照完整；任务无法可靠重放和审计。本方案不采用。
-
-### 方案三：通用 Graph + 专用 Adapter
-
-Graph 只认识连接器类型、能力、快照和证据；Adapter 负责供应商协议；通用快照 Action 负责
-完整分页、固化、哈希和幂等。该方案与现有远程 CSV 的安全边界一致，并能最大程度复用后续
-流程。本设计采用该方案。
-
-## 三个不同的版本概念
-
-### Graph 版本
-
-记录工作流节点、Action、Guard 和证据语义，例如 `agent-sync-graph-v3`。只有工作流合同变化
-时升级。
-
-### Adapter 版本
-
-记录供应商认证、分页和字段读取实现，例如 `dingtalk-adapter@1.1.0`。供应商 API 调整时只
-升级 Adapter，不升级 Graph。
-
-### Provider Manifest 版本
-
-记录凭据字段、能力、权限说明、允许主机和 Adapter 绑定，例如 `dingtalk@1.0.0`。表单或
-能力元数据变化时升级 Manifest，不升级 Graph。
-
-任务创建时冻结三者：
-
-```json
-{
-  "graph_version": "agent-sync-graph-v3",
-  "provider_id": "dingtalk",
-  "adapter_version": "1.1.0",
-  "provider_manifest_version": "1.0.0"
-}
-```
-
-历史任务始终按已冻结版本恢复。新增连接实例不产生任何新版本。
-
-## 总体职责边界
-
-| 层次 | 负责内容 | 禁止内容 |
-| --- | --- | --- |
-| 对话 Agent | 理解供应商、实体范围、目标和连接选择 | 接收密钥、访问 API、创建任务 |
-| Provider Catalog | 提供审核后的供应商、表单、能力和权限说明 | 接收 LLM 动态生成的 URL |
-| 安全配置接口 | 接收凭据、存密钥、测试连接、创建连接实例 | 把密钥写入聊天或日志 |
-| API Runtime | 根据连接实例解析 Adapter 和密钥引用 | 把密钥返回给 Agent |
-| Provider Adapter | 认证、请求签名、分页和供应商字段读取 | 决定 Graph 流程和治理操作 |
-| Graph Action | 完整分页、幂等、快照固化、证据和错误分类 | 理解业务字段语义 |
-| Skill/sub-agent | 在授权快照上理解实体和字段语义 | 网络、认证、凭据和任意 HTTP |
-| 后续治理链路 | 身份对应、差异、审批、执行、验证和回滚 | 写第三方权威来源 |
-
-## Provider Catalog
-
-供应商配置来自代码仓库中的版本化、受审查文件，不来自模型实时搜索结果。示例：
-
-```yaml
-provider_id: dingtalk
-version: "1.0.0"
-display_name: 钉钉
-adapter_key: dingtalk_v1
-
-credential_fields:
-  - name: app_key
-    label: AppKey
-    secret: false
-    required: true
-  - name: app_secret
-    label: AppSecret
-    secret: true
-    required: true
-
-allowed_hosts:
-  - api.dingtalk.com
-
-supported_entities:
-  - organization_unit
-  - teacher
-
-capabilities:
-  read_only: true
-  stable_record_id: true
-  pagination: true
-  full_snapshot: true
-```
-
-企业微信 Manifest 使用 `corp_id` 和 `corp_secret`。供应商将来增加新的必要凭据时，升级
-Manifest 和 Adapter，不修改 Graph。
-
-Manifest 可以声明审核过的主机、命名端点和表单元数据，但不得携带用户密钥。LLM 只接收
-以下安全摘要：
-
-- `provider_id`
-- 显示名称和别名
-- 支持实体
-- 是否已有可用连接
-- 安全表单引用
-- 脱敏的连接健康状态
-
-LLM 不接收完整端点、请求头、认证响应和供应商原始错误。
-
-## 连接实例与安全配置
-
-### 连接实例
-
-一个连接实例表示某个租户对某个供应商的一组可复用授权：
-
-```text
-ConnectorConnection
-  id
-  tenant_id
-  provider_id
-  display_name
-  adapter_version
-  provider_manifest_version
-  credential_reference
-  status
-  capability_summary
-  last_tested_at
-  created_by
-  revoked_at
-```
-
-状态限定为：
-
-```text
-testing -> active -> invalid | revoked
-```
-
-只有 `active` 连接可以进入同步确认卡。连接必须绑定当前可信
-`OperatorContext.tenant_id`，客户端和 LLM 都不能提交或覆盖租户。
-
-### 安全配置会话
-
-聊天 Agent 返回 `connector_setup_required` 后，后端创建短期
-`ConnectorSetupSession`：
-
-```text
-pending -> submitted -> completed | failed | expired
-```
-
-会话只保存租户、操作者、对话、供应商、过期时间和状态，不保存密钥。前端根据
-`credential_form_id` 在聊天区域渲染安全配置卡。
-
-用户填写的凭据通过专用 HTTPS 接口直接提交给后端。请求不经过对话消息接口，不加入对话
-历史，不调用模型，并关闭请求体日志。
-
-### 密钥存储
-
-新增 `CredentialStore` 抽象：
-
-```python
-class CredentialStore(Protocol):
-    async def put(self, tenant_id: str, values: dict[str, str]) -> str: ...
-    async def get(self, tenant_id: str, reference: str) -> dict[str, str]: ...
-    async def replace(self, tenant_id: str, reference: str, values: dict[str, str]) -> None: ...
-    async def delete(self, tenant_id: str, reference: str) -> None: ...
-```
-
-第一版使用应用层 AES-GCM 加密的凭据记录，主密钥只从部署环境注入。连接表只保存
-`credential_reference`，不保存明文。该抽象允许生产部署以后替换为 KMS 或 Vault，而不改变
-对话、Graph 和 Adapter。
-
-access token 只在 Adapter 的短期内存缓存中保存；过期或进程重启后重新认证，不写数据库、
-checkpoint 或日志。
-
-## 聊天交互
-
-### 对话上下文
-
-`ConversationAgentContext` 增加：
-
-```text
-available_api_providers
-available_api_connections
-api_connector_enabled
-pending_connector_setup
-```
-
-所有字段由服务端生成。连接清单只包含连接 ID、别名、供应商、支持实体和健康状态。
-
-### 对话决策
-
-`ConversationAgentDecision.kind` 增加：
-
-```text
-connector_setup_required
-connector_connection_selected
-```
-
-`connector_setup_required` 只能输出服务端清单中的 `provider_id` 和
-`credential_form_id`。它不能输出或接收任何凭据。
-
-连接配置成功后，下一轮上下文会出现新的 `available_api_connection`。当 API 来源、希沃
-MySQL 目标和实体范围均确定时，Agent 返回现有 `start_confirmation`，其中来源为：
-
-```json
-{
-  "kind": "api",
-  "configuration_id": "tenant-bound-connection-id"
-}
-```
-
-用户点击开始后，后端重新校验连接状态、租户、目标角色和实体能力，再创建任务。
-
-### 用户体验示例
-
-```text
-用户：接入钉钉，把老师和部门同步到希沃。
-
-Agent：需要先配置钉钉连接。
-       [安全配置卡：AppKey、AppSecret]
-
-后端：连接测试成功，已保存“学校钉钉”。
-
-Agent：将使用“学校钉钉”同步老师、部门到“希沃 MySQL”。
-       第三方只读，确认后创建全校同步任务。
-       [确认开始]
-```
-
-如果用户把疑似密钥粘贴到普通聊天，消息处理链必须提醒其轮换密钥，不把疑似值写入模型
-历史，并引导使用安全配置卡。
-
-## 通用连接器内核
-
-复用现有 `ConnectorConfiguration`、`ConfiguredApiConnector`、`ConnectorStore`、
-`ConnectorPage` 和分页稳定性检查。新增 API 运行时解析器：
-
-```python
-class ApiConnectorRuntime:
-    async def connector(
-        self,
-        *,
-        tenant_id: str,
-        connection_id: UUID,
-    ) -> ConfiguredApiConnector: ...
-```
-
-解析过程：
-
-1. 按租户读取 `ConnectorConnection`。
-2. 校验状态为 `active`。
-3. 读取并验证 Provider Manifest 和冻结版本。
-4. 从 `CredentialStore` 解析凭据。
-5. 根据 `adapter_key` 创建只读 `ConnectorStore`。
-6. 用现有 `ConfiguredApiConnector` 包装并执行统一能力检查。
-
-供应商只实现自己的 Store：
-
-```text
-DingTalkConnectorStore
-WeComConnectorStore
-```
-
-Store 负责：
-
-- 获取和刷新 access token。
-- 调用审核过的供应商端点。
-- 把供应商分页响应转换为 `ConnectorPage`。
-- 产生稳定记录 ID、稳定游标和安全版本摘要。
-- 把限流、权限、认证和协议错误转换为稳定内部错误码。
-
-Store 不负责：
-
-- 创建任务或选择实体范围。
-- 创建 Graph 节点。
-- 发布 Snapshot。
-- 进行身份匹配或字段差异判断。
-- 写入第三方。
-
-### 按角色解析连接器类型
-
-当前 `_task_source_mode()` 把任务整体归类为 `database` 或 `csv`，并让权威来源与目标使用
-同一种检查和规范化分支。这不适用于：
-
-```text
-authoritative.kind = api
-target.kind = database
-```
-
-v3 将其替换为按角色解析的不可变配对：
-
-```python
-ConnectorPair(
-    authoritative=ConnectorBinding(kind="api", configuration_id="..."),
-    target=ConnectorBinding(kind="database", configuration_id="..."),
-)
-```
-
-后续接入阶段分别路由：
-
-```text
-authoritative/api
-  -> 已固化 API JSONL
-  -> API Schema 画像
-  -> 权威 CanonicalEntity Snapshot
-
-target/database
-  -> 现有数据库 Schema 画像
-  -> 参数化、有界读取
-  -> 目标 CanonicalEntity Snapshot
-```
-
-双方最终都输出现有规范实体和 Snapshot，身份匹配以后不再关心原始 connector kind。该改动
-属于接入路由和规范化边界，不改变差异、审批、执行、验证、回滚和报告阶段。
-
-## API 来源快照
-
-### 为什么必须固化
-
-API 分页期间第三方数据可能变化，access token 可能过期，限流和网络也可能导致中途失败。
-如果后续阶段继续实时请求 API，同一任务会看到不一致数据，无法证明哪些记录参与了分析。
-
-因此 API 与远程 CSV 一样，在任务内只读取一次，并在后续阶段只使用固化快照。
-
-### 快照 Action
-
-`agent-sync-graph-v3` 在现有 `materialize_sources` 节点增加：
-
-```text
-capture_api_authority_snapshot
-```
-
-节点结构保持不变：
+- 不支持 LLM 在运行时上网搜索任意 API 地址并生成未审核的 HTTP 调用。
+- 不支持在聊天消息中直接提交 AppSecret、Secret 或访问令牌。
+- 不让 LLM 持有凭据、刷新令牌或直接调用第三方认证接口。
+- 第一版不提供任意 OpenAPI 文档导入和零代码连接器生成。
+- 第一版不把第三方系统作为写入目标。
+- 第一版不改变 AI 批量分析、风险审批、治理计划和 SQL 执行的总体职责。
+- 不把钉钉 `userid`、企微 `userid` 或部门 ID 冒充为学校工号、学号或部门业务编号。
+- 不复用旧流程的 `CanonicalEntityRecord`、`RawSnapshotRow` 或 `EntityMapping`。
+
+## 当前架构基线
+
+设计必须服从当前代码中的真实执行顺序：
 
 ```text
 intent_confirmed
-  -> acquire_school_lock
-  -> materialize_sources
-  -> inspect_sources
-  -> normalize_input_batches
-  -> validate_input_contract
-  -> build_identity_index
-  -> 原有分析、审批、执行、验证和报告
+  → acquire_school_lock
+  → materialize_sources                 # Graph v2
+  → inspect_sources
+  → normalize_input_batches
+  → validate_input_contract
+  → build_identity_index
+  → construct_identity_work
+  → analyze_actionable_batches
+  → resolve_identity_conflicts（按事实需要）
+  → aggregate_risk
+  → wait_high_risk_approvals（按策略需要）
+  → compile_execution_plan
+  → preflight_execution
+  → execute_ready_operations
+  → verify_operations
+  → generate_terminal_report
 ```
 
-`materialize_sources` 根据来源类型选择：
+关键事实如下：
+
+- `AgentContractRecord` 是进入 Agent 新流程前的不可变六字段投影。
+- `AgentAnalysisRepository.persist_inputs()` 把它持久化为 `AgentInputRecord`。
+- 身份 posting 当前只允许 `number`、`phone` 和 `email`。
+- `AgentIdentityIndexBuilder` 基于 posting 产生匹配、冲突、目标多余、目标缺失和字段差异。
+- 每个已接受的权威记录与目标记录对应关系，保存在本次运行的
+  `AgentIdentityClaimRecord`。
+- `construct_identity_work` 把 work item 规划为分析批次。
+- `reconcile-entity-batch` 只读取已冻结的成对证据并提交分析结果。
+- 风险聚合、审批冻结、计划编译、目标版本预检和执行验证继续使用现有实现。
+
+因此，API 接入模块的交付边界是：
 
 ```text
-remote_csv -> materialize_remote_authority
-api        -> capture_api_authority_snapshot
-database   -> source_already_stable
-local_csv  -> source_already_stable
+第三方 API
+  → 不可变 API 来源证据
+  → AgentContractRecord
+  → AgentInputRecord
 ```
 
-不增加 `dingtalk_node`、`wecom_node`、`refresh_token_node` 或供应商专用 Graph。
+一旦两端 `AgentInputRecord` 和输入标记已经正确持久化，后面的身份索引、work item、
+AI 分析和治理链路应保持通用。
 
-### 固化过程
+## 版本策略
 
-Action 必须确定性完成：
+当前系统同时存在多个彼此独立的版本轴，不能混为一谈。
 
-1. 从任务冻结的 `connection_id`、Adapter 版本和实体范围解析连接器。
-2. 校验连接仍属于当前租户且未吊销。
-3. 对每个声明支持的实体按稳定顺序遍历全部页面。
-4. 检查游标不重复、记录 ID 不重复、实体引用合法。
-5. 对手机号等敏感字段在进入模型证据前进行现有任务级令牌化。
-6. 把原始供应商记录写入确定性 JSONL 管理文件。
-7. 计算内容哈希，登记现有 `SourceFile`。
-8. 写入 Adapter、Manifest、连接、实体范围、页数、记录数和哈希证据。
-9. 保存幂等 checkpoint 后返回 `api-source:materialized` evidence。
+### Workflow version
 
-Action 到此只完成不可变原始来源物化，不提前做业务语义规范化。后续 `inspect_sources` 和
-`normalize_input_batches` 从该 JSONL 生成现有 `Snapshot`、`RawSnapshotRow` 和
-`CanonicalEntityRecord`。`Snapshot.source_file_id` 指向 API JSONL 管理文件，不新增 API
-专用快照表。来源的 API 类型和版本信息记录在任务意图、快照 summary 和 Action checkpoint
-中。
+任务仍使用当前 Agent Graph 工作流标识。API 接入不另起一套工作流。
 
-### 完整性和幂等
+### Graph version
 
-- 任一实体分页未完整结束时，不登记可用 `SourceFile`，后续也不能发布 Snapshot。
-- 部分记录成功、后续页面失败时，整个 Action 失败关闭，不把临时 JSONL 注册为可用
-  `SourceFile`。
-- 限流只允许按照服务端预算和供应商 `Retry-After` 有界重试。
-- 认证过期允许刷新一次 token 后重试当前页。
-- 重复游标、重复记录 ID 或不稳定排序视为协议错误。
-- checkpoint 已存在且管理文件和哈希一致时，任务恢复直接复用，不重新请求 API。
-- checkpoint 存在但文件或哈希不一致时阻断任务，不静默重新拉取。
-- 不完整 API 快照不得触发 target-extra、删除或停用类治理建议。
+新 API 任务使用 `agent-sync-graph-v2`：
 
-## 规范组织数据与身份对应
+- v2 已经在学校锁之后提供 `materialize_sources`。
+- API 来源同样需要在检查和归一化前固化远程权威数据。
+- 后续节点、Guard 和人机门禁没有发生拓扑变化。
 
-### 复用现有 CanonicalEntity
+不发布 `agent-sync-graph-v3`。只有未来确实新增节点、删除节点、修改跳转或改变 Graph
+Action/Guard 合同时，才发布新的 Graph 版本；届时也应从已有定义派生差异，不完整复制 v1。
 
-现有规范实体已经包含稳定 `source_id`、组织父级、教师部门、工号、学号、电话和邮箱等字段。
-API Adapter 必须生成带命名空间的稳定来源 ID：
+### Ingestion contract version
+
+新增 `source-ingestion-v3`，它表达本次真正发生的接入合同变化：
+
+- 支持 `authoritative=api`、`target=database` 的混合角色。
+- 来源检查、字段映射和归一化按角色路由。
+- API 来源从物化证据确定性投影为 `AgentInputRecord`。
+- API 权威字段缺失语义和外部身份绑定进入 Agent 身份索引。
+
+已有任务继续使用其创建时冻结的 `model-mediated-ingestion-v1` 或
+`source-ingestion-v2`，不在恢复运行时自动升级。
+
+### Execution contract version
+
+目标 MySQL 继续使用 `deterministic-execution-v2`。API 只改变权威来源，不改变 SQL
+治理执行合同。
+
+### Provider 和 Adapter version
+
+每个快照还要冻结：
+
+- `provider_id`
+- `provider_manifest_version`
+- `adapter_version`
+- 字段投影版本
+- 选择的实体类型
+- 连接能力版本
+
+这些版本用于重放和审计，不代替 Graph 或接入合同版本。
+
+### 新 API 任务的版本组合
+
+```json
+{
+  "workflow_version": "agent-graph-v1",
+  "graph_version": "agent-sync-graph-v2",
+  "ingestion_contract_version": "source-ingestion-v3",
+  "execution_contract_version": "deterministic-execution-v2"
+}
+```
+
+## 总体职责边界
+
+| 组件 | 负责 | 不负责 |
+| --- | --- | --- |
+| 对话 Supervisor | 识别意图、选择已注册 Provider、补齐非敏感参数、请求确认 | 保存密钥、任意 HTTP、决定身份匹配 |
+| 安全配置界面 | 收集供应商要求的凭据和组织参数 | 把明文回传聊天 |
+| Provider Manifest | 声明官方端点、认证方式、权限、实体能力、限流和字段语义 | 运行时搜索网页 |
+| Provider Adapter | 认证、分页、限流、重试、错误翻译和原始实体提取 | AI 推理、目标写入 |
+| API Materializer | 将一次读取固化为任务绑定的不可变来源证据 | 归一化后续治理记录 |
+| Agent API Ingestion Adapter | 将固化证据确定性投影为 `AgentContractRecord` | 再次请求第三方 API |
+| 身份索引 | 使用身份 posting 和已确认外部绑定建立本次运行的 claim | 让 LLM 猜测 userid 对应谁 |
+| AI Batch Analysis | 分析已构建的差异小任务 | 认证、分页、建索引、直接写目标 |
+| Governance / SQL Handler | 风险、审批、计划、目标写入和验证 | 读取第三方凭据 |
+
+## 连接器分层
+
+### 通用内核
+
+所有第三方 API Adapter 实现统一接口，概念合同如下：
+
+```python
+class OrganizationApiAdapter(Protocol):
+    provider_id: str
+    adapter_version: str
+
+    async def test_connection(self, connection: SafeConnectionView) -> ConnectionTestResult: ...
+    async def inspect_capabilities(self, connection: SafeConnectionView) -> CapabilityResult: ...
+    async def capture(
+        self,
+        connection: SecretBackedConnection,
+        request: CaptureRequest,
+        sink: ImmutableArtifactSink,
+    ) -> CaptureResult: ...
+    def project(
+        self,
+        artifact_record: FrozenApiRecord,
+        context: AgentProjectionContext,
+    ) -> AgentContractRecord: ...
+```
+
+接口通用，但实现必须按供应商独立开发。钉钉、企业微信的认证、分页参数、错误码和组织模型
+不同，不能用一个“万能 HTTP + LLM”实现。
+
+### Provider Manifest
+
+每个 Provider 使用代码仓库内受审计的 Manifest，至少声明：
+
+```yaml
+provider_id: dingtalk
+manifest_version: 1.0.0
+adapter: DingtalkOrganizationAdapter
+authority_only: true
+supported_entities:
+  - department
+  - teacher
+credential_fields:
+  - app_key
+  - app_secret
+required_capabilities:
+  - organization_read
+endpoint_policy: audited_manifest_only
+```
+
+实际支持的实体和字段以对应供应商权限及 Adapter 合同为准。若供应商不能可靠区分教师和
+学生，Adapter 不得依靠 LLM 猜测；任务创建时应拒绝不受支持的实体类型，或要求用户配置
+明确的供应商字段规则。
+
+### 连接实例
+
+新增租户级 `ApiConnectionRecord`，建议字段：
+
+- `id`
+- `tenant_id`
+- `provider_id`
+- `display_name`
+- `organization_ref`
+- `public_configuration`
+- `secret_ref`
+- `manifest_version`
+- `adapter_version`
+- `capabilities`
+- `visibility_summary`
+- `state`
+- `last_tested_at`
+- `last_safe_error_code`
+- `created_by`
+- `updated_by`
+
+`public_configuration` 只能保存非密钥参数。`secret_ref` 指向后端密钥存储，数据库不保存
+AppSecret 明文。
+
+访问令牌由 Adapter 在后端获取和刷新。若需要缓存，只能进入加密令牌缓存，并包含连接 ID、
+租户 ID、过期时间和最小权限范围。
+
+### 安全配置会话
+
+聊天返回一次性的配置会话引用，前端打开安全表单。提交路径直接到后端配置接口：
 
 ```text
-api:dingtalk:<connection-id>:organization_unit:<external-dept-id>
-api:dingtalk:<connection-id>:teacher:<external-user-id>
-api:wecom:<connection-id>:teacher:<external-user-id>
+用户安全表单
+  → Connector API
+  → Secret Store
+  → connection.secret_ref
 ```
 
-这样现有 `NormalizedRecord.record_key = entity_type:source_id` 和 `EntityMapping.source_key`
-可以跨任务稳定复用，同时不同租户、供应商和连接的相同外部 ID 不会冲突。
+以下位置不得出现明文密钥：
 
-### 不能混淆技术 ID 与业务编号
+- 聊天消息和对话摘要
+- LLM 请求和响应
+- Skill 输入输出
+- MCP 工具参数
+- `ReconciliationTask.agent_intent`
+- Graph checkpoint、事件和证据清单
+- 应用日志、异常详情和前端埋点
 
-- 外部 `userid` 只进入 `source_id`，不能填入 `employee_number`。
-- 外部部门 ID 只进入组织单元 `source_id` 和父级引用，不能冒充 `code`。
-- 只有供应商字段语义明确且经过 Adapter 测试时，才映射工号、学号、手机号和邮箱。
-- 姓名、部门和班级只用于业务比较和受控候选上下文，不单独作为自动身份键。
+如果用户已经把密钥发进聊天，系统应提示立即轮换，并且不得把该值复制进设计、测试夹具或
+连接记录。
 
-### 实体级最低要求
+## 聊天与任务创建
 
-```text
-organization_unit:
-  必须：稳定 source_id、name
-  可选：code、parent_source_id
+### 对话职责
 
-teacher:
-  必须：稳定 source_id、name
-  可选：employee_number、department_source_id、phone、email
+对话只收集以下非敏感决策：
 
-student:
-  必须：稳定 source_id、name
-  可选：student_number、class_source_id、class_name、phone、email
-```
+- Provider，例如钉钉或企业微信。
+- 已配置的连接实例。
+- 目标数据库连接。
+- 同步的实体类型。
+- 全量或受支持的组织范围。
+- 是否开始创建任务。
 
-手机号、邮箱被供应商权限隐藏时，不把整条老师或学生记录判为无效。是否能够自动对应是另一
-个问题。
+对话可以告诉用户缺少哪些配置，但不能询问用户把 AppSecret 直接发到聊天。
 
-### 自动对应与人工确认
+### 任务意图
 
-优先使用现有业务身份键自动对应：
-
-```text
-employee_number | student_number | phone_token | email
-```
-
-没有共同身份键时进入现有身份冲突人工 Gate，不自动用姓名猜测。人工确认后复用现有
-`EntityMapping` 保存来源 `source_key` 与希沃 `target_key` 的确认关系；后续任务直接使用
-历史确认映射。
-
-本设计不新增 `external_identity_binding` 表，因为现有 `EntityMapping` 已提供租户隔离、
-确认、吊销、替代和跨任务历史映射能力。
-
-## Skill 设计
-
-第一版不新增钉钉 Skill、企微 Skill、OAuth Skill 或 HTTP Skill。认证、分页、限流、重试、
-主机白名单和快照固化全部属于确定性代码。
-
-### 升级对话 Skill
-
-`converse-school-data-sync` 升级主要版本，支持：
-
-- 服务端提供的 API Provider 和连接清单。
-- `connector_setup_required` 决策。
-- `api` 权威来源与 `database` 希沃目标组合。
-- 供应商能力不足时的单项澄清。
-- 不接收、不复述、不请求聊天中的凭据。
-
-### 升级来源检查 Skill
-
-`inspect-external-data-source` 已声明支持 API，但需要升级合同：
-
-- 只检查已物化 API Snapshot，不直接访问网络。
-- 验证 Adapter、Manifest、稳定来源 ID、完整分页和快照版本证据。
-- 按实体最低要求判断结构，不再要求每个实体都具备固定六字段。
-
-### 升级规范化 Skill
-
-`normalize-organization-data-batch` 升级主要版本：
-
-- 输出与现有 `CanonicalEntity` 对齐的实体级字段。
-- 保留带命名空间的 `source_id` 和关系引用。
-- 电话只接收任务级 token。
-- 缺少可选身份键时保留记录并进入人工对应，而不是直接排除。
-- 仍然禁止从目标记录反向补造第三方权威字段。
-
-### 何时才新增 API Schema Skill
-
-只有未来允许接入“没有专用 Adapter、Schema 未知但已由后端安全物化”的受控 API 时，才
-考虑新增 `understand-organization-api-schema`。该能力不在第一版范围内。
-
-## 数据模型
-
-### 新增
-
-```text
-connector_connections
-  id
-  tenant_id
-  provider_id
-  display_name
-  adapter_version
-  provider_manifest_version
-  credential_reference
-  status
-  capability_summary
-  last_tested_at
-  created_by
-  revoked_at
-
-connector_setup_sessions
-  id
-  tenant_id
-  operator_id
-  conversation_id
-  provider_id
-  credential_form_id
-  status
-  expires_at
-
-connector_credentials
-  id
-  tenant_id
-  ciphertext
-  nonce
-  key_version
-  created_at
-  rotated_at
-```
-
-`connector_credentials` 只能通过 `CredentialStore` 访问，不向业务仓储或 API Schema 暴露
-密文结构。
-
-### 复用
-
-- `ReconciliationTask.agent_intent`：冻结 API 连接、Provider、Adapter、Manifest 和实体范围。
-- `SourceFile`：保存确定性 API JSONL 管理文件及内容哈希。
-- `Snapshot`：保存任务级权威快照。
-- `RawSnapshotRow`：保存供应商记录的受控原始结构。
-- `CanonicalEntityRecord`：保存规范组织实体。
-- `EntityMapping`：保存自动或人工确认的跨来源身份对应。
-- Agent checkpoint、evidence manifest 和 invocation audit：保存 Graph 执行证据。
-
-## 后端接口
-
-建议新增以下租户绑定接口：
-
-```http
-GET    /api/agent/connector-providers
-POST   /api/agent/connector-setup-sessions
-POST   /api/agent/connector-setup-sessions/{id}/credentials
-GET    /api/agent/connector-connections
-POST   /api/agent/connector-connections/{id}/test
-POST   /api/agent/connector-connections/{id}/rotate
-DELETE /api/agent/connector-connections/{id}
-```
-
-接口规则：
-
-- Provider 列表不返回端点、密钥和内部 Adapter 类名。
-- 凭据提交成功后立即进行连接测试；只有测试通过才创建 `active` 连接。
-- 测试结果只返回支持实体、权限状态、脱敏组织摘要和安全错误码。
-- `rotate` 使用新的安全配置会话，成功后原子替换密钥引用。
-- `DELETE` 表示吊销连接和删除凭据；已有任务快照继续可审计，不能用该连接启动新任务。
-- 所有 ID 必须与当前可信租户和操作者授权绑定。
-
-现有任务创建合同允许：
+API 与数据库使用现有 `AgentConnectorSelection.configuration_id` 表达连接选择：
 
 ```json
 {
   "source": {
     "kind": "api",
-    "configuration_id": "connection-id"
+    "configuration_id": "<api_connection_id>"
   },
   "target": {
     "kind": "database",
-    "configuration_id": "seewo-mysql-id"
-  }
+    "configuration_id": "seewo-mysql"
+  },
+  "entity_types": ["department", "teacher", "student"]
 }
 ```
 
-任务创建服务必须重新验证来源只读、目标可写、实体能力和连接健康，不信任对话模型的判断。
+任务意图只保存连接引用，不复制连接配置和密钥。
 
-## Agent Graph 变化
+### API + Database 运行时校验
 
-### 版本
+`AgentTaskService._validate_connector_runtime()` 增加明确的混合角色分支：
 
-新增一次 `agent-sync-graph-v3`：
+```text
+source.kind == api
+and target.kind == database
+```
 
-- 节点集合与 v2 保持一致。
-- `materialize_sources` 增加 `capture_api_authority_snapshot` Action。
-- Action 候选根据冻结的明确 `source.kind` 生成。
-- 不能再把所有非数据库来源默认解释为 CSV。
-- v1、v2 历史任务继续使用原定义。
+任务创建前必须确认：
 
-### 不随连接或供应商变化
+- API 连接属于当前租户且状态为 `active`。
+- Provider 是只读权威来源。
+- 连接最近一次测试通过，能力覆盖所选实体。
+- API 通讯录可见范围不是空范围。
+- 目标数据库连接属于当前租户，角色为 `target`。
+- 目标连接支持读取、版本获取、参数化写入和写后验证。
+- 第一版目标方言为 MySQL。
+- 当前租户没有活动学校任务锁。
 
-以下操作不发布新 Graph：
+不能继续使用“CSV 对 CSV 或 SQL 对 SQL”的成对限制。
 
-- 某学校新增或轮换钉钉密钥。
-- 同一学校新增第二个钉钉连接。
-- 某学校新增企业微信连接。
-- 钉钉端点或分页参数调整并升级 Adapter。
-- 新增一个实现相同分页快照合同的普通供应商 Adapter。
+### 按角色路由
 
-### 需要新 Graph 的情况
+`source-ingestion-v3` 不再调用当前只返回单一模式的 `_source_pair_mode()` 或
+`_task_source_mode()` 来决定两端行为，而是冻结两个 role binding：
 
-只有出现新的工作流语义才发布后续版本，例如：
+| source role | connector kind | 检查 | 映射 | 归一化 |
+| --- | --- | --- | --- | --- |
+| `authoritative` | `api` | 检查物化证据和 Provider 能力 | Provider 固定投影 | `AgentApiIngestionAdapter` |
+| `target` | `database` | 数据库健康、Schema 和版本 | 配置映射或现有数据库 Schema Skill | `AgentDatabaseIngestionAdapter` |
 
-- 供应商必须先提交异步导出任务，持久等待回调后再下载。
-- 同步任务需要新的人工授权 Gate。
-- 引入增量游标并改变快照或恢复语义。
-- 开放反向写第三方或双向冲突解决。
-- 改变执行、审批或回滚阶段。
+建议以 `AgentSourceBinding` 值对象统一传递：
+
+```text
+role
+connector_kind
+configuration_id
+snapshot_id
+mapping_checkpoint_key
+normalization_checkpoint_key
+```
+
+所有 checkpoint 必须带 role，不能让权威 API 的映射覆盖目标数据库映射。
+
+## API 来源物化
+
+### 为什么先物化
+
+第三方组织数据可能在分页期间变化，访问令牌会过期，接口返回顺序也可能不稳定。如果分析
+阶段继续实时请求 API，同一次运行的证据会漂移，无法重放。
+
+因此 Graph 必须先把本次权威读取固化，再进行检查和归一化。
+
+### 复用 Graph v2
+
+`agent-sync-graph-v2` 已有：
+
+```text
+acquire_school_lock
+  → materialize_sources
+  → inspect_sources
+```
+
+API 任务复用现有 Graph Action kind `materialize_remote_authority`。该名称作为 v2 的兼容
+合同保留，执行器根据 task-bound resource 区分：
+
+```text
+remote-source:<id>   → Remote CSV materializer
+api-source:<id>      → API authority materializer
+```
+
+API 候选 Action 使用：
+
+```text
+graph_action_kind: materialize_remote_authority
+resource_id: api-source:<api_source_id>
+required_evidence: api-source:<api_source_id>:materialized
+```
+
+这样无需修改 Graph 节点或跳转，也不会为每个连接发布新链路。
+
+### 任务绑定记录
+
+新增 `ApiAuthoritySourceRecord`，职责与远程 CSV 的任务绑定记录相似：
+
+- `id`
+- `tenant_id`
+- `task_id`
+- `connection_id`
+- `provider_id`
+- `selected_entities`
+- `selection_hash`
+- `state`
+- `source_file_id`
+- `snapshot_id`
+- `content_sha256`
+- `record_count`
+- `page_count`
+- `manifest_version`
+- `adapter_version`
+- `captured_at`
+- `safe_problem_code`
+
+创建任务时绑定连接和选择范围，但不提前读取 API。
+
+### 固化过程
+
+`ApiAuthorityMaterializer.capture()` 必须：
+
+1. 校验 task、tenant、connection 和 `ApiAuthoritySourceRecord` 的绑定未变化。
+2. 从后端 Secret Store 解析凭据。
+3. 使用 Manifest 中的固定官方端点获取或刷新令牌。
+4. 按 Adapter 规定的顺序读取部门和成员等资源。
+5. 实施超时、限流、指数退避和供应商错误码翻译。
+6. 把每条原始记录写入临时的规范 JSONL 制品。
+7. 记录资源类型、外部 ID、页序号、页内序号和原始安全负载。
+8. 校验分页闭合、重复游标、重复外部 ID 和所选实体覆盖情况。
+9. 计算内容哈希并原子发布为托管 `SourceFile`。
+10. 创建 authoritative `Snapshot`，把 `ApiAuthoritySourceRecord` 标为 `ready`。
+11. 保存不含密钥和令牌的 materialization checkpoint。
+
+归一化阶段只读取已经发布的制品，不再访问第三方 API。
+
+### Snapshot 的边界
+
+继续复用 `SourceFile` 和 `Snapshot`，因为当前 `AgentInputRecord.snapshot_id`、身份索引和
+目标版本合同都依赖任务的成对快照。
+
+但 Snapshot 在这里仅承担：
+
+- 来源证据引用
+- 内容哈希
+- Adapter/Manifest/投影版本
+- 记录数和完整性摘要
+- 权威角色绑定
+
+API 记录不会再转换为 `RawSnapshotRow` 或 `CanonicalEntityRecord`。
+
+### 幂等与恢复
+
+物化幂等键至少包含：
+
+```text
+task_id
+api_source_id
+connection_id
+selection_hash
+manifest_version
+adapter_version
+```
+
+- 已 `ready` 且合同未变化时，重试返回同一个 `SourceFile / Snapshot`。
+- 临时文件不会被 Graph 后续节点读取。
+- 失败重试可以从 Adapter 声明为安全的游标恢复；否则重新抓取并原子替换临时制品。
+- 内容变化不能覆盖已发布快照，只能产生新的运行或显式重采集。
+- checkpoint 不保存 access token、请求头或第三方原始错误正文。
+
+## 归一化为 AgentInputRecord
+
+### 确定性 API Adapter
+
+新增 `AgentApiIngestionAdapter`，形状与当前 `AgentDatabaseIngestionAdapter` 一致：
+
+```text
+冻结的 API JSONL
+  → Provider Adapter 固定投影
+  → AgentContractRecord
+  → AgentAnalysisRepository.persist_inputs()
+  → AgentInputRecord
+  → AgentInputMarkRecord
+```
+
+每条 `AgentContractRecord` 仍使用当前固定字段：
+
+- `entity_kind`
+- `category`
+- `name`
+- `number`
+- `class_name`
+- `phone`
+- `email`
+
+并携带现有运行上下文：
+
+- `task_id`
+- `run_id`
+- `snapshot_id`
+- `tenant_id`
+- `source_role`
+- `stable_locator`
+- `stable_order`
+- `raw_row_number`
+
+### 稳定定位
+
+API 权威记录的稳定定位格式：
+
+```text
+api:<connection_id>:<entity_kind>:<encoded_external_id>
+```
+
+其中：
+
+- `connection_id` 防止不同组织的相同 userid 冲突。
+- `entity_kind` 防止部门 ID 与成员 ID 冲突。
+- `external_id` 来自 Provider 明确声明的稳定技术 ID。
+- Adapter 必须进行长度校验和可逆安全编码。
+
+`stable_order` 使用固定实体优先级和外部 ID 的确定性排序，不依赖接口偶然返回顺序。
+同一运行中相同 locator 但不同输入哈希仍触发当前 `ReplayConflict`。
+
+### 字段语义
+
+Provider Manifest 必须明确每个来源字段对应的六字段语义：
+
+| Agent 字段 | 允许的来源 |
+| --- | --- |
+| `category` | Provider 明确的实体类别或已确认配置 |
+| `name` | 部门名、人员显示名或学生姓名 |
+| `number` | 学校业务工号、学号或部门业务编码 |
+| `class_name` | 学生所属班级的明确字段 |
+| `phone` | 有权限读取且已规范化的手机号 |
+| `email` | 有权限读取且已规范化的邮箱 |
+
+技术 userid、unionid、open_userid 和部门技术 ID 默认只进入 `stable_locator`，不写入
+`number`。
+
+只有管理员在 Provider 字段映射中明确确认某个扩展字段就是学校业务编号时，该字段才可
+投影为 `number`。这个配置需要版本化和审计。
+
+### 缺失字段与“未知”语义
+
+当前 `source-ingestion-v2` 对 authoritative 记录要求多个字段同时存在。真实 API 可能因
+权限或可见范围不返回手机号、邮箱，因此 v3 不能直接复用这一验证规则。
+
+`source-ingestion-v3` 采用以下规则：
+
+- `stable_locator`、`entity_kind` 和 `name` 是基本输入要求。
+- 自动身份匹配使用 `number / phone / email`；没有这些字段时，身份索引先查询有效的外部
+  身份绑定。
+- 没有普通身份键且没有有效外部绑定时，身份索引持久化
+  `authority_identity_absent` 标记，并创建 `authority_invalid` 工作项和必报异常，不让 AI
+  猜测。
+- API Adapter 不能在查询外部绑定前，仅因为缺少普通身份键就提前排除记录。
+- 因权限不可见而缺失的普通字段记录为 `authority_field_unavailable`。
+- 字段不可见与来源明确返回空值必须区分。
+- 身份索引比较普通字段时跳过标记为 unavailable 的字段，避免把目标已有手机号或邮箱
+  错误清空。
+- 权威来源明确给出的空值是否允许清理目标数据，继续由治理策略和风险审批决定。
+
+可以复用 `AgentInputMarkRecord.affected_fields` 保存本次记录不可治理的字段范围；
+`ordinary_field_differences()` 在 v3 下必须读取这一字段范围。
+
+## 身份索引与外部 userid
+
+### 当前自动身份键不变
+
+普通自动身份 posting 继续只使用：
+
+```text
+number
+phone
+email
+```
+
+API Adapter 不增加 `userid` posting，也不把姓名当成确定性身份键。
+
+### 本次运行的身份事实
+
+匹配成功后仍创建当前模型的 `AgentIdentityClaimRecord`：
+
+```text
+authority AgentInputRecord
+  ↔ target AgentInputRecord
+  ↔ AgentWorkItemRecord
+```
+
+后续成对证据、字段差异、AI 分析和治理计划只读取这个本次运行的 claim。
+
+### 跨任务外部身份绑定
+
+旧 `EntityMapping` 属于旧规范实体流程，不能直接复用。确实需要跨任务复用人工确认时，
+新增 Agent 专用 `AgentExternalIdentityBindingRecord`：
+
+- `id`
+- `tenant_id`
+- `provider_id`
+- `connection_id`
+- `entity_kind`
+- `authority_stable_locator`
+- `target_connector_id`
+- `target_stable_locator`
+- `status`
+- `binding_version`
+- `confirmed_by`
+- `confirmed_at`
+- `revoked_by`
+- `revoked_at`
+- `evidence_hash`
+
+约束：
+
+- 同一连接、实体类型和权威 locator 只能有一个活动目标。
+- 同一绑定范围内的目标 locator 默认只能被一个权威 locator 占用。
+- 绑定只建立关系，不把外部 userid 写入业务字段。
+- 目标数据库主键或连接变化后，旧绑定不能自动迁移。
+- 绑定失效、目标不存在或出现一对多时，必须进入现有身份冲突/异常事实。
+
+### 身份索引顺序
+
+`AgentIdentityIndexBuilder` 在 v3 下按以下顺序工作：
+
+1. 加载两端 `AgentInputRecord` 和输入标记。
+2. 验证并应用活动的 `AgentExternalIdentityBindingRecord`。
+3. 为尚未 claim 的记录建立 `number / phone / email` posting。
+4. 对既无 posting 又无有效绑定的权威记录持久化身份缺失标记并创建
+   `authority_invalid`。
+5. 对唯一候选创建 `AgentIdentityClaimRecord`。
+6. 对多候选创建 `identity_conflict` 和现有澄清事实。
+7. 对目标未匹配项创建 `target_extra`。
+8. 对仍有可用身份、但没有目标 claim 的权威记录创建 `target_missing`。
+9. 对其他被排除的权威项创建 `authority_invalid`。
+10. 对已 claim 记录创建 `correct` 或 `field_difference`。
+
+人工确认绑定必须通过明确的人机交互或管理接口产生，记录操作者和证据哈希。LLM 可以解释
+候选差异，但不能自行创建持久绑定。
+
+第一版若尚未实现外部绑定管理，则没有共同身份键的记录只能作为异常报告，不能为了提高
+匹配率退回到按姓名或 userid 猜测。
+
+## Work item、AI 分析与治理
+
+API 接入完成后不新增新的供应商 work item 类型。继续使用当前类型：
+
+- `resolved`
+- `identity_conflict`
+- `target_extra`
+- `target_duplicate`
+- `target_missing`
+- `field_difference`
+- `authority_invalid`
+- `correct`
+
+执行链路保持：
+
+```text
+AgentInputRecord
+  → AgentIdentityPostingRecord / AgentExternalIdentityBindingRecord
+  → AgentIdentityClaimRecord
+  → AgentWorkItemRecord
+  → AgentAnalysisBatchRecord
+  → reconcile-entity-batch
+  → finding
+  → risk / approval
+  → governance plan
+  → SQL operation
+  → verification
+```
+
+`construct_identity_work` 继续确定性创建批次。`reconcile-entity-batch` 只分析可执行的
+work item 及其冻结证据；它不读取 API、不读取密钥、不新增身份候选。
+
+## Skill 设计
+
+### 不新增供应商 API Skill
+
+第一版不新增：
+
+- 钉钉 OAuth Skill
+- 企业微信认证 Skill
+- 任意 HTTP Skill
+- API 分页 Skill
+- API 字段猜测 Skill
+
+这些工作由受审计的 Adapter 完成。
+
+### 对话 Skill
+
+更新现有对话 Skill，使其可以：
+
+- 把“钉钉、企微、企业微信”解析为已注册 `provider_id`。
+- 列出当前租户已配置且可用的连接引用。
+- 说明需要打开安全配置界面。
+- 收集实体范围、目标连接和用户确认。
+- 生成不含凭据的任务意图。
+
+对话 Skill 不获得 Secret Store、access token 或 API HTTP 工具。
+
+### 接入阶段 Skill 范围
+
+对于 `source-ingestion-v3`：
+
+- API authoritative 检查：确定性，模型调用数为 0。
+- API authoritative 归一化：确定性，模型调用数为 0。
+- target database 检查：确定性，模型调用数为 0。
+- target database 映射：若配置已完整，模型调用数为 0。
+- target database 映射：只有 Schema 语义确实不明确时，才调用现有
+  `understand-organization-database-schema`。
+
+旧的 `inspect-external-data-source` 和 `normalize-organization-data-batch` 保留给旧接入
+合同，不是 API v3 的主要执行路径。
+
+`GRAPH_SKILL_TOOLS_BY_PHASE` 不需要增加认证或网络工具。即使接入阶段已有通用
+`read_connector_page` 工具，API Secret-backed connector 也不得注册到 LLM Tool Gateway；
+只有后端 Materializer 可以访问它。
+
+### AI 批量分析
+
+API 接入不修改 `reconcile-entity-batch` Skill 的职责。它继续在
+`analyze_actionable_batches` 节点读取：
+
+- work item
+- claim 状态
+- 成对记录证据
+- 已冻结的字段差异
+
+并输出受 Schema 校验的 finding。
+
+## 目标数据库、锁和执行安全
+
+### 学校锁
+
+当前 `AgentSupervisorService.start()` 在进入接入阶段前获取租户学校锁。API 任务继续遵守：
+
+- 锁在 `materialize_sources` 前已获取。
+- 锁的 fencing token 随 Graph 运行传递。
+- 同一租户不能同时创建第二个活动同步任务。
+- 锁覆盖物化、分析、审批、计划和执行，直到终态或规定的终止处理完成。
+
+连接创建和连接测试发生在同步任务外，不需要学校锁；它们不能直接创建第二个任务或写目标。
+
+### API 来源
+
+API 来源为只读，不获取第三方写锁。来源一致性由不可变物化制品保证。
+
+若分页期间发现供应商版本或游标不一致，物化失败，不把半份数据发布为 Snapshot。
+
+### 目标数据库
+
+目标 MySQL 不宣称持有一个覆盖整个 Graph 的数据库锁。现有安全合同继续使用：
+
+1. 目标归一化前后读取连接器版本，确保有界提取期间未变化。
+2. 创建当前 `TargetVersion`。
+3. 治理计划冻结该目标版本。
+4. `preflight_execution` 比较计划版本、当前 `TargetVersion` 和数据库实时版本。
+5. 版本漂移时进入已有 `cross_phase_replan` 人工门禁。
+6. SQL Handler 使用参数化操作、幂等键和 `expected_version`。
+7. 每个操作写后读取或调用 verify。
+8. 每个成功操作产生新的目标版本。
+9. 外部已执行但本地未记录的重试，使用现有幂等恢复逻辑。
+
+API 接入不能绕过审批、目标版本预检或 SQL 验证。
 
 ## 错误处理
 
-使用稳定、脱敏错误码：
+所有供应商错误必须翻译为稳定、安全的错误码。建议至少包括：
+
+- `connector_credentials_invalid`
+- `connector_permission_denied`
+- `connector_visibility_empty`
+- `connector_scope_incomplete`
+- `connector_rate_limited`
+- `connector_token_refresh_failed`
+- `connector_remote_unavailable`
+- `connector_schema_changed`
+- `connector_pagination_incomplete`
+- `connector_duplicate_external_id`
+- `connector_materialization_conflict`
+- `connector_entity_unsupported`
+- `authority_identity_absent`
+- `external_identity_binding_stale`
+- `target_version_changed`
+
+前端显示安全提示，不显示第三方完整响应、请求头、token 或密钥。
+
+错误处理原则：
+
+- 认证、权限和可见范围问题停在连接测试或物化阶段。
+- 物化不完整不能进入 `inspect_sources`。
+- 单条记录字段问题通过 `AgentInputMarkRecord` 进入异常事实。
+- 身份冲突进入现有澄清链路。
+- AI 分析失败按当前批次 claim/release 和 repair 机制处理。
+- 目标版本变化进入 replan，不直接重试写入。
+- 独立 SQL 操作的部分失败继续使用当前依赖和验证合同。
+
+## 数据模型
+
+### 新增
+
+#### `ApiConnectionRecord`
+
+保存租户级连接元数据、Provider/Adapter 版本、能力、状态和 `secret_ref`。
+
+#### `ApiAuthoritySourceRecord`
+
+保存一次任务对 API 权威来源的绑定、物化状态、SourceFile/Snapshot 引用和完整性摘要。
+
+#### `AgentExternalIdentityBindingRecord`
+
+保存经人工确认的 API 稳定 locator 与目标数据库稳定 locator 的跨任务对应关系。
+
+如果第一版不交付人工绑定管理，可以先不创建该表，但必须保持“无业务身份键则异常”的安全
+行为，不能退回复用旧 `EntityMapping`。
+
+### 复用
+
+- `SourceFile`：不可变 API JSONL 制品元数据。
+- `Snapshot`：任务内权威或目标证据与版本边界。
+- `AgentInputRecord`：统一的 Graph 输入记录。
+- `AgentInputMarkRecord`：缺失、不可见、排除和异常字段事实。
+- `AgentIdentityPostingRecord`：`number / phone / email` 身份索引。
+- `AgentIdentityClaimRecord`：本次运行接受的权威与目标对应。
+- `AgentWorkItemRecord`：身份与字段差异小任务。
+- `AgentAnalysisBatchRecord`：AI 批量分析边界。
+- `AgentGovernancePlanRecord` 和 operation 记录：治理执行。
+- `TargetVersion`：目标数据库版本链。
+- 现有学校锁、Graph run、checkpoint、事件和审计记录。
+
+### 明确不复用
+
+- `RawSnapshotRow`
+- `CanonicalEntityRecord`
+- 旧 `EntityMapping`
+
+这些对象不属于当前 Agent Graph 主路径。API Graph 测试应明确断言不会创建它们。
+
+## 后端接口
+
+建议新增或扩展以下接口：
 
 ```text
-api_invalid_credentials
-api_insufficient_scope
-api_connection_revoked
-api_token_refresh_failed
-api_rate_limited
-api_request_timeout
-api_pagination_cursor_repeated
-api_record_id_missing
-api_record_id_duplicated
-api_partial_snapshot
-api_entity_unsupported
-api_schema_unsupported
-api_snapshot_hash_mismatch
-credential_store_unavailable
+GET    /api/connectors/providers
+POST   /api/connectors/configuration-sessions
+POST   /api/connectors/connections
+GET    /api/connectors/connections
+GET    /api/connectors/connections/{id}
+POST   /api/connectors/connections/{id}/test
+POST   /api/connectors/connections/{id}/rotate-secret
+DELETE /api/connectors/connections/{id}
+
+GET    /api/connectors/connections/{id}/capabilities
+GET    /api/connectors/connections/{id}/visibility
+
+GET    /api/agent/external-identity-bindings
+POST   /api/agent/external-identity-bindings
+DELETE /api/agent/external-identity-bindings/{id}
 ```
 
-错误规则：
+约束：
 
-- 连接测试错误不创建连接实例。
-- 认证和权限错误引导用户重新配置或在供应商后台授权。
-- 限流和超时使用有界重试，预算耗尽后暂停或安全失败。
-- 供应商原始错误正文、请求 ID、URL 查询参数和响应内容不进入用户消息。
-- 部分快照绝不进入后续对账。
-- 已有活动任务继续遵守学校锁，不允许通过聊天配置新连接绕过锁并创建第二个同步任务。
-- 目标写入阶段仍使用现有目标版本、审批、幂等和回滚规则。
+- 普通连接读取接口不返回 `secret_ref` 的内部值或任何明文。
+- 创建和轮换密钥使用一次性配置会话与 CSRF 防护。
+- 删除连接前检查是否被活动任务引用。
+- 测试连接不创建 `ReconciliationTask`，也不读取超出最小探测范围的数据。
+- 外部身份绑定的创建和撤销要求已认证操作者，并记录审计。
 
-## 安全要求
+现有任务创建接口继续接收 `AgentConnectorSelection`。只需让运行时真正接受
+`api + database`，无需增加另一套同步任务 API。
 
-- 普通聊天接口拒绝或遮蔽疑似凭据。
-- LLM、Skill、MCP 和 Graph Supervisor 永远没有 `read_secret` 权限。
-- 不提供任意 HTTP 工具。
-- Adapter 只能访问 Manifest 中审核过的 HTTPS 主机。
-- 禁止重定向到未允许主机、内网、环回、本地文件或其他协议。
-- 请求和响应日志默认不记录请求体、Authorization 和 access token。
-- 所有供应商字段和记录内容都视为不可信数据，不能改变工具调用和 Graph 候选。
-- 学生手机号在模型可见前使用现有任务级令牌化。
-- 连接、凭据、配置会话和快照都执行租户隔离。
-- 第三方 Adapter 不实现写入能力；`ConfiguredApiConnector.apply` 对权威来源继续失败关闭。
-- 连接吊销后删除或不可恢复地失效凭据引用。
-- 先前在普通聊天或日志中暴露过的真实密钥必须轮换后才能用于正式测试。
+## 关键代码改动边界
 
-## 可观测性与审计
+### Graph 与运行时
 
-连接级审计事件：
+- `backend/app/agent_runtime/service.py`
+  - API 任务选择 `agent-sync-graph-v2`。
+  - API 任务冻结 `source-ingestion-v3`。
+- `backend/app/agent_graph/runtime.py`
+  - `materialize_sources` 候选支持 task-bound `api-source`。
+  - v3 检查和归一化候选按 role binding 路由。
+  - 不再用单一 `_source_pair_mode()` 处理混合连接器。
+- `backend/app/agent_graph/production_executor.py`
+  - 现有 materialize Action kind 根据资源类型分派 Materializer。
+  - 新增确定性的 API inspection 和 normalization 路径。
+  - 目标数据库继续复用 v2 Adapter 和确定性执行。
+- `backend/app/agent_graph/definition.py`
+  - 第一版不新增 Graph 定义。
 
-```text
-connector_setup_started
-connector_test_succeeded
-connector_test_failed
-connector_credential_rotated
-connector_revoked
-```
+### 任务与连接
 
-任务级审计事件：
+- `backend/app/agent_runtime/task_service.py`
+  - 接受并验证 `api + database`。
+  - 绑定 `ApiAuthoritySourceRecord` 和目标数据库 Snapshot。
+- 新增连接器 Provider registry、connection service、secret resolver 和 API materializer。
+- 不把供应商分支散落到 Supervisor；通过 registry 查找 Adapter。
 
-```text
-api_snapshot_started
-api_page_captured
-api_snapshot_published
-api_snapshot_failed
-api_snapshot_reused_from_checkpoint
-```
+### 接入与身份
 
-审计允许记录：
+- 新增 `backend/app/ingestion/agent_api_adapter.py`。
+- 扩展 v3 输入验证和 unavailable 字段处理。
+- `AgentIdentityIndexBuilder` 在 posting 前读取有效外部身份绑定。
+- 普通 posting 仍只包含 `number / phone / email`。
+- 不调用旧规范实体仓储。
 
-- tenant、operator、conversation、connection 和 task 的内部引用。
-- Provider、Adapter、Manifest 和 Graph 版本。
-- 实体类型、页数、记录数、耗时、重试次数和内容哈希。
-- 稳定安全错误码。
+### Skill
 
-审计禁止记录：
-
-- AppSecret、Secret、access token 和完整认证响应。
-- 原始学生手机号。
-- Authorization、Cookie 和含密钥查询参数。
-- 供应商响应中的任意提示文本。
+- 更新对话 Skill 的 Provider 与安全配置交互。
+- 保持 API 认证和 HTTP 在 Skill 工具范围之外。
+- 复用目标数据库 Schema Skill，不新增供应商 API Skill。
+- 保持 `reconcile-entity-batch` 的输入职责不变。
 
 ## 测试策略
 
-### 单元测试
+所有自动化测试只使用合成组织数据和假的 Adapter server，不使用真实师生记录或真实密钥。
 
-- Provider Manifest Schema、版本和主机白名单。
-- DingTalk 和 WeCom 认证请求构造。
-- access token 过期刷新。
-- 单页、多页、空页和结束游标。
-- 重复游标和重复记录 ID。
-- 权限不足、限流、超时和供应商异常映射。
-- 连接租户隔离和状态转换。
-- 凭据加密、轮换、删除和日志脱敏。
-- 外部 ID 命名空间和长度限制。
-- 实体级最低字段要求。
+### Provider Adapter 合同测试
 
-### Adapter 合同测试
+每个 Adapter 运行相同合同套件：
 
-所有 Provider Adapter 必须通过同一测试套件：
+- 正确读取多页部门和成员。
+- 游标结束条件正确。
+- 重复游标会失败。
+- 重复外部 ID 会失败。
+- 401/403、限流、超时和服务错误被翻译为安全错误码。
+- token 刷新不泄漏凭据。
+- entity capability 与 Manifest 一致。
+- 同一原始实体生成相同稳定 locator 和六字段投影。
+- userid 只进入 locator，不默认进入 `number`。
+- 隐藏字段产生 unavailable 标记，不产生清空目标的差异。
 
-- 只读能力。
-- 稳定 `version`。
-- 稳定记录 ID。
-- 有界分页。
-- 游标单调推进且不会重复。
-- 完整读取结束信号。
-- 安全错误转换。
-- 不泄露凭据。
-- 不产生供应商专用 Graph Action。
+### 物化测试
 
-新增普通供应商时，只需运行该合同测试和自己的响应 fixture 测试。
+- API 任务在学校锁获取后才开始物化。
+- task、tenant、connection 绑定不一致时拒绝物化。
+- 完整分页产生一个托管 `SourceFile` 和一个 authoritative `Snapshot`。
+- Snapshot 冻结 Manifest、Adapter、投影版本和选择范围。
+- 已完成 Action 重试返回同一证据。
+- 半成品和失败物化不会被后续节点读取。
+- checkpoint 和日志不包含密钥、token、请求头或未脱敏错误正文。
+- API 内容变化不会覆盖已发布 Snapshot。
 
-### 集成测试
+### 接入合同测试
 
-使用本地模拟 HTTP 服务和合成组织数据，不使用真实教师、学生和手机号：
+- authoritative API 记录转换为 `AgentContractRecord`。
+- `persist_inputs()` 创建 `AgentInputRecord`。
+- target MySQL 继续通过 `AgentDatabaseIngestionAdapter` 创建 `AgentInputRecord`。
+- 两端 checkpoint 使用不同 role key。
+- 已知 API 和已配置数据库映射的模型调用数为 0。
+- 不创建 `RawSnapshotRow`、`CanonicalEntityRecord` 或旧 `EntityMapping`。
+- v3 可重放时 locator、order 和 input hash 一致。
+- 不同 input hash 重放同一 locator 时触发 `ReplayConflict`。
 
-- 安全配置卡提交后创建 active 连接。
-- 无效密钥不创建连接。
-- `api + database` 任务创建成功。
-- API 快照完整分页后发布现有 Snapshot。
-- 中途失败不发布 Snapshot。
-- worker 重启后复用 checkpoint，不重复调用 API。
-- API 快照进入现有规范化、身份对应和差异生成。
-- 无共同身份键进入人工确认。
-- 人工确认的 `EntityMapping` 在下一任务复用。
-- 第三方记录中的提示注入不能扩大权限。
+### 身份索引测试
+
+- `number / phone / email` 唯一候选创建 `AgentIdentityClaimRecord`。
+- 多候选创建 `identity_conflict`。
+- 目标无候选创建 `target_extra`。
+- 未 claim 权威记录创建 `target_missing`。
+- 排除记录创建 `authority_invalid`。
+- 外部 userid 不进入 `AgentIdentityPostingRecord`。
+- 有效外部绑定在 posting 前创建本次运行 claim。
+- 失效绑定不会静默匹配。
+- 无业务身份键且无外部绑定时进入异常，不按姓名猜测。
+- unavailable 字段不进入 `ordinary_field_differences()`。
+
+### AI 与治理链路测试
+
+- work item 被规划为 `AgentAnalysisBatchRecord`。
+- `reconcile-entity-batch` 只收到冻结的 work item 和成对证据。
+- AI 不收到连接配置、密钥、token 或原始 API 请求。
+- 分析批次失败会释放 claim 并按现有 repair 机制重试。
+- finding 进入风险聚合和审批分组。
+- 计划编译使用当前目标 Snapshot 和 TargetVersion。
+
+### SQL 执行测试
+
+- `api + database` 任务选择 SQL Governance Handler。
+- 计划前目标版本、实时数据库版本和计划版本一致时才执行。
+- 版本漂移创建 `cross_phase_replan` 人工门禁。
+- 写入使用幂等键和 expected version。
+- create/update/delete 均执行写后验证。
+- 部分操作失败不破坏独立操作的既有执行语义。
+- 重试能识别外部已执行操作并恢复本地事实。
 
 ### Graph 测试
 
-- v3 节点集合与 v2 保持一致。
-- API 来源只出现 `capture_api_authority_snapshot` 候选。
-- 远程 CSV 仍只出现 `materialize_remote_authority`。
-- 数据库和本地 CSV 不调用 API Action。
-- 新增测试 Provider 不改变 Graph 定义。
-- v1、v2 历史运行仍能恢复。
-- API Action evidence 和 checkpoint 哈希可重放。
+- API 新任务使用 `agent-sync-graph-v2`。
+- API 新任务使用 `source-ingestion-v3`。
+- API 新任务使用 `deterministic-execution-v2`。
+- 路径包含 `acquire_school_lock → materialize_sources → inspect_sources`。
+- 物化成功后才进入归一化。
+- 后续路径实际经过身份索引、work item、AI 批次、风险、计划、预检、执行和报告。
+- 钉钉与企业微信使用相同节点集合。
+- 新增连接实例不会创建 Graph 定义。
+- 恢复旧运行时继续使用其原有版本合同。
 
-### 前端和端到端测试
+### 安全测试
 
-- 聊天识别钉钉或企微并展示对应安全表单。
-- 密钥不出现在聊天消息 DOM、历史接口和任务详情。
-- 连接成功后可被当前租户选择。
-- 连接失败显示安全恢复动作。
-- 确认卡展示第三方只读、希沃目标和实体范围。
-- 一次确认只创建一个任务。
-- 连接吊销后不能创建新任务。
-
-### 真实环境烟雾测试
-
-真实测试默认跳过，只在显式提供测试租户和密钥的隔离环境运行：
-
-- 获取 token。
-- 读取部门第一页。
-- 读取成员第一页。
-- 验证权限范围和稳定 ID。
-- 不保存或打印真实成员明细。
-
-真实凭据不得进入仓库、CI fixture、截图和测试报告。
-
-## 开发顺序
-
-### 第一阶段：连接器控制面
-
-- Provider Catalog 和 Manifest Schema。
-- `ConnectorConnection`、`ConnectorSetupSession` 和 `CredentialStore`。
-- 安全配置接口和连接测试。
-- 对话上下文、决策 Schema 和安全配置卡。
-
-### 第二阶段：钉钉纵向切片
-
-- `DingTalkConnectorStore`。
-- 认证、部门、成员、分页和安全错误。
-- 连接测试与 Adapter 合同测试。
-
-### 第三阶段：Graph API 快照
-
-- `agent-sync-graph-v3`。
-- `capture_api_authority_snapshot` Action、Guard、evidence 和 checkpoint。
-- API JSONL `SourceFile` 与现有 Snapshot 发布。
-- `api + database` 任务配对。
-
-### 第四阶段：规范化和身份对应
-
-- 对齐现有 CanonicalEntity。
-- 升级来源检查与规范化 Skill。
-- 命名空间 `source_id`。
-- 无共同身份键的人工确认和历史 `EntityMapping` 复用。
-
-### 第五阶段：企业微信
-
-- `WeComConnectorStore`。
-- 复用同一 Catalog、连接、Graph、快照和合同测试。
-- 不创建企业微信专用 Graph 节点。
-
-### 第六阶段：安全与发布
-
-- 全量自动化测试和迁移烟雾测试。
-- 日志与错误脱敏检查。
-- 租户隔离和提示注入测试。
-- 按 Provider 启用开关逐步发布。
-
-## 配置与发布
-
-复用现有 `new_agent_api_connector_enabled` 作为总开关，并增加供应商级开关：
-
-```text
-api_connector_dingtalk_enabled
-api_connector_wecom_enabled
-```
-
-关闭总开关时：
-
-- 对话 Agent 不显示 API Provider 或连接。
-- 配置接口拒绝新建和测试。
-- 已完成任务和历史快照仍可查看。
-
-关闭单个供应商时：
-
-- 不允许新建、测试或使用该供应商连接。
-- 不影响其他供应商。
-- 已经固化的任务快照继续进入后续安全阶段。
-
-## 对现有代码的影响
-
-主要修改：
-
-- `backend/app/schemas/agent_conversation.py`
-  - API Provider、连接和配置会话上下文。
-  - 新的对话决策类型。
-- `backend/app/api/routes/agent.py`
-  - Provider、配置会话、凭据提交、连接测试、轮换和吊销接口。
-- `backend/app/agent_runtime/task_service.py`
-  - 允许只读 API 权威来源与 MySQL 数据库目标。
-- `backend/app/agent_graph/definition.py`
-  - 注册 `agent-sync-graph-v3`，节点集合保持不变。
-- `backend/app/agent_graph/runtime.py`
-  - API 来源 Action 候选和明确来源模式。
-- `backend/app/agent_graph/production_executor.py`
-  - API 来源物化 Action、按角色接入路由和后续现有 Snapshot 发布。
-- `backend/app/connectors/configured.py`
-  - 复用并补充 API 只读能力合同。
-- `backend/app/connectors/api_runtime.py`
-  - 连接实例、Manifest、密钥和 Adapter 解析。
-- `backend/app/connectors/providers/dingtalk.py`
-  - 钉钉认证、部门、成员和分页。
-- `backend/app/connectors/providers/wecom.py`
-  - 企微认证、部门、成员和分页。
-- `backend/app/ai/skills/contracts.py`
-  - API 来源和实体级规范合同。
-- `backend/app/ai/skills/converse-school-data-sync/SKILL.md`
-  - API 供应商和安全配置决策。
-- `backend/app/ai/skills/inspect-external-data-source/SKILL.md`
-  - 已固化 API 来源检查。
-- `backend/app/ai/skills/normalize-organization-data-batch/SKILL.md`
-  - 与 CanonicalEntity 对齐的规范化规则。
-
-新增数据库迁移只包含连接、配置会话和加密凭据控制面。API 快照和身份映射复用现有表。
+- 租户不能读取或使用其他租户连接。
+- Secret Store 解析只在后端 Adapter 边界发生。
+- 配置 API、错误响应、审计和日志均不回显秘密。
+- 测试连接只做最小读取。
+- 通讯录可见范围为空或明显不足时不能创建同步任务。
+- 外部身份绑定创建、撤销和冲突都有操作者审计。
 
 ## 验收标准
 
-以下条件全部满足才认为功能完成：
+功能完成必须同时满足以下条件：
 
-1. 用户说“接入钉钉”时，系统从服务端目录选择钉钉并展示 AppKey/AppSecret 安全表单。
-2. 用户说“接入企业微信”时，系统展示 CorpID/Secret 安全表单。
-3. 明文密钥不进入聊天历史、模型请求、Skill 输入、MCP 参数、Graph checkpoint 和日志。
-4. 有效凭据测试成功后创建当前租户可复用的 active 连接。
-5. 无效凭据、权限不足或能力不支持时不创建可用连接。
-6. 用户选择 active API 连接和希沃 MySQL 后可以生成开始确认卡。
-7. 用户确认后只创建一个 `api + database` 同步任务。
-8. Graph 使用 `agent-sync-graph-v3`，节点数量不因钉钉或企微增加。
-9. API 来源只增加通用 `capture_api_authority_snapshot` Action。
-10. 运行时按角色解析 `api` 权威来源和 `database` 目标，不再依赖单一任务来源模式。
-11. API 全量分页完整结束后才登记原始来源，并在规范化后发布不可变 Snapshot。
-12. 部分页失败、重复游标、重复 ID 或连接吊销时不进入差异分析。
-13. worker 重启或 Action 重试不会再次拉取已经成功固化且哈希一致的 API 数据。
-14. 外部技术 ID 进入带命名空间的 `source_id`，不冒充工号、学号或部门业务编号。
-15. 手机、邮箱等可选字段不可见时记录仍可进入规范化，但不会无证据自动匹配。
-16. 无共同身份键时进入人工确认，确认结果通过现有 `EntityMapping` 在后续任务复用。
-17. 差异分析、风险审批、目标执行、验证、审计、回滚和报告继续使用现有链路。
-18. 新增一个通过合同测试的模拟 Provider 时不修改 Graph 定义。
-19. 新增第二个学校连接时只新增连接记录，不发布应用或 Graph。
-20. 第三方始终只读，所有可写操作仍只作用于希沃 MySQL 目标。
-21. 后端、前端、迁移、Graph、Adapter、安全和端到端测试全部通过。
+1. 用户能在聊天中选择钉钉或企业微信，但凭据通过安全表单提交。
+2. Provider 端点来自受审计 Manifest，运行时不让 LLM 搜索或拼装任意 URL。
+3. 连接测试能区分认证失败、权限不足、可见范围为空、限流和远端异常。
+4. 明文凭据和 access token 不进入聊天、LLM、Skill、MCP、任务意图、checkpoint 或日志。
+5. 用户确认后只创建一个 `source=api、target=database` 的同步任务。
+6. 任务创建会分别验证权威 API 角色和目标数据库角色，不要求两端连接器类型相同。
+7. 新任务冻结为 `agent-sync-graph-v2 + source-ingestion-v3 + deterministic-execution-v2`。
+8. Graph 在学校锁之后、来源检查之前通过 `materialize_sources` 固化完整 API 权威数据。
+9. 物化结果有任务、租户、连接、选择范围、内容哈希、Manifest 和 Adapter 版本证据。
+10. API 记录确定性转换为 `AgentContractRecord` 并持久化为 `AgentInputRecord`。
+11. 目标 MySQL 记录也持久化为同一类型的 `AgentInputRecord`。
+12. API 主路径不会创建 `RawSnapshotRow`、`CanonicalEntityRecord` 或旧 `EntityMapping`。
+13. 外部 userid 只作为稳定 locator 或显式外部绑定键，不默认成为 `number` 或 identity posting。
+14. 身份索引实际生成 posting、claim 和 `AgentWorkItemRecord`。
+15. 无可靠身份键的记录进入 `authority_invalid`/必报异常，不由 LLM 猜测。
+16. 已知 API 来源的检查和归一化模型调用数为 0。
+17. AI 只在 `analyze_actionable_batches` 处理已冻结 work item。
+18. finding 实际进入风险聚合、审批、治理计划和 SQL operation。
+19. 目标版本漂移会暂停并请求 replan 确认，不直接写入。
+20. SQL 写入具备幂等键、expected version 和写后验证。
+21. 钉钉和企业微信共用同一 Graph 节点集合；新增连接不会发布新链路。
+22. 旧运行可按原 Graph 和接入合同恢复，不被 v3 接入逻辑改变。
+23. 合同测试、集成测试、Graph 测试、安全测试和现有质量门禁全部通过。
+
+## 开发顺序
+
+### 第一阶段：版本与角色路由
+
+- 增加 `source-ingestion-v3` feature flag 和运行冻结规则。
+- API 任务选择现有 Graph v2。
+- 把接入候选和执行器从单一 pair mode 改为按 role binding 路由。
+- 保持旧 v1/v2 行为和恢复兼容。
+
+### 第二阶段：连接器控制面
+
+- Provider registry 和 Manifest。
+- `ApiConnectionRecord`、Secret Store 引用和安全配置会话。
+- 连接测试、能力检查、可见范围摘要和错误翻译。
+- 对话 Skill 只接触安全连接视图。
+
+### 第三阶段：钉钉纵向切片
+
+- 钉钉 Adapter。
+- `ApiAuthoritySourceRecord`。
+- API Materializer 和 Graph v2 Action 分派。
+- 不可变 JSONL、SourceFile、Snapshot 和完整性 checkpoint。
+
+### 第四阶段：Agent 输入链
+
+- `AgentApiIngestionAdapter`。
+- v3 字段缺失和 unavailable 语义。
+- `AgentInputRecord`、marks 和 role-specific checkpoints。
+- API + MySQL 两端输入合同集成测试。
+
+### 第五阶段：身份与治理链
+
+- 证明 posting、claim、work item、AI 批次和治理计划完整贯通。
+- 若本期需要，增加 `AgentExternalIdentityBindingRecord` 和管理接口。
+- 目标版本漂移、SQL 执行、验证和重试测试。
+
+### 第六阶段：企业微信
+
+- 企业微信 Manifest 和 Adapter。
+- 复用同一连接控制面、物化器、API Ingestion Adapter 和 Graph v2。
+- 运行完整 Adapter 合同套件，不新增 Graph 节点。
+
+### 第七阶段：安全与发布
+
+- 凭据泄漏扫描。
+- 多租户与可见范围测试。
+- synthetic sandbox 烟雾测试。
+- 现有后端、前端、迁移和 OpenSpec 质量门禁。
 
 ## 最终评估
 
-该设计能够满足“在聊天中选择钉钉或企业微信、只填写对应凭据、完成连接测试并创建同步”的
-开发目标，同时避免以下不可维护或不安全的结果：
+这项功能对整体 Agent Graph 的影响是有限但明确的：
 
-- 每个学校连接发布一条新 Graph。
-- 每个供应商复制一套对账和治理链路。
-- LLM 自由搜索并调用未知 API。
-- 密钥进入聊天和模型上下文。
-- API 分页不完整却继续产生删除类差异。
-- 把供应商技术 ID 当成希沃业务编号。
+- Graph 拓扑不变，复用 v2 的远程来源物化节点。
+- 接入合同升级为 v3，以支持每个角色使用不同连接器。
+- 数据接入的终点改为当前真实的 `AgentInputRecord`。
+- 身份索引、待分析小任务、AI 批量分析和治理执行继续作为唯一后续主链路。
+- 外部 userid 被限制在稳定定位和显式绑定层，不污染学校业务字段。
+- 新供应商通过 Adapter 扩展，不通过复制 Graph 或赋予 LLM 任意网络能力扩展。
 
-实现范围仍然较大，但边界清晰，可拆成连接器控制面、钉钉纵向切片、通用 API 快照、
-规范化与身份对应、企业微信五个独立交付阶段。最关键的架构判断是：Graph 只为通用 API
-来源能力升级一次；以后新增连接实例或符合合同的普通供应商均不发布新链路。
+因此，“新增数据来源只改接入层，后续不用改”的准确说法是：
+
+> 新增供应商时只新增 Manifest 和 Adapter；首次增加 API 这一连接器大类时，需要升级接入
+> 合同、任务角色路由、物化器和身份绑定边界。完成这些通用能力后，身份索引之后的分析与
+> 治理链路不再因钉钉、企微或新增连接实例而变化。
