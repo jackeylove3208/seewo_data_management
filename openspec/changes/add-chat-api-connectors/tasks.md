@@ -8,8 +8,8 @@
 ## 2. API connection control plane
 
 - [x] 2.1 Add API connection, task-bound API authority source, and external identity binding models and migration
-- [ ] 2.2 Implement provider manifest registry and deterministic Adapter protocol
-- [ ] 2.3 Implement backend-only secret resolver and safe connection views
+- [x] 2.2 Implement provider manifest registry and deterministic Adapter protocol
+- [x] 2.3 Implement backend-only secret resolver and safe connection views
 - [ ] 2.4 Add tenant-scoped connection create/list/read/test/rotate/delete services and API routes
 - [ ] 2.5 Add capability, visibility, sanitized-error, and cross-tenant security tests
 

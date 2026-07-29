@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from cryptography.fernet import Fernet
 from pydantic import SecretStr
 
 from app.core.config import DEFAULT_ENV_FILE, Settings
@@ -144,6 +145,7 @@ def test_connector_execution_flags_require_server_side_connector_configuration()
         new_agent_enabled=True,
         new_agent_analysis_only=False,
         new_agent_api_connector_enabled=True,
+        api_connector_secret_key=Fernet.generate_key().decode(),
         api_connector_configurations={
             "seewo": {
                 "credential_reference": "secret://connectors/seewo-api",
@@ -158,6 +160,34 @@ def test_connector_execution_flags_require_server_side_connector_configuration()
     assert configured.api_connector_configurations["seewo"].credential_reference.endswith(
         "seewo-api"
     )
+
+
+def test_api_connector_execution_requires_valid_encryption_key() -> None:
+    configuration = {
+        "seewo": {
+            "credential_reference": "secret://connectors/seewo-api",
+            "endpoint": "https://connector.example.test/v1/people",
+            "record_id_field": "id",
+            "version_field": "etag",
+        }
+    }
+    with pytest.raises(ValueError, match="secret key"):
+        Settings(
+            new_agent_enabled=True,
+            new_agent_analysis_only=False,
+            new_agent_api_connector_enabled=True,
+            api_connector_configurations=configuration,
+            _env_file=None,
+        )
+    with pytest.raises(ValueError, match="Fernet"):
+        Settings(
+            new_agent_enabled=True,
+            new_agent_analysis_only=False,
+            new_agent_api_connector_enabled=True,
+            api_connector_configurations=configuration,
+            api_connector_secret_key="not-a-fernet-key",
+            _env_file=None,
+        )
 
 
 def test_sql_graph_accepts_read_only_postgresql_source_and_writable_mysql_target() -> None:
