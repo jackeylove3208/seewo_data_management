@@ -78,12 +78,14 @@ export function ConversationRiskApprovalCard({
       data-risk-approval-status={decision ?? gate.status}
       data-risk-approval-selectable={String(!decision && canDecide)}
     >
-      <header className="conversation-risk-header">
+      <header
+        className="conversation-risk-header"
+        data-risk-approval-heading
+        tabIndex={-1}
+      >
         <div>
           <span>高风险操作</span>
-          <strong data-risk-approval-heading tabIndex={-1}>
-            需要你的确认
-          </strong>
+          <strong>需要你的确认</strong>
         </div>
         {decision && (
           <span className={`conversation-risk-decision ${decision}`}>

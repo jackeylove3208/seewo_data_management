@@ -53,6 +53,25 @@ describe("Agent API", () => {
     });
   });
 
+  it("sends explicit current-baseline acceptance only after user confirmation", async () => {
+    await agentApi.startTask(
+      "conversation-1",
+      {
+        title: "重新同步",
+        entity_types: ["student"],
+        source: { kind: "local", source_ref: "data/authority.csv" },
+        target: { kind: "local", source_ref: "seewo/current.csv" },
+      },
+      "accepted-baseline-key",
+      { acceptCurrentTargetBaseline: true },
+    );
+
+    const [, request] = vi.mocked(fetch).mock.calls[0]!;
+    expect((request as RequestInit).headers).toEqual(expect.objectContaining({
+      "X-Accept-Current-Target-Baseline": "true",
+    }));
+  });
+
   it("atomically resets the current conversation with an idempotency key", async () => {
     await agentApi.resetConversation("reset-key");
 

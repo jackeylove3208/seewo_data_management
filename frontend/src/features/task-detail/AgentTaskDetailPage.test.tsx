@@ -103,9 +103,14 @@ describe("controlled Agent graph task detail", () => {
   });
 
   it("renders business progress without internal English event identifiers", async () => {
-    const { client } = renderPage();
+    const { client, container } = renderPage();
 
     expect(await screen.findAllByText("正在等待高风险操作审批")).toHaveLength(2);
+    const scrollTarget = container.querySelector<HTMLElement>(
+      "[data-risk-approval-heading]",
+    );
+    expect(scrollTarget).toHaveClass("graph-approval-card");
+    expect(scrollTarget).toHaveAttribute("data-risk-approval-id", "gate-1");
     expect(
       screen.getByRole("complementary", { name: "任务处理状态" }),
     ).toBeInTheDocument();

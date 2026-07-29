@@ -26,6 +26,7 @@ function text(value: unknown, fallback = "—") {
 
 const terminalLabels: Record<string, string> = {
   completed: "同步完成",
+  completed_with_conflicts: "回滚存在冲突",
   terminated: "任务已终止",
   failed: "处理失败",
   abnormal_input: "输入异常",
@@ -54,7 +55,16 @@ const decisionLabels: Record<string, string> = {
   not_required: "无需审批",
   not_executed: "未执行",
   verification_failed: "校验失败",
+  already_restored: "已经恢复，无需再次写入",
+  conflict_skipped: "因当前值冲突而跳过",
 };
+
+function mutationTagColor(status: string) {
+  if (status === "succeeded" || status === "already_restored") {
+    return "success";
+  }
+  return status === "conflict_skipped" ? "warning" : "error";
+}
 
 export function AgentReportPage() {
   const { taskId = "" } = useParams();
@@ -77,13 +87,18 @@ export function AgentReportPage() {
   const mutations = records(facts.mutations);
   const mutationSummary = record(facts.mutation_summary);
   const publication = record(facts.publication);
+  const isRollback = report.data.kind === "rollback";
   const reportTitle = text(
     narrative.title_zh,
     report.data.kind === "rollback" ? "回滚任务分析报告" : "数据同步分析报告",
   );
   const reportSummary = text(
     narrative.summary_zh ?? narrative.summary,
-    findings.length
+    isRollback
+      ? report.data.terminal_state === "completed_with_conflicts"
+        ? "部分数据的当前值与可安全回滚的值不一致，系统已跳过这些冲突项。"
+        : "目标数据已经完成回滚；已处于原状态的记录不会重复写入。"
+      : findings.length
       ? `Agent 共发现 ${findings.length} 项需要处理的问题，并依据审核结果完成治理。`
       : "Agent 已完成本次数据核验，没有发现需要治理的问题。",
   );
@@ -99,15 +114,28 @@ export function AgentReportPage() {
           <p className="agent-report-lead">{reportSummary}</p>
         </div>
         <Tag color={report.data.terminal_state === "completed" ? "success" : "warning"}>
-          {terminalLabels[report.data.terminal_state] ?? report.data.terminal_state}
+          {isRollback && report.data.terminal_state === "completed"
+            ? "回滚完成"
+            : terminalLabels[report.data.terminal_state] ?? report.data.terminal_state}
         </Tag>
       </section>
 
       <section className="agent-report-metrics" aria-label="报告摘要">
-        <article><span>需要处理</span><strong>{findings.length}</strong></article>
-        <article><span>输入异常</span><strong>{excluded.length}</strong></article>
-        <article><span>成功变更</span><strong>{text(mutationSummary.succeeded, "0")}</strong></article>
-        <article><span>失败变更</span><strong>{text(mutationSummary.failed, "0")}</strong></article>
+        {isRollback ? (
+          <>
+            <article><span>实际恢复</span><strong>{text(mutationSummary.succeeded, "0")}</strong></article>
+            <article><span>已处于原状态</span><strong>{text(mutationSummary.already_restored, "0")}</strong></article>
+            <article><span>冲突跳过</span><strong>{text(mutationSummary.conflict_skipped, "0")}</strong></article>
+            <article><span>恢复失败</span><strong>{text(mutationSummary.failed, "0")}</strong></article>
+          </>
+        ) : (
+          <>
+            <article><span>需要处理</span><strong>{findings.length}</strong></article>
+            <article><span>输入异常</span><strong>{excluded.length}</strong></article>
+            <article><span>成功变更</span><strong>{text(mutationSummary.succeeded, "0")}</strong></article>
+            <article><span>失败变更</span><strong>{text(mutationSummary.failed, "0")}</strong></article>
+          </>
+        )}
       </section>
 
       {publicationStatus !== "not_applicable" && (
@@ -116,9 +144,9 @@ export function AgentReportPage() {
           <div>
             <h2>
               {publicationStatus === "published"
-                ? "已写回本地 CSV"
+                ? isRollback ? "已写回回滚结果" : "已写回本地 CSV"
                 : publicationStatus === "no_changes"
-                  ? "本地 CSV 无需修改"
+                  ? isRollback ? "无需再次写入本地 CSV" : "本地 CSV 无需修改"
                   : "本地 CSV 已核验"}
             </h2>
             <p>{text(publication.source_ref, "已授权的希沃目标文件")}</p>
@@ -192,7 +220,7 @@ export function AgentReportPage() {
           <ul className="agent-report-mutations">
             {mutations.map((item, index) => (
               <li key={text(item.id, `mutation-${index}`)}>
-                <Tag color={item.status === "succeeded" ? "success" : "error"}>
+                <Tag color={mutationTagColor(text(item.status))}>
                   {decisionLabels[text(item.status)] ?? text(item.status)}
                 </Tag>
                 <span>

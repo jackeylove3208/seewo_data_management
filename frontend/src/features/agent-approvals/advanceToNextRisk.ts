@@ -16,18 +16,31 @@ export function advanceToNextPendingRiskHeading(currentGateId: string) {
         card.dataset.riskApprovalStatus === "pending"
         && card.dataset.riskApprovalSelectable === "true",
     );
-  const heading = nextCard?.querySelector<HTMLElement>(
-    "[data-risk-approval-heading]",
-  );
+  const heading = nextCard?.matches("[data-risk-approval-heading]")
+    ? nextCard
+    : nextCard?.querySelector<HTMLElement>("[data-risk-approval-heading]");
   if (!heading) {
     return;
   }
 
   const reduceMotion =
     window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-  heading.scrollIntoView({
-    behavior: reduceMotion ? "auto" : "smooth",
-    block: "start",
-  });
+  const behavior = reduceMotion ? "auto" : "smooth";
+  const conversationViewport = heading.closest<HTMLElement>(
+    ".conversation-messages",
+  );
+  if (conversationViewport) {
+    const viewportTop = conversationViewport.getBoundingClientRect().top;
+    const headingTop = heading.getBoundingClientRect().top;
+    conversationViewport.scrollTo({
+      behavior,
+      top: conversationViewport.scrollTop + headingTop - viewportTop,
+    });
+  } else {
+    heading.scrollIntoView({
+      behavior,
+      block: "start",
+    });
+  }
   heading.focus({ preventScroll: true });
 }

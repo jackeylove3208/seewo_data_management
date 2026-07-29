@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ingestionApi } from "../../api/ingestion";
 import type { AgentManualTaskApi } from "../../api/agent";
+import { ApiError } from "../../api/client";
 import { TaskCreatePage } from "./TaskCreatePage";
 
 const csv = "entity_type,id,name\n教师,T01,张三\n学生,S01,李四\n";
@@ -246,5 +247,71 @@ describe("manual Agent data sync", () => {
     expect(screen.getByText("third-party.csv")).toBeInTheDocument();
     expect(screen.getByLabelText("希沃魔方本地 CSV")).toHaveValue("seewo/current.csv");
     expect(start).toBeEnabled();
+  });
+
+  it("requires an explicit click before accepting a changed target as the new baseline", async () => {
+    const user = userEvent.setup();
+    const startManualTask = vi.fn()
+      .mockRejectedValueOnce(
+        new ApiError(
+          "希沃目标文件已在 Agent 之外发生变化",
+          409,
+          "target_baseline_drift",
+        ),
+      )
+      .mockResolvedValueOnce({
+        id: "agent-task-accepted-baseline",
+        workflow_version: "agent-graph-v1",
+        phase: "ingest_and_normalize",
+        status: "running",
+      });
+    const localSources = vi.fn().mockResolvedValue([
+      {
+        source_ref: "third-party/authority.csv",
+        kind: "csv" as const,
+        writable_as_target: false,
+      },
+      {
+        source_ref: "seewo/current.csv",
+        kind: "csv" as const,
+        writable_as_target: true,
+      },
+    ]);
+    renderPage({ startManualTask, localSources });
+    await user.click(screen.getByRole("button", { name: "手动同步" }));
+    await user.selectOptions(
+      screen.getByLabelText("三方系统连接方式"),
+      "local",
+    );
+    await user.selectOptions(
+      await screen.findByLabelText("三方系统本地 CSV"),
+      "third-party/authority.csv",
+    );
+    await user.selectOptions(
+      screen.getByLabelText("希沃魔方本地 CSV"),
+      "seewo/current.csv",
+    );
+
+    await user.click(screen.getByRole("button", { name: "开始同步" }));
+
+    expect(
+      await screen.findByText("希沃目标文件已在 Agent 之外发生变化"),
+    ).toBeInTheDocument();
+    expect(startManualTask).toHaveBeenCalledTimes(1);
+
+    await user.click(
+      screen.getByRole("button", { name: "将当前文件作为新基线继续" }),
+    );
+
+    expect(
+      await screen.findByText("/tasks/agent-task-accepted-baseline"),
+    ).toBeInTheDocument();
+    expect(startManualTask).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        target: { kind: "local", source_ref: "seewo/current.csv" },
+      }),
+      expect.any(String),
+      { acceptCurrentTargetBaseline: true },
+    );
   });
 });

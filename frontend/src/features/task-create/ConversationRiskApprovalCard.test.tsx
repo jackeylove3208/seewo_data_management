@@ -36,6 +36,16 @@ function gate(status: "pending" | "approved"): AgentGraphHumanGate {
 }
 
 describe("ConversationRiskApprovalCard", () => {
+  it("uses the card header as the automatic scroll target", () => {
+    const { container } = render(
+      <ConversationRiskApprovalCard gate={gate("pending")} onDecide={vi.fn()} />,
+    );
+
+    expect(
+      container.querySelector("[data-risk-approval-heading]")?.tagName,
+    ).toBe("HEADER");
+  });
+
   it("reflects a decision completed from another task view", () => {
     const onDecide = vi.fn();
     const view = render(
