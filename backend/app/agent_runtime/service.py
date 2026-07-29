@@ -96,7 +96,13 @@ class AgentSupervisorService:
             execution_contract_version=(
                 "deterministic-execution-v2"
                 if self.settings is not None
-                and self.settings.source_ingestion_v2_enabled
+                and (
+                    self.settings.source_ingestion_v2_enabled
+                    or (
+                        self.settings.source_ingestion_v3_enabled
+                        and _uses_api_authority(task)
+                    )
+                )
                 and task.workflow_version == "agent-graph-v1"
                 else "model-mediated-execution-v1"
             ),

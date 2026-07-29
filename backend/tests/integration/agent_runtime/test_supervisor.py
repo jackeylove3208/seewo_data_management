@@ -133,7 +133,6 @@ async def test_api_task_freezes_ingestion_v3_and_starts_at_materialization(sessi
         settings=Settings(
             new_agent_enabled=True,
             agent_graph_enabled=True,
-            source_ingestion_v2_enabled=True,
             source_ingestion_v3_enabled=True,
         ),
     ).start(task_id=task.id, conversation_id=conversation.id)
@@ -189,6 +188,38 @@ async def test_existing_api_run_is_not_upgraded_when_ingestion_v3_is_enabled(ses
 
     assert replay.id == original.id
     assert replay.ingestion_contract_version == "source-ingestion-v2"
+
+
+@pytest.mark.asyncio
+async def test_ingestion_v3_flag_does_not_upgrade_a_non_api_task(session) -> None:
+    task = ReconciliationTask(
+        tenant_id="school-1",
+        scope_id="all",
+        snapshot_mode="full",
+        entity_types=["teacher"],
+        workflow_version="agent-graph-v1",
+        agent_intent={
+            "source": {"kind": "local", "source_ref": "third-party.csv"},
+            "target": {"kind": "local", "source_ref": "seewo.csv"},
+        },
+        idempotency_key="non-api-supervisor-v3",
+        request_hash="non-api-supervisor-v3",
+    )
+    session.add(task)
+    await session.flush()
+
+    run = await AgentSupervisorService(
+        session,
+        operator=OperatorContext(operator_id="operator-1", tenant_id="school-1"),
+        settings=Settings(
+            new_agent_enabled=True,
+            agent_graph_enabled=True,
+            source_ingestion_v3_enabled=True,
+        ),
+    ).start(task_id=task.id, conversation_id=None)
+
+    assert run.ingestion_contract_version == "model-mediated-ingestion-v1"
+    assert run.execution_contract_version == "model-mediated-execution-v1"
 
 
 @pytest.mark.asyncio
