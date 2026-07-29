@@ -113,6 +113,27 @@ describe("responsive analysis styles", () => {
     );
   });
 
+  it("keeps sidebar controls fixed while every expanded source scrolls internally", () => {
+    expect(globalCss).toMatch(
+      /\.workspace-navigation\s*\{[^}]*min-height:\s*0[^}]*overflow:\s*hidden/s,
+    );
+    expect(globalCss).toMatch(
+      /\.workspace-history\s*\{[^}]*min-height:\s*0[^}]*overflow:\s*hidden/s,
+    );
+    expect(globalCss).toMatch(
+      /\.workspace-history-list\s*\{[^}]*min-height:\s*0[^}]*overflow-y:\s*auto[^}]*overscroll-behavior-y:\s*contain/s,
+    );
+    expect(globalCss).toMatch(
+      /\.workspace-source-groups\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column/s,
+    );
+    expect(globalCss).toMatch(
+      /\.workspace-source-group:has\(\.workspace-source-tasks\)\s*\{[^}]*display:\s*grid[^}]*grid-template-rows:\s*auto minmax\(0,\s*1fr\)[^}]*flex:\s*1 1 0/s,
+    );
+    expect(globalCss).toMatch(
+      /\.workspace-source-tasks\s*\{[^}]*min-height:\s*0[^}]*overflow-y:\s*auto[^}]*overscroll-behavior-y:\s*contain/s,
+    );
+  });
+
   it("keeps the conversation header compact on desktop and mobile", () => {
     const mobileCss = extractCssBlocks(globalCss, "@media (max-width: 720px)").join("\n");
 
