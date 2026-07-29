@@ -2,18 +2,18 @@ import type { EntityType } from "../types/domain";
 import { requestJson } from "./client";
 
 export type WorkflowStage = "ingestion" | "matching" | "differences" | "analysis" | "complete";
-export type WorkflowStatus = "pending" | "running" | "succeeded" | "failed";
+type WorkflowStatus = "pending" | "running" | "succeeded" | "failed";
 export type AnalysisStatus = "pending" | "succeeded" | "manual_review" | "failed";
 export type RiskLevel = "low" | "medium" | "high";
 export type OperationType = "create" | "update" | "move" | "disable" | "skip" | "manual_review";
 
-export interface WorkflowError {
+interface WorkflowError {
   code: string;
   message: string;
   retryable: boolean;
 }
 
-export interface AnalysisProgress {
+interface AnalysisProgress {
   job_id?: string | null;
   total: number;
   completed: number;
@@ -22,7 +22,7 @@ export interface AnalysisProgress {
   failed: number;
 }
 
-export type RematchingJobStatus =
+type RematchingJobStatus =
   | "queued"
   | "indexing"
   | "running"
@@ -47,7 +47,7 @@ export interface RematchingJobProgress {
   updated_at: string;
 }
 
-export interface MatchingQualityCounts {
+interface MatchingQualityCounts {
   total: number;
   accepted: number;
   deterministic: number;
@@ -60,7 +60,7 @@ export interface MatchingQualityCounts {
   predicted_redundant: number;
 }
 
-export interface MatchingQualityGate {
+interface MatchingQualityGate {
   code: "matching_quality_gate_failed";
   affected_entity_types: EntityType[];
   reason: string;
@@ -90,7 +90,7 @@ export interface WorkflowState {
   error: WorkflowError | null;
 }
 
-export interface WorkflowAdvanceResponse {
+interface WorkflowAdvanceResponse {
   task_id: string;
   workflow: WorkflowState;
 }
@@ -102,7 +102,7 @@ export type DifferenceType =
   | "structure_conflict"
   | "duplicate_conflict";
 
-export interface FieldDifference {
+interface FieldDifference {
   field: string;
   source_value: unknown;
   target_value: unknown;
@@ -111,7 +111,7 @@ export interface FieldDifference {
   comparison: "attribute" | "structure" | "duplicate";
 }
 
-export interface DifferenceEvidence {
+interface DifferenceEvidence {
   source_snapshot_id: string;
   target_snapshot_id: string;
   source_entity_id: string | null;
@@ -143,12 +143,12 @@ export interface DifferenceItem {
   current_proposal_version: number | null;
 }
 
-export interface DifferencePage {
+interface DifferencePage {
   items: DifferenceItem[];
   next_cursor: string | null;
 }
 
-export interface ProposedFieldChange {
+interface ProposedFieldChange {
   field: string;
   before: unknown;
   after: unknown;
@@ -175,8 +175,6 @@ export interface CauseAnalysisV2 {
   options: GovernanceOption[];
 }
 
-export type ResolutionMode = "auto_executable" | "needs_information" | "manual_only";
-
 interface ResolutionBase {
   solution_id: string;
   title: string;
@@ -198,7 +196,7 @@ export interface AutoExecutableResolution extends ResolutionBase {
   };
 }
 
-export interface NeedsInformationResolution extends ResolutionBase {
+interface NeedsInformationResolution extends ResolutionBase {
   mode: "needs_information";
   information_requests: Array<{
     request_type: string;
@@ -208,12 +206,12 @@ export interface NeedsInformationResolution extends ResolutionBase {
   }>;
 }
 
-export interface ManualResolution extends ResolutionBase {
+interface ManualResolution extends ResolutionBase {
   mode: "manual_only";
   manual_steps: Array<{ order: number; instruction: string }>;
 }
 
-export type ResolutionPath = AutoExecutableResolution | NeedsInformationResolution | ManualResolution;
+type ResolutionPath = AutoExecutableResolution | NeedsInformationResolution | ManualResolution;
 
 export interface CauseAnalysisV3 {
   locale: "zh-CN";
@@ -247,14 +245,14 @@ export interface AnalysisResult {
   };
 }
 
-export interface EntityEditorField {
+interface EntityEditorField {
   name: string;
   label: string;
   field_type: "text" | "email" | "phone" | "status" | "relation";
   required: boolean;
 }
 
-export interface EntityEditorSchema {
+interface EntityEditorSchema {
   entity_type: EntityType;
   fields: EntityEditorField[];
 }
@@ -285,7 +283,7 @@ export interface GovernanceProposalPreview {
   risk: RiskLevel;
 }
 
-export interface GovernanceProposal extends GovernanceProposalPreview {
+interface GovernanceProposal extends GovernanceProposalPreview {
   id: string;
   task_id: string;
   tenant_id: string;
@@ -308,7 +306,7 @@ export interface DifferenceFilters {
   limit?: number;
 }
 
-export type AnalysisJobStatus = "queued" | "running" | "completed" | "completed_with_failures" | "canceled";
+type AnalysisJobStatus = "queued" | "running" | "completed" | "completed_with_failures" | "canceled";
 
 export interface AnalysisJobProgress {
   job_id: string;
@@ -326,7 +324,7 @@ export interface AnalysisJobProgress {
   updated_at: string;
 }
 
-export interface EntityIssueSummary {
+interface EntityIssueSummary {
   entity_type: EntityType;
   issue_count: number;
   proposal_ready: number;
@@ -335,7 +333,7 @@ export interface EntityIssueSummary {
   failed: number;
 }
 
-export interface TaskAnalysisSummary {
+interface TaskAnalysisSummary {
   task_id: string;
   analysis_job_id: string | null;
   job_status: AnalysisJobStatus | null;
@@ -343,14 +341,14 @@ export interface TaskAnalysisSummary {
   entity_types: EntityIssueSummary[];
 }
 
-export type BatchExclusionReason = "high_risk" | "needs_information" | "manual_only" | "analysis_failed" | "stale" | "existing_proposal" | "no_recommended_action";
+type BatchExclusionReason = "high_risk" | "needs_information" | "manual_only" | "analysis_failed" | "stale" | "existing_proposal" | "no_recommended_action";
 
-export interface BatchPreviewRequest {
+interface BatchPreviewRequest {
   analysis_job_id: string;
   entity_type?: EntityType;
 }
 
-export interface BatchPreviewItem {
+interface BatchPreviewItem {
   difference_id: string;
   difference_version: number;
   analysis_id: string;
@@ -362,14 +360,14 @@ export interface BatchPreviewItem {
   risk: RiskLevel;
 }
 
-export interface BatchExcludedItem {
+interface BatchExcludedItem {
   difference_id: string;
   entity_type: EntityType;
   reason: BatchExclusionReason;
   reason_label: string;
 }
 
-export interface BatchProposalPreview {
+interface BatchProposalPreview {
   task_id: string;
   analysis_job_id: string;
   preview_token: string;
@@ -377,7 +375,7 @@ export interface BatchProposalPreview {
   excluded: BatchExcludedItem[];
 }
 
-export interface ConfirmBatchProposalRequest {
+interface ConfirmBatchProposalRequest {
   preview_token: string;
   idempotency_key: string;
 }

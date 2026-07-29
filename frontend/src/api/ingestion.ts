@@ -2,7 +2,7 @@ import { requestJson } from "./client";
 import type { EntityType } from "../types/domain";
 import type { WorkflowState } from "./reconciliation";
 
-export interface UploadResponse {
+interface UploadResponse {
   id: string;
   source_role: "authoritative" | "target";
   original_name: string;
@@ -10,7 +10,7 @@ export interface UploadResponse {
   detected_encoding: string;
 }
 
-export interface SnapshotSummary {
+interface SnapshotSummary {
   accepted: number;
   normalized_with_warning: number;
   quarantined: number;

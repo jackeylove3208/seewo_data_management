@@ -190,10 +190,9 @@ class ProductionGraphActionExecutor:
             return await self._analyze_batch(context, action)
         if action_kind == "resolve_identity_conflicts":
             return await self._open_identity_conflict_gate(context, action)
-        if action_kind in {
-            "enter_aggregate_risk",
-            "resume_analysis_after_identity_conflicts",
-        }:
+        if action_kind == "resume_analysis_after_identity_conflicts":
+            return await self._resume_analysis_after_identity_conflicts(context, action)
+        if action_kind == "enter_aggregate_risk":
             return await self._record_guarded_noop(context, action)
         if action_kind == "aggregate_risk":
             if context.current_node != "aggregate_risk":
@@ -1299,6 +1298,31 @@ class ProductionGraphActionExecutor:
             evidence_refs=action.required_evidence,
             pause_for_human=True,
         )
+
+    async def _resume_analysis_after_identity_conflicts(
+        self,
+        context: GraphWorkContext,
+        action: AllowedActionV1,
+    ) -> GraphActionOutcome:
+        async with self._session_factory() as session:
+            async with session.begin():
+                resolved = await AgentIdentityIndexBuilder(
+                    session
+                ).resolve_confirmed_conflicts(run_id=context.run_id)
+                batches = await AgentBatchPlanner(session).create_for_run(
+                    run_id=context.run_id,
+                    work_item_ids=tuple(item.id for item in resolved),
+                )
+                await self._record_deterministic_invocation(
+                    session,
+                    context=context,
+                    action=action,
+                    output={
+                        "resolved_work_item_ids": [str(item.id) for item in resolved],
+                        "analysis_batch_ids": [str(batch.id) for batch in batches],
+                    },
+                )
+        return _outcome(action)
 
     async def _aggregate_risk(
         self,

@@ -6,10 +6,10 @@ from app.connectors.configured import (
     ConfiguredApiConnector,
     ConnectorCapabilities,
     DatabaseConnectorConfiguration,
-    InMemoryConnectorStore,
 )
 from app.ingestion.agent_database_adapter import AgentDatabaseIngestionAdapter
 from app.schemas.agent_ingestion import AgentEntityKind, AgentSourceRole
+from tests.fixtures.connector_store import InMemoryConnectorStore
 
 
 def _connector(

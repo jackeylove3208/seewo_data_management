@@ -33,7 +33,7 @@ class ConversationSupervisorAgent:
         self._reserved_output_tokens = reserved_output_tokens
 
     async def reply(self, context: ConversationAgentContext) -> ConversationAgentDecision:
-        skill = self._skills.load("converse-school-data-sync", "1.1.0")
+        skill = self._skills.load("converse-school-data-sync", "1.2.0")
         request = build_agent_request(
             skill,
             context.model_dump(mode="json"),
@@ -73,6 +73,52 @@ def _validate_source_references(
     context: ConversationAgentContext,
 ) -> ConversationAgentDecision:
     references = {value for value in context.available_source_refs}
+    selected_boundary = (
+        (decision.remote_url_start, decision.remote_url_end)
+        if decision.remote_url_start is not None
+        and decision.remote_url_end is not None
+        else None
+    )
+    allowed_boundaries = {
+        (candidate.start, candidate.end) for candidate in context.remote_link_candidates
+    }
+    if context.remote_link_candidates:
+        if not context.conversation_remote_csv_enabled:
+            return ConversationAgentDecision(
+                kind="clarification",
+                message_zh=(
+                    "当前部署未启用对话远程 CSV 接入，不能使用远程链接作为数据来源。"
+                ),
+            )
+        if selected_boundary is None:
+            return ConversationAgentDecision(
+                kind="clarification",
+                message_zh="请先确认本条消息中的第三方 CSV 链接边界。",
+            )
+        mixed_remote_selection = bool(
+            decision.remote_source_id
+            or decision.source_ref
+            or decision.source_configuration_id
+            or decision.target_configuration_id
+        )
+        target_is_valid = (
+            decision.target_ref is None or decision.target_ref in references
+        )
+        if (
+            selected_boundary in allowed_boundaries
+            and not mixed_remote_selection
+            and target_is_valid
+        ):
+            return decision
+        return ConversationAgentDecision(
+            kind="clarification",
+            message_zh="第三方 CSV 链接边界或希沃目标已变化，请重新发送链接。",
+        )
+    if selected_boundary is not None:
+        return ConversationAgentDecision(
+            kind="clarification",
+            message_zh="当前消息没有可供确认的第三方 CSV 链接，请重新发送链接。",
+        )
     remote_source_ids = {
         item.remote_source_id for item in context.available_remote_sources
     }

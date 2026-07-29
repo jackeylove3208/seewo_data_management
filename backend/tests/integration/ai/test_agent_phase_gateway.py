@@ -8,7 +8,6 @@ from app.ai.mcp.agent_authorization import (
     AgentToolContext,
 )
 from app.ai.mcp.agent_gateway import AgentPhaseToolGateway
-from app.ai.mcp.server import create_agent_fastmcp_server
 from app.core.security import OperatorContext
 from app.models.agent_runtime import AgentRunRecord
 from app.models.reconciliation import ReconciliationTask
@@ -91,28 +90,3 @@ async def test_agent_phase_gateway_binds_tool_to_durable_tenant_task_and_phase(s
             connector_id="invented",
             arguments={"item_id": str(resource_id)},
         )
-
-
-@pytest.mark.asyncio
-async def test_agent_fastmcp_registers_every_phase_capability_without_legacy_tools(
-    session,
-) -> None:
-    context = AgentToolContext(
-        operator_id="demo-operator",
-        tenant_id="school-1",
-        task_id=uuid4(),
-        run_id=uuid4(),
-        phase="analyze_batches",
-    )
-    gateway = AgentPhaseToolGateway(
-        session,
-        operator=OperatorContext(operator_id="demo-operator", tenant_id="school-1"),
-        tools={},
-    )
-
-    server = create_agent_fastmcp_server(gateway, lambda _ctx: context)
-
-    assert {tool.name for tool in await server.list_tools()} == {
-        capability.value for capability in AgentCapability
-    }
-    assert "difference_context" not in {tool.name for tool in await server.list_tools()}

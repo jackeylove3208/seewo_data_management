@@ -5,7 +5,6 @@ import pytest
 from app.ai.agent import GovernanceAgent
 from app.ai.analysis_service import AnalysisService
 from app.ai.mcp.server import MCPToolGateway
-from app.governance.eligibility import ExecutionEligibility
 from app.repositories.differences import DifferenceRepository
 from app.schemas.differences import DifferenceDraft, DifferenceType
 from app.schemas.governance import AnalysisStatus
@@ -68,7 +67,6 @@ async def test_invalid_outputs_never_become_executable(session, output) -> None:
     assert result.provenance.usage.input_tokens == 14
     assert result.provenance.usage.output_tokens == 8
     assert model.calls == 2
-    assert not await ExecutionEligibility(session).is_eligible(difference.id, difference.version)
 
 
 @pytest.mark.asyncio

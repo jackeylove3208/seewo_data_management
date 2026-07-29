@@ -16,8 +16,6 @@ export function resolveApiUrl(path: string) {
   return `${API_BASE_URL}${path}`;
 }
 
-export const apiUrl = resolveApiUrl;
-
 export async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {

@@ -66,14 +66,3 @@ class AnalysisJobProgress(BaseModel):
         if self.proposal_ready > self.succeeded:
             raise ValueError("proposal-ready count cannot exceed succeeded count")
         return self
-
-
-class AnalysisJobEvent(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    cursor: int = Field(ge=1)
-    progress: AnalysisJobProgress
-
-
-class AnalysisJobControlResponse(AnalysisJobProgress):
-    pass

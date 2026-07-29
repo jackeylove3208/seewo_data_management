@@ -10,13 +10,7 @@ from app.schemas.agent_ingestion import (
     AgentInputMark,
     AgentSourceRole,
 )
-from app.schemas.agent_reconciliation import (
-    AgentFindingPayload,
-    AgentSolutionPayload,
-    IdentityKeyKind,
-    WorkItemKind,
-    WorkItemState,
-)
+from app.schemas.agent_reconciliation import AgentFindingPayload, AgentSolutionPayload
 
 
 def _record(**changes: object) -> AgentContractRecord:
@@ -78,10 +72,6 @@ def test_reconciliation_payloads_are_strict_and_bound_solution_cardinality() -> 
     )
 
     assert finding.solutions == (solution,)
-    assert IdentityKeyKind.NUMBER.value == "number"
-    assert WorkItemKind.TARGET_EXTRA.value == "target_extra"
-    assert WorkItemKind.AUTHORITY_INVALID.value == "authority_invalid"
-    assert WorkItemState.PENDING.value == "pending"
     with pytest.raises(ValidationError, match="at most 3"):
         AgentFindingPayload(
             work_item_id=finding.work_item_id,

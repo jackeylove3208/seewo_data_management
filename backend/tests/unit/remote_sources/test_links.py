@@ -2,6 +2,7 @@ import pytest
 
 from app.remote_sources.links import (
     RemoteSourceRegistrationError,
+    conversation_link_candidates,
     extract_conversation_link,
     redact_conversation_links,
 )
@@ -49,3 +50,40 @@ def test_redacts_links_in_legacy_history_without_registering_them() -> None:
     assert redact_conversation_links(
         "旧消息 https://data.example.test/a.csv?secret=value"
     ) == "旧消息 [远程CSV来源:data.example.test]"
+
+
+@pytest.mark.parametrize("suffix", ["的数据", "/的数据"])
+def test_model_can_select_csv_boundary_before_chinese_prose(suffix: str) -> None:
+    message = f"请同步 https://data.example.test/roster.csv{suffix}"
+
+    candidates = conversation_link_candidates(message)
+    csv_candidate = next(
+        candidate
+        for candidate in candidates
+        if message[candidate.start : candidate.end].endswith(".csv")
+    )
+    extracted = extract_conversation_link(
+        message,
+        start=csv_candidate.start,
+        end=csv_candidate.end,
+    )
+
+    assert extracted is not None
+    assert extracted.original_url == "https://data.example.test/roster.csv"
+    assert extracted.redacted_message == (
+        f"请同步 [远程CSV来源:data.example.test]{suffix}"
+    )
+
+
+def test_model_candidates_do_not_expose_signed_query_values() -> None:
+    message = (
+        "请同步 https://data.example.test/roster.csv?"
+        "X-Amz-Credential=secret-value&X-Amz-Signature=private-signature"
+    )
+
+    candidates = conversation_link_candidates(message)
+
+    assert len(candidates) == 1
+    assert "secret-value" not in candidates[0].display_url
+    assert "private-signature" not in candidates[0].display_url
+    assert "<redacted>" in candidates[0].display_url

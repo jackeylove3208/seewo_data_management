@@ -63,15 +63,6 @@ PROTECTED_FIELDS = frozenset(
         "parent_source_id",
     }
 )
-LOCAL_SIMILARITY_FIELDS: dict[EntityType, tuple[str, ...]] = {
-    EntityType.ORGANIZATION_UNIT: ("display_name", "organization_path"),
-    EntityType.CLASS: ("display_name", "grade", "school_year", "class_number"),
-    EntityType.TEACHER: ("display_name", "employee_number", "phone", "email"),
-    EntityType.STUDENT: ("display_name", "student_number", "phone", "email"),
-    EntityType.MEMBERSHIP: ("member_source_id", "container_source_id", "role"),
-}
-
-
 @dataclass(frozen=True)
 class CandidateEdge:
     focal_entity_id: UUID
@@ -393,22 +384,6 @@ def representation(
             value = _protected_value(token_field, value, record.entity_type, tokenization_context)
         values.append(f"{field}={value}")
     return " | ".join(values)
-
-
-def local_similarity_features(
-    source: NormalizedRecord,
-    target: NormalizedRecord,
-) -> dict[str, float]:
-    if source.entity_type is not target.entity_type:
-        return {}
-    return {
-        field: float(
-            bool(source.values.get(field)) and source.values.get(field) == target.values.get(field)
-        )
-        for field in LOCAL_SIMILARITY_FIELDS[source.entity_type]
-        if source.values.get(field) is not None or target.values.get(field) is not None
-    }
-
 
 def _protected_value(
     field: str,

@@ -1,7 +1,7 @@
 from uuid import uuid4
 
 from app.ai.tokenization import TaskTokenizationContext
-from app.matching.vector_index import local_similarity_features, representation
+from app.matching.vector_index import representation
 from app.schemas.canonical_entities import EntityType
 from app.schemas.matching import NormalizedRecord
 
@@ -50,15 +50,3 @@ def test_person_representation_tokenizes_protected_fields_and_allows_only_govern
     assert "EMAIL_" in text
     assert "EXTERNAL_ID_" in text
     assert "高一1班" in text
-
-
-def test_local_similarity_uses_raw_values_without_including_them_in_diagnostics() -> None:
-    source = _student("source-1", name="张三", phone="13800000000", email="a@test.cn")
-    target = _student("target-9", name="张三", phone="13800000000", email="b@test.cn")
-
-    features = local_similarity_features(source, target)
-
-    assert features == {"display_name": 1.0, "phone": 1.0, "email": 0.0}
-    diagnostics = repr(features)
-    assert "张三" not in diagnostics
-    assert "13800000000" not in diagnostics

@@ -52,17 +52,29 @@ class AgentBatchPlanner:
         self._session = session
         self._repository = AgentAnalysisRepository(session)
 
-    async def create_for_run(self, *, run_id: UUID) -> tuple[AgentModelBatchRecord, ...]:
+    async def create_for_run(
+        self,
+        *,
+        run_id: UUID,
+        work_item_ids: tuple[UUID, ...] | None = None,
+    ) -> tuple[AgentModelBatchRecord, ...]:
         run = await self._session.get(AgentRunRecord, run_id)
         if run is None:
             raise LookupError(f"agent run not found: {run_id}")
+        if work_item_ids is not None and not work_item_ids:
+            return ()
+        filters = [
+            AgentWorkItemRecord.run_id == run_id,
+            AgentWorkItemRecord.kind.not_in(
+                ("correct", "resolved", "identity_conflict")
+            ),
+        ]
+        if work_item_ids is not None:
+            filters.append(AgentWorkItemRecord.id.in_(work_item_ids))
         work_items = tuple(
             await self._session.scalars(
                 select(AgentWorkItemRecord)
-                .where(
-                    AgentWorkItemRecord.run_id == run_id,
-                    AgentWorkItemRecord.kind.not_in(("correct", "resolved")),
-                )
+                .where(*filters)
                 .order_by(AgentWorkItemRecord.entity_kind, AgentWorkItemRecord.id)
             )
         )

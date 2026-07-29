@@ -13,7 +13,7 @@ export interface ExecutionSummary {
   output_target_version_id: string | null;
 }
 
-export interface ExecutionOperation {
+interface ExecutionOperation {
   record_id: string;
   operation_id: string;
   proposal_id: string;

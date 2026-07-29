@@ -1,6 +1,6 @@
 import type { AgentPhase, AgentTaskEvent } from "../../api/agent";
 
-export type AgentEventTone = "info" | "success" | "warning" | "danger";
+type AgentEventTone = "info" | "success" | "warning" | "danger";
 
 export interface PresentedAgentEvent {
   title: string;
