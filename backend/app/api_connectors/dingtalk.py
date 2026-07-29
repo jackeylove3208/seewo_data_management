@@ -12,12 +12,20 @@ from app.api_connectors.contracts import (
     ProviderManifest,
 )
 from app.api_connectors.provider_runtime import (
+    append_unique_record,
+    configured_field,
     configured_person_kinds,
+    department_memberships,
+    non_negative_int,
     person_kind,
+    positive_int,
     project_record,
     projected_fields,
+    record_dict,
     request_json,
     require_supported_selection,
+    required_string,
+    summarize_connection_test,
 )
 from app.schemas.agent_ingestion import AgentContractRecord, AgentEntityKind
 
@@ -51,31 +59,9 @@ class DingtalkOrganizationAdapter:
     ) -> ConnectionTestResult:
         person_kinds = configured_person_kinds(public_configuration)
         selected = frozenset({AgentEntityKind.DEPARTMENT, *person_kinds})
-        counts = {entity.value: 0 for entity in AgentEntityKind}
-        async for page in self.capture(public_configuration, secret, selected):
-            for record in page.records:
-                counts[record.entity_kind.value] += 1
-        record_count = sum(counts.values())
-        capabilities = _capabilities(person_kinds)
-        if record_count == 0:
-            return ConnectionTestResult(
-                eligible=False,
-                capabilities=capabilities,
-                visibility_summary={
-                    "visible": False,
-                    "record_count": 0,
-                    **{f"{kind}_count": count for kind, count in counts.items()},
-                },
-                safe_error_code="connector_visibility_empty",
-            )
-        return ConnectionTestResult(
-            eligible=True,
-            capabilities=capabilities,
-            visibility_summary={
-                "visible": True,
-                "record_count": record_count,
-                **{f"{kind}_count": count for kind, count in counts.items()},
-            },
+        return await summarize_connection_test(
+            self.capture(public_configuration, secret, selected),
+            person_kinds=person_kinds,
         )
 
     async def capture(
@@ -86,13 +72,15 @@ class DingtalkOrganizationAdapter:
     ) -> AsyncIterator[CapturedApiPage]:
         require_supported_selection(public_configuration, selected_entities)
         token = await self._access_token(secret)
-        root_department_id = _root_department_id(public_configuration)
-        number_field = _configured_field(
+        root_department_id = positive_int(
+            public_configuration.get("root_department_id", 1)
+        )
+        number_field = configured_field(
             public_configuration,
             "number_field",
             default="job_number",
         )
-        class_name_field = _configured_field(
+        class_name_field = configured_field(
             public_configuration,
             "class_name_field",
             default=None,
@@ -131,7 +119,7 @@ class DingtalkOrganizationAdapter:
             department_ids.append(department_id)
             if AgentEntityKind.DEPARTMENT in selected_entities:
                 record = _department_record(department_id, department)
-                _append_unique(records, unique_records, record)
+                append_unique_record(records, unique_records, record)
             children_payload = await top(
                 "/topapi/v2/department/listsub",
                 {"dept_id": department_id},
@@ -145,8 +133,8 @@ class DingtalkOrganizationAdapter:
             if not isinstance(children, list):
                 raise ApiProviderError("connector_invalid_response")
             for child in children:
-                child_record = _record_dict(child)
-                child_id = _positive_int(child_record.get("dept_id"))
+                child_record = record_dict(child)
+                child_id = positive_int(child_record.get("dept_id"))
                 if child_id not in visited_departments:
                     queued.append(child_id)
 
@@ -169,15 +157,15 @@ class DingtalkOrganizationAdapter:
                 if not isinstance(raw_users, list):
                     raise ApiProviderError("connector_invalid_response")
                 for item in raw_users:
-                    raw = _record_dict(item)
-                    external_id = _required_string(raw.get("userid"))
-                    department_memberships = _department_memberships(
+                    raw = record_dict(item)
+                    external_id = required_string(raw.get("userid"))
+                    memberships = department_memberships(
                         raw.get("dept_id_list"),
                         fallback=department_id,
                     )
                     entity_kind = person_kind(
                         public_configuration,
-                        tuple(str(value) for value in department_memberships),
+                        tuple(str(value) for value in memberships),
                     )
                     if entity_kind not in selected_entities:
                         continue
@@ -194,13 +182,13 @@ class DingtalkOrganizationAdapter:
                         projected_fields=projected,
                         unavailable_fields=unavailable,
                     )
-                    _append_unique(records, unique_records, record)
+                    append_unique_record(records, unique_records, record)
                 has_more = result.get("has_more", False)
                 if not isinstance(has_more, bool):
                     raise ApiProviderError("connector_invalid_response")
                 if not has_more:
                     break
-                next_cursor = _non_negative_int(result.get("next_cursor"))
+                next_cursor = non_negative_int(result.get("next_cursor"))
                 if next_cursor == cursor or next_cursor in seen_cursors:
                     raise ApiProviderError("connector_pagination_incomplete")
                 cursor = next_cursor
@@ -294,91 +282,3 @@ def _department_record(
         projected_fields=projected,
         unavailable_fields=unavailable,
     )
-
-
-def _append_unique(
-    records: list[FrozenApiRecord],
-    unique_records: dict[tuple[AgentEntityKind, str], FrozenApiRecord],
-    record: FrozenApiRecord,
-) -> None:
-    key = (record.entity_kind, record.external_id)
-    existing = unique_records.get(key)
-    if existing is None:
-        unique_records[key] = record
-        records.append(record)
-        return
-    if existing != record:
-        raise ApiProviderError("connector_duplicate_external_id")
-
-
-def _root_department_id(public_configuration: Mapping[str, object]) -> int:
-    return _positive_int(public_configuration.get("root_department_id", 1))
-
-
-def _configured_field(
-    public_configuration: Mapping[str, object],
-    name: str,
-    *,
-    default: str | None,
-) -> str | None:
-    value = public_configuration.get(name, default)
-    if value is None:
-        return None
-    if (
-        not isinstance(value, str)
-        or not value
-        or len(value) > 128
-        or not value.replace("_", "").isalnum()
-    ):
-        raise ApiProviderError("connector_configuration_invalid")
-    return value
-
-
-def _department_memberships(value: object, *, fallback: int) -> tuple[int, ...]:
-    if value is None:
-        return (fallback,)
-    if not isinstance(value, list):
-        raise ApiProviderError("connector_invalid_response")
-    return tuple(_positive_int(item) for item in value) or (fallback,)
-
-
-def _record_dict(value: object) -> dict[str, object]:
-    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
-        raise ApiProviderError("connector_invalid_response")
-    return dict(value)
-
-
-def _required_string(value: object) -> str:
-    if not isinstance(value, str) or not value:
-        raise ApiProviderError("connector_invalid_response")
-    return value
-
-
-def _positive_int(value: object) -> int:
-    result = _non_negative_int(value)
-    if result <= 0:
-        raise ApiProviderError("connector_invalid_response")
-    return result
-
-
-def _non_negative_int(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, str)):
-        raise ApiProviderError("connector_invalid_response")
-    try:
-        result = int(value)
-    except ValueError as error:
-        raise ApiProviderError("connector_invalid_response") from error
-    if result < 0:
-        raise ApiProviderError("connector_invalid_response")
-    return result
-
-
-def _capabilities(
-    person_kinds: frozenset[AgentEntityKind],
-) -> dict[str, bool]:
-    return {
-        "organization.read": True,
-        "entity.department.read": True,
-        "entity.student.read": AgentEntityKind.STUDENT in person_kinds,
-        "entity.teacher.read": AgentEntityKind.TEACHER in person_kinds,
-    }

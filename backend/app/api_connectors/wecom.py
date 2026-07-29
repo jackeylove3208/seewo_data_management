@@ -12,12 +12,19 @@ from app.api_connectors.contracts import (
     ProviderManifest,
 )
 from app.api_connectors.provider_runtime import (
+    append_unique_record,
+    configured_field,
     configured_person_kinds,
+    department_memberships,
     person_kind,
+    positive_int,
     project_record,
     projected_fields,
+    record_dict,
     request_json,
     require_supported_selection,
+    required_string,
+    summarize_connection_test,
 )
 from app.schemas.agent_ingestion import AgentContractRecord, AgentEntityKind
 
@@ -50,31 +57,9 @@ class WeComOrganizationAdapter:
     ) -> ConnectionTestResult:
         person_kinds = configured_person_kinds(public_configuration)
         selected = frozenset({AgentEntityKind.DEPARTMENT, *person_kinds})
-        counts = {entity.value: 0 for entity in AgentEntityKind}
-        async for page in self.capture(public_configuration, secret, selected):
-            for record in page.records:
-                counts[record.entity_kind.value] += 1
-        record_count = sum(counts.values())
-        capabilities = _capabilities(person_kinds)
-        if record_count == 0:
-            return ConnectionTestResult(
-                eligible=False,
-                capabilities=capabilities,
-                visibility_summary={
-                    "visible": False,
-                    "record_count": 0,
-                    **{f"{kind}_count": count for kind, count in counts.items()},
-                },
-                safe_error_code="connector_visibility_empty",
-            )
-        return ConnectionTestResult(
-            eligible=True,
-            capabilities=capabilities,
-            visibility_summary={
-                "visible": True,
-                "record_count": record_count,
-                **{f"{kind}_count": count for kind, count in counts.items()},
-            },
+        return await summarize_connection_test(
+            self.capture(public_configuration, secret, selected),
+            person_kinds=person_kinds,
         )
 
     async def capture(
@@ -85,17 +70,17 @@ class WeComOrganizationAdapter:
     ) -> AsyncIterator[CapturedApiPage]:
         require_supported_selection(public_configuration, selected_entities)
         token = await self._access_token(secret)
-        number_field = _configured_field(
+        number_field = configured_field(
             public_configuration,
             "number_field",
             default=None,
         )
-        class_name_field = _configured_field(
+        class_name_field = configured_field(
             public_configuration,
             "class_name_field",
             default=None,
         )
-        root_department_id = _positive_int(
+        root_department_id = positive_int(
             public_configuration.get("root_department_id", 1)
         )
         request_count = 0
@@ -126,8 +111,8 @@ class WeComOrganizationAdapter:
         unique_records: dict[tuple[AgentEntityKind, str], FrozenApiRecord] = {}
         department_ids: list[int] = []
         for item in raw_departments:
-            raw = _record_dict(item)
-            department_id = _positive_int(raw.get("id"))
+            raw = record_dict(item)
+            department_id = positive_int(raw.get("id"))
             department_ids.append(department_id)
             if AgentEntityKind.DEPARTMENT in selected_entities:
                 projected, unavailable = projected_fields(
@@ -136,7 +121,7 @@ class WeComOrganizationAdapter:
                     number_field=None,
                     class_name_field=None,
                 )
-                _append_unique(
+                append_unique_record(
                     records,
                     unique_records,
                     FrozenApiRecord(
@@ -157,9 +142,9 @@ class WeComOrganizationAdapter:
             if not isinstance(raw_users, list):
                 raise ApiProviderError("connector_invalid_response")
             for item in raw_users:
-                raw = _record_dict(item)
-                external_id = _required_string(raw.get("userid"))
-                memberships = _department_memberships(
+                raw = record_dict(item)
+                external_id = required_string(raw.get("userid"))
+                memberships = department_memberships(
                     raw.get("department"),
                     fallback=department_id,
                 )
@@ -175,7 +160,7 @@ class WeComOrganizationAdapter:
                     number_field=number_field,
                     class_name_field=class_name_field,
                 )
-                _append_unique(
+                append_unique_record(
                     records,
                     unique_records,
                     FrozenApiRecord(
@@ -250,80 +235,3 @@ def _wecom_error_code(value: object, *, authentication: bool) -> str:
     if code in {"45009"}:
         return "connector_rate_limited"
     return "connector_provider_rejected"
-
-
-def _append_unique(
-    records: list[FrozenApiRecord],
-    unique_records: dict[tuple[AgentEntityKind, str], FrozenApiRecord],
-    record: FrozenApiRecord,
-) -> None:
-    key = (record.entity_kind, record.external_id)
-    existing = unique_records.get(key)
-    if existing is None:
-        unique_records[key] = record
-        records.append(record)
-        return
-    if existing != record:
-        raise ApiProviderError("connector_duplicate_external_id")
-
-
-def _configured_field(
-    public_configuration: Mapping[str, object],
-    name: str,
-    *,
-    default: str | None,
-) -> str | None:
-    value = public_configuration.get(name, default)
-    if value is None:
-        return None
-    if (
-        not isinstance(value, str)
-        or not value
-        or len(value) > 128
-        or not value.replace("_", "").isalnum()
-    ):
-        raise ApiProviderError("connector_configuration_invalid")
-    return value
-
-
-def _department_memberships(value: object, *, fallback: int) -> tuple[int, ...]:
-    if value is None:
-        return (fallback,)
-    if not isinstance(value, list):
-        raise ApiProviderError("connector_invalid_response")
-    return tuple(_positive_int(item) for item in value) or (fallback,)
-
-
-def _record_dict(value: object) -> dict[str, object]:
-    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
-        raise ApiProviderError("connector_invalid_response")
-    return dict(value)
-
-
-def _required_string(value: object) -> str:
-    if not isinstance(value, str) or not value:
-        raise ApiProviderError("connector_invalid_response")
-    return value
-
-
-def _positive_int(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, str)):
-        raise ApiProviderError("connector_invalid_response")
-    try:
-        result = int(value)
-    except ValueError as error:
-        raise ApiProviderError("connector_invalid_response") from error
-    if result <= 0:
-        raise ApiProviderError("connector_invalid_response")
-    return result
-
-
-def _capabilities(
-    person_kinds: frozenset[AgentEntityKind],
-) -> dict[str, bool]:
-    return {
-        "organization.read": True,
-        "entity.department.read": True,
-        "entity.student.read": AgentEntityKind.STUDENT in person_kinds,
-        "entity.teacher.read": AgentEntityKind.TEACHER in person_kinds,
-    }

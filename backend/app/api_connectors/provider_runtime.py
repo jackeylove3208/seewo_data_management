@@ -1,5 +1,5 @@
 import json
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from typing import Any
 from urllib.parse import quote, urlsplit
 
@@ -8,6 +8,8 @@ import httpx
 from app.api_connectors.contracts import (
     AgentProjectionContext,
     ApiProviderError,
+    CapturedApiPage,
+    ConnectionTestResult,
     FrozenApiRecord,
     ProviderManifest,
 )
@@ -121,6 +123,112 @@ def require_supported_selection(
     }
     if not selected_entities or not selected_entities <= supported:
         raise ApiProviderError("connector_entity_unsupported")
+
+
+def append_unique_record(
+    records: list[FrozenApiRecord],
+    unique_records: dict[tuple[AgentEntityKind, str], FrozenApiRecord],
+    record: FrozenApiRecord,
+) -> None:
+    key = (record.entity_kind, record.external_id)
+    existing = unique_records.get(key)
+    if existing is None:
+        unique_records[key] = record
+        records.append(record)
+    elif existing != record:
+        raise ApiProviderError("connector_duplicate_external_id")
+
+
+def configured_field(
+    public_configuration: Mapping[str, object],
+    name: str,
+    *,
+    default: str | None,
+) -> str | None:
+    value = public_configuration.get(name, default)
+    if value is None:
+        return None
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 128
+        or not value.replace("_", "").isalnum()
+    ):
+        raise ApiProviderError("connector_configuration_invalid")
+    return value
+
+
+def department_memberships(value: object, *, fallback: int) -> tuple[int, ...]:
+    if value is None:
+        return (fallback,)
+    if not isinstance(value, list):
+        raise ApiProviderError("connector_invalid_response")
+    return tuple(positive_int(item) for item in value) or (fallback,)
+
+
+def record_dict(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+        raise ApiProviderError("connector_invalid_response")
+    return dict(value)
+
+
+def required_string(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        raise ApiProviderError("connector_invalid_response")
+    return value
+
+
+def positive_int(value: object) -> int:
+    result = non_negative_int(value)
+    if result <= 0:
+        raise ApiProviderError("connector_invalid_response")
+    return result
+
+
+def non_negative_int(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ApiProviderError("connector_invalid_response")
+    try:
+        result = int(value)
+    except ValueError as error:
+        raise ApiProviderError("connector_invalid_response") from error
+    if result < 0:
+        raise ApiProviderError("connector_invalid_response")
+    return result
+
+
+def capability_summary(
+    person_kinds: frozenset[AgentEntityKind],
+) -> dict[str, bool]:
+    return {
+        "organization.read": True,
+        "entity.department.read": True,
+        "entity.student.read": AgentEntityKind.STUDENT in person_kinds,
+        "entity.teacher.read": AgentEntityKind.TEACHER in person_kinds,
+    }
+
+
+async def summarize_connection_test(
+    pages: AsyncIterator[CapturedApiPage],
+    *,
+    person_kinds: frozenset[AgentEntityKind],
+) -> ConnectionTestResult:
+    counts = {entity.value: 0 for entity in AgentEntityKind}
+    async for page in pages:
+        for record in page.records:
+            counts[record.entity_kind.value] += 1
+    record_count = sum(counts.values())
+    visible = record_count > 0
+    return ConnectionTestResult(
+        eligible=visible,
+        capabilities=capability_summary(person_kinds),
+        visibility_summary={
+            "visible": visible,
+            "record_count": record_count,
+            **{f"{kind}_count": count for kind, count in counts.items()},
+        },
+        safe_error_code=None if visible else "connector_visibility_empty",
+    )
 
 
 def project_record(
