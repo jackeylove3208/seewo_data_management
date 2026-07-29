@@ -1,9 +1,9 @@
 ## 1. Versioned ingestion foundation
 
-- [ ] 1.1 Add source-ingestion-v3 configuration and freeze it only for newly created API tasks
-- [ ] 1.2 Introduce immutable authoritative and target role-binding contracts with role-specific checkpoint keys
+- [x] 1.1 Add source-ingestion-v3 configuration and freeze it only for newly created API tasks
+- [x] 1.2 Introduce immutable authoritative and target role-binding contracts with role-specific checkpoint keys
 - [ ] 1.3 Replace pair-mode routing with role-binding routing for ingestion-v3 candidates and executors
-- [ ] 1.4 Add regression tests proving v1/v2 runs resume without entering v3 routing
+- [x] 1.4 Add regression tests proving v1/v2 runs resume without entering v3 routing
 
 ## 2. API connection control plane
 

@@ -100,6 +100,98 @@ async def test_remote_task_starts_at_the_versioned_materialization_node(session)
 
 
 @pytest.mark.asyncio
+async def test_api_task_freezes_ingestion_v3_and_starts_at_materialization(session) -> None:
+    conversation = await AgentRuntimeRepository(session).create_conversation(
+        tenant_id="school-1",
+        created_by="operator-1",
+    )
+    task = ReconciliationTask(
+        tenant_id="school-1",
+        scope_id="all",
+        snapshot_mode="full",
+        entity_types=["teacher"],
+        workflow_version="agent-graph-v1",
+        agent_intent={
+            "source": {
+                "kind": "api",
+                "configuration_id": "ding-school",
+            },
+            "target": {
+                "kind": "database",
+                "configuration_id": "seewo-mysql",
+            },
+        },
+        idempotency_key="api-supervisor-v3",
+        request_hash="api-supervisor-v3",
+    )
+    session.add(task)
+    await session.flush()
+
+    run = await AgentSupervisorService(
+        session,
+        operator=OperatorContext(operator_id="operator-1", tenant_id="school-1"),
+        settings=Settings(
+            new_agent_enabled=True,
+            agent_graph_enabled=True,
+            source_ingestion_v2_enabled=True,
+            source_ingestion_v3_enabled=True,
+        ),
+    ).start(task_id=task.id, conversation_id=conversation.id)
+    graph = await AgentGraphRepository(session).get_run_state_for_agent_run(run.id)
+
+    assert run.ingestion_contract_version == "source-ingestion-v3"
+    assert run.execution_contract_version == "deterministic-execution-v2"
+    assert graph is not None
+    assert graph.graph_version == "agent-sync-graph-v2"
+    assert graph.current_node == "materialize_sources"
+    assert graph.cursor == 2
+
+
+@pytest.mark.asyncio
+async def test_existing_api_run_is_not_upgraded_when_ingestion_v3_is_enabled(session) -> None:
+    task = ReconciliationTask(
+        tenant_id="school-1",
+        scope_id="all",
+        snapshot_mode="full",
+        entity_types=["teacher"],
+        workflow_version="agent-graph-v1",
+        agent_intent={
+            "source": {"kind": "api", "configuration_id": "ding-school"},
+            "target": {"kind": "database", "configuration_id": "seewo-mysql"},
+        },
+        idempotency_key="api-supervisor-frozen-v2",
+        request_hash="api-supervisor-frozen-v2",
+    )
+    session.add(task)
+    await session.flush()
+    operator = OperatorContext(operator_id="operator-1", tenant_id="school-1")
+
+    original = await AgentSupervisorService(
+        session,
+        operator=operator,
+        settings=Settings(
+            new_agent_enabled=True,
+            agent_graph_enabled=True,
+            source_ingestion_v2_enabled=True,
+            source_ingestion_v3_enabled=False,
+        ),
+    ).start(task_id=task.id, conversation_id=None)
+    replay = await AgentSupervisorService(
+        session,
+        operator=operator,
+        settings=Settings(
+            new_agent_enabled=True,
+            agent_graph_enabled=True,
+            source_ingestion_v2_enabled=True,
+            source_ingestion_v3_enabled=True,
+        ),
+    ).start(task_id=task.id, conversation_id=None)
+
+    assert replay.id == original.id
+    assert replay.ingestion_contract_version == "source-ingestion-v2"
+
+
+@pytest.mark.asyncio
 async def test_model_exhaustion_blocks_run_without_releasing_school_lock(session) -> None:
     task = await create_agent_task(session, tenant_id="school-1", key="supervisor-2")
     service = supervisor(session)

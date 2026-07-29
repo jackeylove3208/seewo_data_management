@@ -108,6 +108,7 @@ class Settings(BaseSettings):
     agent_graph_enabled: bool = False
     agent_graph_csv_execution_enabled: bool = False
     source_ingestion_v2_enabled: bool = False
+    source_ingestion_v3_enabled: bool = False
     agent_graph_sql_execution_enabled: bool = False
     new_agent_analysis_only: bool = True
     new_agent_csv_execution_enabled: bool = False
