@@ -380,33 +380,33 @@ select {
   font-size: 13px;
 }
 
-.start-confirmation-details {
+.apple-page .start-confirmation .start-confirmation-details {
   display: grid;
   gap: 8px;
   margin: 2px 0 4px;
 }
 
-.start-confirmation-details > div {
+.apple-page .start-confirmation .start-confirmation-details > div {
   display: grid;
   grid-template-columns: 88px minmax(0, 1fr);
   align-items: baseline;
   gap: 12px;
 }
 
-.start-confirmation-details dt,
-.start-confirmation-details dd {
+.apple-page .start-confirmation .start-confirmation-details dt,
+.apple-page .start-confirmation .start-confirmation-details dd {
   min-width: 0;
   margin: 0;
   font-size: inherit;
   line-height: 1.5;
 }
 
-.start-confirmation-details dt {
+.apple-page .start-confirmation .start-confirmation-details dt {
   color: var(--codex-ink-soft);
   font-weight: 600;
 }
 
-.start-confirmation-details dd {
+.apple-page .start-confirmation .start-confirmation-details dd {
   color: var(--codex-ink);
   overflow-wrap: anywhere;
 }

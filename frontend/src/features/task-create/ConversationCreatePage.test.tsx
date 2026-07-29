@@ -2,7 +2,11 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AgentConversationApi, AgentGraphProgress } from "../../api/agent";
+import type {
+  AgentConnectorSelection,
+  AgentConversationApi,
+  AgentGraphProgress,
+} from "../../api/agent";
 import { ApiError } from "../../api/client";
 import { TASK_HISTORY_UPDATED_EVENT } from "../../data/taskHistory";
 import { ConversationCreatePage } from "./ConversationCreatePage";
@@ -251,6 +255,9 @@ describe("backend Agent conversation", () => {
     expect(within(confirmationCard).getByText("teacher-roster.csv")).toBeInTheDocument();
     expect(within(confirmationCard).getByText("同步数据")).toBeInTheDocument();
     expect(within(confirmationCard).getByText("教师")).toBeInTheDocument();
+    expect(confirmationCard.querySelectorAll(".start-confirmation-details > div")).toHaveLength(2);
+    expect(confirmationCard.querySelectorAll("dt")).toHaveLength(2);
+    expect(confirmationCard.querySelectorAll("dd")).toHaveLength(2);
     expect(
       within(confirmationCard).queryByText("将同步三方系统与希沃魔方的教师数据"),
     ).not.toBeInTheDocument();
@@ -328,6 +335,61 @@ describe("backend Agent conversation", () => {
       }),
       expect.any(String),
     );
+  });
+
+  it.each([
+    {
+      name: "database configuration",
+      source: { kind: "database", configuration_id: "school-mysql-prod" },
+      expectedLabel: "school-mysql-prod",
+    },
+    {
+      name: "API configuration",
+      source: { kind: "api", configuration_id: "school-api-prod" },
+      expectedLabel: "school-api-prod",
+    },
+    {
+      name: "missing source details",
+      source: undefined,
+      expectedLabel: "已选择的第三方数据",
+    },
+  ] satisfies Array<{
+    name: string;
+    source: AgentConnectorSelection | undefined;
+    expectedLabel: string;
+  }>)("uses the safe third-party label for $name", async ({ source, expectedLabel }) => {
+    const backend = api({
+      sendMessage: vi.fn().mockResolvedValue({
+        accepted_message: "同步全校教师",
+        message: "已整理好全校教师同步需求。",
+        intent: {
+          title: "全校教师同步",
+          entity_types: ["teacher"],
+          source,
+          target: {
+            kind: "local",
+            source_ref: "seewo/teacher-roster.csv",
+          },
+        },
+        start_confirmation: {
+          title: "全校教师同步",
+          summary: "将同步三方系统与希沃魔方的教师数据",
+          entity_types: ["teacher"],
+        },
+      }),
+    });
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    await waitForComposer();
+    await user.type(screen.getByLabelText("对账目标"), "同步全校教师");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    const confirmationCard = await screen.findByLabelText("开始确认");
+    expect(within(confirmationCard).getByText(expectedLabel)).toBeInTheDocument();
+    expect(confirmationCard.querySelectorAll(".start-confirmation-details > div")).toHaveLength(2);
+    expect(confirmationCard.querySelectorAll("dt")).toHaveLength(2);
+    expect(confirmationCard.querySelectorAll("dd")).toHaveLength(2);
   });
 
   it("does not echo a rejected link before the backend accepts it", async () => {

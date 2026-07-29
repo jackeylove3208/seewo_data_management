@@ -144,10 +144,16 @@ describe("responsive analysis styles", () => {
       /\.apple-page \.conversation-message\.user\s*\{[^}]*border-color:\s*var\(--codex-border\)[^}]*background:\s*var\(--codex-panel-muted\)/s,
     );
     expect(appleCss).toMatch(
+      /\.apple-page \.conversation-message\.user \.message-avatar\s*\{[^}]*color:\s*#4f5358[^}]*background:\s*#e2e4e7/s,
+    );
+    expect(appleCss).toMatch(
+      /body,\s*button,\s*input,\s*textarea,\s*select\s*\{[^}]*font-family:\s*var\(--codex-font\)/s,
+    );
+    expect(appleCss).toMatch(
       /\.apple-page \.start-confirmation\s*\{[^}]*font-size:\s*13px/s,
     );
     expect(appleCss).toMatch(
-      /\.start-confirmation-details\s*\{[^}]*display:\s*grid/s,
+      /\.apple-page \.start-confirmation \.start-confirmation-details\s*\{[^}]*display:\s*grid/s,
     );
   });
 
