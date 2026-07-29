@@ -117,11 +117,15 @@ async def get_reconciliation_task(
 )
 async def delete_reconciliation_task(
     task_id: UUID,
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
     operator: Annotated[OperatorContext, Depends(get_operator_context)],
 ) -> None:
     try:
-        await TaskDeletionService(session).delete(task_id, operator.tenant_id)
+        await TaskDeletionService(
+            session,
+            request.app.state.settings.upload_root / "remote",
+        ).delete(task_id, operator.tenant_id)
     except TaskDeletionNotFound as error:
         raise HTTPException(404, detail=str(error)) from error
     except TaskDeletionBlocked as error:

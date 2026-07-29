@@ -294,7 +294,10 @@ def test_postgresql_agent_deletion_removes_pre_execution_target_version(
                 version_id = version.id
 
             async with database.session_factory() as session:
-                await TaskDeletionService(session).delete(task_id, "school-1")
+                await TaskDeletionService(
+                    session,
+                    Path("storage/uploads/remote"),
+                ).delete(task_id, "school-1")
 
             async with database.session_factory() as session:
                 assert await session.get(ReconciliationTask, task_id) is None
@@ -787,7 +790,10 @@ def test_task_deletion_service_uses_scoped_guard_on_migrated_sqlite(
                 survivor_capability_id = survivor_capability.id
 
             async with database.session_factory() as session:
-                await TaskDeletionService(session).delete(removable_id, "school-1")
+                await TaskDeletionService(
+                    session,
+                    Path("storage/uploads/remote"),
+                ).delete(removable_id, "school-1")
 
             async with database.session_factory() as session:
                 assert await session.get(ReconciliationTask, removable_id) is None

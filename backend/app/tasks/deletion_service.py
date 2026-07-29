@@ -1,7 +1,8 @@
 import logging
+from pathlib import Path as FileSystemPath
 from uuid import UUID
 
-from anyio import Path
+from anyio import Path as AsyncPath
 from sqlalchemy import delete, exists, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -51,6 +52,7 @@ from app.models.rematching import (
     EntityRematchJobRecord,
     EntityRematchWorkItemRecord,
 )
+from app.models.remote_sources import RemoteSourceRecord
 from app.models.reporting import AgentReportRecord
 from app.models.snapshots import (
     CanonicalEntityRecord,
@@ -73,8 +75,13 @@ class TaskDeletionBlocked(ValueError):
 
 
 class TaskDeletionService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        remote_upload_root: FileSystemPath,
+    ) -> None:
         self.session = session
+        self.remote_upload_root = remote_upload_root
 
     async def delete(self, task_id: UUID, tenant_id: str) -> None:
         task = await self.session.scalar(
@@ -178,6 +185,11 @@ class TaskDeletionService:
             )
         ).all()
         source_file_ids = [row.id for row in file_rows]
+        remote_source_ids = list(
+            await self.session.scalars(
+                select(RemoteSourceRecord.id).where(RemoteSourceRecord.task_id == task_id)
+            )
+        )
         entity_ids = list(
             (
                 await self.session.scalars(
@@ -311,6 +323,9 @@ class TaskDeletionService:
         await self.session.execute(
             delete(WorkflowStageRun).where(WorkflowStageRun.task_id == task_id)
         )
+        await self.session.execute(
+            delete(RemoteSourceRecord).where(RemoteSourceRecord.id.in_(remote_source_ids))
+        )
         await self.session.execute(delete(SourceFile).where(SourceFile.id.in_(source_file_ids)))
         await self.session.execute(
             delete(ReconciliationTask).where(ReconciliationTask.id == task_id)
@@ -323,9 +338,28 @@ class TaskDeletionService:
         quarantine_paths = [row.quarantine_path for row in snapshot_rows if row.quarantine_path]
         for path in [*stored_paths, *quarantine_paths]:
             try:
-                await Path(path).unlink(missing_ok=True)
+                await AsyncPath(path).unlink(missing_ok=True)
             except OSError:
                 logger.exception("failed to remove stored task file", extra={"path": path})
+        await self._remove_remote_artifacts(remote_source_ids)
+
+    async def _remove_remote_artifacts(self, remote_source_ids: list[UUID]) -> None:
+        remote_root = self.remote_upload_root.resolve()
+        for remote_source_id in remote_source_ids:
+            for pattern in (
+                f"{remote_source_id.hex}-*.csv",
+                f".{remote_source_id.hex}-*.part",
+            ):
+                for path in remote_root.glob(pattern):
+                    try:
+                        if not path.resolve().is_relative_to(remote_root):
+                            continue
+                        await AsyncPath(path).unlink(missing_ok=True)
+                    except OSError:
+                        logger.exception(
+                            "failed to remove managed remote source file",
+                            extra={"path": str(path)},
+                        )
 
     async def _enable_agent_analysis_deletion(self, task_id: UUID) -> bool:
         if self.session.bind is None:

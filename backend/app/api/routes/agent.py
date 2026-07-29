@@ -2516,7 +2516,10 @@ async def delete_agent_task(
 ) -> None:
     _require_enabled(request)
     try:
-        await TaskDeletionService(session).delete(task_id, operator.tenant_id)
+        await TaskDeletionService(
+            session,
+            request.app.state.settings.upload_root / "remote",
+        ).delete(task_id, operator.tenant_id)
     except TaskDeletionNotFound as error:
         raise HTTPException(404, detail=_error("agent_task_not_found", str(error))) from error
     except TaskDeletionBlocked as error:

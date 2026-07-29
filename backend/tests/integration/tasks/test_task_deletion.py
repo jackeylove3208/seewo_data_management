@@ -5,6 +5,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 
+from app.agent_runtime.repository import AgentRuntimeRepository
 from app.models.agent_analysis import (
     AgentApprovalGroupRecord,
     AgentClarificationRecord,
@@ -34,6 +35,7 @@ from app.models.reconciliation import ReconciliationTask
 from app.models.rematching import (
     EntityRematchJobRecord,
 )
+from app.models.remote_sources import RemoteSourceRecord
 from app.models.reporting import AgentReportRecord
 from app.models.snapshots import Snapshot, SourceFile
 from app.models.workflow import WorkflowStageRun
@@ -42,6 +44,8 @@ from app.tasks.deletion_service import (
     TaskDeletionNotFound,
     TaskDeletionService,
 )
+
+TEST_REMOTE_UPLOAD_ROOT = Path("storage/uploads/remote")
 
 
 def task(tenant_id: str = "school-1") -> ReconciliationTask:
@@ -56,6 +60,10 @@ def task(tenant_id: str = "school-1") -> ReconciliationTask:
         idempotency_key=str(uuid4()),
         request_hash="a" * 64,
     )
+
+
+def deletion_service(session) -> TaskDeletionService:
+    return TaskDeletionService(session, TEST_REMOTE_UPLOAD_ROOT)
 
 
 def analysis_run(task_id) -> WorkflowStageRun:
@@ -115,7 +123,7 @@ async def test_deletes_analyzed_task_and_owned_records(session, tmp_path: Path) 
     )
     await session.flush()
 
-    await TaskDeletionService(session).delete(removable.id, "school-1")
+    await deletion_service(session).delete(removable.id, "school-1")
 
     assert await session.get(ReconciliationTask, removable.id) is None
     assert await session.get(ReconciliationTask, survivor.id) is not None
@@ -153,7 +161,7 @@ async def test_deleting_task_keeps_referenced_local_source_file(
     )
     await session.flush()
 
-    await TaskDeletionService(session).delete(removable.id, "school-1")
+    await deletion_service(session).delete(removable.id, "school-1")
 
     assert await session.get(ReconciliationTask, removable.id) is None
     assert external_path.exists()
@@ -240,7 +248,7 @@ async def test_deletes_rematching_and_quality_records_with_task(session) -> None
     session.add(quality)
     await session.flush()
 
-    await TaskDeletionService(session).delete(removable.id, "school-1")
+    await deletion_service(session).delete(removable.id, "school-1")
 
     assert await session.get(ReconciliationTask, removable.id) is None
     assert await session.get(EntityRematchJobRecord, job.id) is None
@@ -255,7 +263,7 @@ async def test_deletes_task_without_successful_analysis(session) -> None:
     session.add(pending)
     await session.flush()
 
-    await TaskDeletionService(session).delete(pending.id, "school-1")
+    await deletion_service(session).delete(pending.id, "school-1")
 
     assert await session.get(ReconciliationTask, pending.id) is None
 
@@ -267,7 +275,7 @@ async def test_agent_deletion_service_allows_report_without_verified_mutation(se
     session.add(pending)
     await session.flush()
 
-    await TaskDeletionService(session).delete(pending.id, "school-1")
+    await deletion_service(session).delete(pending.id, "school-1")
     assert await session.get(ReconciliationTask, pending.id) is None
 
 
@@ -557,7 +565,7 @@ async def test_agent_deletion_removes_persisted_analysis_records_before_run(sess
     session.add(operation)
     await session.flush()
 
-    await TaskDeletionService(session).delete(pending.id, "school-1")
+    await deletion_service(session).delete(pending.id, "school-1")
 
     assert await session.get(ReconciliationTask, pending.id) is None
     assert await session.get(AgentRunRecord, run.id) is None
@@ -603,7 +611,7 @@ async def test_agent_deletion_service_protects_verified_mutation(session) -> Non
     await session.flush()
 
     with pytest.raises(TaskDeletionBlocked, match="已验证"):
-        await TaskDeletionService(session).delete(protected.id, "school-1")
+        await deletion_service(session).delete(protected.id, "school-1")
 
     assert await session.get(ReconciliationTask, protected.id) is not None
 
@@ -756,7 +764,7 @@ async def test_agent_deletion_blocks_reportless_actual_target_mutation(session) 
     await session.flush()
 
     with pytest.raises(TaskDeletionBlocked, match="目标变更"):
-        await TaskDeletionService(session).delete(protected.id, "school-1")
+        await deletion_service(session).delete(protected.id, "school-1")
 
     assert await session.get(ReconciliationTask, protected.id) is not None
     assert await session.get(AgentGovernanceOperationRecord, operation.id) is not None
@@ -780,7 +788,7 @@ async def test_agent_deletion_blocks_active_execution_phase(session) -> None:
     await session.flush()
 
     with pytest.raises(TaskDeletionBlocked, match="治理执行中"):
-        await TaskDeletionService(session).delete(protected.id, "school-1")
+        await deletion_service(session).delete(protected.id, "school-1")
 
     assert await session.get(ReconciliationTask, protected.id) is not None
     assert await session.get(AgentRunRecord, run.id) is not None
@@ -908,7 +916,7 @@ async def test_deletes_task_with_unexecuted_governance_proposal(session) -> None
     )
     await session.flush()
 
-    await TaskDeletionService(session).delete(protected.id, "school-1")
+    await deletion_service(session).delete(protected.id, "school-1")
 
     assert await session.get(ReconciliationTask, protected.id) is None
     assert await session.get(GovernanceProposalRecord, proposal.id) is None
@@ -978,7 +986,7 @@ async def test_refuses_task_with_governance_execution_batch(session) -> None:
     await session.flush()
 
     with pytest.raises(TaskDeletionBlocked, match="治理执行记录"):
-        await TaskDeletionService(session).delete(protected.id, "school-1")
+        await deletion_service(session).delete(protected.id, "school-1")
 
     assert await session.get(ReconciliationTask, protected.id) is not None
 
@@ -990,6 +998,130 @@ async def test_missing_and_cross_tenant_tasks_are_not_found(session) -> None:
     await session.flush()
 
     with pytest.raises(TaskDeletionNotFound):
-        await TaskDeletionService(session).delete(uuid4(), "school-1")
+        await deletion_service(session).delete(uuid4(), "school-1")
     with pytest.raises(TaskDeletionNotFound):
-        await TaskDeletionService(session).delete(foreign.id, "school-1")
+        await deletion_service(session).delete(foreign.id, "school-1")
+
+
+@pytest.mark.asyncio
+async def test_deletes_failed_remote_source_task_and_its_managed_artifacts(
+    session,
+    tmp_path: Path,
+) -> None:
+    failed = task()
+    conversation = await AgentRuntimeRepository(session).create_conversation(
+        tenant_id=failed.tenant_id,
+        created_by="operator-1",
+    )
+    session.add(failed)
+    await session.flush()
+    remote = RemoteSourceRecord(
+        tenant_id=failed.tenant_id,
+        created_by="operator-1",
+        conversation_id=conversation.id,
+        task_id=failed.id,
+        original_url="https://data.example.test/failed.csv",
+        display_origin="data.example.test",
+        state="failed",
+        safe_problem_code="remote_source_timeout",
+    )
+    session.add(remote)
+    await session.flush()
+
+    remote_root = tmp_path / "uploads" / "remote"
+    remote_root.mkdir(parents=True)
+    completed = remote_root / f"{remote.id.hex}-stale.csv"
+    partial = remote_root / f".{remote.id.hex}-interrupted.part"
+    unrelated = remote_root / f"{remote.id.hex}0-stale.csv"
+    completed.write_text("id,name\n1,Student\n", encoding="utf-8")
+    partial.write_text("partial", encoding="utf-8")
+    unrelated.write_text("keep", encoding="utf-8")
+
+    await TaskDeletionService(session, remote_root).delete(failed.id, failed.tenant_id)
+
+    assert await session.get(ReconciliationTask, failed.id) is None
+    assert await session.get(RemoteSourceRecord, remote.id) is None
+    assert not completed.exists()
+    assert not partial.exists()
+    assert unrelated.exists()
+
+
+@pytest.mark.asyncio
+async def test_deletes_materialized_remote_source_before_its_source_file(
+    session,
+    tmp_path: Path,
+) -> None:
+    materialized = task()
+    conversation = await AgentRuntimeRepository(session).create_conversation(
+        tenant_id=materialized.tenant_id,
+        created_by="operator-1",
+    )
+    session.add(materialized)
+    await session.flush()
+
+    remote_id = uuid4()
+    remote_root = tmp_path / "uploads" / "remote"
+    remote_root.mkdir(parents=True)
+    completed = remote_root / f"{remote_id.hex}-digest.csv"
+    partial = remote_root / f".{remote_id.hex}-interrupted.part"
+    completed.write_text("id,name\n1,Student\n", encoding="utf-8")
+    partial.write_text("partial", encoding="utf-8")
+    source = SourceFile(
+        id=uuid4(),
+        task_id=materialized.id,
+        source_role="authoritative",
+        original_name="remote.csv",
+        storage_name=completed.name,
+        storage_path=str(completed),
+        sha256="a" * 64,
+        size_bytes=completed.stat().st_size,
+        managed_storage=True,
+    )
+    session.add(source)
+    await session.flush()
+    session.add(
+        Snapshot(
+            id=uuid4(),
+            task_id=materialized.id,
+            source_file_id=source.id,
+            source_role="authoritative",
+            schema_version="canonical-v1",
+            mapping_version="remote-v1",
+            file_hash="b" * 64,
+            content_hash="c" * 64,
+            summary={},
+        )
+    )
+    session.add(
+        RemoteSourceRecord(
+            id=remote_id,
+            tenant_id=materialized.tenant_id,
+            created_by="operator-1",
+            conversation_id=conversation.id,
+            task_id=materialized.id,
+            source_file_id=source.id,
+            original_url="https://data.example.test/materialized.csv",
+            display_origin="data.example.test",
+            state="ready",
+            content_sha256="a" * 64,
+            size_bytes=completed.stat().st_size,
+            media_type="text/csv",
+        )
+    )
+    await session.flush()
+
+    await TaskDeletionService(session, remote_root).delete(
+        materialized.id,
+        materialized.tenant_id,
+    )
+
+    assert await session.get(ReconciliationTask, materialized.id) is None
+    assert await session.get(SourceFile, source.id) is None
+    assert (
+        await session.scalar(
+            select(RemoteSourceRecord).where(RemoteSourceRecord.task_id == materialized.id)
+        )
+        is None
+    )
+    assert not completed.exists()
+    assert not partial.exists()
