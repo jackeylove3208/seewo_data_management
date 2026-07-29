@@ -5,6 +5,12 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent_runtime.external_identity_service import (
+    AgentExternalIdentityService,
+    ExternalIdentityBindingConflict,
+    ExternalIdentityBindingNotFound,
+    ExternalIdentityBindingValidation,
+)
 from app.api.dependencies import get_operator_context, get_session
 from app.api_connectors.service import (
     ApiConnectionConflictError,
@@ -20,9 +26,15 @@ from app.schemas.api_connectors import (
     ApiConnectionRead,
     ApiConnectionRotateSecret,
     ApiProviderRead,
+    ExternalIdentityBindingConfirm,
+    ExternalIdentityBindingRead,
 )
 
 router = APIRouter(prefix="/api/connectors", tags=["api-connectors"])
+external_identity_router = APIRouter(
+    prefix="/api/agent/external-identity-bindings",
+    tags=["agent-external-identity"],
+)
 _CONFIGURATION_SESSION_TTL = timedelta(minutes=10)
 
 
@@ -243,4 +255,85 @@ def _consume_configuration_session(
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="API configuration session is invalid or expired",
+        )
+
+
+@external_identity_router.get(
+    "",
+    response_model=list[ExternalIdentityBindingRead],
+)
+async def list_external_identity_bindings(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    operator: Annotated[OperatorContext, Depends(get_operator_context)],
+) -> list[ExternalIdentityBindingRead]:
+    _require_external_identity_enabled(request)
+    return [
+        ExternalIdentityBindingRead.model_validate(item)
+        for item in await AgentExternalIdentityService(session).list(
+            tenant_id=operator.tenant_id
+        )
+    ]
+
+
+@external_identity_router.post(
+    "",
+    response_model=ExternalIdentityBindingRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def confirm_external_identity_binding(
+    payload: ExternalIdentityBindingConfirm,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    operator: Annotated[OperatorContext, Depends(get_operator_context)],
+) -> ExternalIdentityBindingRead:
+    _require_external_identity_enabled(request)
+    try:
+        binding = await AgentExternalIdentityService(session).confirm(
+            tenant_id=operator.tenant_id,
+            operator_id=operator.operator_id,
+            run_id=payload.run_id,
+            connection_id=payload.connection_id,
+            entity_kind=payload.entity_kind.value,
+            authority_stable_locator=payload.authority_stable_locator,
+            target_connector_id=payload.target_connector_id,
+            target_stable_locator=payload.target_stable_locator,
+        )
+    except ExternalIdentityBindingValidation as error:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(error),
+        ) from error
+    except ExternalIdentityBindingConflict as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
+    return ExternalIdentityBindingRead.model_validate(binding)
+
+
+@external_identity_router.post(
+    "/{binding_id}/revoke",
+    response_model=ExternalIdentityBindingRead,
+)
+async def revoke_external_identity_binding(
+    binding_id: UUID,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    operator: Annotated[OperatorContext, Depends(get_operator_context)],
+) -> ExternalIdentityBindingRead:
+    _require_external_identity_enabled(request)
+    try:
+        binding = await AgentExternalIdentityService(session).revoke(
+            tenant_id=operator.tenant_id,
+            operator_id=operator.operator_id,
+            binding_id=binding_id,
+        )
+    except ExternalIdentityBindingNotFound as error:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    return ExternalIdentityBindingRead.model_validate(binding)
+
+
+def _require_external_identity_enabled(request: Request) -> None:
+    if not request.app.state.settings.new_agent_api_connector_enabled:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            detail="API connectors are disabled",
         )

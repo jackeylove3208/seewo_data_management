@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.agent_ingestion import AgentEntityKind
 
@@ -64,3 +64,41 @@ class ApiConnectionRead(BaseModel):
     state: str
     last_tested_at: datetime | None
     last_safe_error_code: str | None
+
+
+class ExternalIdentityBindingConfirm(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: UUID
+    connection_id: UUID
+    entity_kind: AgentEntityKind
+    authority_stable_locator: str = Field(min_length=1, max_length=512)
+    target_connector_id: str = Field(min_length=1, max_length=128)
+    target_stable_locator: str = Field(min_length=1, max_length=512)
+
+
+class ExternalIdentityBindingRead(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: UUID
+    tenant_id: str
+    provider_id: str
+    connection_id: UUID
+    entity_kind: AgentEntityKind
+    authority_stable_locator: str
+    target_connector_id: str
+    target_stable_locator: str
+    status: str
+    binding_version: int
+    confirmed_by: str
+    confirmed_at: datetime
+    revoked_by: str | None
+    revoked_at: datetime | None
+    evidence_hash: str
+
+    @field_validator("confirmed_at", "revoked_at", mode="before")
+    @classmethod
+    def normalize_utc(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)

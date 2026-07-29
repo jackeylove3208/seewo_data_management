@@ -19,6 +19,9 @@ from app.api_connectors.registry import ProviderRegistry
 from app.core.security import OperatorContext
 from app.main import create_app
 from app.schemas.agent_ingestion import AgentContractRecord, AgentEntityKind
+from tests.integration.repositories.test_agent_external_identity import (
+    _seed_context,
+)
 from tests.settings import build_test_settings
 
 MANIFEST = ProviderManifest(
@@ -94,6 +97,7 @@ def connector_client(tmp_path: Path):
         new_agent_enabled=True,
         new_agent_analysis_only=False,
         new_agent_api_connector_enabled=True,
+        demo_operator_id="operator-1",
         api_connector_secret_key=key,
         api_connector_configurations={
             "legacy-placeholder": {
@@ -323,3 +327,69 @@ def test_configuration_session_is_one_time_and_display_name_is_unique(
     replay = client.post("/api/connectors/connections", json=payload)
     assert replay.status_code == 422
     assert "session" in replay.json()["detail"]
+
+
+def test_external_identity_binding_endpoints_are_audited_and_tenant_scoped(
+    connector_client: tuple[TestClient, FakeDingTalkAdapter],
+) -> None:
+    client, _adapter = connector_client
+
+    async def seed():
+        async with client.app.state.database.session_factory() as session:
+            async with session.begin():
+                _task, run, connection, authority, targets = await _seed_context(
+                    session
+                )
+                return (
+                    run.id,
+                    connection.id,
+                    authority.stable_locator,
+                    targets[0].stable_locator,
+                )
+
+    run_id, connection_id, authority_locator, target_locator = client.portal.call(
+        seed
+    )
+    response = client.post(
+        "/api/agent/external-identity-bindings",
+        json={
+            "run_id": str(run_id),
+            "connection_id": str(connection_id),
+            "entity_kind": "teacher",
+            "authority_stable_locator": authority_locator,
+            "target_connector_id": "seewo-mysql",
+            "target_stable_locator": target_locator,
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    binding = response.json()
+    assert binding["status"] == "active"
+    assert binding["confirmed_by"] == "operator-1"
+    assert binding["binding_version"] == 1
+    assert "phone" not in json.dumps(binding).lower()
+    assert client.get("/api/agent/external-identity-bindings").json() == [
+        binding
+    ]
+
+    client.app.dependency_overrides[get_operator_context] = lambda: OperatorContext(
+        operator_id="operator-2",
+        tenant_id="school-2",
+    )
+    try:
+        assert client.get("/api/agent/external-identity-bindings").json() == []
+        assert (
+            client.post(
+                f"/api/agent/external-identity-bindings/{binding['id']}/revoke"
+            ).status_code
+            == 404
+        )
+    finally:
+        client.app.dependency_overrides.pop(get_operator_context, None)
+
+    revoked = client.post(
+        f"/api/agent/external-identity-bindings/{binding['id']}/revoke"
+    )
+    assert revoked.status_code == 200
+    assert revoked.json()["status"] == "revoked"
+    assert revoked.json()["revoked_by"] == "operator-1"

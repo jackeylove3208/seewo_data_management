@@ -31,11 +31,11 @@
 
 ## 5. Agent identity integration
 
-- [ ] 5.1 Implement audited external identity binding repository and management service
-- [ ] 5.2 Apply valid external bindings before ordinary number/phone/email lookup
-- [ ] 5.3 Route stale or contradictory bindings to deterministic identity conflicts
-- [ ] 5.4 Route authority records without ordinary keys or bindings to authority-invalid work
-- [ ] 5.5 Add binding, no-key, stale-target, conflict, and userid-not-posting tests
+- [x] 5.1 Implement audited external identity binding repository and management service
+- [x] 5.2 Apply valid external bindings before ordinary number/phone/email lookup
+- [x] 5.3 Route stale or contradictory bindings to deterministic identity conflicts
+- [x] 5.4 Route authority records without ordinary keys or bindings to authority-invalid work
+- [x] 5.5 Add binding, no-key, stale-target, conflict, and userid-not-posting tests
 
 ## 6. Provider adapters
 
