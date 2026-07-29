@@ -5,6 +5,15 @@
 本文描述在当前已经落地的 Agent Graph 架构上，接入钉钉、企业微信等第三方 API，
 并把数据同步到模拟希沃的 MySQL 目标库。
 
+本文描述的是基于当前 Agent Graph 的 API 接入设计合同，不代表当前代码已经支持
+`api + database`。当前代码虽然在 Schema 层可表达 API connector，但任务运行时仍主要
+支持 CSV/local、remote CSV/local 和 database/database。落地本设计必须新增
+`source-ingestion-v3`，将接入阶段从单一 pair mode 改为按 `authoritative / target`
+role binding 路由；同时让 API 任务选择 `agent-sync-graph-v2`，扩展
+`materialize_sources` 对 `api-source` 的资源分派，并改造身份索引对外部身份绑定、
+无身份键权威记录和 unavailable 字段的处理。旧任务必须继续按创建时冻结的 Graph 和接入
+合同恢复，不能被 v3 逻辑隐式升级。
+
 本版修正了早期设计中最重要的模型错位：
 
 - 第三方 API 数据不进入旧的 `CanonicalEntityRecord / EntityMapping` 主流程。
@@ -14,8 +23,6 @@
 - AI 只分析身份索引产生的待分析小任务，不负责认证、HTTP 请求、分页或随意决定身份。
 - API 来源复用 `agent-sync-graph-v2` 已有的 `materialize_sources` 节点。
 - 新能力以 `source-ingestion-v3` 发布，不复制一份完整的 Graph v3。
-
-本文是设计合同，不代表功能已经实现。
 
 ## 结论
 
