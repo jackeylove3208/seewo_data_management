@@ -50,8 +50,30 @@ async def test_supervisor_uses_versioned_skill_and_returns_confirmation() -> Non
 
     assert decision.kind == "start_confirmation"
     assert decision.source_ref == "third-party/roster.csv"
-    assert "converse-school-data-sync@1.0.0" in provider.requests[0].messages[0].content
+    assert "converse-school-data-sync@1.1.0" in provider.requests[0].messages[0].content
     assert "不可信证据" in provider.requests[0].messages[0].content
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.asyncio
+async def test_supervisor_exposes_remote_csv_capability_state(enabled: bool) -> None:
+    provider = CapturingProvider(
+        {
+            "result": {
+                "kind": "clarification",
+                "message_zh": "已根据当前部署能力说明可用的数据接入方式。",
+            }
+        }
+    )
+
+    await ConversationSupervisorAgent(provider).reply(
+        _context(conversation_remote_csv_enabled=enabled)
+    )
+
+    evidence = json.loads(provider.requests[0].messages[1].content)[
+        "untrusted_evidence"
+    ]
+    assert evidence["conversation_remote_csv_enabled"] is enabled
 
 
 @pytest.mark.asyncio
@@ -94,6 +116,7 @@ async def test_supervisor_accepts_server_listed_remote_source_with_local_target(
     decision = await ConversationSupervisorAgent(provider).reply(
         _context(
             message="请同步 [远程CSV来源:data.example.test]",
+            conversation_remote_csv_enabled=True,
             available_remote_sources=(
                 {
                     "remote_source_id": remote_source_id,
@@ -106,6 +129,41 @@ async def test_supervisor_accepts_server_listed_remote_source_with_local_target(
     assert decision.kind == "start_confirmation"
     assert decision.remote_source_id == remote_source_id
     assert decision.target_ref == "seewo/roster.csv"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_rejects_remote_source_when_capability_is_disabled() -> None:
+    remote_source_id = uuid4()
+    provider = CapturingProvider(
+        {
+            "result": {
+                "kind": "start_confirmation",
+                "title": "不应启动的远程同步",
+                "entity_types": ["student"],
+                "remote_source_id": str(remote_source_id),
+                "target_ref": "seewo/roster.csv",
+                "message_zh": "已确认。",
+            }
+        }
+    )
+
+    decision = await ConversationSupervisorAgent(provider).reply(
+        _context(
+            conversation_remote_csv_enabled=False,
+            available_remote_sources=(
+                {
+                    "remote_source_id": remote_source_id,
+                    "display_origin": "data.example.test",
+                },
+            ),
+        )
+    )
+
+    assert decision.kind == "clarification"
+    assert decision.remote_source_id is None
+    assert decision.message_zh == (
+        "当前部署未启用对话远程 CSV 接入，不能使用远程链接作为数据来源。"
+    )
 
 
 @pytest.mark.asyncio

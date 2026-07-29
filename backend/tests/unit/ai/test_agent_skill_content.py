@@ -130,6 +130,7 @@ NEW_AGENT_SKILLS = {
 }
 
 NEW_AGENT_SKILL_VERSIONS = {
+    "converse-school-data-sync": "1.1.0",
     "assess-agent-rollback-impact": "2.1.0",
     "execute-approved-rollback": "2.1.0",
 }
@@ -204,6 +205,36 @@ def test_remote_source_understanding_skill_has_only_bounded_read_tools() -> None
     }
     assert skill.input_schema == "CsvSchemaMappingInput"
     assert skill.output_schema == "CsvSchemaMappingOutput"
+
+
+def test_conversation_skill_advertises_direct_remote_csv_ingestion() -> None:
+    skill = SkillRegistry().load("converse-school-data-sync", "1.1.0")
+
+    for term in (
+        "`conversation_remote_csv_enabled`",
+        "直接发送一个公共 HTTPS CSV 直链",
+        "后端自动登记",
+        "无需先下载、上传或通过其他入口登记",
+        "登记时不读取文件",
+        "确认开始同步后",
+        "受控任务",
+        "冻结 CSV 快照",
+        "本地希沃目标",
+        "普通 HTML 网页",
+        "无需登录",
+        "Cookie",
+        "自定义请求头",
+        "Excel",
+        "JSON",
+        "压缩包",
+        "手动同步",
+        "`available_remote_sources` 为空",
+        "模型不直接访问 URL",
+        "当前部署未启用",
+        "不得根据文件名或单侧来源猜测",
+        "不代表",
+    ):
+        assert term in skill.instructions
 
 
 def test_rollback_assessment_contract_distinguishes_no_write_from_restore() -> None:

@@ -33,7 +33,7 @@ class ConversationSupervisorAgent:
         self._reserved_output_tokens = reserved_output_tokens
 
     async def reply(self, context: ConversationAgentContext) -> ConversationAgentDecision:
-        skill = self._skills.load("converse-school-data-sync", "1.0.0")
+        skill = self._skills.load("converse-school-data-sync", "1.1.0")
         request = build_agent_request(
             skill,
             context.model_dump(mode="json"),
@@ -77,6 +77,13 @@ def _validate_source_references(
         item.remote_source_id for item in context.available_remote_sources
     }
     if decision.remote_source_id is not None:
+        if not context.conversation_remote_csv_enabled:
+            return ConversationAgentDecision(
+                kind="clarification",
+                message_zh=(
+                    "当前部署未启用对话远程 CSV 接入，不能使用远程链接作为数据来源。"
+                ),
+            )
         mixed_remote_selection = bool(
             decision.source_ref
             or decision.source_configuration_id

@@ -784,7 +784,11 @@ def test_conversation_uses_model_discovered_local_sources(
         "kind": "local",
         "source_ref": "third-party/roster.csv",
     }
-    assert "converse-school-data-sync@1.0.0" in provider.requests[0].messages[0].content
+    evidence = json.loads(provider.requests[0].messages[1].content)[
+        "untrusted_evidence"
+    ]
+    assert evidence["conversation_remote_csv_enabled"] is False
+    assert "converse-school-data-sync@1.1.0" in provider.requests[0].messages[0].content
 
     created = agent_client.post(
         f"/api/agent/conversations/{conversation.json()['id']}/tasks",
@@ -853,6 +857,10 @@ def test_conversation_registers_one_remote_source_without_exposing_its_url(
     assert "secret=value" not in request_text
     assert "https://" not in provider.requests[0].messages[1].content
     assert "[远程CSV来源:data.example.test]" in provider.requests[0].messages[1].content
+    evidence = json.loads(provider.requests[0].messages[1].content)[
+        "untrusted_evidence"
+    ]
+    assert evidence["conversation_remote_csv_enabled"] is True
 
     async def load_facts() -> tuple[RemoteSourceRecord, list[str]]:
         async with agent_client.app.state.database.session_factory() as session:

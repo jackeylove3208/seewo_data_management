@@ -16,6 +16,7 @@ class ConversationAgentContext(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
     history: tuple["ConversationHistoryMessage", ...] = ()
     available_source_refs: tuple[str, ...] = ()
+    conversation_remote_csv_enabled: bool = False
     available_remote_sources: tuple["ConversationRemoteSource", ...] = ()
     available_database_connectors: tuple["ConversationDatabaseConnector", ...] = ()
     current_intent: dict[str, Any] = Field(default_factory=dict)

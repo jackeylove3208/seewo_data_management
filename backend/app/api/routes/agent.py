@@ -550,10 +550,8 @@ async def send_agent_message(
         else redact_conversation_links(body.message)
     )
     remote_source_repository = RemoteSourceRepository(session)
-    if (
-        extracted_link is not None
-        and request.app.state.settings.conversation_remote_csv_enabled
-    ):
+    remote_csv_enabled = request.app.state.settings.conversation_remote_csv_enabled
+    if extracted_link is not None and remote_csv_enabled:
         await remote_source_repository.register(
             tenant_id=operator.tenant_id,
             created_by=operator.operator_id,
@@ -561,10 +559,14 @@ async def send_agent_message(
             original_url=extracted_link.original_url,
             display_origin=extracted_link.display_origin,
         )
-    remote_sources = await remote_source_repository.list_for_conversation(
-        tenant_id=operator.tenant_id,
-        created_by=operator.operator_id,
-        conversation_id=conversation.id,
+    remote_sources = (
+        await remote_source_repository.list_for_conversation(
+            tenant_id=operator.tenant_id,
+            created_by=operator.operator_id,
+            conversation_id=conversation.id,
+        )
+        if remote_csv_enabled
+        else ()
     )
     message_token = str(uuid4())
     conversation.context = {
@@ -635,6 +637,7 @@ async def send_agent_message(
                 message=safe_message,
                 history=history,
                 available_source_refs=tuple(source.source_ref for source in sources),
+                conversation_remote_csv_enabled=remote_csv_enabled,
                 available_remote_sources=tuple(
                     ConversationRemoteSource(
                         remote_source_id=remote_source.id,
