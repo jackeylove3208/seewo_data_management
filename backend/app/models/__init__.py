@@ -39,6 +39,12 @@ from app.models.agent_runtime import (
 )
 from app.models.analyses import AnalysisRecord
 from app.models.analysis_jobs import AnalysisJobRecord, AnalysisWorkItemRecord
+from app.models.api_connectors import (
+    AgentExternalIdentityBindingRecord,
+    ApiAuthoritySourceRecord,
+    ApiConnectionRecord,
+    ApiConnectionSecretRecord,
+)
 from app.models.base import Base
 from app.models.differences import DifferenceRecord
 from app.models.executions import (
@@ -96,6 +102,7 @@ __all__ = [
     "AgentGraphRunRecord",
     "AgentGraphTransitionRecord",
     "AgentApprovalGroupRecord",
+    "AgentExternalIdentityBindingRecord",
     "AgentClarificationRecord",
     "AgentGovernanceOperationRecord",
     "AgentGovernancePlanRecord",
@@ -116,6 +123,9 @@ __all__ = [
     "AgentWorkItemRecord",
     "AnalysisJobRecord",
     "AnalysisWorkItemRecord",
+    "ApiAuthoritySourceRecord",
+    "ApiConnectionRecord",
+    "ApiConnectionSecretRecord",
     "CanonicalEntityRecord",
     "DifferenceRecord",
     "EntityMapping",
