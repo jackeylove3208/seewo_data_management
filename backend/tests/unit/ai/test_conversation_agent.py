@@ -376,6 +376,54 @@ async def test_supervisor_accepts_eligible_api_authority_with_mysql_target() -> 
 
 
 @pytest.mark.asyncio
+async def test_supervisor_reports_unknown_mysql_target_without_blaming_api_permissions() -> None:
+    connection_id = uuid4()
+    provider = CapturingProvider(
+        {
+            "result": {
+                "kind": "start_confirmation",
+                "title": "钉钉学生同步",
+                "entity_types": ["student"],
+                "source_api_connection_id": str(connection_id),
+                "target_configuration_id": "seewo_data",
+                "message_zh": "已确认。",
+            }
+        }
+    )
+
+    decision = await ConversationSupervisorAgent(provider).reply(
+        _context(
+            available_source_refs=(),
+            available_api_connections=(
+                {
+                    "connection_id": connection_id,
+                    "provider_id": "dingtalk",
+                    "display_name": "学校钉钉",
+                    "state": "active",
+                    "capabilities": {"entity.student.read": True},
+                    "visibility_summary": {
+                        "visible": True,
+                        "student_count": 3,
+                    },
+                },
+            ),
+            available_database_connectors=(
+                {
+                    "connector_id": "seewo-data-mysql",
+                    "dialect": "mysql",
+                    "source_role": "target",
+                },
+            ),
+        )
+    )
+
+    assert decision.kind == "clarification"
+    assert "MySQL 目标连接" in decision.message_zh
+    assert "seewo-data-mysql" in decision.message_zh
+    assert "权限或可见范围" not in decision.message_zh
+
+
+@pytest.mark.asyncio
 async def test_supervisor_can_request_safe_api_configuration_card() -> None:
     provider = CapturingProvider(
         {

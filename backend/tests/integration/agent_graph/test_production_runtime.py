@@ -1919,7 +1919,24 @@ async def test_sql_v3_routes_mappable_inspection_through_skill_to_normalization(
     assert normalization_action.action_id == "normalize_authoritative_full"
 
     await executor(normalized_context, normalization_action)
+    await executor(
+        normalized_context,
+        _database_v3_normalization_action("target"),
+    )
+    validation_plan = await ProductionGraphCandidateProvider(
+        database.session_factory,
+    )(replace(context, current_node="validate_input_contract"))
+    validation_action = next(
+        item.action
+        for item in validation_plan.candidate_evaluations
+        if item.passed
+    )
     async with database.session_factory() as session:
+        target_inspection = await AgentRuntimeRepository(session).get_checkpoint(
+            context.run_id,
+            phase=AgentPhase.INGEST_AND_NORMALIZE,
+            checkpoint_key="graph-source-inspection:target",
+        )
         record = await session.scalar(
             select(AgentInputRecord).where(
                 AgentInputRecord.run_id == context.run_id,
@@ -1928,6 +1945,10 @@ async def test_sql_v3_routes_mappable_inspection_through_skill_to_normalization(
         )
 
     assert len(provider.requests) == 1
+    assert target_inspection is not None
+    assert target_inspection.payload["recognized"] is False
+    assert target_inspection.payload["mapping_required"] is True
+    assert validation_action.action_id == "build_identity_index"
     assert record is not None
     assert record.number == "S001"
 

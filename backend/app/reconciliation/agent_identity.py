@@ -70,10 +70,12 @@ def ordinary_field_differences(
     if authority.entity_kind == AgentEntityKind.STUDENT:
         fields.append("class_name")
     fields.extend(("phone", "email"))
+    # A missing student class is valid input, but clearing an existing target class
+    # remains a reviewable governance change.
     return tuple(
         field
         for field in fields
-        if field not in unavailable_fields
+        if field == "class_name" or field not in unavailable_fields
         if _semantic_field_value(authority, field)
         != _semantic_field_value(target, field)
     )

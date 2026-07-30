@@ -1021,12 +1021,21 @@ class ProductionGraphCandidateProvider:
                     .order_by(Snapshot.source_role)
                 )
             )
-            abnormal = (
-                any(
-                    checkpoint is None
-                    or not checkpoint.payload.get("recognized", False)
-                    for checkpoint in inspections
+            inspections_resolved = all(
+                inspection is not None
+                and (
+                    inspection.payload.get("recognized", False)
+                    or (
+                        inspection.payload.get("mapping_required", False)
+                        and not inspection.payload.get("safe_problem_codes", ())
+                        and mapping is not None
+                        and mapping.payload.get("resolved", False)
+                    )
                 )
+                for inspection, mapping in zip(inspections, mappings, strict=True)
+            )
+            abnormal = (
+                not inspections_resolved
                 or any(
                     checkpoint is None
                     or not checkpoint.payload.get("resolved", False)

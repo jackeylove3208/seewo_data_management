@@ -28,6 +28,7 @@ from app.models.agent_analysis import (
 from app.models.agent_runtime import AgentRunRecord
 from app.models.analyses import AnalysisRecord
 from app.models.api_connectors import (
+    AgentSourceBindingRecord,
     ApiAuthoritySourceRecord,
     ApiConnectionRecord,
     ApiConnectionSecretRecord,
@@ -254,10 +255,25 @@ async def test_deletes_materialized_api_source_before_its_task(
         projection_version="api-projection-v1",
     )
     session.add(api_source)
+    binding = AgentSourceBindingRecord(
+        tenant_id=removable.tenant_id,
+        task_id=removable.id,
+        role="authoritative",
+        connector_kind="api",
+        configuration_id=str(connection.id),
+        snapshot_id=snapshot.id,
+        configuration_fingerprint="e" * 64,
+        frozen_public_configuration={},
+        credential_reference=f"db-secret:{frozen_secret.id}",
+        mapping_checkpoint_key="graph-api-field-mapping-v3:authoritative",
+        normalization_checkpoint_key="graph-source-normalization-v3:authoritative",
+    )
+    session.add(binding)
     await session.flush()
 
     await deletion_service(session).delete(removable.id, removable.tenant_id)
 
+    assert await session.get(AgentSourceBindingRecord, binding.id) is None
     assert await session.get(ApiAuthoritySourceRecord, api_source.id) is None
     assert await session.get(ReconciliationTask, removable.id) is None
     assert await session.get(ApiConnectionRecord, connection.id) is not None

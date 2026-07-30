@@ -85,6 +85,20 @@ def test_provider_unavailable_fields_are_not_ordinary_differences() -> None:
     ) == ()
 
 
+def test_unavailable_student_class_remains_a_governed_difference() -> None:
+    authority = _record(
+        source_role=AgentSourceRole.AUTHORITATIVE,
+        class_name=None,
+    )
+    target = _record(class_name="一班")
+
+    assert ordinary_field_differences(
+        authority,
+        target,
+        unavailable_fields={"class_name"},
+    ) == ("class_name",)
+
+
 def test_frozen_identity_candidate_masks_phone_and_email_before_persistence() -> None:
     candidate = agent_identity._masked_candidate(  # noqa: SLF001
         SimpleNamespace(

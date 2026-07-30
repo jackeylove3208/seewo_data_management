@@ -36,7 +36,7 @@ from app.models.agent_runtime import (
 )
 from app.models.analyses import AnalysisRecord
 from app.models.analysis_jobs import AnalysisJobRecord, AnalysisWorkItemRecord
-from app.models.api_connectors import ApiAuthoritySourceRecord
+from app.models.api_connectors import AgentSourceBindingRecord, ApiAuthoritySourceRecord
 from app.models.differences import DifferenceRecord
 from app.models.executions import (
     ExecutionBatchRecord,
@@ -329,6 +329,11 @@ class TaskDeletionService:
         )
         await self.session.execute(
             delete(IngestionIssueRecord).where(IngestionIssueRecord.snapshot_id.in_(snapshot_ids))
+        )
+        await self.session.execute(
+            delete(AgentSourceBindingRecord).where(
+                AgentSourceBindingRecord.task_id == task_id
+            )
         )
         await self.session.execute(
             delete(ApiAuthoritySourceRecord).where(

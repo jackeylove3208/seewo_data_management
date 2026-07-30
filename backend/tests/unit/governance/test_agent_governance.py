@@ -62,6 +62,13 @@ def test_student_create_with_phone_is_not_high_risk() -> None:
     assert decision.requires_approval is True
 
 
+def test_student_class_clear_is_server_owned_medium_risk() -> None:
+    decision = AgentRiskPolicy().assess(finding(fields=("class_name",)))
+
+    assert decision.risk == "medium"
+    assert decision.requires_approval is True
+
+
 def test_medium_risk_findings_are_grouped_for_operator_review() -> None:
     medium = finding(kind="target_missing", operation="create", fields=("name",))
 

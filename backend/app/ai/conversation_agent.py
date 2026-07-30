@@ -280,16 +280,28 @@ def _validate_api_selection(
             for entity in decision.entity_types
         )
     )
-    if (
-        eligible
-        and target is not None
-        and target.source_role == "target"
-        and target.dialect == "mysql"
-    ):
+    if not eligible:
+        return ConversationAgentDecision(
+            kind="clarification",
+            message_zh="API 连接的权限或可见范围不足，请修正配置并重新测试。",
+        )
+    if target is None:
+        available_targets = sorted(
+            item.connector_id
+            for item in context.available_database_connectors
+            if item.source_role == "target" and item.dialect == "mysql"
+        )
+        options = "、".join(available_targets)
+        suffix = f"当前可选：{options}。" if options else "当前没有可用的 MySQL 目标连接。"
+        return ConversationAgentDecision(
+            kind="clarification",
+            message_zh=f"未找到所选 MySQL 目标连接。{suffix}",
+        )
+    if target.source_role == "target" and target.dialect == "mysql":
         return decision
     return ConversationAgentDecision(
         kind="clarification",
-        message_zh="API 连接的权限或可见范围不足，请修正配置并重新测试。",
+        message_zh="所选数据库连接不是可写入的 MySQL 目标，请重新选择。",
     )
 
 
