@@ -2,7 +2,13 @@ import pytest
 
 from app.ai.agent_prompting import COMMON_AGENT_SAFETY_CONTRACT
 from app.ai.prompting import build_messages
-from app.ai.skills.contracts import AgentRollbackAssessment, OperationOutcome
+from app.ai.skills.contracts import (
+    AgentRollbackAssessment,
+    DatabaseColumnProfile,
+    DatabaseSchemaMappingOutput,
+    DatabaseSourceSchemaProfile,
+    OperationOutcome,
+)
 from app.ai.skills.registry import SkillRegistry
 
 NEW_AGENT_SKILLS = {
@@ -59,6 +65,11 @@ NEW_AGENT_SKILLS = {
         "固定六字段",
         "source_field_ref",
         "normalizer_id",
+        "SQL 类型",
+        "主键",
+        "generated",
+        "autoincrement",
+        "版本列",
         "参数化 SQL",
         "不得创造第七个业务字段",
     ),
@@ -206,6 +217,52 @@ def test_remote_source_understanding_skill_has_only_bounded_read_tools() -> None
     assert skill.output_schema == "CsvSchemaMappingOutput"
 
 
+def test_database_schema_mapping_contract_carries_bounded_v3_metadata() -> None:
+    column = DatabaseColumnProfile(
+        source_field_ref="database-column:target:0",
+        column_name="display_name",
+        sql_type="varchar(255)",
+        inferred_type="text",
+        nullable=False,
+        primary_key=False,
+        generated=False,
+        autoincrement=False,
+        candidate_contract_fields=("name",),
+    )
+    profile = DatabaseSourceSchemaProfile(
+        source_role="target",
+        connector_id="seewo-data-mysql",
+        dialect="mysql",
+        relation_ref="database-relation:target:data",
+        stable_key_ref="database-column:target:1",
+        version_ref="database-column:target:2",
+        columns=(column,),
+    )
+    output = DatabaseSchemaMappingOutput(
+        schema_version="fixed-six-field-sql-mapping-v3",
+        authoritative_mappings=(),
+        target_mappings=(),
+        unresolved_required_fields=(
+            "authoritative.category",
+            "authoritative.name",
+            "authoritative.number",
+            "authoritative.class_name",
+            "authoritative.phone",
+            "authoritative.email",
+            "target.category",
+            "target.name",
+            "target.number",
+            "target.class_name",
+            "target.phone",
+            "target.email",
+        ),
+    )
+
+    assert profile.version_ref == "database-column:target:2"
+    assert profile.columns[0].sql_type == "varchar(255)"
+    assert output.schema_version == "fixed-six-field-sql-mapping-v3"
+
+
 def test_conversation_skill_advertises_direct_remote_csv_ingestion() -> None:
     skill = SkillRegistry().load("converse-school-data-sync", "1.3.0")
 
@@ -300,14 +357,22 @@ def test_rollback_execution_skill_revalidates_only_affected_current_data() -> No
 
 
 def test_rollback_skills_cover_whole_record_and_late_conflict_boundaries() -> None:
-    assessment = SkillRegistry().load(
-        "assess-agent-rollback-impact",
-        "2.1.0",
-    ).instructions
-    execution = SkillRegistry().load(
-        "execute-approved-rollback",
-        "2.1.0",
-    ).instructions
+    assessment = (
+        SkillRegistry()
+        .load(
+            "assess-agent-rollback-impact",
+            "2.1.0",
+        )
+        .instructions
+    )
+    execution = (
+        SkillRegistry()
+        .load(
+            "execute-approved-rollback",
+            "2.1.0",
+        )
+        .instructions
+    )
 
     for instructions in (assessment, execution):
         assert "自定义列" in instructions
@@ -354,7 +419,9 @@ def test_every_legacy_skill_is_detailed_and_cannot_enter_new_agent_workflow() ->
             assert section in instructions, f"{name} missing {section}"
 
 
-def test_common_agent_contract_covers_runtime_authority_privacy_and_fail_closed_output() -> None:
+def test_common_agent_contract_covers_runtime_authority_privacy_and_fail_closed_output() -> (
+    None
+):
     for term in (
         "OperatorContext.tenant_id",
         "服务端阶段",
@@ -389,7 +456,9 @@ def test_agent_skills_make_missing_authority_student_class_an_opt_in_clear() -> 
     assert '`operation="update"`' in governance
 
 
-def test_legacy_prompt_builder_injects_common_contract_and_pinned_skill_identity() -> None:
+def test_legacy_prompt_builder_injects_common_contract_and_pinned_skill_identity() -> (
+    None
+):
     skill = SkillRegistry().load("analyze-data-difference", "1.0.0")
 
     system_prompt = build_messages(skill, {"difference_id": "example"})[0].content

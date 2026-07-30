@@ -158,6 +158,7 @@ class CsvSchemaMappingOutput(StrictContract):
 class DatabaseColumnProfile(StrictContract):
     source_field_ref: str = Field(min_length=1, max_length=512)
     column_name: str = Field(min_length=1, max_length=255)
+    sql_type: str = Field(min_length=1, max_length=255)
     inferred_type: Literal[
         "text",
         "identifier",
@@ -166,6 +167,9 @@ class DatabaseColumnProfile(StrictContract):
         "unknown",
     ]
     nullable: bool
+    primary_key: bool
+    generated: bool
+    autoincrement: bool
     candidate_contract_fields: tuple[FixedContractField, ...] = ()
 
 
@@ -175,6 +179,7 @@ class DatabaseSourceSchemaProfile(StrictContract):
     dialect: Literal["mysql", "postgresql"]
     relation_ref: str = Field(min_length=1, max_length=512)
     stable_key_ref: str = Field(min_length=1, max_length=512)
+    version_ref: str = Field(min_length=1, max_length=512)
     columns: tuple[DatabaseColumnProfile, ...] = Field(
         min_length=1,
         max_length=256,
@@ -182,6 +187,10 @@ class DatabaseSourceSchemaProfile(StrictContract):
 
 
 class DatabaseSchemaMappingInput(AgentSkillInput):
+    mapping_schema_version: Literal[
+        "fixed-six-field-sql-mapping-v2",
+        "fixed-six-field-sql-mapping-v3",
+    ] = "fixed-six-field-sql-mapping-v2"
     sources: tuple[DatabaseSourceSchemaProfile, ...] = Field(
         min_length=2,
         max_length=2,
@@ -196,7 +205,10 @@ class DatabaseFieldMapping(StrictContract):
 
 
 class DatabaseSchemaMappingOutput(StrictContract):
-    schema_version: Literal["fixed-six-field-sql-mapping-v2"]
+    schema_version: Literal[
+        "fixed-six-field-sql-mapping-v2",
+        "fixed-six-field-sql-mapping-v3",
+    ]
     authoritative_mappings: tuple[DatabaseFieldMapping, ...] = Field(max_length=6)
     target_mappings: tuple[DatabaseFieldMapping, ...] = Field(max_length=6)
     unresolved_required_fields: tuple[str, ...] = ()

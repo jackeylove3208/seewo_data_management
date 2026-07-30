@@ -114,6 +114,26 @@ class GraphIngestionAnalysisExecutors:
             result_validator=validate,
         )
 
+    async def map_database_schema(
+        self,
+        invocation: GraphSkillInvocation,
+        *,
+        result_validator: Callable[[BaseModel], BaseModel],
+    ) -> GraphSkillRunResult:
+        if invocation.graph_node != "normalize_input_batches":
+            raise ValueError(
+                "database schema mapping requires normalize_input_batches graph node"
+            )
+        return await self._runner.run(
+            invocation.model_copy(
+                update={
+                    "skill_name": "understand-organization-database-schema",
+                    "skill_version": "1.0.0",
+                }
+            ),
+            result_validator=result_validator,
+        )
+
     async def analyze_actionable_batch(
         self,
         invocation: GraphSkillInvocation,
@@ -249,6 +269,7 @@ class GraphAnalysisResultWriter:
         await self._repository.persist_marks(tuple(marks))
         return tuple(records)
 
+
 def validate_normalized_output(
     expected_locators: Sequence[str],
     output: NormalizedOrganizationBatch,
@@ -280,12 +301,9 @@ def compile_analysis_payloads(
         findings=findings,
     )
 
-    solution_by_id = {
-        solution.finding_id: solution for solution in solutions.solutions
-    }
-    if (
-        len(solution_by_id) != len(solutions.solutions)
-        or set(solution_by_id) != set(finding_by_id)
+    solution_by_id = {solution.finding_id: solution for solution in solutions.solutions}
+    if len(solution_by_id) != len(solutions.solutions) or set(solution_by_id) != set(
+        finding_by_id
     ):
         raise ValueError("AI solutions must exactly cover analysis findings")
 
@@ -295,7 +313,9 @@ def compile_analysis_payloads(
         if solution.operation != finding.proposed_operation:
             raise ValueError("AI solution operation conflicts with analysis finding")
         if not operation_is_allowed(finding.disposition, solution.operation):
-            raise ValueError("AI solution operation is incompatible with persisted work")
+            raise ValueError(
+                "AI solution operation is incompatible with persisted work"
+            )
         payloads.append(
             AgentFindingPayload(
                 work_item_id=finding.work_item_id,
