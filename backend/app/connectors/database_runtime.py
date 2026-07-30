@@ -28,12 +28,20 @@ class ConfiguredDatabaseConnectorRuntime:
         self._connectors: dict[str, ConfiguredApiConnector] = {}
 
     async def connector(self, connector_id: str) -> ConfiguredApiConnector:
-        existing = self._connectors.get(connector_id)
-        if existing is not None:
-            return existing
         configuration = self._settings.database_connector_configurations.get(connector_id)
         if configuration is None:
             raise ConnectorCapabilityError("database connector is not configured by the server")
+        return await self.connector_for_configuration(connector_id, configuration)
+
+    async def connector_for_configuration(
+        self,
+        connector_id: str,
+        configuration: DatabaseConnectorConfiguration,
+    ) -> ConfiguredApiConnector:
+        cache_key = f"{connector_id}:{configuration.model_dump_json()}"
+        existing = self._connectors.get(cache_key)
+        if existing is not None:
+            return existing
         credential = self._settings.database_connector_credentials.get(
             configuration.credential_reference
         )
@@ -66,8 +74,8 @@ class ConfiguredDatabaseConnectorRuntime:
                 configuration=configuration,
             ),
         )
-        self._engines[connector_id] = engine
-        self._connectors[connector_id] = connector
+        self._engines[cache_key] = engine
+        self._connectors[cache_key] = connector
         return connector
 
     async def close(self) -> None:

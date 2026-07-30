@@ -209,26 +209,24 @@ Action/Guard 合同时，才发布新的 Graph 版本；届时也应从已有定
 
 ```python
 class OrganizationApiAdapter(Protocol):
-    provider_id: str
-    adapter_version: str
+    manifest: ProviderManifest
 
-    async def test_connection(self, connection: SafeConnectionView) -> ConnectionTestResult: ...
-    async def inspect_capabilities(self, connection: SafeConnectionView) -> CapabilityResult: ...
+    async def test_connection(
+        self,
+        public_configuration: Mapping[str, object],
+        secret: Mapping[str, str],
+    ) -> ConnectionTestResult: ...
     async def capture(
         self,
-        connection: SecretBackedConnection,
-        request: CaptureRequest,
-        sink: ImmutableArtifactSink,
-    ) -> CaptureResult: ...
-    def project(
-        self,
-        artifact_record: FrozenApiRecord,
-        context: AgentProjectionContext,
-    ) -> AgentContractRecord: ...
+        public_configuration: Mapping[str, object],
+        secret: Mapping[str, str],
+        selected_entities: frozenset[AgentEntityKind],
+    ) -> AsyncIterator[CapturedApiPage]: ...
 ```
 
 接口通用，但实现必须按供应商独立开发。钉钉、企业微信的认证、分页参数、错误码和组织模型
-不同，不能用一个“万能 HTTP + LLM”实现。
+不同，不能用一个“万能 HTTP + LLM”实现。Provider 只负责安全抓取并形成冻结记录；
+`AgentApiIngestionAdapter` 再统一完成 `AgentInputRecord` 归一化，避免两套投影语义。
 
 ### Provider Manifest
 

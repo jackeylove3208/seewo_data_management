@@ -125,22 +125,68 @@ RECONCILIATION_LLM_AUTH_SCHEME=
 
 ## Configure Agent API and database connectors
 
-API and database connectors are disabled by default. Their JSON configuration maps contain only
-server-owned endpoint/table metadata and a `credential_reference`, such as
-`secret://connectors/seewo-api`; do not put API tokens, passwords, DSNs, arbitrary SQL, or mutable
-table names in browser input, task events, or model context. A target connector must declare read,
-write, optimistic-version, and read-after-write capabilities before its rollout flag is enabled.
+Organization API ingestion is disabled by default. The backend registers audited DingTalk and
+WeCom manifests with fixed provider endpoints; the model cannot discover endpoints or construct
+arbitrary HTTP requests. Generate one Fernet key and keep it only in the ignored `backend/.env`:
+
+```bash
+cd backend
+.venv/bin/python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
+```
+
+Configure one server-owned writable MySQL target. The configuration contains allow-listed table and
+column metadata plus an opaque credential reference; the matching DSN stays in the secret map.
 
 ```dotenv
 RECONCILIATION_NEW_AGENT_ENABLED=true
+RECONCILIATION_AGENT_GRAPH_ENABLED=true
+RECONCILIATION_SOURCE_INGESTION_V3_ENABLED=true
+RECONCILIATION_AGENT_GRAPH_SQL_EXECUTION_ENABLED=true
 RECONCILIATION_NEW_AGENT_ANALYSIS_ONLY=false
-RECONCILIATION_API_CONNECTOR_CONFIGURATIONS={"seewo":{"credential_reference":"secret://connectors/seewo-api","endpoint":"https://connector.example.com/v1/people","record_id_field":"id","version_field":"etag"}}
 RECONCILIATION_NEW_AGENT_API_CONNECTOR_ENABLED=true
+RECONCILIATION_API_CONNECTOR_SECRET_KEY=replace-with-generated-fernet-key
+RECONCILIATION_DATABASE_CONNECTOR_CONFIGURATIONS={"seewo-mysql":{"credential_reference":"secret://connectors/seewo-mysql","dialect":"mysql","table_name":"organization_people","primary_key":"id","version_column":"row_version","field_columns":{"category":"category","name":"name","number":"number","class_name":"class_name","phone":"phone","email":"email"},"source_role":"target","capabilities":{"read":true,"paginated":true,"create":true,"update":true,"delete":true,"optimistic_version":true,"read_after_write":true}}}
+RECONCILIATION_DATABASE_CONNECTOR_CREDENTIALS={"secret://connectors/seewo-mysql":"mysql+asyncmy://user:password@host/database"}
 ```
 
-The runtime resolves each credential reference through its server-side secret provider. Connector
-reads use a stable cursor and record ID; target writes require an idempotency key, current version,
-allow-listed operation, and read-after-write verification. Authoritative connectors remain read-only.
+Run `alembic upgrade head` before enabling the flags, then restart both FastAPI and
+`python -m app.agent_runtime`. The secure conversation card creates a one-time configuration
+session, submits DingTalk `app_key`/`app_secret` or WeCom `corp_id`/`corp_secret` directly to the
+connector API, and tests permissions and visibility. Chat, model payloads, task intent, Graph state,
+events, reports, and logs receive only the connection ID and sanitized status.
+
+The safe connector control plane is:
+
+- `GET /api/connectors/providers`
+- `POST /api/connectors/configuration-sessions`
+- `POST/GET /api/connectors/connections`
+- `POST /api/connectors/connections/{id}/test`
+- `POST /api/connectors/connections/{id}/rotate-secret`
+- `DELETE /api/connectors/connections/{id}`
+
+Provider access is always read-only. A confirmed task freezes
+`agent-sync-graph-v2`, `source-ingestion-v3`, `deterministic-execution-v2`, and its safe connection
+configuration/opaque secret version. Secret rotation affects later tasks only. The task captures
+complete paginated API evidence, then reuses the existing identity, AI analysis, governance, MySQL
+preflight, idempotent mutation, write-verification, reporting, and rollback pipeline.
+
+Run only synthetic connector tests during development:
+
+```bash
+cd backend
+.venv/bin/pytest tests/contract/test_organization_api_adapters.py \
+  tests/integration/api/test_api_connectors.py \
+  tests/integration/api_connectors/test_api_authority_materializer.py \
+  tests/integration/agent_runtime/test_api_task_binding.py \
+  tests/e2e/test_agent_graph_lifecycle.py -q
+```
+
+These fixtures never use production teacher, student, department, credential, or token data.
+Rotating a connection secret affects future captures only; an in-progress run continues from its
+immutable captured evidence. To roll back new task creation, set
+`RECONCILIATION_NEW_AGENT_API_CONNECTOR_ENABLED=false` and restart API and worker. Keep
+`source-ingestion-v3` and Graph v2 code deployed while existing API runs finish, and retain the
+additive connection, source, and identity-binding rows for audit rather than downgrading them.
 
 Embedding access has the same gateway controls, but uses independent settings so
 the chat and embedding deployments can differ:

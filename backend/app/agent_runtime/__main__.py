@@ -5,6 +5,8 @@ import logging
 import signal
 from uuid import uuid4
 
+import httpx
+
 from app.agent_graph.production_executor import ProductionGraphActionExecutor
 from app.agent_graph.runtime import ProductionGraphCandidateProvider
 from app.agent_graph.worker import AgentGraphWorker
@@ -13,6 +15,8 @@ from app.agent_runtime.worker import AgentWorker
 from app.ai.graph_supervisor import GraphSupervisorAgent
 from app.ai.providers.llm import HttpLLMProvider
 from app.ai.worker import WorkerRunner, run_worker_loop
+from app.api_connectors.materializer import ApiAuthorityMaterializer
+from app.api_connectors.registry import build_default_provider_runtime
 from app.connectors.database_runtime import ConfiguredDatabaseConnectorRuntime
 from app.core.config import get_settings
 from app.core.database import Database
@@ -39,6 +43,19 @@ async def run() -> None:
         if settings.agent_graph_sql_execution_enabled
         else None
     )
+    api_clients: tuple[httpx.AsyncClient, ...] = ()
+    api_materializer: ApiAuthorityMaterializer | None = None
+    if settings.new_agent_api_connector_enabled:
+        assert settings.api_connector_secret_key is not None
+        provider_registry, api_clients = build_default_provider_runtime(
+            connect_timeout=settings.api_connector_connect_timeout_seconds,
+            read_timeout=settings.api_connector_read_timeout_seconds,
+        )
+        api_materializer = ApiAuthorityMaterializer(
+            settings,
+            registry=provider_registry,
+            fernet_key=settings.api_connector_secret_key,
+        )
     factory = CsvAnalysisHandlerFactory(
         database.session_factory,
         tokenization_secret=settings.tokenization_secret.get_secret_value(),
@@ -76,6 +93,7 @@ async def run() -> None:
                     csv_execution_enabled=settings.agent_graph_csv_execution_enabled,
                     settings=settings,
                     database_connectors=database_connector_runtime,
+                    api_materializer=api_materializer,
                 ),
             )
         )
@@ -98,6 +116,8 @@ async def run() -> None:
             )
         )
     finally:
+        for client in api_clients:
+            await client.aclose()
         if database_connector_runtime is not None:
             await database_connector_runtime.close()
         await database.dispose()

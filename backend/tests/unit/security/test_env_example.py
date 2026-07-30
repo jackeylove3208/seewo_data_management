@@ -6,3 +6,4 @@ def test_example_contains_no_usable_api_key() -> None:
 
     assert "replace-with-real-secret" in example
     assert "sk-" not in example
+    assert "RECONCILIATION_API_CONNECTOR_SECRET_KEY=\n" in example

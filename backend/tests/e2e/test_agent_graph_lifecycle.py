@@ -4,15 +4,18 @@ from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
+from cryptography.fernet import Fernet
 from sqlalchemy import func, select
 
 from app.agent_graph.analysis_tools import GraphAnalysisEvidenceTools
 from app.agent_graph.production_executor import ProductionGraphActionExecutor
+from app.agent_graph.repository import AgentGraphRepository
 from app.agent_graph.runtime import ProductionGraphCandidateProvider
 from app.agent_graph.tools import GraphToolContext
 from app.agent_graph.worker import AgentGraphWorker, GraphWorkContext
 from app.agent_reporting.service import AgentReportingService
 from app.agent_runtime.service import AgentSupervisorService
+from app.agent_runtime.task_service import AgentTaskService
 from app.ai.graph_supervisor import GraphSupervisorAgent
 from app.ai.providers.base import (
     LLMRequest,
@@ -21,8 +24,19 @@ from app.ai.providers.base import (
     ModelUsage,
 )
 from app.api.routes.agent import decide_agent_graph_gate
+from app.api_connectors.materializer import ApiAuthorityMaterializer
+from app.api_connectors.registry import ProviderRegistry
+from app.connectors.configured import ConfiguredApiConnector
 from app.core.security import OperatorContext
-from app.models.agent_analysis import AgentWorkItemRecord
+from app.models.agent_analysis import (
+    AgentFindingRecord,
+    AgentGovernanceOperationRecord,
+    AgentGovernancePlanRecord,
+    AgentIdentityClaimRecord,
+    AgentInputRecord,
+    AgentModelBatchRecord,
+    AgentWorkItemRecord,
+)
 from app.models.agent_graph import (
     AgentEvidenceManifestRecord,
     AgentGraphRunRecord,
@@ -34,10 +48,25 @@ from app.models.agent_runtime import (
     AgentTaskEventRecord,
     SchoolTaskLockRecord,
 )
+from app.models.mappings import EntityMapping
 from app.models.reconciliation import ReconciliationTask
 from app.models.reporting import AgentReportRecord
-from app.models.snapshots import Snapshot, SourceFile
+from app.models.snapshots import (
+    CanonicalEntityRecord,
+    RawSnapshotRow,
+    Snapshot,
+    SourceFile,
+)
 from app.schemas.agent_graph_api import AgentGraphGateDecisionRequest
+from tests.fixtures.connector_store import InMemoryConnectorStore
+from tests.integration.agent_runtime.test_api_task_binding import (
+    MANIFEST,
+    CaptureAdapter,
+    StaticDatabaseConnectorRuntime,
+    _intent,
+    _seed_connection,
+    _settings,
+)
 
 
 class ScriptedSupervisorProvider:
@@ -792,6 +821,227 @@ def select_graph_run_id(run_id):
     return select(AgentGraphRunRecord.id).where(
         AgentGraphRunRecord.run_id == run_id
     ).scalar_subquery()
+
+
+@pytest.mark.asyncio
+async def test_api_authority_reuses_agent_governance_and_mysql_execution(
+    database,
+    tmp_path: Path,
+) -> None:
+    key = Fernet.generate_key()
+    settings = _settings(key).model_copy(
+        update={"upload_root": tmp_path / "api-uploads"}
+    )
+    adapter = CaptureAdapter()
+    registry = ProviderRegistry()
+    registry.register(MANIFEST, adapter)
+    operator = OperatorContext(
+        operator_id="operator-1",
+        tenant_id="school-1",
+    )
+    async with database.session_factory() as session:
+        async with session.begin():
+            connection = await _seed_connection(session, fernet_key=key)
+            task, run = await AgentTaskService(
+                session,
+                operator=operator,
+                settings=settings,
+                provider_registry=registry,
+            ).create(
+                _intent(connection.id),
+                idempotency_key="api-agent-graph-e2e",
+            )
+            graph = await AgentGraphRepository(session).get_run_state_for_agent_run(
+                run.id
+            )
+            assert graph is not None
+
+    target_store = InMemoryConnectorStore(
+        records=[
+            {
+                "id": "target-teacher-1",
+                "row_version": "v1",
+                "category": "教师",
+                "name": "周明远-old",
+                "number": None,
+                "class_name": None,
+                "phone": "13800000001",
+                "email": None,
+            }
+        ]
+    )
+    target_runtime = StaticDatabaseConnectorRuntime(
+        ConfiguredApiConnector(
+            configuration=settings.database_connector_configurations[
+                "seewo-mysql"
+            ],
+            store=target_store,
+        )
+    )
+    candidate_provider = ProductionGraphCandidateProvider(
+        database.session_factory,
+        database_connectors=target_runtime,
+    )
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=ScriptedSkillProvider(),
+        tokenization_secret="api-graph-e2e-tokenization-secret",
+        max_retries=0,
+        output_root=tmp_path / "api-outputs",
+        settings=settings,
+        database_connectors=target_runtime,
+        api_materializer=ApiAuthorityMaterializer(
+            settings,
+            registry=registry,
+            fernet_key=key,
+        ),
+    )
+    worker = AgentGraphWorker(
+        database.session_factory,
+        worker_id="api-agent-graph-e2e-worker",
+        lease_seconds=60,
+        supervisor=GraphSupervisorAgent(
+            ScriptedSupervisorProvider(),
+            max_retries=0,
+        ),
+        candidate_provider=candidate_provider,
+        executor=executor,
+    )
+
+    for _step in range(40):
+        await worker.run_once()
+        pending_gate_id: UUID | None = None
+        async with database.session_factory() as session:
+            current = await session.get(AgentRunRecord, run.id)
+            assert current is not None
+            if current.status == "waiting_human":
+                pending_gate_id = await session.scalar(
+                    select(AgentHumanGateRecord.id).where(
+                        AgentHumanGateRecord.graph_run_id == graph.id,
+                        AgentHumanGateRecord.status == "pending",
+                    )
+                )
+                assert pending_gate_id is not None
+            if current.status == "completed":
+                break
+        if pending_gate_id is not None:
+            async with database.session_factory() as session:
+                async with session.begin():
+                    await decide_agent_graph_gate(
+                        task_id=task.id,
+                        gate_id=pending_gate_id,
+                        body=AgentGraphGateDecisionRequest(
+                            decision="approve",
+                            reason="合成测试确认执行",
+                        ),
+                        request=SimpleNamespace(
+                            app=SimpleNamespace(
+                                state=SimpleNamespace(
+                                    settings=SimpleNamespace(
+                                        new_agent_enabled=True,
+                                    )
+                                )
+                            )
+                        ),
+                        session=session,
+                        operator=operator,
+                    )
+    else:
+        async with database.session_factory() as session:
+            current = await session.get(AgentRunRecord, run.id)
+            current_graph = await session.get(AgentGraphRunRecord, graph.id)
+            events = tuple(
+                await session.scalars(
+                    select(AgentTaskEventRecord)
+                    .where(AgentTaskEventRecord.run_id == run.id)
+                    .order_by(AgentTaskEventRecord.sequence.desc())
+                    .limit(5)
+                )
+            )
+            operations = tuple(
+                await session.scalars(
+                    select(AgentGovernanceOperationRecord).where(
+                        AgentGovernanceOperationRecord.run_id == run.id
+                    )
+                )
+            )
+        operation_states = [
+            (
+                item.status,
+                item.target_source_identifier,
+                item.before,
+                item.after,
+                item.error_code,
+            )
+            for item in operations
+        ]
+        pytest.fail(
+            "API Agent graph did not reach terminal state: "
+            f"run={current.status if current else None}, "
+            f"node={current_graph.current_node if current_graph else None}, "
+            f"events={[(item.event_type, item.payload) for item in events]}, "
+            f"operations={operation_states}"
+        )
+
+    async with database.session_factory() as session:
+        async def count(model, *criteria) -> int:
+            return int(
+                (
+                    await session.scalar(
+                        select(func.count()).select_from(model).where(*criteria)
+                    )
+                )
+                or 0
+            )
+
+        assert graph.graph_version == "agent-sync-graph-v2"
+        assert run.ingestion_contract_version == "source-ingestion-v3"
+        assert run.execution_contract_version == "deterministic-execution-v2"
+        assert await count(
+            AgentInputRecord,
+            AgentInputRecord.run_id == run.id,
+            AgentInputRecord.source_role == "authoritative",
+        ) == 1
+        assert await count(
+            AgentIdentityClaimRecord,
+            AgentIdentityClaimRecord.run_id == run.id,
+        ) > 0
+        assert await count(
+            AgentWorkItemRecord,
+            AgentWorkItemRecord.run_id == run.id,
+        ) > 0
+        assert await count(
+            AgentModelBatchRecord,
+            AgentModelBatchRecord.run_id == run.id,
+        ) > 0
+        assert await count(
+            AgentFindingRecord,
+            AgentFindingRecord.run_id == run.id,
+        ) > 0
+        assert await count(
+            AgentGovernancePlanRecord,
+            AgentGovernancePlanRecord.run_id == run.id,
+        ) == 1
+        assert await count(
+            AgentGovernanceOperationRecord,
+            AgentGovernanceOperationRecord.run_id == run.id,
+            AgentGovernanceOperationRecord.status == "succeeded",
+        ) > 0
+        assert await count(RawSnapshotRow) == 0
+        assert await count(CanonicalEntityRecord) == 0
+        assert await count(EntityMapping) == 0
+        report = await session.scalar(
+            select(AgentReportRecord).where(AgentReportRecord.task_id == task.id)
+        )
+        assert report is not None
+
+    target = await target_store.record(
+        identifier="target-teacher-1",
+        record_id_field="id",
+    )
+    assert target is not None
+    assert target["name"] == "周明远"
+    assert adapter.calls == 1
 
 
 @pytest.mark.asyncio

@@ -7,6 +7,7 @@ from sqlalchemy import delete, exists, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent_reporting.service import AgentReportingService
+from app.api_connectors.secrets import delete_unreferenced_secret
 from app.models.agent_analysis import (
     AgentApprovalGroupRecord,
     AgentClarificationRecord,
@@ -35,6 +36,7 @@ from app.models.agent_runtime import (
 )
 from app.models.analyses import AnalysisRecord
 from app.models.analysis_jobs import AnalysisJobRecord, AnalysisWorkItemRecord
+from app.models.api_connectors import ApiAuthoritySourceRecord
 from app.models.differences import DifferenceRecord
 from app.models.executions import (
     ExecutionBatchRecord,
@@ -185,6 +187,15 @@ class TaskDeletionService:
             )
         ).all()
         source_file_ids = [row.id for row in file_rows]
+        api_secret_refs = set(
+            (
+                await self.session.scalars(
+                    select(ApiAuthoritySourceRecord.frozen_secret_ref).where(
+                        ApiAuthoritySourceRecord.task_id == task_id
+                    )
+                )
+            ).all()
+        )
         remote_source_ids = list(
             await self.session.scalars(
                 select(RemoteSourceRecord.id).where(RemoteSourceRecord.task_id == task_id)
@@ -319,6 +330,17 @@ class TaskDeletionService:
         await self.session.execute(
             delete(IngestionIssueRecord).where(IngestionIssueRecord.snapshot_id.in_(snapshot_ids))
         )
+        await self.session.execute(
+            delete(ApiAuthoritySourceRecord).where(
+                ApiAuthoritySourceRecord.task_id == task_id
+            )
+        )
+        for secret_ref in api_secret_refs:
+            await delete_unreferenced_secret(
+                self.session,
+                tenant_id=tenant_id,
+                secret_ref=secret_ref,
+            )
         await self.session.execute(delete(Snapshot).where(Snapshot.id.in_(snapshot_ids)))
         await self.session.execute(
             delete(WorkflowStageRun).where(WorkflowStageRun.task_id == task_id)

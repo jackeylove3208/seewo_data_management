@@ -84,6 +84,110 @@ describe("Agent API", () => {
     expect(JSON.parse(String((request as RequestInit).body))).toEqual({});
   });
 
+  it("keeps API credentials on the secure connector endpoints", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: "configuration-session-1",
+        provider_id: "dingtalk",
+        required_secret_fields: ["app_key", "app_secret"],
+        expires_at: "2026-07-29T12:00:00Z",
+      }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: "connection-1",
+        provider_id: "dingtalk",
+        display_name: "学校钉钉",
+        state: "pending",
+        capabilities: {},
+        visibility_summary: {},
+      }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: "connection-1",
+        provider_id: "dingtalk",
+        display_name: "学校钉钉",
+        state: "active",
+        capabilities: { "entity.teacher.read": true },
+        visibility_summary: { visible: true, teacher_count: 5 },
+      }), { status: 200 }));
+
+    const result = await agentApi.configureApiConnection?.({
+      provider_id: "dingtalk",
+      display_name: "学校钉钉",
+      required_secret_fields: ["app_key", "app_secret"],
+      public_configuration: {
+        person_entity_kind: "student",
+        root_department_id: 2,
+        number_field: "student_number",
+        class_name_field: "class_name",
+      },
+      secret: { app_key: "ding-app", app_secret: "ding-secret" },
+    });
+
+    const calls = vi.mocked(fetch).mock.calls;
+    expect(calls.map(([path]) => path)).toEqual([
+      "/api/connectors/configuration-sessions",
+      "/api/connectors/connections",
+      "/api/connectors/connections/connection-1/test",
+    ]);
+    expect(JSON.parse(String((calls[1]?.[1] as RequestInit).body))).toEqual({
+      configuration_session_id: "configuration-session-1",
+      provider_id: "dingtalk",
+      display_name: "学校钉钉",
+      public_configuration: {
+        person_entity_kind: "student",
+        root_department_id: 2,
+        number_field: "student_number",
+        class_name_field: "class_name",
+      },
+      secret: { app_key: "ding-app", app_secret: "ding-secret" },
+    });
+    expect(result?.state).toBe("active");
+  });
+
+  it("updates safe API configuration when retrying an existing connection", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: "connection-1",
+        provider_id: "dingtalk",
+        display_name: "学校钉钉",
+        state: "pending",
+        capabilities: {},
+        visibility_summary: {},
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        id: "connection-1",
+        provider_id: "dingtalk",
+        display_name: "学校钉钉",
+        state: "active",
+        capabilities: { "entity.student.read": true },
+        visibility_summary: { visible: true, student_count: 5 },
+      }), { status: 200 }));
+
+    await agentApi.configureApiConnection?.({
+      provider_id: "dingtalk",
+      display_name: "学校钉钉",
+      required_secret_fields: ["app_key", "app_secret"],
+      public_configuration: {
+        person_entity_kind: "student",
+        root_department_id: 2,
+      },
+      secret: { app_key: "ding-app", app_secret: "ding-secret" },
+      connection_id: "connection-1",
+    });
+
+    const calls = vi.mocked(fetch).mock.calls;
+    expect(calls.map(([path]) => path)).toEqual([
+      "/api/connectors/connections/connection-1/rotate-secret",
+      "/api/connectors/connections/connection-1/test",
+    ]);
+    expect(JSON.parse(String((calls[0]?.[1] as RequestInit).body))).toEqual({
+      public_configuration: {
+        person_entity_kind: "student",
+        root_department_id: 2,
+      },
+      secret: { app_key: "ding-app", app_secret: "ding-secret" },
+    });
+  });
+
   it("reads persisted task events and sends only control commands", async () => {
     await agentApi.events("task-1", "cursor-2");
     await agentApi.terminate("task-1");

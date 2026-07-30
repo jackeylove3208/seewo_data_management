@@ -33,7 +33,7 @@ class ConversationSupervisorAgent:
         self._reserved_output_tokens = reserved_output_tokens
 
     async def reply(self, context: ConversationAgentContext) -> ConversationAgentDecision:
-        skill = self._skills.load("converse-school-data-sync", "1.2.0")
+        skill = self._skills.load("converse-school-data-sync", "1.3.0")
         request = build_agent_request(
             skill,
             context.model_dump(mode="json"),
@@ -72,6 +72,9 @@ def _validate_source_references(
     decision: ConversationAgentDecision,
     context: ConversationAgentContext,
 ) -> ConversationAgentDecision:
+    api_decision = _validate_api_selection(decision, context)
+    if api_decision is not None:
+        return api_decision
     references = {value for value in context.available_source_refs}
     selected_boundary = (
         (decision.remote_url_start, decision.remote_url_end)
@@ -206,3 +209,89 @@ def _validate_source_references(
         kind="clarification",
         message_zh="可用本地数据来源已变化，请从服务端列出的来源中重新确认。",
     )
+
+
+def _validate_api_selection(
+    decision: ConversationAgentDecision,
+    context: ConversationAgentContext,
+) -> ConversationAgentDecision | None:
+    if decision.api_provider_id is not None:
+        provider_ids = {
+            provider.provider_id for provider in context.available_api_providers
+        }
+        if (
+            decision.kind == "api_configuration"
+            and decision.api_provider_id in provider_ids
+            and decision.source_api_connection_id is None
+            and decision.source_configuration_id is None
+            and decision.target_configuration_id is None
+            and decision.source_ref is None
+            and decision.target_ref is None
+            and decision.remote_source_id is None
+        ):
+            return decision
+        return ConversationAgentDecision(
+            kind="clarification",
+            message_zh="API 提供方清单已变化，请重新选择当前支持的连接类型。",
+        )
+    if decision.kind == "api_configuration":
+        return ConversationAgentDecision(
+            kind="clarification",
+            message_zh="请先选择要配置的 API 提供方。",
+        )
+    if decision.source_api_connection_id is None:
+        return None
+    if (
+        decision.source_configuration_id is not None
+        or decision.source_ref is not None
+        or decision.target_ref is not None
+        or decision.remote_source_id is not None
+        or decision.remote_url_start is not None
+    ):
+        return ConversationAgentDecision(
+            kind="clarification",
+            message_zh="API 权威来源只能与服务端列出的 MySQL 希沃目标配对。",
+        )
+    connection = next(
+        (
+            item
+            for item in context.available_api_connections
+            if item.connection_id == decision.source_api_connection_id
+        ),
+        None,
+    )
+    target = next(
+        (
+            item
+            for item in context.available_database_connectors
+            if item.connector_id == decision.target_configuration_id
+        ),
+        None,
+    )
+    eligible = (
+        connection is not None
+        and connection.state == "active"
+        and connection.visibility_summary.get("visible") is True
+        and all(
+            connection.capabilities.get(f"entity.{entity.value}.read") is True
+            and _positive_count(
+                connection.visibility_summary.get(f"{entity.value}_count")
+            )
+            for entity in decision.entity_types
+        )
+    )
+    if (
+        eligible
+        and target is not None
+        and target.source_role == "target"
+        and target.dialect == "mysql"
+    ):
+        return decision
+    return ConversationAgentDecision(
+        kind="clarification",
+        message_zh="API 连接的权限或可见范围不足，请修正配置并重新测试。",
+    )
+
+
+def _positive_count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0

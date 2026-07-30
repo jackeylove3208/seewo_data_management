@@ -186,7 +186,7 @@ test("task detail keeps an in-flight identity choice read only after navigation"
   await page.goto("/tasks");
   await page
     .getByRole("region", { name: "历史任务" })
-    .getByRole("button", { name: /^身份冲突同步 / })
+    .getByRole("button", { name: /^同步 身份冲突同步 / })
     .click();
 
   await expect(page.getByText("已选择：第三方候选 A")).toBeVisible();
@@ -512,15 +512,15 @@ test("history exposes abnormal and partial outcomes, protects mutations, and con
 
   await page.goto("/tasks");
   const taskList = page.locator(".task-list");
-  await expect(taskList.getByRole("button", { name: /^异常输入报告 后端/ })).toBeVisible();
-  await expect(taskList.getByRole("button", { name: /^部分执行任务 后端/ })).toBeVisible();
+  await expect(taskList.getByRole("button", { name: /^同步 异常输入报告 / })).toBeVisible();
+  await expect(taskList.getByRole("button", { name: /^同步 部分执行任务 / })).toBeVisible();
   await expect(taskList.getByRole("button", { name: "删除异常输入报告" })).toBeVisible();
   await expect(page.getByRole("button", { name: "删除部分执行任务" })).toHaveCount(0);
   await taskList.getByRole("button", { name: "删除异常输入报告" }).click();
   await page.getByRole("button", { name: "确认删除" }).click();
-  await expect(taskList.getByRole("button", { name: /^异常输入报告 后端/ })).toHaveCount(0);
+  await expect(taskList.getByRole("button", { name: /^同步 异常输入报告 / })).toHaveCount(0);
 
-  await taskList.getByRole("button", { name: /^部分执行任务 后端/ }).click();
+  await taskList.getByRole("button", { name: /^同步 部分执行任务 / }).click();
   await page.getByRole("button", { name: "创建回滚任务" }).click();
   await expect.poll(() => previewCalled).toBe(true);
   await page.getByRole("button", { name: "确认回滚" }).click();
@@ -549,5 +549,5 @@ test("partial and abnormal facts are readable from the backend-owned report", as
   await expect(page.getByRole("heading", { name: "数据同步分析报告" })).toBeVisible();
   await expect(page.getByText("希沃多余")).toBeVisible();
   await expect(page.getByText("第三方数据缺少编号")).toBeVisible();
-  await expect(page.getByText("partial", { exact: true })).toBeVisible();
+  await expect(page.getByText("部分完成", { exact: true })).toBeVisible();
 });

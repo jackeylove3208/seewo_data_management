@@ -3,6 +3,7 @@
 import hashlib
 import json
 from collections import defaultdict
+from collections.abc import Collection, Iterable
 from typing import Protocol
 from uuid import UUID
 
@@ -19,11 +20,20 @@ from app.models.agent_analysis import (
     AgentWorkItemRecord,
 )
 from app.models.agent_runtime import AgentRunRecord
+from app.models.api_connectors import (
+    AgentExternalIdentityBindingRecord,
+    ApiConnectionRecord,
+)
 from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import Snapshot
 from app.repositories.agent_analysis import AgentAnalysisRepository
+from app.repositories.agent_external_identity import AgentExternalIdentityRepository
 from app.repositories.agent_governance import AgentGovernanceRepository
-from app.schemas.agent_ingestion import AgentContractRecord, AgentEntityKind
+from app.schemas.agent_ingestion import (
+    AgentContractRecord,
+    AgentEntityKind,
+    AgentInputMark,
+)
 
 
 class AgentIdentityRecord(Protocol):
@@ -50,7 +60,10 @@ def identity_postings(record: AgentContractRecord) -> tuple[tuple[str, str], ...
 
 
 def ordinary_field_differences(
-    authority: AgentIdentityRecord, target: AgentIdentityRecord
+    authority: AgentIdentityRecord,
+    target: AgentIdentityRecord,
+    *,
+    unavailable_fields: Collection[str] = (),
 ) -> tuple[str, ...]:
     """Compare governed ordinary fields after identity correspondence is accepted."""
     fields = ["category", "name", "number"]
@@ -60,15 +73,71 @@ def ordinary_field_differences(
     return tuple(
         field
         for field in fields
+        if field not in unavailable_fields
         if _semantic_field_value(authority, field)
         != _semantic_field_value(target, field)
     )
+
+
+async def unavailable_fields_by_input(
+    session: AsyncSession,
+    input_ids: Iterable[UUID],
+) -> dict[UUID, frozenset[str]]:
+    selected_ids = tuple(set(input_ids))
+    if not selected_ids:
+        return {}
+    rows = await session.execute(
+        select(
+            AgentInputMarkRecord.input_record_id,
+            AgentInputMarkRecord.affected_fields,
+        ).where(
+            AgentInputMarkRecord.input_record_id.in_(selected_ids),
+            AgentInputMarkRecord.reason_code == "authority_field_unavailable",
+            AgentInputMarkRecord.inclusion_state == "included",
+        )
+    )
+    return {
+        input_id: frozenset(
+            str(field)
+            for field in affected_fields
+            if str(field) in {"category", "name", "number", "class_name", "phone", "email"}
+        )
+        for input_id, affected_fields in rows
+    }
 
 
 def _semantic_field_value(record: AgentIdentityRecord, field: str) -> object:
     if field == "category":
         return str(record.entity_kind)
     return getattr(record, field)
+
+
+def _external_identity_scope(
+    run: AgentRunRecord,
+    task: ReconciliationTask,
+) -> tuple[str, str] | None:
+    if (
+        run.ingestion_contract_version != "source-ingestion-v3"
+        or not isinstance(task.agent_intent, dict)
+    ):
+        return None
+    source = task.agent_intent.get("source")
+    target = task.agent_intent.get("target")
+    if (
+        not isinstance(source, dict)
+        or source.get("kind") != "api"
+        or not isinstance(target, dict)
+        or target.get("kind") != "database"
+    ):
+        return None
+    connection_id = source.get("configuration_id")
+    target_connector_id = target.get("configuration_id")
+    if not isinstance(connection_id, str) or not isinstance(
+        target_connector_id,
+        str,
+    ):
+        return None
+    return connection_id, target_connector_id
 
 
 class AgentIdentityIndexBuilder:
@@ -103,6 +172,10 @@ class AgentIdentityIndexBuilder:
             )
         )
         valid_authority = tuple(record for record in authority if record.id not in excluded_ids)
+        unavailable_by_id = await unavailable_fields_by_input(
+            self._session,
+            (record.id for record in valid_authority),
+        )
         await self._persist_postings(run, source, valid_authority)
         await self._persist_postings(run, target, targets)
         postings = tuple(
@@ -112,17 +185,154 @@ class AgentIdentityIndexBuilder:
                 )
             )
         )
-        authority_index: dict[tuple[str, str], set[UUID]] = defaultdict(set)
-        valid_authority_ids = {record.id for record in valid_authority}
+        authority_by_id = {record.id: record for record in valid_authority}
+        authority_by_locator = {
+            record.stable_locator: record for record in valid_authority
+        }
+        target_by_id = {record.id: record for record in targets}
+        target_by_locator = {record.stable_locator: record for record in targets}
+        valid_authority_ids = set(authority_by_id)
+        target_ids = set(target_by_id)
+        target_index: dict[tuple[str, str], set[UUID]] = defaultdict(set)
         for posting in postings:
-            if posting.input_record_id in valid_authority_ids:
+            if posting.input_record_id in target_ids:
+                target_index[(posting.key_kind, posting.normalized_value)].add(
+                    posting.input_record_id
+                )
+        claimed_authority: set[UUID] = set()
+        claimed_targets: set[UUID] = set()
+        conflicted_authority: set[UUID] = set()
+        reserved_targets: set[UUID] = set()
+        invalid_authority: set[UUID] = set()
+        task = await self._session.get(ReconciliationTask, run.task_id)
+        if task is None:
+            raise LookupError("Agent task not found")
+        external_identity_scope = _external_identity_scope(run, task)
+        external_bindings = await self._external_bindings(
+            run,
+            task,
+            scope=external_identity_scope,
+        )
+        for binding in external_bindings:
+            authority_record = authority_by_locator.get(
+                binding.authority_stable_locator
+            )
+            target_record = target_by_locator.get(binding.target_stable_locator)
+            if authority_record is None:
+                await AgentRuntimeRepository(self._session).append_event(
+                    run.id,
+                    "external_identity_binding_stale",
+                    {
+                        "binding_id": str(binding.id),
+                        "reason_code": "authority_locator_absent",
+                    },
+                )
+                continue
+            if (
+                target_record is None
+                or authority_record.entity_kind != binding.entity_kind
+                or target_record.entity_kind != binding.entity_kind
+            ):
+                await self._mark_identity_exception(
+                    authority_record,
+                    reason_code="external_identity_binding_stale",
+                    report_disposition="external_binding_stale",
+                )
+                await self._persist_work(
+                    run,
+                    source,
+                    target,
+                    authority_record,
+                    "authority_invalid",
+                    ("external_binding_stale", str(binding.id)),
+                )
+                invalid_authority.add(authority_record.id)
+                await AgentRuntimeRepository(self._session).append_event(
+                    run.id,
+                    "external_identity_binding_stale",
+                    {
+                        "binding_id": str(binding.id),
+                        "reason_code": "target_locator_absent_or_changed",
+                    },
+                )
+                continue
+            ordinary_target_ids = {
+                candidate_id
+                for key in _record_postings(authority_record)
+                for candidate_id in target_index.get(key, set())
+            }
+            contradictory_targets = ordinary_target_ids.difference(
+                {target_record.id}
+            )
+            if (
+                contradictory_targets
+                or authority_record.id in claimed_authority
+                or target_record.id in claimed_targets
+            ):
+                await self._mark_identity_exception(
+                    authority_record,
+                    reason_code="external_identity_binding_conflict",
+                    report_disposition="identity_conflict",
+                )
+                await self._persist_work(
+                    run,
+                    source,
+                    target,
+                    target_record,
+                    "identity_conflict",
+                    (
+                        "external_binding_disagrees",
+                        str(binding.id),
+                        *(str(item) for item in sorted(contradictory_targets, key=str)),
+                    ),
+                )
+                conflicted_authority.add(authority_record.id)
+                reserved_targets.add(target_record.id)
+                reserved_targets.update(contradictory_targets)
+                continue
+            differences = ordinary_field_differences(
+                authority_record,
+                target_record,
+                unavailable_fields=unavailable_by_id.get(authority_record.id, ()),
+            )
+            kind = "field_difference" if differences else "correct"
+            work = await self._persist_work(
+                run,
+                source,
+                target,
+                target_record,
+                kind,
+                ("external_binding", str(binding.id), *differences),
+            )
+            await self._repository.persist_identity_claim(
+                run_id=run.id,
+                task_id=run.task_id,
+                source_snapshot_id=source.id,
+                target_snapshot_id=target.id,
+                authority_input_id=authority_record.id,
+                target_input_id=target_record.id,
+                work_item_id=work.id,
+            )
+            claimed_authority.add(authority_record.id)
+            claimed_targets.add(target_record.id)
+
+        authority_index: dict[tuple[str, str], set[UUID]] = defaultdict(set)
+        for posting in postings:
+            if (
+                posting.input_record_id in valid_authority_ids
+                and posting.input_record_id not in claimed_authority
+                and posting.input_record_id not in conflicted_authority
+                and posting.input_record_id not in invalid_authority
+            ):
                 authority_index[(posting.key_kind, posting.normalized_value)].add(
                     posting.input_record_id
                 )
-        authority_by_id = {record.id: record for record in valid_authority}
-        claimed_authority: set[UUID] = set()
-        conflicted_authority: set[UUID] = set()
         for target_record in targets:
+            if (
+                target_record.id in claimed_targets
+                or target_record.id in reserved_targets
+            ):
+                continue
             candidate_ids = {
                 candidate
                 for key in _record_postings(target_record)
@@ -176,7 +386,11 @@ class AgentIdentityIndexBuilder:
                     run, source, target, target_record, "target_duplicate", (str(authority_id),)
                 )
                 continue
-            differences = ordinary_field_differences(authority_record, target_record)
+            differences = ordinary_field_differences(
+                authority_record,
+                target_record,
+                unavailable_fields=unavailable_by_id.get(authority_record.id, ()),
+            )
             kind = "field_difference" if differences else "correct"
             work = await self._persist_work(run, source, target, target_record, kind, differences)
             await self._repository.persist_identity_claim(
@@ -189,19 +403,101 @@ class AgentIdentityIndexBuilder:
                 work_item_id=work.id,
             )
             claimed_authority.add(authority_id)
+            claimed_targets.add(target_record.id)
         for authority_record in valid_authority:
             if (
                 authority_record.id not in claimed_authority
                 and authority_record.id not in conflicted_authority
+                and authority_record.id not in invalid_authority
             ):
-                await self._persist_work(
-                    run, source, target, authority_record, "target_missing", ("unclaimed",)
-                )
+                if (
+                    external_identity_scope is not None
+                    and not _record_postings(authority_record)
+                ):
+                    await self._mark_identity_exception(
+                        authority_record,
+                        reason_code="authority_identity_absent",
+                        report_disposition="mandatory_ai_anomaly",
+                    )
+                    await self._persist_work(
+                        run,
+                        source,
+                        target,
+                        authority_record,
+                        "authority_invalid",
+                        ("authority_identity_absent",),
+                    )
+                else:
+                    await self._persist_work(
+                        run,
+                        source,
+                        target,
+                        authority_record,
+                        "target_missing",
+                        ("unclaimed",),
+                    )
         for authority_record in authority:
             if authority_record.id in excluded_ids:
                 await self._persist_work(
                     run, source, target, authority_record, "authority_invalid", ("excluded",)
                 )
+
+    async def _external_bindings(
+        self,
+        run: AgentRunRecord,
+        task: ReconciliationTask,
+        *,
+        scope: tuple[str, str] | None,
+    ) -> tuple[AgentExternalIdentityBindingRecord, ...]:
+        if scope is None:
+            return ()
+        connection_value, target_connector_id = scope
+        try:
+            connection_id = UUID(connection_value)
+        except ValueError:
+            return ()
+        connection = await self._session.scalar(
+            select(ApiConnectionRecord).where(
+                ApiConnectionRecord.id == connection_id,
+                ApiConnectionRecord.tenant_id == run.tenant_id,
+            )
+        )
+        if connection is None:
+            return ()
+        return await AgentExternalIdentityRepository(
+            self._session
+        ).active_for_scope(
+            tenant_id=run.tenant_id,
+            provider_id=connection.provider_id,
+            connection_id=connection.id,
+            target_connector_id=target_connector_id,
+            entity_kinds=tuple(task.entity_types),
+        )
+
+    async def _mark_identity_exception(
+        self,
+        record: AgentInputRecord,
+        *,
+        reason_code: str,
+        report_disposition: str,
+    ) -> None:
+        await self._repository.persist_marks(
+            (
+                AgentInputMark(
+                    input_record_id=record.id,
+                    reason_code=reason_code,
+                    affected_fields=("number", "phone", "email"),
+                    inclusion_state="excluded",
+                    report_disposition=report_disposition,
+                    safe_evidence={
+                        "code": reason_code,
+                        "entity_kind": record.entity_kind,
+                        "has_identity": bool(_record_postings(record)),
+                        "source_role": record.source_role,
+                    },
+                ),
+            )
+        )
 
     async def resolve_confirmed_conflicts(
         self,
@@ -289,7 +585,15 @@ class AgentIdentityIndexBuilder:
                     )
                 )
                 if existing_claim is None:
-                    differences = ordinary_field_differences(authority, subject)
+                    unavailable_by_id = await unavailable_fields_by_input(
+                        self._session,
+                        (authority.id,),
+                    )
+                    differences = ordinary_field_differences(
+                        authority,
+                        subject,
+                        unavailable_fields=unavailable_by_id.get(authority.id, ()),
+                    )
                     resolution_kind = "field_difference" if differences else "correct"
                     primary = await self._persist_work(
                         run,

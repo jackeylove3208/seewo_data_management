@@ -12,11 +12,13 @@ The implementation provides:
 - `ThirdPartyApiConnector`, `SeewoApiConnector`, and `DatabaseSourceConnector` façades over those
   configured stores.
 
-The durable `new-agent-v1` worker currently binds CSV end-to-end. Agent task submission rejects
-an API/database selection with the stable `connector_capability_failure` code before it creates a
-task or acquires a school lock. This is intentional until configured records can be materialized
-as immutable Agent evidence and the connector target session can be reconstructed safely after a
-worker restart.
+With the API rollout flags enabled, a conversation may select a tested DingTalk or WeCom
+connection as the read-only authoritative source and a server-configured MySQL connector as the
+target. New tasks freeze `agent-sync-graph-v2`, `source-ingestion-v3`, and
+`deterministic-execution-v2`. Before inspection, the worker materializes complete paginated API
+evidence and then projects it directly to `AgentInputRecord`; it does not enter the legacy
+`CanonicalEntityRecord`/`EntityMapping` path. Unsupported connector pairs are still rejected before
+task or school-lock creation.
 
 Configured connectors must preserve the canonical Pydantic models and provenance. Authentication
 or DSN values remain behind server-side credential references; clients and model payloads receive

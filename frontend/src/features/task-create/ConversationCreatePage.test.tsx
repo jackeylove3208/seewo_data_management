@@ -241,6 +241,105 @@ describe("backend Agent conversation", () => {
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
   });
 
+  it("configures and tests an API connection without echoing credentials into chat", async () => {
+    const configureApiConnection = vi.fn()
+      .mockResolvedValueOnce({
+        provider_id: "dingtalk",
+        state: "invalid",
+        required_secret_fields: ["app_key", "app_secret"],
+        connection_id: "connection-1",
+        display_name: "学校钉钉",
+        capabilities: {},
+        visibility_summary: {},
+        safe_error_code: "connector_permission_denied",
+      })
+      .mockResolvedValueOnce({
+        provider_id: "dingtalk",
+        state: "active",
+        required_secret_fields: ["app_key", "app_secret"],
+        connection_id: "connection-1",
+        display_name: "学校钉钉",
+        capabilities: { "entity.teacher.read": true },
+        visibility_summary: { visible: true, teacher_count: 5 },
+      });
+    const backend = api({
+      currentConversation: vi.fn().mockResolvedValue({
+        id: "conversation-api",
+        status: "active",
+        messages: [],
+        intent: {
+          title: "全校组织数据同步",
+          entity_types: [],
+        },
+        api_connection: {
+          provider_id: "dingtalk",
+          state: "configuration_required",
+          required_secret_fields: ["app_key", "app_secret"],
+          capabilities: {},
+          visibility_summary: {},
+        },
+        task: null,
+      }),
+      configureApiConnection,
+    });
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    const card = await screen.findByLabelText("API 连接配置");
+    await user.clear(within(card).getByLabelText("连接名称"));
+    await user.type(within(card).getByLabelText("连接名称"), "学校钉钉");
+    await user.selectOptions(within(card).getByLabelText("人员类型"), "student");
+    await user.clear(within(card).getByLabelText("根部门 ID"));
+    await user.type(within(card).getByLabelText("根部门 ID"), "2");
+    await user.type(within(card).getByLabelText("人员编号字段"), "student_number");
+    await user.type(within(card).getByLabelText("班级字段"), "class_name");
+    await user.type(within(card).getByLabelText("AppKey"), "ding-app");
+    await user.type(within(card).getByLabelText("AppSecret"), "ding-secret");
+    await user.click(within(card).getByRole("button", { name: "保存并测试连接" }));
+
+    await waitFor(() => expect(configureApiConnection).toHaveBeenCalledWith({
+      provider_id: "dingtalk",
+      display_name: "学校钉钉",
+      required_secret_fields: ["app_key", "app_secret"],
+      public_configuration: {
+        person_entity_kind: "student",
+        root_department_id: 2,
+        number_field: "student_number",
+        class_name_field: "class_name",
+      },
+      secret: { app_key: "ding-app", app_secret: "ding-secret" },
+    }));
+    expect(
+      await within(card).findByText(
+        "连接测试未通过：connector_permission_denied",
+      ),
+    ).toBeInTheDocument();
+
+    await user.type(within(card).getByLabelText("AppKey"), "ding-app-fixed");
+    await user.type(within(card).getByLabelText("AppSecret"), "ding-secret-fixed");
+    await user.click(within(card).getByRole("button", { name: "保存并测试连接" }));
+
+    expect(await within(card).findByText("连接测试通过")).toBeInTheDocument();
+    expect(configureApiConnection).toHaveBeenLastCalledWith({
+      provider_id: "dingtalk",
+      display_name: "学校钉钉",
+      required_secret_fields: ["app_key", "app_secret"],
+      public_configuration: {
+        person_entity_kind: "student",
+        root_department_id: 2,
+        number_field: "student_number",
+        class_name_field: "class_name",
+      },
+      secret: {
+        app_key: "ding-app-fixed",
+        app_secret: "ding-secret-fixed",
+      },
+      connection_id: "connection-1",
+    });
+    expect(screen.queryByText("ding-app")).not.toBeInTheDocument();
+    expect(screen.queryByText("ding-secret")).not.toBeInTheDocument();
+  });
+
   it("shows backend confirmation and locks ordinary input after task start", async () => {
     const backend = api();
     const user = userEvent.setup();

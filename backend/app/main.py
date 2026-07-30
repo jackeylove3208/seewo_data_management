@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api.routes import api_connectors
 from app.api.routes.agent import router as agent_router
 from app.api.routes.analyses import router as analysis_router
 from app.api.routes.analysis_jobs import router as analysis_job_router
@@ -17,6 +18,7 @@ from app.api.routes.rematching_jobs import router as rematching_router
 from app.api.routes.reports import router as report_router
 from app.api.routes.restores import router as restore_router
 from app.api.routes.uploads import router as upload_router
+from app.api_connectors.registry import build_default_provider_runtime
 from app.core.config import Settings, get_settings
 from app.core.database import Database
 from app.models import Base
@@ -36,17 +38,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             else secrets.token_bytes(32)
         )
         app.state.database = Database(configured.database_url)
+        app.state.api_provider_registry, provider_clients = (
+            build_default_provider_runtime(
+                connect_timeout=configured.api_connector_connect_timeout_seconds,
+                read_timeout=configured.api_connector_read_timeout_seconds,
+            )
+        )
         if configured.auto_create_schema:
             async with app.state.database.engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)
         try:
             yield
         finally:
+            for client in provider_clients:
+                await client.aclose()
             await app.state.database.dispose()
 
     app = FastAPI(title=configured.app_name, version="0.1.0", lifespan=lifespan)
     app.include_router(health_router, prefix="/health", tags=["health"])
     app.include_router(agent_router)
+    app.include_router(api_connectors.router)
+    app.include_router(api_connectors.external_identity_router)
     app.include_router(analysis_router)
     app.include_router(analysis_job_router)
     app.include_router(difference_router)

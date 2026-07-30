@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -14,6 +15,7 @@ from app.models.agent_analysis import (
     AgentFindingRecord,
     AgentGovernanceOperationRecord,
     AgentGovernancePlanRecord,
+    AgentInputMarkRecord,
     AgentInputRecord,
     AgentModelBatchRecord,
     AgentWorkItemRecord,
@@ -51,6 +53,113 @@ def _verified_mutation(operation_id: str = "op-1") -> dict[str, object]:
         "status": "succeeded",
         "verification": {"valid": True},
     }
+
+
+@pytest.mark.asyncio
+async def test_terminal_report_includes_safe_input_diagnostics(session) -> None:
+    task = _task()
+    session.add(task)
+    await session.flush()
+    run = await AgentRuntimeRepository(session).create_run(
+        task_id=task.id,
+        tenant_id=task.tenant_id,
+        conversation_id=None,
+        kind=AgentRunKind.SYNC,
+    )
+    inputs: list[AgentInputRecord] = []
+    for order, role in enumerate(("authoritative", "target"), start=1):
+        source_file = SourceFile(
+            task_id=task.id,
+            source_role=role,
+            original_name=f"{role}.jsonl",
+            storage_name=f"{uuid4()}.jsonl",
+            storage_path=f"/tmp/{role}.jsonl",
+            sha256=str(order) * 64,
+            size_bytes=1,
+        )
+        session.add(source_file)
+        await session.flush()
+        snapshot = Snapshot(
+            id=uuid4(),
+            task_id=task.id,
+            source_file_id=source_file.id,
+            source_role=role,
+            schema_version="v1",
+            mapping_version="v1",
+            file_hash=source_file.sha256,
+            content_hash=str(order + 2) * 64,
+            summary={},
+        )
+        session.add(snapshot)
+        await session.flush()
+        inputs.append(
+            AgentInputRecord(
+                run_id=run.id,
+                task_id=task.id,
+                snapshot_id=snapshot.id,
+                tenant_id=task.tenant_id,
+                source_role=role,
+                stable_locator=f"{role}:person-1",
+                stable_order=1,
+                entity_kind="teacher",
+                name="合成教师",
+                phone="13800000000",
+                input_hash=str(order + 4) * 64,
+            )
+        )
+    session.add_all(inputs)
+    await session.flush()
+    session.add_all(
+        [
+            AgentInputMarkRecord(
+                input_record_id=inputs[0].id,
+                reason_code="authority_field_unavailable",
+                affected_fields=["phone", "email"],
+                inclusion_state="included",
+                report_disposition="warning",
+                safe_evidence={"visibility": "hidden"},
+            ),
+            AgentInputMarkRecord(
+                input_record_id=inputs[0].id,
+                reason_code="authority_identity_absent",
+                affected_fields=["number", "phone", "email"],
+                inclusion_state="anomaly",
+                report_disposition="mandatory",
+                safe_evidence={"identity_keys": "absent"},
+            ),
+            AgentInputMarkRecord(
+                input_record_id=inputs[1].id,
+                reason_code="target_row_invalid",
+                affected_fields=["name"],
+                inclusion_state="excluded",
+                report_disposition="warning",
+                safe_evidence={"validation": "failed"},
+            ),
+        ]
+    )
+    await session.flush()
+
+    facts = await build_agent_report_facts(session, run_id=run.id)
+
+    assert facts["input_diagnostics"] == {
+        "marked_input_counts": {"authoritative": 1, "target": 1},
+        "reason_counts": {
+            "authority_field_unavailable": 1,
+            "authority_identity_absent": 1,
+            "target_row_invalid": 1,
+        },
+        "unavailable_field_counts": {"email": 1, "phone": 1},
+        "identity_absent_count": 1,
+    }
+    assert facts["excluded_findings"][0] == {
+        "source_role": "authoritative",
+        "reason": "authority_field_unavailable",
+        "affected_fields": ["email", "phone"],
+        "inclusion_state": "included",
+        "disposition": "warning",
+        "safe_evidence": {"visibility": "hidden"},
+    }
+    assert "13800000000" not in json.dumps(facts, ensure_ascii=False)
 
 
 @pytest.mark.asyncio

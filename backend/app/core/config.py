@@ -108,12 +108,17 @@ class Settings(BaseSettings):
     agent_graph_enabled: bool = False
     agent_graph_csv_execution_enabled: bool = False
     source_ingestion_v2_enabled: bool = False
+    source_ingestion_v3_enabled: bool = False
     agent_graph_sql_execution_enabled: bool = False
     new_agent_analysis_only: bool = True
     new_agent_csv_execution_enabled: bool = False
     new_agent_api_connector_enabled: bool = False
     new_agent_database_connector_enabled: bool = False
     conversation_remote_csv_enabled: bool = False
+    api_connector_secret_key: SecretStr | None = None
+    api_connector_connect_timeout_seconds: PositiveFloat = 10
+    api_connector_read_timeout_seconds: PositiveFloat = 30
+    api_connector_test_max_age_seconds: PositiveInt = 24 * 60 * 60
     remote_source_max_redirects: int = Field(default=3, ge=0, le=5)
     remote_source_connect_timeout_seconds: PositiveFloat = 10
     remote_source_read_timeout_seconds: PositiveFloat = 30
@@ -213,8 +218,17 @@ class Settings(BaseSettings):
             raise ValueError("new_agent_enabled is required for Agent rollout flags")
         if self.new_agent_analysis_only and any(child_flags):
             raise ValueError("new_agent_analysis_only cannot enable target execution")
-        if self.new_agent_api_connector_enabled and not self.api_connector_configurations:
-            raise ValueError("API connector configuration is required before enabling execution")
+        if self.new_agent_api_connector_enabled:
+            if self.api_connector_secret_key is None:
+                raise ValueError(
+                    "API connector secret key is required before enabling execution"
+                )
+            from cryptography.fernet import Fernet
+
+            try:
+                Fernet(self.api_connector_secret_key.get_secret_value().encode())
+            except (TypeError, ValueError) as error:
+                raise ValueError("API connector secret key must be a valid Fernet key") from error
         if self.new_agent_database_connector_enabled and not self.database_connector_configurations:
             raise ValueError(
                 "database connector configuration is required before enabling execution"
@@ -227,6 +241,8 @@ class Settings(BaseSettings):
             )
         if self.source_ingestion_v2_enabled and not self.agent_graph_enabled:
             raise ValueError("agent_graph_enabled is required for source_ingestion_v2_enabled")
+        if self.source_ingestion_v3_enabled and not self.agent_graph_enabled:
+            raise ValueError("agent_graph_enabled is required for source_ingestion_v3_enabled")
         if self.conversation_remote_csv_enabled and not self.source_ingestion_v2_enabled:
             raise ValueError(
                 "source_ingestion_v2_enabled is required for conversation remote CSV"
@@ -235,8 +251,12 @@ class Settings(BaseSettings):
             raise ValueError(
                 "agent_graph_enabled is required for agent_graph_sql_execution_enabled"
             )
-        if self.agent_graph_sql_execution_enabled and not self.source_ingestion_v2_enabled:
-            raise ValueError("source_ingestion_v2_enabled is required for SQL graph execution")
+        if self.agent_graph_sql_execution_enabled and not (
+            self.source_ingestion_v2_enabled or self.source_ingestion_v3_enabled
+        ):
+            raise ValueError(
+                "versioned source ingestion is required for SQL graph execution"
+            )
         if self.agent_graph_sql_execution_enabled:
             self._validate_sql_graph_connectors()
         if self.new_agent_analysis_only and self.agent_graph_csv_execution_enabled:
@@ -289,7 +309,9 @@ class Settings(BaseSettings):
                     "SQL graph target requires create, update, delete, "
                     "optimistic version, and read-after-write capabilities"
                 )
-        if authoritative_count == 0 or target_count == 0:
+        if target_count == 0 or (
+            authoritative_count == 0 and not self.source_ingestion_v3_enabled
+        ):
             raise ValueError("SQL graph execution requires authoritative and target connectors")
 
     @property

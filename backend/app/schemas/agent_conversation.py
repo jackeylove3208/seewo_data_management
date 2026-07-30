@@ -20,6 +20,8 @@ class ConversationAgentContext(BaseModel):
     remote_link_candidates: tuple["ConversationLinkBoundaryCandidate", ...] = ()
     available_remote_sources: tuple["ConversationRemoteSource", ...] = ()
     available_database_connectors: tuple["ConversationDatabaseConnector", ...] = ()
+    available_api_providers: tuple["ConversationApiProvider", ...] = ()
+    available_api_connections: tuple["ConversationApiConnection", ...] = ()
     current_intent: dict[str, Any] = Field(default_factory=dict)
     active_task_id: UUID | None = None
 
@@ -38,6 +40,28 @@ class ConversationDatabaseConnector(BaseModel):
     connector_id: str = Field(min_length=1, max_length=128)
     dialect: Literal["mysql", "postgresql"]
     source_role: Literal["authoritative", "target"]
+
+
+class ConversationApiProvider(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    provider_id: str = Field(min_length=1, max_length=64)
+    supported_entities: tuple[AgentEntityType, ...]
+    required_secret_fields: tuple[str, ...]
+
+
+class ConversationApiConnection(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    connection_id: UUID
+    provider_id: str = Field(min_length=1, max_length=64)
+    display_name: str = Field(min_length=1, max_length=255)
+    state: Literal["pending", "active", "invalid", "disabled"]
+    capabilities: dict[str, bool] = Field(default_factory=dict)
+    visibility_summary: dict[str, str | int | bool | None] = Field(
+        default_factory=dict
+    )
+    last_safe_error_code: str | None = None
 
 
 class ConversationRemoteSource(BaseModel):
@@ -69,6 +93,7 @@ class ConversationAgentDecision(BaseModel):
         "clarification",
         "intent_update",
         "start_confirmation",
+        "api_configuration",
         "active_task_notice",
         "safe_failure",
     ]
@@ -79,6 +104,8 @@ class ConversationAgentDecision(BaseModel):
     target_ref: str | None = Field(default=None, min_length=1)
     source_configuration_id: str | None = Field(default=None, min_length=1)
     target_configuration_id: str | None = Field(default=None, min_length=1)
+    api_provider_id: str | None = Field(default=None, min_length=1, max_length=64)
+    source_api_connection_id: UUID | None = None
     remote_source_id: UUID | None = None
     remote_url_start: int | None = Field(default=None, ge=0)
     remote_url_end: int | None = Field(default=None, gt=0)

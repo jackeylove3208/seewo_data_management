@@ -27,6 +27,11 @@ from app.models.agent_analysis import (
 )
 from app.models.agent_runtime import AgentRunRecord
 from app.models.analyses import AnalysisRecord
+from app.models.api_connectors import (
+    ApiAuthoritySourceRecord,
+    ApiConnectionRecord,
+    ApiConnectionSecretRecord,
+)
 from app.models.differences import DifferenceRecord
 from app.models.executions import ExecutionBatchRecord, GovernancePlanRecord, TargetVersionRecord
 from app.models.proposals import GovernanceProposalRecord
@@ -165,6 +170,100 @@ async def test_deleting_task_keeps_referenced_local_source_file(
 
     assert await session.get(ReconciliationTask, removable.id) is None
     assert external_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_deletes_materialized_api_source_before_its_task(
+    session,
+    tmp_path: Path,
+) -> None:
+    removable = task()
+    removable.workflow_version = "agent-graph-v1"
+    frozen_secret = ApiConnectionSecretRecord(
+        tenant_id=removable.tenant_id,
+        ciphertext=b"encrypted",
+        key_version="fernet-v1",
+    )
+    current_secret = ApiConnectionSecretRecord(
+        tenant_id=removable.tenant_id,
+        ciphertext=b"rotated",
+        key_version="fernet-v1",
+    )
+    connection = ApiConnectionRecord(
+        tenant_id=removable.tenant_id,
+        provider_id="dingtalk",
+        display_name="待删除任务的连接",
+        public_configuration={},
+        secret_ref="pending",
+        manifest_version="v1",
+        adapter_version="v1",
+        capabilities={},
+        visibility_summary={},
+        state="active",
+        created_by="operator-1",
+        updated_by="operator-1",
+    )
+    session.add_all([removable, frozen_secret, current_secret])
+    await session.flush()
+    connection.secret_ref = f"db-secret:{current_secret.id}"
+    session.add(connection)
+    await session.flush()
+    artifact = tmp_path / "api-authority.jsonl"
+    artifact.write_text("{}\n", encoding="utf-8")
+    source = SourceFile(
+        task_id=removable.id,
+        source_role="authoritative",
+        original_name=artifact.name,
+        storage_name=artifact.name,
+        storage_path=str(artifact),
+        sha256="b" * 64,
+        size_bytes=artifact.stat().st_size,
+    )
+    session.add(source)
+    await session.flush()
+    snapshot = Snapshot(
+        id=uuid4(),
+        task_id=removable.id,
+        source_file_id=source.id,
+        source_role="authoritative",
+        schema_version="agent-contract-v1",
+        mapping_version="api-projection-v1",
+        file_hash=source.sha256,
+        content_hash="c" * 64,
+        state="published",
+        summary={},
+    )
+    session.add(snapshot)
+    await session.flush()
+    api_source = ApiAuthoritySourceRecord(
+        tenant_id=removable.tenant_id,
+        task_id=removable.id,
+        connection_id=connection.id,
+        frozen_public_configuration={},
+        frozen_secret_ref=f"db-secret:{frozen_secret.id}",
+        selected_entities=["teacher"],
+        selection_hash="d" * 64,
+        state="ready",
+        source_file_id=source.id,
+        snapshot_id=snapshot.id,
+        content_sha256=source.sha256,
+        record_count=1,
+        page_count=1,
+        manifest_version="v1",
+        adapter_version="v1",
+        projection_version="api-projection-v1",
+    )
+    session.add(api_source)
+    await session.flush()
+
+    await deletion_service(session).delete(removable.id, removable.tenant_id)
+
+    assert await session.get(ApiAuthoritySourceRecord, api_source.id) is None
+    assert await session.get(ReconciliationTask, removable.id) is None
+    assert await session.get(ApiConnectionRecord, connection.id) is not None
+    assert await session.get(ApiConnectionSecretRecord, frozen_secret.id) is None
+    assert await session.get(ApiConnectionSecretRecord, current_secret.id) is not None
+    assert not artifact.exists()
 
 
 @pytest.mark.asyncio

@@ -80,16 +80,29 @@ class AgentSupervisorService:
             kind=AgentRunKind.SYNC,
             workflow_version=task.workflow_version,
             ingestion_contract_version=(
-                "source-ingestion-v2"
+                "source-ingestion-v3"
                 if self.settings is not None
-                and self.settings.source_ingestion_v2_enabled
+                and self.settings.source_ingestion_v3_enabled
                 and task.workflow_version == "agent-graph-v1"
-                else "model-mediated-ingestion-v1"
+                and _uses_api_authority(task)
+                else (
+                    "source-ingestion-v2"
+                    if self.settings is not None
+                    and self.settings.source_ingestion_v2_enabled
+                    and task.workflow_version == "agent-graph-v1"
+                    else "model-mediated-ingestion-v1"
+                )
             ),
             execution_contract_version=(
                 "deterministic-execution-v2"
                 if self.settings is not None
-                and self.settings.source_ingestion_v2_enabled
+                and (
+                    self.settings.source_ingestion_v2_enabled
+                    or (
+                        self.settings.source_ingestion_v3_enabled
+                        and _uses_api_authority(task)
+                    )
+                )
                 and task.workflow_version == "agent-graph-v1"
                 else "model-mediated-execution-v1"
             ),
@@ -112,7 +125,7 @@ class AgentSupervisorService:
         )
         graph_version = (
             "agent-sync-graph-v2"
-            if _uses_remote_csv(task)
+            if _uses_remote_csv(task) or _uses_api_authority(task)
             else "agent-sync-graph-v1"
         )
         graph_state = (
@@ -423,3 +436,10 @@ def _uses_remote_csv(task: ReconciliationTask) -> bool:
         return False
     source = task.agent_intent.get("source")
     return isinstance(source, dict) and source.get("kind") == "remote_csv"
+
+
+def _uses_api_authority(task: ReconciliationTask) -> bool:
+    if not isinstance(task.agent_intent, dict):
+        return False
+    source = task.agent_intent.get("source")
+    return isinstance(source, dict) and source.get("kind") == "api"

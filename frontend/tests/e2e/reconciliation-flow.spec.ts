@@ -184,13 +184,13 @@ test("opens history, returns, and inspects one issue independently", async ({ pa
   await seedGovernanceWorkbench(page, "ai", "demo-001", false);
   await page.goto("/tasks");
   const history = page.getByRole("region", { name: "历史任务" });
-  await history.getByRole("button", { name: /^三方全校数据核对 / }).click();
+  await history.getByRole("button", { name: /^同步 三方全校数据核对 / }).click();
   await expect(page).toHaveURL(/\/tasks\/demo-001$/);
 
   await page.getByRole("button", { name: "返回任务列表" }).click();
   await expect(page).toHaveURL(/\/tasks$/);
 
-  await history.getByRole("button", { name: /^三方全校数据核对 / }).click();
+  await history.getByRole("button", { name: /^同步 三方全校数据核对 / }).click();
   await page.getByRole("button", { name: "查看教师问题" }).click();
   await expect(page.getByRole("heading", { name: "教师差异" })).toBeVisible();
   await expect(page.getByText("张老师", { exact: true })).toBeVisible();
