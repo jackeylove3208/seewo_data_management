@@ -26,10 +26,10 @@ invented or extra mapping keys, and SHALL treat `class_name` as applicable only 
 
 ### Requirement: Bound model-mediated schema mapping
 Before mapping a configured database schema, the system SHALL provide the model only a bounded,
-sanitized schema-metadata envelope and SHALL NOT provide raw rows, credentials, arbitrary SQL,
-generic table access, or unbounded evidence. The model result SHALL use exactly the six fixed output
-fields `category`, `name`, `number`, `class_name`, `phone`, and `email`; invented or extra keys SHALL
-be rejected.
+sanitized schema-metadata envelope whose serialized UTF-8 representation does not exceed 256 KiB,
+and SHALL NOT provide raw rows, credentials, arbitrary SQL, generic table access, or unbounded
+evidence. The model result SHALL use exactly the six fixed output fields `category`, `name`,
+`number`, `class_name`, `phone`, and `email`; invented or extra keys SHALL be rejected.
 
 #### Scenario: Model receives schema metadata before mapping
 - **WHEN** an LLM-mode connector requires semantic mapping
@@ -41,6 +41,10 @@ be rejected.
   access, or evidence beyond the configured metadata bound
 - **THEN** the model boundary denies the request, records a safe mapping error, and does not expand
   the evidence supplied to the model
+
+#### Scenario: Schema metadata exceeds the bounded envelope
+- **WHEN** the serialized schema-mapping input would exceed 256 KiB
+- **THEN** the backend rejects the input before invoking the model and records a safe mapping error
 
 #### Scenario: Model returns an invented field
 - **WHEN** a model mapping result contains a key other than `category`, `name`, `number`,
@@ -121,5 +125,5 @@ credential configuration without exposing raw credentials to ingestion or model-
 
 #### Scenario: Credential reference is unresolved
 - **WHEN** a YAML connector references a credential that is absent from configured credentials
-- **THEN** settings rejects the connector configuration and does not make a usable connector
-  available to ingestion
+- **THEN** settings rejects the YAML-backed configuration during loading and does not make a usable
+  connector available to ingestion, even when SQL execution flags are disabled

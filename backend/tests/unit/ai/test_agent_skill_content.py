@@ -3,6 +3,7 @@ import pytest
 from app.ai.agent_prompting import COMMON_AGENT_SAFETY_CONTRACT
 from app.ai.prompting import build_messages
 from app.ai.skills.contracts import (
+    MAX_DATABASE_SCHEMA_MAPPING_INPUT_BYTES,
     AgentRollbackAssessment,
     DatabaseColumnProfile,
     DatabaseSchemaMappingInput,
@@ -296,6 +297,39 @@ def test_database_schema_mapping_input_accepts_one_database_role() -> None:
     )
 
     assert tuple(source.source_role for source in contract.sources) == ("target",)
+
+
+def test_database_schema_mapping_input_rejects_unbounded_evidence() -> None:
+    profile = DatabaseSourceSchemaProfile(
+        source_role="target",
+        connector_id="seewo-data-mysql",
+        dialect="mysql",
+        relation_ref="database-relation:target:data",
+        stable_key_ref="database-column:target:0",
+        version_ref="database-column:target:1",
+        columns=(
+            DatabaseColumnProfile(
+                source_field_ref="database-column:target:0",
+                column_name="id",
+                sql_type="bigint",
+                inferred_type="identifier",
+                nullable=False,
+                primary_key=True,
+                generated=True,
+                autoincrement=True,
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="metadata envelope exceeds the size limit"):
+        DatabaseSchemaMappingInput(
+            task_id="00000000-0000-0000-0000-000000000001",
+            run_id="00000000-0000-0000-0000-000000000002",
+            phase="ingest_and_normalize",
+            evidence_refs=("x" * MAX_DATABASE_SCHEMA_MAPPING_INPUT_BYTES,),
+            mapping_schema_version="fixed-six-field-sql-mapping-v3",
+            sources=(profile,),
+        )
 
 
 def test_database_schema_mapping_v2_still_requires_both_database_roles() -> None:

@@ -43,6 +43,10 @@ def test_database_connector_yaml_coexists_with_empty_legacy_environment_json() -
     settings = Settings(
         database_connector_config_file=CONFIG_FILE,
         database_connector_configurations={},
+        database_connector_credentials={
+            connector.credential_reference: "mysql+asyncmy://hidden"
+            for connector in load_database_connector_configurations(CONFIG_FILE).values()
+        },
         _env_file=None,
     )
 

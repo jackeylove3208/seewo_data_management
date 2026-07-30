@@ -27,6 +27,7 @@ FixedFieldNormalizer = Literal[
     "normalize_phone",
     "normalize_email",
 ]
+MAX_DATABASE_SCHEMA_MAPPING_INPUT_BYTES = 256 * 1024
 
 
 class StrictContract(BaseModel):
@@ -206,6 +207,11 @@ class DatabaseSchemaMappingInput(AgentSkillInput):
             and set(roles) != {"authoritative", "target"}
         ):
             raise ValueError("v2 requires both database source roles")
+        if (
+            len(self.model_dump_json().encode("utf-8"))
+            > MAX_DATABASE_SCHEMA_MAPPING_INPUT_BYTES
+        ):
+            raise ValueError("database schema metadata envelope exceeds the size limit")
         return self
 
 

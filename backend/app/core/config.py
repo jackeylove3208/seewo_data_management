@@ -180,6 +180,17 @@ class Settings(BaseSettings):
                     "duplicate database connector configuration ID: "
                     f"{sorted(duplicate_ids)[0]}"
                 )
+            unresolved_credential_ids = sorted(
+                connector_id
+                for connector_id, configuration in file_configurations.items()
+                if configuration.credential_reference
+                not in self.database_connector_credentials
+            )
+            if unresolved_credential_ids:
+                raise ValueError(
+                    "database connector credential reference is unavailable: "
+                    f"{unresolved_credential_ids[0]}"
+                )
             self.database_connector_configurations = {
                 **file_configurations,
                 **self.database_connector_configurations,

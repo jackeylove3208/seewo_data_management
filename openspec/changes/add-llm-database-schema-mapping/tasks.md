@@ -45,3 +45,7 @@
   app/connectors/configured.py app/core/config.py` and resolve all reported errors.
 - [x] 4.3 Run `openspec validate add-llm-database-schema-mapping --strict --no-interactive` and
   confirm the proposal, design, delta spec, and task checklist validate together.
+- [x] 4.4 Add regression tests that reject unresolved YAML credential references during settings
+  loading and reject a serialized database schema-mapping envelope larger than 256 KiB.
+- [x] 4.5 Re-run the focused backend tests, Ruff, mypy, the complete backend suite, and strict
+  OpenSpec validation after the review corrections.

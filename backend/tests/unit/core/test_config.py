@@ -75,9 +75,41 @@ connectors:
         encoding="utf-8",
     )
 
-    settings = Settings(database_connector_config_file=config, _env_file=None)
+    settings = Settings(
+        database_connector_config_file=config,
+        database_connector_credentials={
+            "secret://connectors/seewo-data-mysql": "mysql+asyncmy://hidden"
+        },
+        _env_file=None,
+    )
 
     assert settings.database_connector_configurations["seewo-data-mysql"].allowed_columns == ()
+
+
+def test_settings_rejects_yaml_connector_with_unresolved_credential_reference(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "database-connectors.yaml"
+    config.write_text(
+        """
+connectors:
+  seewo-data-mysql:
+    credential_reference: secret://connectors/seewo-data-mysql
+    dialect: mysql
+    table_name: data
+    primary_key: row_id
+    version_column: version
+    mapping:
+      mode: llm
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="database connector credential reference is unavailable",
+    ):
+        Settings(database_connector_config_file=config, _env_file=None)
 
 
 def test_settings_rejects_explicit_mapping_without_required_allowed_columns() -> None:

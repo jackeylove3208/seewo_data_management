@@ -29,7 +29,8 @@ a target is usable.
 
 **Non-Goals:**
 
-- Implementing LLM schema discovery, prompting, mapping inference, or database introspection.
+- Giving the LLM direct database introspection, row sampling, arbitrary SQL, generic table access, or
+  any other tool that can expand the bounded server-generated schema envelope.
 - Changing connector execution, SQL governance, task APIs, migrations, or frontend behavior.
 - Supporting arbitrary YAML tags, includes, environment interpolation, or credential material in the
   YAML file.
@@ -68,8 +69,9 @@ unsafe for credentials, mapping policy, and auditability.
 ### Fail closed on YAML structure and path errors
 
 Only object roots and object-shaped connector entries are accepted; unknown keys are rejected by
-Pydantic. Relative paths are resolved from `backend/`, and malformed YAML or invalid configuration
-is surfaced as a settings error before runtime use.
+Pydantic. Relative paths are resolved from `backend/`, unresolved credential references are rejected
+while loading the YAML-backed settings, and malformed YAML or invalid configuration is surfaced as a
+settings error before runtime use.
 
 Alternative considered: permissive parsing with ignored keys. Rejected because configuration typos
 could change the connector contract without operator visibility.
@@ -77,10 +79,10 @@ could change the connector contract without operator visibility.
 ### Keep model-mediated mapping bounded and fixed-contract
 
 Before a mapping decision, the model receives only a bounded, sanitized schema metadata envelope
-with an explicit size limit and no row values. The mapping result is validated against the exact
-six-field contract (`category`, `name`, `number`, `class_name`, `phone`, `email`); unknown or
-invented output keys are rejected. The model boundary has no credential, arbitrary SQL, generic
-table-access, or unbounded-evidence capability.
+whose serialized UTF-8 representation is at most 256 KiB and contains no row values. The mapping
+result is validated against the exact six-field contract (`category`, `name`, `number`,
+`class_name`, `phone`, `email`); unknown or invented output keys are rejected. The model boundary
+has no credential, arbitrary SQL, generic table-access, or unbounded-evidence capability.
 
 Alternative considered: provide sample rows or a generic database tool so the model can infer
 semantics more freely. Rejected because those inputs increase privacy and exfiltration risk and
@@ -115,12 +117,3 @@ edit could change the meaning of a historical run, invalidate checkpoint keys, o
    before enabling the file in a deployment.
 4. Roll back by disabling the YAML setting and reverting the dependency/code change; environment JSON
    remains the supported fallback.
-
-## Open Questions
-
-- The implementation task should confirm the existing settings error type and preserve its public
-  error formatting when wrapping YAML/parser failures.
-- The later LLM mapping implementation must define the bounded schema evidence and approval policy;
-  this configuration change only selects the mapping mode.
-- The exact persistence columns and storage model for the frozen task/run contract should follow
-  the existing workflow-version and mapping-checkpoint implementation during application work.
