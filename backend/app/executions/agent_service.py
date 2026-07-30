@@ -166,7 +166,8 @@ class AgentExecutionService:
                     if operation.operation == AgentOperation.CREATE:
                         expected.pop("source_id", None)
                     valid = actual is not None and all(
-                        actual.get(field) == value for field, value in expected.items()
+                        _verification_values_match(actual.get(field), value)
+                        for field, value in expected.items()
                     )
                 if not valid:
                     return AgentOperationResult(
@@ -294,3 +295,9 @@ def _stable_order(
         for dependencies in remaining.values():
             dependencies.difference_update(ready)
     return tuple(ordered)
+
+
+def _verification_values_match(actual: object, expected: object) -> bool:
+    if expected is None:
+        return actual is None or actual == ""
+    return actual == expected

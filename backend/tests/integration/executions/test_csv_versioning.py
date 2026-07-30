@@ -291,6 +291,58 @@ async def test_agent_csv_precondition_failure_becomes_a_safe_operation_outcome(
 
 
 @pytest.mark.asyncio
+async def test_agent_csv_create_treats_null_class_as_verified_empty_value(
+    tmp_path: Path,
+) -> None:
+    original = tmp_path / "uploaded-target.csv"
+    original.write_text(
+        "entity_type,id,category,name,number,class_name,phone,email\n",
+        encoding="utf-8",
+    )
+    parent = parent_version(original)
+    governance_operation = AgentGovernanceOperation(
+        id=uuid4(),
+        finding_id=uuid4(),
+        operation=AgentOperation.CREATE,
+        entity_kind="student",
+        target_source_identifier=None,
+        before=None,
+        after={
+            "source_id": "S202671",
+            "category": "学生",
+            "name": "测试学生",
+            "number": "S202671",
+            "class_name": None,
+            "phone": "13800138000",
+            "email": "student@example.test",
+        },
+        dependencies=frozenset(),
+        risk="medium",
+        target_version=f"sha256:{parent.file_sha256}",
+    )
+    repository = VersionRepositorySpy()
+
+    result = await AgentExecutionService().execute(
+        plan_id=uuid4(),
+        target_version=governance_operation.target_version,
+        operations=(governance_operation,),
+        target=CsvAgentTargetAdapter(
+            versioner=CsvTargetVersioner(
+                repository=repository,
+                output_root=tmp_path / "derived",
+            ),
+            parent=parent,
+        ),
+    )
+
+    assert result.status == "succeeded"
+    assert result.by_operation[governance_operation.id].status == "succeeded"
+    assert result.by_operation[governance_operation.id].actual_after is not None
+    assert result.by_operation[governance_operation.id].actual_after["class_name"] == ""
+    assert repository.created is not None
+
+
+@pytest.mark.asyncio
 async def test_delete_creates_verified_child_without_overwriting_parent(tmp_path: Path) -> None:
     original = tmp_path / "uploaded-target.csv"
     original.write_text("entity_type,id,name\n学生,S1,Ada\n学生,S2,Grace\n", encoding="utf-8")
