@@ -83,3 +83,28 @@ def test_medium_student_field_update_is_not_presented_as_phone_risk() -> None:
     )
     assert view.actionable is True
     assert view.unavailable_reason_zh is None
+
+
+def test_student_class_clear_is_presented_as_opt_in() -> None:
+    item = AgentGraphApprovalItemView(
+        finding_id=uuid4(),
+        entity_kind="student",
+        entity_name="李四",
+        entity_number="S001",
+        class_name="一班",
+        source_locator="csv:2",
+        operation_zh="修改希沃中的学生记录",
+        issue_zh="班级仅存在于希沃",
+        analysis_zh="第三方班级为空。",
+        solution_zh="可选择将希沃班级设置为空。",
+        changes=(
+            AgentGraphApprovalChangeView(
+                field="class_name",
+                field_zh="班级",
+                before="一班",
+                after=None,
+            ),
+        ),
+    )
+
+    assert item.selection_mode == "opt_in"

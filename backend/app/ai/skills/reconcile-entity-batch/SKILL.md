@@ -35,7 +35,9 @@ output_schema: AgentFindingBatch
    但顺序仅用于确定性查询，不能覆盖矛盾证据。
 3. 一个或多个身份键一致指向同一第三方权威行时，接受后端对应关系，再比较所有适用治理
    字段。编号、电话、邮箱中缺失的值在其他键已确认身份时也属于普通字段缺失；姓名、类别和
-   学生班级同理。
+   学生班级同理。第三方学生班级为空而希沃班级非空时，生成可将希沃班级设为空的中风险
+   候选并输出 `proposed_operation="update"`，使服务端能够冻结审核项；这不代表默认执行。
+   审核项默认保留希沃班级，只有用户主动选择后才能执行。
 4. 同一个键命中多个权威行，或不同身份键指向不同权威行时，归为 `identity_conflict`。
    不得按搜索顺序、相似姓名或模型偏好选一个，必须进入受限人工澄清。
 5. 所有提供的身份键均未命中时，归为 `target_extra`。即使姓名、类别或班级高度相似，也不能
@@ -60,7 +62,9 @@ output_schema: AgentFindingBatch
 - `target_duplicate`：稳定顺序靠后的希沃记录重复认领已占用权威行；允许 delete、retain，
   分析中明确保留最早的规范记录。
 - `target_missing`：有效权威行未被任何希沃行认领；允许 create、retain。
-- `field_difference`：身份唯一确认但适用字段缺失或与权威不同；允许 update、retain。
+- `field_difference`：身份唯一确认但适用字段缺失或与权威不同；允许 update、retain。第三方
+  学生班级为空时，清空希沃班级必须输出 `proposed_operation="update"` 进入审核，但审核
+  默认决定必须是保留，等待用户主动选择。
 - `identity_conflict`：候选多义或身份键互相矛盾；只描述冲突和澄清路径，未经人工二次确认
   不得形成可执行决定。
 - `authority_invalid`：第三方缺少适用必填字段；只允许 skip，不得提出第三方 update。

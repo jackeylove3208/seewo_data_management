@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class AgentGraphApprovalChangeView(BaseModel):
@@ -25,6 +25,18 @@ class AgentGraphApprovalItemView(BaseModel):
     analysis_zh: str
     solution_zh: str
     changes: tuple[AgentGraphApprovalChangeView, ...] = ()
+    selection_mode: Literal["opt_in", "opt_out"] = "opt_out"
+
+    @model_validator(mode="after")
+    def classify_selection_mode(self) -> "AgentGraphApprovalItemView":
+        clears_student_class = self.entity_kind == "student" and any(
+            change.field == "class_name"
+            and change.before is not None
+            and change.after is None
+            for change in self.changes
+        )
+        self.selection_mode = "opt_in" if clears_student_class else "opt_out"
+        return self
 
 
 class AgentGraphIdentityRecordView(BaseModel):

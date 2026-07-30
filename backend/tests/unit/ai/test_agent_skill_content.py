@@ -354,6 +354,24 @@ def test_common_agent_contract_covers_runtime_authority_privacy_and_fail_closed_
         assert term in COMMON_AGENT_SAFETY_CONTRACT
 
 
+def test_agent_skills_make_missing_authority_student_class_an_opt_in_clear() -> None:
+    registry = SkillRegistry()
+    normalization = registry.load(
+        "normalize-organization-data-batch",
+        "1.0.0",
+    ).instructions
+    reconciliation = registry.load("reconcile-entity-batch", "1.0.0").instructions
+    governance = registry.load("generate-governance-solutions", "1.0.0").instructions
+
+    assert "第三方学生班级允许为空" in normalization
+    assert "不得因此设置 `invalid=true`" in normalization
+    assert "默认保留希沃班级" in reconciliation
+    assert '`proposed_operation="update"`' in reconciliation
+    assert "主动勾选" in governance
+    assert "中风险 `opt_in`" in governance
+    assert '`operation="update"`' in governance
+
+
 def test_legacy_prompt_builder_injects_common_contract_and_pinned_skill_identity() -> None:
     skill = SkillRegistry().load("analyze-data-difference", "1.0.0")
 

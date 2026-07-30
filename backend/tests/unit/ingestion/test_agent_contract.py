@@ -77,6 +77,27 @@ def test_incomplete_authority_is_excluded_without_raw_phone_in_mark() -> None:
     assert "13800138000" not in str(mark.safe_evidence)
 
 
+def test_authoritative_student_without_class_is_valid() -> None:
+    mapper = AgentContractMapper()
+    record = mapper.map_row(
+        task_id=uuid4(),
+        run_id=uuid4(),
+        snapshot_id=uuid4(),
+        tenant_id="school-1",
+        source_role=AgentSourceRole.AUTHORITATIVE,
+        row_number=2,
+        row={
+            "category": "student",
+            "name": "李四",
+            "number": "S1",
+            "phone": "13800138000",
+            "email": "student@example.test",
+        },
+    )
+
+    assert mapper.validation_mark(record) is None
+
+
 def test_target_without_identity_is_retained_as_target_extra_candidate() -> None:
     mapper = AgentContractMapper()
     record = mapper.map_row(

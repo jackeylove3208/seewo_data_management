@@ -44,12 +44,16 @@ output_schema: GovernanceSolutionBatch
   后续重复记录才是删除候选。
 - `target_missing`：只能给出 create 或 retain。创建字段只来自完整、有效、未认领的权威行。
 - `field_difference`：只能给出 update 或 retain。更新 expected-before 和 after-value 必须由
-  持久化证据支持；替换已有字段、身份字段或学生手机号不能被描述为无风险。
+  持久化证据支持；替换已有字段、身份字段或学生手机号不能被描述为无风险。第三方学生班级
+  为空而希沃班级非空时，将班级设为空的中风险候选必须输出 `operation="update"`，以便服务端
+  把唯一候选持久化并冻结 `opt_in` 审核项；该 operation 只选择待审核候选，不代表默认执行。
+  审核默认保留现状，只有用户主动勾选后才能批准执行。
 - `authority_invalid`：只能输出 skip。中文分析应建议人工修复第三方权威源并重新同步，但绝不
   产生第三方 update/create/delete。
 - `identity_conflict`：只能保持不可执行或进入人工澄清；用户确认前不得把自由文本变成操作。
 - 学生手机号读取治理或变更、delete/disable/merge、create、替换现有身份/类别/班级值及
-  所有回滚均由服务端判定高风险，模型不能降低。
+  所有回滚均由服务端判定高风险，模型不能降低。唯一的班级风险特例是：第三方学生班级为空
+  而把希沃班级设为空，由服务端判定为中风险 `opt_in`，默认保留且必须主动勾选。
 
 ## 输出要求
 

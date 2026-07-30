@@ -103,7 +103,9 @@ function ApprovalItemRow({
   const sourceContext = item.source_row_number
     ? `希沃第 ${item.source_row_number} 行`
     : item.source_locator;
-  const decision = reviewDecision ?? "approved";
+  const optIn = isOptInItem(item);
+  const decision = reviewDecision ?? (optIn ? "rejected" : "approved");
+  const checked = optIn ? decision === "approved" : decision === "rejected";
 
   return (
     <li>
@@ -132,21 +134,37 @@ function ApprovalItemRow({
         <div className="graph-item-review">
           <span className={`graph-item-review-status ${decision}`}>
             {reviewCompleted
-              ? `${decision === "rejected" ? "已拒绝" : "已同意"}${entityName}`
-              : decision === "rejected"
-                ? "已选择拒绝"
-                : "默认同意"}
+              ? optIn
+                ? `${decision === "approved" ? "已选择执行" : "已保留"}${entityName}`
+                : `${decision === "rejected" ? "已拒绝" : "已同意"}${entityName}`
+              : optIn
+                ? decision === "approved"
+                  ? "已选择执行"
+                  : "默认保留"
+                : decision === "rejected"
+                  ? "已选择拒绝"
+                  : "默认同意"}
           </span>
           {!reviewCompleted && onReview && (
             <Checkbox
-              aria-label={`拒绝${entityName}`}
-              checked={decision === "rejected"}
+              aria-label={
+                optIn
+                  ? optInReviewLabel(item, entityName)
+                  : `拒绝${entityName}`
+              }
+              checked={checked}
               onChange={(event) => onReview(
                 item.finding_id,
-                event.target.checked ? "rejected" : "approved",
+                optIn
+                  ? event.target.checked ? "approved" : "rejected"
+                  : event.target.checked ? "rejected" : "approved",
               )}
             >
-              拒绝此项
+              {optIn
+                ? item.changes.length === 1
+                  ? "将班级设置为空"
+                  : "同意整项变更（包括清空班级）"
+                : "拒绝此项"}
             </Checkbox>
           )}
         </div>
@@ -234,14 +252,24 @@ function mediumReviewGroupTitle(group: MediumReviewGroup) {
   return `${operation} ${group.entries.length} 条${entity}记录`;
 }
 
+function isOptInItem(item: AgentGraphApprovalItem) {
+  return item.selection_mode === "opt_in";
+}
+
+function optInReviewLabel(item: AgentGraphApprovalItem, entityName: string) {
+  return item.changes.length === 1 && item.changes[0]?.field === "class_name"
+    ? `将${entityName}的班级设置为空`
+    : `同意${entityName}的整项变更（包括将班级设置为空）`;
+}
+
 function reviewDecisionForGateState(
   gate: AgentGraphHumanGate,
-  findingId: string,
+  item: AgentGraphApprovalItem,
   decisions: Record<string, Record<string, ReviewDecision>>,
 ) {
-  return decisions[gate.id]?.[findingId]
-    ?? gate.member_decisions?.[findingId]
-    ?? "approved";
+  return decisions[gate.id]?.[item.finding_id]
+    ?? gate.member_decisions?.[item.finding_id]
+    ?? (isOptInItem(item) ? "rejected" : "approved");
 }
 
 function updateConflictSubmission(
@@ -369,23 +397,21 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
   const pendingMediumGates = mediumGates.filter(
     (gate) => (gateDecisions[gate.id] ?? gate.status) === "pending",
   );
+  const pendingMediumEntries = pendingMediumGates.flatMap((gate) =>
+    (gate.items ?? []).map((item) => ({ gate, item })),
+  );
   const pendingMediumFindingIds = new Set(
-    pendingMediumGates.flatMap((gate) =>
-      (gate.items ?? []).map((item) => item.finding_id),
-    ),
+    pendingMediumEntries.map(({ item }) => item.finding_id),
   );
   const rejectedMediumFindingIds = new Set(
-    [...pendingMediumFindingIds].filter((findingId) =>
-      pendingMediumGates.some(
-        (gate) =>
-          (gate.items ?? []).some((item) => item.finding_id === findingId)
-          && reviewDecisionForGateState(
-            gate,
-            findingId,
-            gateItemDecisions,
-          ) === "rejected",
-      ),
-    ),
+    pendingMediumEntries
+      .filter(({ gate, item }) =>
+        reviewDecisionForGateState(gate, item, gateItemDecisions) === "rejected"
+      )
+      .map(({ item }) => item.finding_id),
+  );
+  const hasMediumOptIn = mediumReviewGroups.some((group) =>
+    group.entries.some(({ item }) => isOptInItem(item)),
   );
   const approvedMediumCount =
     pendingMediumFindingIds.size - rejectedMediumFindingIds.size;
@@ -552,7 +578,12 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
   }
 
   function reviewDecisionFor(gate: AgentGraphHumanGate, findingId: string) {
-    return reviewDecisionForGateState(gate, findingId, gateItemDecisions);
+    const item = (gate.items ?? []).find(
+      (candidate) => candidate.finding_id === findingId,
+    );
+    return item
+      ? reviewDecisionForGateState(gate, item, gateItemDecisions)
+      : "approved";
   }
 
   function setMediumItemDecision(
@@ -569,7 +600,7 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
           ...Object.fromEntries(
             (gate.items ?? []).map((item) => [
               item.finding_id,
-              reviewDecisionForGateState(gate, item.finding_id, current),
+              reviewDecisionForGateState(gate, item, current),
             ]),
           ),
           [findingId]: decision,
@@ -606,7 +637,7 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
         const approvedFindingIds: string[] = [];
         const rejectedFindingIds: string[] = [];
         for (const item of gate.items ?? []) {
-          if (reviewDecisionFor(gate, item.finding_id) === "rejected") {
+          if (reviewDecisionForGateState(gate, item, gateItemDecisions) === "rejected") {
             rejectedFindingIds.push(item.finding_id);
           } else {
             approvedFindingIds.push(item.finding_id);
@@ -755,13 +786,15 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
         >
           <header className="graph-medium-review-heading">
             <div>
-              <Tag color="processing">中风险 · 默认全部同意</Tag>
+              <Tag color="processing">
+                {hasMediumOptIn ? "中风险 · 部分项目需主动选择" : "中风险 · 默认全部同意"}
+              </Tag>
               <h2>中风险治理建议</h2>
               <p>
                 共 {new Set(mediumGates.flatMap((gate) =>
                   (gate.items ?? []).map((item) => item.finding_id),
                 )).size} 条记录，
-                已归入 {mediumReviewGroups.length} 类操作。系统默认同意全部建议；如有不希望执行的项目，请展开后勾选拒绝。
+                已归入 {mediumReviewGroups.length} 类操作。普通项目默认同意；清空班级仅在主动勾选后执行。
               </p>
             </div>
           </header>
@@ -790,7 +823,11 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
                     {reviewCompleted ? (
                       <Tag color="success">已完成复核</Tag>
                     ) : (
-                      <Tag color="processing">默认同意</Tag>
+                      <Tag color="processing">
+                        {group.entries.some(({ item }) => isOptInItem(item))
+                          ? "包含主动选择项"
+                          : "默认同意"}
+                      </Tag>
                     )}
                   </div>
                   <details

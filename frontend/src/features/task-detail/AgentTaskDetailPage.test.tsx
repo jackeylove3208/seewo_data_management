@@ -734,6 +734,88 @@ describe("controlled Agent graph task detail", () => {
     client.clear();
   });
 
+  it("defaults a class-clear opt-in item to retained in the task detail review", async () => {
+    const user = userEvent.setup();
+    vi.mocked(agentApi.graph).mockResolvedValue({
+      task_id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      graph_version: "agent-sync-graph-v1",
+      graph_cursor: 8,
+      current_node: "wait_high_risk_approvals",
+      business_stage: "governance_execution",
+      current_action_zh: "正在等待治理操作确认",
+      status: "waiting_human",
+      can_terminate: true,
+      termination_requested: false,
+      human_gates: [{
+        id: "gate-class-clear",
+        kind: "high_risk_approval",
+        status: "pending",
+        risk: "medium",
+        cursor: 8,
+        membership_hash: "class-clear-membership-hash",
+        member_decisions: {},
+        item_count: 1,
+        entity_kind: "student",
+        operation: "update",
+        issue_kind: "field_difference",
+        summary_zh: "修改 1 条学生记录",
+        risk_reason_zh: "清空班级需要主动选择。",
+        actionable: true,
+        items: [{
+          finding_id: "finding-class-clear",
+          entity_kind: "student",
+          entity_name: "李四",
+          entity_number: "S-001",
+          class_name: "一班",
+          source_locator: "csv:2",
+          source_row_number: 2,
+          operation_zh: "修改希沃中的学生记录",
+          issue_zh: "班级仅存在于希沃",
+          analysis_zh: "第三方班级为空。",
+          solution_zh: "可选择清空希沃班级。",
+          selection_mode: "opt_in",
+          changes: [{
+            field: "class_name",
+            field_zh: "班级",
+            before: "一班",
+            after: null,
+          }],
+        }],
+      }],
+    });
+    vi.mocked(agentApi.decideGraphGates).mockResolvedValue({
+      decisions: [{
+        gate_id: "gate-class-clear",
+        status: "rejected",
+        graph_cursor: 8,
+      }],
+    });
+    const { client } = renderPage();
+
+    const panel = await screen.findByRole("region", { name: "中风险批量审核" });
+    expect(within(panel).getByRole("checkbox", {
+      name: "将李四的班级设置为空",
+    })).not.toBeChecked();
+    await user.click(within(panel).getByRole("button", {
+      name: "按当前选择继续（同意 0，拒绝 1）",
+    }));
+
+    expect(agentApi.decideGraphGates).toHaveBeenCalledWith(
+      "task-graph-1",
+      [{
+        gate_id: "gate-class-clear",
+        decision: "reject",
+        reason: "操作人完成中风险批量复核",
+        approved_finding_ids: [],
+        rejected_finding_ids: ["finding-class-clear"],
+        graph_cursor: 8,
+        membership_hash: "class-clear-membership-hash",
+      }],
+    );
+    client.clear();
+  });
+
   it("consolidates every medium-risk group into one bulk review panel", async () => {
     const user = userEvent.setup();
     vi.mocked(agentApi.graph).mockResolvedValue({

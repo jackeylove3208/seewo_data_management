@@ -111,8 +111,6 @@ class AgentContractMapper:
     def validation_mark(self, record: AgentContractRecord) -> AgentInputMark | None:
         if record.source_role is AgentSourceRole.AUTHORITATIVE:
             required = ["category", "name", "number", "phone", "email"]
-            if record.entity_kind is AgentEntityKind.STUDENT:
-                required.append("class_name")
             missing = tuple(field for field in required if getattr(record, field) is None)
             if missing:
                 return AgentInputMark(

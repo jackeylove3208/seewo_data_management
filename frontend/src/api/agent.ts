@@ -171,6 +171,7 @@ export interface AgentGraphApprovalItem {
   issue_zh: string;
   analysis_zh: string;
   solution_zh: string;
+  selection_mode?: "opt_in" | "opt_out";
   changes: AgentGraphApprovalChange[];
 }
 

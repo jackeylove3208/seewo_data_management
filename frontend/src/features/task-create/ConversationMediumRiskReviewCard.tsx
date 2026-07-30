@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type {
   AgentGraphApprovalItem,
@@ -43,6 +43,29 @@ function collectEntries(gates: AgentGraphHumanGate[]) {
   return entries;
 }
 
+function isOptIn(item: AgentGraphApprovalItem) {
+  return item.selection_mode === "opt_in";
+}
+
+function optInLabel(item: AgentGraphApprovalItem, subject: string) {
+  return item.changes.length === 1 && item.changes[0]?.field === "class_name"
+    ? `将${subject}的班级设置为空`
+    : `同意${subject}的整项变更（包括将班级设置为空）`;
+}
+
+function initialRejectedFindingIds(gates: AgentGraphHumanGate[]) {
+  const rejected = new Set<string>();
+  for (const gate of gates) {
+    for (const item of gate.items ?? []) {
+      const persisted = gate.member_decisions?.[item.finding_id];
+      if (persisted === "rejected" || (persisted !== "approved" && isOptIn(item))) {
+        rejected.add(item.finding_id);
+      }
+    }
+  }
+  return rejected;
+}
+
 export function ConversationMediumRiskReviewCard({
   gates,
   onSubmit,
@@ -55,14 +78,15 @@ export function ConversationMediumRiskReviewCard({
 }) {
   const entries = useMemo(() => collectEntries(gates), [gates]);
   const [rejectedFindingIds, setRejectedFindingIds] = useState<Set<string>>(
-    () => new Set(
-      gates.flatMap((gate) =>
-        Object.entries(gate.member_decisions ?? {})
-          .filter(([, decision]) => decision === "rejected")
-          .map(([findingId]) => findingId),
-      ),
-    ),
+    () => initialRejectedFindingIds(gates),
   );
+  const initializedSelectionModes = useRef(
+    new Map(entries.map(({ item }) => [
+      item.finding_id,
+      item.selection_mode ?? "opt_out",
+    ])),
+  );
+  const editedFindingIds = useRef(new Set<string>());
   const [completionStatuses, setCompletionStatuses] = useState<
     Partial<Record<string, GateDecisionStatus>>
   >({});
@@ -86,9 +110,12 @@ export function ConversationMediumRiskReviewCard({
     rejectedFindingIds.has(item.finding_id),
   ).length;
   const approvedCount = pendingEntries.length - rejectedCount;
+  const hasPendingOptIn = pendingEntries.some(({ item }) => isOptIn(item));
   const submitLabel = rejectedCount > 0
     ? `按当前选择继续（同意 ${approvedCount}，拒绝 ${rejectedCount}）`
-    : "全部同意并继续";
+    : hasPendingOptIn
+      ? `同意 ${approvedCount} 项并继续`
+      : "全部同意并继续";
 
   useEffect(() => {
     setCompletionStatuses((current) => ({
@@ -103,16 +130,29 @@ export function ConversationMediumRiskReviewCard({
       const next = new Set(current);
       let changed = false;
       for (const gate of gates) {
-        if (!["approved", "rejected"].includes(gate.status)) continue;
-        for (const [findingId, decision] of Object.entries(
-          gate.member_decisions ?? {},
-        )) {
+        for (const item of gate.items ?? []) {
+          const findingId = item.finding_id;
+          const decision = gate.member_decisions?.[findingId];
+          const selectionMode = item.selection_mode ?? "opt_out";
+          const previousMode = initializedSelectionModes.current.get(findingId);
           if (decision === "rejected" && !next.has(findingId)) {
             next.add(findingId);
             changed = true;
           } else if (decision === "approved" && next.delete(findingId)) {
             changed = true;
+          } else if (
+            decision === undefined
+            && previousMode !== selectionMode
+            && !editedFindingIds.current.has(findingId)
+          ) {
+            if (selectionMode === "opt_in" && !next.has(findingId)) {
+              next.add(findingId);
+              changed = true;
+            } else if (selectionMode === "opt_out" && next.delete(findingId)) {
+              changed = true;
+            }
           }
+          initializedSelectionModes.current.set(findingId, selectionMode);
         }
       }
       return changed ? next : current;
@@ -120,6 +160,7 @@ export function ConversationMediumRiskReviewCard({
   }, [gates]);
 
   function toggleRejected(findingId: string) {
+    editedFindingIds.current.add(findingId);
     setRejectedFindingIds((current) => {
       const next = new Set(current);
       if (next.has(findingId)) {
@@ -159,10 +200,14 @@ export function ConversationMediumRiskReviewCard({
     >
       <header className="conversation-medium-review-header">
         <div>
-          <span>中风险 · 默认全部同意</span>
+          <span>
+            {entries.some(({ item }) => isOptIn(item))
+              ? "中风险 · 部分项目需主动选择"
+              : "中风险 · 默认全部同意"}
+          </span>
           <strong>中风险治理建议</strong>
           <small>
-            共 {entries.length} 项。勾选不希望执行的项目，其余项目将统一同意。
+            共 {entries.length} 项。普通项目默认同意；清空班级仅在主动勾选后执行。
           </small>
         </div>
         {completed && <span className="conversation-medium-review-completed">已完成复核</span>}
@@ -171,21 +216,34 @@ export function ConversationMediumRiskReviewCard({
       <div className="conversation-medium-review-items">
         {entries.map(({ gate, item }) => {
           const rejected = rejectedFindingIds.has(item.finding_id);
+          const optIn = isOptIn(item);
           const itemCompleted = !pendingGateIds.has(gate.id);
+          const label = personLabel(item);
+          const checked = optIn ? !rejected : rejected;
           return (
             <article className="conversation-medium-review-item" key={item.finding_id}>
               <label>
                 <input
                   type="checkbox"
-                  aria-label={`拒绝${personLabel(item)}`}
-                  checked={rejected}
+                  aria-label={
+                    optIn
+                      ? optInLabel(item, label)
+                      : `拒绝${label}`
+                  }
+                  checked={checked}
                   disabled={itemCompleted || loading}
                   onChange={() => toggleRejected(item.finding_id)}
                 />
-                <span>拒绝此项</span>
+                <span>
+                  {optIn
+                    ? item.changes.length === 1
+                      ? "将班级设置为空"
+                      : "同意整项变更（包括清空班级）"
+                    : "拒绝此项"}
+                </span>
               </label>
               <div className="conversation-risk-subject">
-                <strong>{personLabel(item)}</strong>
+                <strong>{label}</strong>
                 <span>{item.operation_zh}</span>
               </div>
               <div className="conversation-risk-changes">
