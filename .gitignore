@@ -18,3 +18,7 @@ backend/storage/quarantine/*
 *.sqlite3
 *.egg-info/
 backend/storage/exports/*
+
+# Local project documentation and OpenSpec planning artifacts
+/docs/
+/openspec/
