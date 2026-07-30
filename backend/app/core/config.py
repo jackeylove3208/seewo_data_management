@@ -15,6 +15,7 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.connectors.config_file import load_database_connector_configurations
 from app.connectors.configured import (
     ApiConnectorConfiguration,
     DatabaseConnectorConfiguration,
@@ -124,6 +125,7 @@ class Settings(BaseSettings):
     remote_source_read_timeout_seconds: PositiveFloat = 30
     remote_source_total_timeout_seconds: PositiveFloat = 60
     api_connector_configurations: dict[str, ApiConnectorConfiguration] = {}
+    database_connector_config_file: Path | None = None
     database_connector_configurations: dict[str, DatabaseConnectorConfiguration] = {}
     database_connector_credentials: dict[str, SecretStr] = {}
 
@@ -146,6 +148,16 @@ class Settings(BaseSettings):
     def canonicalize_agent_local_roots(cls, values: tuple[Path, ...]) -> tuple[Path, ...]:
         return tuple(path.expanduser().resolve() for path in values)
 
+    @field_validator("database_connector_config_file")
+    @classmethod
+    def resolve_database_connector_config_file(cls, value: Path | None) -> Path | None:
+        if value is None:
+            return None
+        path = value.expanduser()
+        if not path.is_absolute():
+            path = DEFAULT_ENV_FILE.parent / path
+        return path.resolve()
+
     @field_validator("llm_auth_scheme", "embedding_auth_scheme")
     @classmethod
     def normalize_auth_scheme(cls, value: str) -> str:
@@ -156,6 +168,22 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_gateway_extensions(self) -> "Settings":
+        if self.database_connector_config_file is not None:
+            file_configurations = load_database_connector_configurations(
+                self.database_connector_config_file
+            )
+            duplicate_ids = set(file_configurations).intersection(
+                self.database_connector_configurations
+            )
+            if duplicate_ids:
+                raise ValueError(
+                    "duplicate database connector configuration ID: "
+                    f"{sorted(duplicate_ids)[0]}"
+                )
+            self.database_connector_configurations = {
+                **file_configurations,
+                **self.database_connector_configurations,
+            }
         if self.conversation_context_reserved_output_tokens >= self.conversation_context_max_tokens:
             raise ValueError(
                 "conversation reserved output tokens must be smaller than context maximum"
@@ -294,7 +322,7 @@ class Settings(BaseSettings):
                     raise ValueError("authoritative SQL graph connector must be read-only")
                 continue
             target_count += 1
-            if missing_fields:
+            if configuration.mapping.mode == "explicit" and missing_fields:
                 raise ValueError("SQL graph target is missing fixed organization fields")
             if configuration.dialect != "mysql":
                 raise ValueError("SQL graph writable target must use MySQL")

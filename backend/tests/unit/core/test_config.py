@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,121 @@ from pydantic import SecretStr
 
 from app.core.config import DEFAULT_ENV_FILE, Settings
 from tests.settings import build_test_settings
+
+
+def test_settings_load_llm_database_connector_yaml(tmp_path: Path) -> None:
+    config = tmp_path / "database-connectors.yaml"
+    config.write_text(
+        """
+connectors:
+  seewo-data-mysql:
+    credential_reference: secret://connectors/seewo-data-mysql
+    dialect: mysql
+    database_name: seewo_data
+    table_name: data
+    primary_key: row_id
+    version_column: version
+    source_role: target
+    mapping:
+      mode: llm
+    capabilities:
+      read: true
+      paginated: true
+      create: true
+      update: true
+      delete: true
+      optimistic_version: true
+      read_after_write: true
+""",
+        encoding="utf-8",
+    )
+
+    settings = Settings(
+        database_connector_config_file=config,
+        database_connector_credentials={
+            "secret://connectors/seewo-data-mysql": "mysql+asyncmy://hidden"
+        },
+        agent_graph_enabled=True,
+        source_ingestion_v3_enabled=True,
+        agent_graph_sql_execution_enabled=True,
+        new_agent_enabled=True,
+        new_agent_analysis_only=False,
+        _env_file=None,
+    )
+
+    connector = settings.database_connector_configurations["seewo-data-mysql"]
+    assert connector.mapping.mode == "llm"
+    assert connector.field_columns == {}
+    assert connector.allowed_columns == ()
+
+
+def test_settings_rejects_invalid_database_connector_yaml(tmp_path: Path) -> None:
+    config = tmp_path / "database-connectors.yaml"
+    config.write_text("connectors: [", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="database connector configuration YAML"):
+        Settings(database_connector_config_file=config, _env_file=None)
+
+
+def test_settings_rejects_duplicate_database_connector_ids_from_yaml_and_environment(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "database-connectors.yaml"
+    config.write_text(
+        """
+connectors:
+  seewo-data-mysql:
+    credential_reference: secret://connectors/seewo-data-mysql
+    dialect: mysql
+    table_name: data
+    primary_key: row_id
+    version_column: version
+    field_columns:
+      name: name
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="duplicate database connector configuration ID"):
+        Settings(
+            database_connector_config_file=config,
+            database_connector_configurations={
+                "seewo-data-mysql": {
+                    "credential_reference": "secret://connectors/override",
+                    "dialect": "mysql",
+                    "table_name": "data",
+                    "primary_key": "row_id",
+                    "version_column": "version",
+                    "field_columns": {"name": "name"},
+                }
+            },
+            _env_file=None,
+        )
+
+
+def test_settings_loads_legacy_database_connector_environment_json(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "RECONCILIATION_DATABASE_CONNECTOR_CONFIGURATIONS="
+        + json.dumps(
+            {
+                "seewo-data-mysql": {
+                    "credential_reference": "secret://connectors/seewo-data-mysql",
+                    "dialect": "mysql",
+                    "table_name": "data",
+                    "primary_key": "row_id",
+                    "version_column": "version",
+                    "field_columns": {"name": "name"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = Settings(_env_file=env_file)
+
+    connector = settings.database_connector_configurations["seewo-data-mysql"]
+    assert connector.mapping.mode == "explicit"
 
 
 def test_default_env_file_is_backend_absolute_path() -> None:

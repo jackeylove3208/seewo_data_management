@@ -107,6 +107,12 @@ class ApiConnectorConfiguration(ConnectorConfiguration):
         return value
 
 
+class DatabaseMappingConfiguration(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    mode: Literal["explicit", "llm"] = "explicit"
+
+
 class DatabaseConnectorConfiguration(ConnectorConfiguration):
     dialect: Literal["mysql", "postgresql"] = "mysql"
     database_name: str | None = None
@@ -114,7 +120,8 @@ class DatabaseConnectorConfiguration(ConnectorConfiguration):
     table_name: str
     primary_key: str
     version_column: str
-    field_columns: dict[str, str]
+    mapping: DatabaseMappingConfiguration = Field(default_factory=DatabaseMappingConfiguration)
+    field_columns: dict[str, str] = Field(default_factory=dict)
     allowed_columns: tuple[str, ...] = ()
 
     @model_validator(mode="before")
@@ -125,7 +132,9 @@ class DatabaseConnectorConfiguration(ConnectorConfiguration):
         configured = dict(value)
         configured.setdefault("record_id_field", configured.get("primary_key"))
         configured.setdefault("version_field", configured.get("version_column"))
-        if "allowed_columns" not in configured:
+        mapping = configured.get("mapping")
+        mapping_mode = mapping.get("mode", "explicit") if isinstance(mapping, dict) else "explicit"
+        if "allowed_columns" not in configured and mapping_mode != "llm":
             configured["allowed_columns"] = tuple(
                 sorted(
                     {
@@ -175,6 +184,8 @@ class DatabaseConnectorConfiguration(ConnectorConfiguration):
     def _database_fields_are_consistent(self) -> "DatabaseConnectorConfiguration":
         if self.record_id_field != self.primary_key or self.version_field != self.version_column:
             raise ValueError("database identifier and version fields must match configured columns")
+        if self.mapping.mode == "llm":
+            return self
         required_columns = {
             self.primary_key,
             self.version_column,
