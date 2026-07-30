@@ -243,7 +243,7 @@ async def _add_v3_database_mapping_facts(
     }
     if include_checkpoint:
         schema = await connector.discover_schema()
-        schema_fingerprint = _configuration_fingerprint(
+        schema_fingerprint = "sha256:" + _configuration_fingerprint(
             {
                 "schema": schema.model_dump(mode="json"),
                 "table": configuration.table_name,
@@ -594,7 +594,8 @@ async def test_sql_governance_updates_mysql_target_and_verifies_result(
                         "connector_id": "seewo-mysql",
                         "resolved": True,
                         "mapping": dict(configuration.field_columns),
-                        "schema_fingerprint": _configuration_fingerprint(
+                        "schema_fingerprint": "sha256:"
+                        + _configuration_fingerprint(
                             {
                                 "schema": schema.model_dump(mode="json"),
                                 "table": configuration.table_name,

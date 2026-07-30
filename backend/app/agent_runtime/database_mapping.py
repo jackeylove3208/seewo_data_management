@@ -123,8 +123,12 @@ async def load_frozen_database_mapping_context(
     schema_fingerprint = payload.get("schema_fingerprint")
     if (
         not isinstance(schema_fingerprint, str)
-        or len(schema_fingerprint) != 64
-        or any(character not in "0123456789abcdef" for character in schema_fingerprint)
+        or len(schema_fingerprint) != 71
+        or not schema_fingerprint.startswith("sha256:")
+        or any(
+            character not in "0123456789abcdef"
+            for character in schema_fingerprint.removeprefix("sha256:")
+        )
     ):
         raise ValueError("frozen database mapping schema fingerprint is malformed")
     return FrozenDatabaseMapping(
@@ -233,6 +237,7 @@ def _schema_fingerprint(
         "primary_key": configuration.primary_key,
         "version_column": configuration.version_column,
     }
-    return hashlib.sha256(
+    digest = hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+    return f"sha256:{digest}"
