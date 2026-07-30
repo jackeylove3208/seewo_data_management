@@ -1,7 +1,7 @@
-from typing import Literal
+from typing import Literal, Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.agent_graph.contracts import SupervisorContextV1, SupervisorDecisionV1
 from app.agent_graph.evidence import PairedRecordEvidenceV1
@@ -192,9 +192,21 @@ class DatabaseSchemaMappingInput(AgentSkillInput):
         "fixed-six-field-sql-mapping-v3",
     ] = "fixed-six-field-sql-mapping-v2"
     sources: tuple[DatabaseSourceSchemaProfile, ...] = Field(
-        min_length=2,
+        min_length=1,
         max_length=2,
     )
+
+    @model_validator(mode="after")
+    def validate_source_roles(self) -> Self:
+        roles = tuple(source.source_role for source in self.sources)
+        if len(set(roles)) != len(roles):
+            raise ValueError("database mapping source roles must be distinct")
+        if (
+            self.mapping_schema_version == "fixed-six-field-sql-mapping-v2"
+            and set(roles) != {"authoritative", "target"}
+        ):
+            raise ValueError("v2 requires both database source roles")
+        return self
 
 
 class DatabaseFieldMapping(StrictContract):

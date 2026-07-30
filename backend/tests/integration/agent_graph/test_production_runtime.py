@@ -288,11 +288,13 @@ class DatabaseMappingProvider:
         schema_version: str = "fixed-six-field-sql-mapping-v2",
         unresolved_required_fields: tuple[str, ...] = (),
         mapping_overrides: dict[str, dict[str, str]] | None = None,
+        active_roles: tuple[str, ...] = ("authoritative", "target"),
     ) -> None:
         self.requests = []
         self.schema_version = schema_version
         self.unresolved_required_fields = unresolved_required_fields
         self.mapping_overrides = mapping_overrides or {}
+        self.active_roles = active_roles
 
     async def complete_json_once(self, request):
         self.requests.append(request)
@@ -362,11 +364,16 @@ class DatabaseMappingProvider:
             output={
                 "result": {
                     "schema_version": self.schema_version,
-                    "authoritative_mappings": mappings(
-                        "authoritative",
-                        authority_fields,
+                    "authoritative_mappings": (
+                        mappings("authoritative", authority_fields)
+                        if "authoritative" in self.active_roles
+                        else []
                     ),
-                    "target_mappings": mappings("target", target_fields),
+                    "target_mappings": (
+                        mappings("target", target_fields)
+                        if "target" in self.active_roles
+                        else []
+                    ),
                     "unresolved_required_fields": list(self.unresolved_required_fields),
                 }
             },
@@ -923,6 +930,44 @@ async def _sql_ingestion_v3_context(
                 lease_token=uuid4(),
                 ingestion_contract_version=run.ingestion_contract_version,
                 execution_contract_version=run.execution_contract_version,
+            )
+
+
+async def _make_v3_authoritative_binding_api(
+    database,
+    context: GraphWorkContext,
+) -> None:
+    frozen_configuration = {"provider_id": "synthetic-authority-api"}
+    async with database.session_factory() as session:
+        async with session.begin():
+            task = await session.get(ReconciliationTask, context.task_id)
+            binding = await session.scalar(
+                select(AgentSourceBindingRecord).where(
+                    AgentSourceBindingRecord.task_id == context.task_id,
+                    AgentSourceBindingRecord.role == "authoritative",
+                )
+            )
+            assert task is not None
+            assert binding is not None
+            task.agent_intent = {
+                **task.agent_intent,
+                "source": {
+                    "kind": "api",
+                    "configuration_id": "synthetic-authority-api",
+                },
+            }
+            binding.connector_kind = "api"
+            binding.configuration_id = "synthetic-authority-api"
+            binding.frozen_public_configuration = frozen_configuration
+            binding.configuration_fingerprint = _configuration_fingerprint(
+                frozen_configuration
+            )
+            binding.credential_reference = "secret://connectors/synthetic-authority-api"
+            binding.mapping_checkpoint_key = (
+                "graph-api-projection-mapping-v3:authoritative"
+            )
+            binding.normalization_checkpoint_key = (
+                "graph-source-normalization-v3:authoritative"
             )
 
 
@@ -1816,6 +1861,181 @@ async def test_sql_v3_invokes_schema_skill_once_freezes_roles_and_binds_mapping(
     assert checkpoints["target"].payload["model_calls"] == 1
     assert record is not None
     assert record.number == "S001"
+
+
+@pytest.mark.asyncio
+async def test_sql_v3_routes_mappable_inspection_through_skill_to_normalization(
+    database,
+) -> None:
+    connectors = _sql_v3_test_connectors()
+    context = await _sql_ingestion_v3_context(database, connectors)
+    provider = DatabaseMappingProvider(schema_version="fixed-six-field-sql-mapping-v3")
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=provider,
+        tokenization_secret="test-tokenization-secret",
+        database_connectors=StaticDatabaseConnectorRuntime(connectors),
+    )
+    inspection_context = replace(context, current_node="inspect_sources")
+    for role, graph_action_kind in (
+        ("authoritative", "inspect_authority"),
+        ("target", "inspect_target"),
+    ):
+        await executor(
+            inspection_context,
+            AllowedActionV1(
+                action_id=f"{graph_action_kind}:source",
+                graph_action_kind=graph_action_kind,
+                kind="run_deterministic",
+                resource_ids=(f"source:{role}:full",),
+                required_evidence=(f"source:{role}:inspection",),
+                risk="low",
+                requires_human=False,
+                successor_node="inspect_sources",
+            ),
+        )
+
+    normalized_context = replace(context, current_node="normalize_input_batches")
+    mapping_plan = await ProductionGraphCandidateProvider(
+        database.session_factory,
+    )(normalized_context)
+    mapping_action = next(
+        item.action for item in mapping_plan.candidate_evaluations if item.passed
+    )
+
+    assert mapping_action.action_id == "resolve_database_authoritative_mapping"
+    assert mapping_action.kind == "dispatch_sub_agent"
+    assert mapping_action.sub_agent == "database-schema-mapping"
+
+    await executor(normalized_context, mapping_action)
+    normalization_plan = await ProductionGraphCandidateProvider(
+        database.session_factory,
+    )(normalized_context)
+    normalization_action = next(
+        item.action
+        for item in normalization_plan.candidate_evaluations
+        if item.passed
+    )
+    assert normalization_action.action_id == "normalize_authoritative_full"
+
+    await executor(normalized_context, normalization_action)
+    async with database.session_factory() as session:
+        record = await session.scalar(
+            select(AgentInputRecord).where(
+                AgentInputRecord.run_id == context.run_id,
+                AgentInputRecord.source_role == "authoritative",
+            )
+        )
+
+    assert len(provider.requests) == 1
+    assert record is not None
+    assert record.number == "S001"
+
+
+@pytest.mark.asyncio
+async def test_sql_v3_single_database_role_invokes_skill_reuses_cache_and_freezes(
+    database,
+) -> None:
+    connectors = _sql_v3_test_connectors(store_type=PageMustNotRunStore)
+    first_context = await _sql_ingestion_v3_context(database, connectors)
+    second_context = await _sql_ingestion_v3_context(database, connectors)
+    await _make_v3_authoritative_binding_api(database, first_context)
+    await _make_v3_authoritative_binding_api(database, second_context)
+    provider = DatabaseMappingProvider(
+        schema_version="fixed-six-field-sql-mapping-v3",
+        active_roles=("target",),
+    )
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=provider,
+        tokenization_secret="test-tokenization-secret",
+        database_connectors=StaticDatabaseConnectorRuntime(connectors),
+    )
+
+    await executor(first_context, _database_v3_mapping_action("target"))
+    await executor(first_context, _database_v3_normalization_action("target"))
+    await executor(second_context, _database_v3_mapping_action("target"))
+
+    async with database.session_factory() as session:
+        runtime = AgentRuntimeRepository(session)
+        first_checkpoint = await runtime.get_checkpoint(
+            first_context.run_id,
+            phase=AgentPhase.INGEST_AND_NORMALIZE,
+            checkpoint_key="graph-database-field-mapping-v3:target",
+        )
+        second_checkpoint = await runtime.get_checkpoint(
+            second_context.run_id,
+            phase=AgentPhase.INGEST_AND_NORMALIZE,
+            checkpoint_key="graph-database-field-mapping-v3:target",
+        )
+        record = await session.scalar(
+            select(AgentInputRecord).where(
+                AgentInputRecord.run_id == first_context.run_id,
+                AgentInputRecord.source_role == "target",
+            )
+        )
+
+    prompt = "\n".join(message.content for message in provider.requests[0].messages)
+    assert len(provider.requests) == 1
+    assert "测试学生" not in prompt
+    assert "database-column:authoritative:" not in prompt
+    assert first_checkpoint is not None
+    assert first_checkpoint.payload["mapping"]["number"] == "number"
+    assert first_checkpoint.payload["model_calls"] == 1
+    assert second_checkpoint is not None
+    assert second_checkpoint.payload["cache_hit"] is True
+    assert second_checkpoint.payload["model_calls"] == 0
+    assert record is not None
+    assert record.number == "S001"
+
+
+@pytest.mark.asyncio
+async def test_sql_v3_inspection_uses_frozen_binding_after_task_config_changes(
+    database,
+) -> None:
+    connectors = _sql_v3_test_connectors()
+    context = await _sql_ingestion_v3_context(database, connectors)
+    async with database.session_factory() as session:
+        async with session.begin():
+            task = await session.get(ReconciliationTask, context.task_id)
+            assert task is not None
+            task.agent_intent = {
+                **task.agent_intent,
+                "source": {
+                    "kind": "database",
+                    "configuration_id": "replacement-postgres",
+                },
+            }
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=ModelMustNotRun(),
+        tokenization_secret="test-tokenization-secret",
+        database_connectors=StaticDatabaseConnectorRuntime(connectors),
+    )
+
+    await executor(
+        replace(context, current_node="inspect_sources"),
+        AllowedActionV1(
+            action_id="inspect_authority:source",
+            graph_action_kind="inspect_authority",
+            kind="run_deterministic",
+            resource_ids=("source:authoritative:full",),
+            required_evidence=("source:authoritative:inspection",),
+            risk="low",
+            requires_human=False,
+            successor_node="inspect_sources",
+        ),
+    )
+
+    async with database.session_factory() as session:
+        checkpoint = await AgentRuntimeRepository(session).get_checkpoint(
+            context.run_id,
+            phase=AgentPhase.INGEST_AND_NORMALIZE,
+            checkpoint_key="graph-source-inspection:authoritative",
+        )
+
+    assert checkpoint is not None
+    assert checkpoint.payload["connector_id"] == "authority-postgres"
 
 
 @pytest.mark.asyncio

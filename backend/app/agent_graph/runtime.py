@@ -733,9 +733,19 @@ class ProductionGraphCandidateProvider:
                     for binding in bindings
                 ),
             )
+            inspections_by_role = dict(
+                zip(
+                    (binding.role for binding in bindings),
+                    inspections,
+                    strict=True,
+                )
+            )
             if any(
                 checkpoint is None
-                or not checkpoint.payload.get("recognized", False)
+                or (
+                    not checkpoint.payload.get("recognized", False)
+                    and not checkpoint.payload.get("mapping_required", False)
+                )
                 for checkpoint in inspections
             ):
                 return (
@@ -751,12 +761,28 @@ class ProductionGraphCandidateProvider:
                     checkpoint_key=binding.mapping_checkpoint_key,
                 )
                 if mapping is None:
+                    inspection = inspections_by_role[binding.role]
+                    mapping_required = bool(
+                        inspection is not None
+                        and inspection.payload.get("mapping_required", False)
+                    )
                     return (
                         _action(
                             f"resolve_{binding.connector_kind}_{binding.role}_mapping",
                             graph_action_kind="normalize_next_batch",
                             successor="normalize_input_batches",
-                            kind="run_deterministic",
+                            kind=(
+                                "dispatch_sub_agent"
+                                if binding.connector_kind == "database"
+                                and mapping_required
+                                else "run_deterministic"
+                            ),
+                            sub_agent=(
+                                "database-schema-mapping"
+                                if binding.connector_kind == "database"
+                                and mapping_required
+                                else None
+                            ),
                             resource_ids=(f"source:{binding.role}:mapping",),
                             required_evidence=(
                                 f"mapping:{binding.connector_kind}:"

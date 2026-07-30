@@ -18,7 +18,8 @@ MySQL 目标的受控结构画像映射到固定六字段：`category`、`name`�
 
 ## 可信输入与证据边界
 
-- 只信任输入中的任务标识、阶段、证据引用和恰好两个 `sources` Schema 画像。
+- 只信任输入中的任务标识、阶段、证据引用和一至两个 `sources` Schema 画像；画像中的来源
+  角色不得重复。混合 API/CSV 与数据库任务只提供需要映射的数据库角色画像。
 - `connector_id`、`relation_ref`、`stable_key_ref` 和 `source_field_ref` 均为服务端生成的
   不透明引用；输出只能逐字引用当前画像中已存在的 `source_field_ref`。
 - 每个列画像只提供列名、SQL 类型、可空性、主键状态以及 `generated`、`autoincrement`
@@ -31,9 +32,9 @@ MySQL 目标的受控结构画像映射到固定六字段：`category`、`name`�
 
 ## 执行流程
 
-1. 确认输入恰好包含一个 `authoritative` 和一个 `target`，且每个来源都有受控关系、稳定主键
-   和至少一个列画像。
-2. 对双方来源分别审查全部列；优先采用后端给出的 `candidate_contract_fields`，再结合列名、
+1. 确认输入包含一个或两个数据库来源角色；两个画像时必须分别是 `authoritative` 和
+   `target`，单个画像时只映射该角色。每个来源都必须有受控关系、稳定主键和至少一个列画像。
+2. 对输入中的每个来源分别审查全部列；优先采用后端给出的 `candidate_contract_fields`，再结合列名、
    SQL 类型、推测类型、可空性、主键、`generated` 和 `autoincrement` 状态判断语义。
 3. 每个物理字段最多绑定一个固定字段；每个固定字段在同一来源最多绑定一个物理字段。
 4. `category` 只表示部门、学生、教师三选一；不得把班级、职务或表名直接当类别字段。
@@ -46,7 +47,8 @@ MySQL 目标的受控结构画像映射到固定六字段：`category`、`name`�
 9. 对证据不足、多个候选无法消歧或必填字段不存在的情况，不猜测；将
    `来源角色.固定字段` 写入 `unresolved_required_fields`。
 10. 不得把 `stable_key_ref` 或 `version_ref` 引用用于任何固定业务字段，即使列名看似匹配。
-11. 分别输出双方映射草案并停止，等待服务端验证字段引用、目标写入白名单和 Schema 指纹。
+11. 只为输入中存在的角色输出映射草案；缺席角色的映射数组必须为空。然后停止，等待服务端验证
+    字段引用、目标写入白名单和 Schema 指纹。
 
 ## 决策规则
 
@@ -66,7 +68,7 @@ MySQL 目标的受控结构画像映射到固定六字段：`category`、`name`�
 只输出 `DatabaseSchemaMappingOutput` 严格 JSON。`schema_version` 必须逐字等于输入的
 `mapping_schema_version`，仅允许 `fixed-six-field-sql-mapping-v2` 或
 `fixed-six-field-sql-mapping-v3`。`authoritative_mappings` 和 `target_mappings` 分别只能
-引用对应来源画像里的 `source_field_ref`，每项只包含合同规定字段。所有未解决必填项写入
+引用对应来源画像里的 `source_field_ref`；输入未包含的角色必须输出空数组。每项只包含合同规定字段。所有未解决必填项写入
 `unresolved_required_fields`。不得输出 Markdown、解释段落、置信度、样本值、表名猜测、
 SQL 文本、连接参数或 Schema 之外的字段。
 
@@ -81,6 +83,6 @@ SQL 文本、连接参数或 Schema 之外的字段。
 
 ## 停止条件
 
-双方映射草案完成后立即停止。只要发现来源角色缺失、引用越界、稳定主键缺失、多个列歧义、
+输入中各角色的映射草案完成后立即停止。只要发现角色重复、引用越界、稳定主键缺失、多个列歧义、
 必填字段无法映射或目标字段不在提供画像中，就保留安全的未解决项并停止。不得通过追加 SQL、
 索取原始数据、请求更多权限或反复猜测来继续。

@@ -128,7 +128,7 @@ from app.schemas.agent_ingestion import AgentEntityKind, AgentInputMark, AgentSo
 
 @dataclass(frozen=True)
 class _DatabaseMappingMaterials:
-    profiles: tuple[DatabaseSourceSchemaProfile, DatabaseSourceSchemaProfile]
+    profiles: tuple[DatabaseSourceSchemaProfile, ...]
     field_refs: dict[str, dict[str, str]]
     configured_mappings: dict[str, dict[str, str]]
     mapping_modes: dict[str, str]
@@ -585,6 +585,7 @@ class ProductionGraphActionExecutor:
             action,
             schema_version="source-ingestion-v3",
             mapping_version="fixed-six-field-sql-mapping-v3",
+            binding=binding,
         )
 
     async def _inspect_database_source_v2(
@@ -606,10 +607,17 @@ class ProductionGraphActionExecutor:
         *,
         schema_version: str,
         mapping_version: str,
+        binding: AgentSourceBinding | None = None,
     ) -> GraphActionOutcome:
         role = _source_role(_only(action.resource_ids))
-        connector_id = await self._database_connector_id(context.task_id, role)
-        connector = await self._database_connector(connector_id)
+        if binding is None:
+            connector_id = await self._database_connector_id(context.task_id, role)
+            connector = await self._database_connector(connector_id)
+        else:
+            if binding.role != role:
+                raise GraphGuardRejected("database_target_binding_changed")
+            connector_id = binding.configuration_id
+            connector = await self._database_connector_for_binding(binding)
         health = await connector.health()
         schema = await connector.discover_schema()
         version = await connector.version()
@@ -926,7 +934,18 @@ class ProductionGraphActionExecutor:
         schema_fingerprints: dict[str, str] = {}
         source_versions: dict[str, str] = {}
         forbidden_source_refs: dict[str, frozenset[str]] = {}
-        for role in ("authoritative", "target"):
+        roles = (
+            ("authoritative", "target")
+            if bindings_by_role is None
+            else tuple(
+                role
+                for role in ("authoritative", "target")
+                if role in bindings_by_role
+            )
+        )
+        if not roles:
+            raise GraphGuardRejected("database_mapping_pair_invalid")
+        for role in roles:
             if bindings_by_role is None:
                 connector_id = await self._database_connector_id(context.task_id, role)
                 connector = await self._database_connector(connector_id)
@@ -1036,7 +1055,7 @@ class ProductionGraphActionExecutor:
             )
             source_versions[role] = (await connector.version()).value
         return _DatabaseMappingMaterials(
-            profiles=(profiles["authoritative"], profiles["target"]),
+            profiles=tuple(profiles[role] for role in roles),
             field_refs=field_refs,
             configured_mappings=configured_mappings,
             mapping_modes=mapping_modes,
@@ -1081,14 +1100,18 @@ class ProductionGraphActionExecutor:
             )
 
         runtime = AgentRuntimeRepository(session)
+        (
+            authoritative_connector_id,
+            target_connector_id,
+            authoritative_schema_fingerprint,
+            target_schema_fingerprint,
+        ) = _database_mapping_cache_coordinates(materials)
         cached = await runtime.get_database_schema_mapping(
             tenant_id=context.tenant_id,
-            authoritative_connector_id=materials.connector_ids["authoritative"],
-            target_connector_id=materials.connector_ids["target"],
-            authoritative_schema_fingerprint=(
-                materials.schema_fingerprints["authoritative"]
-            ),
-            target_schema_fingerprint=materials.schema_fingerprints["target"],
+            authoritative_connector_id=authoritative_connector_id,
+            target_connector_id=target_connector_id,
+            authoritative_schema_fingerprint=authoritative_schema_fingerprint,
+            target_schema_fingerprint=target_schema_fingerprint,
             ingestion_contract_version=context.ingestion_contract_version,
             skill_name="understand-organization-database-schema",
             skill_version="1.0.0",
@@ -1148,12 +1171,10 @@ class ProductionGraphActionExecutor:
             mapping = output.model_dump(mode="json")
             await runtime.save_database_schema_mapping(
                 tenant_id=context.tenant_id,
-                authoritative_connector_id=materials.connector_ids["authoritative"],
-                target_connector_id=materials.connector_ids["target"],
-                authoritative_schema_fingerprint=(
-                    materials.schema_fingerprints["authoritative"]
-                ),
-                target_schema_fingerprint=materials.schema_fingerprints["target"],
+                authoritative_connector_id=authoritative_connector_id,
+                target_connector_id=target_connector_id,
+                authoritative_schema_fingerprint=authoritative_schema_fingerprint,
+                target_schema_fingerprint=target_schema_fingerprint,
                 ingestion_contract_version=context.ingestion_contract_version,
                 skill_name="understand-organization-database-schema",
                 skill_version="1.0.0",
@@ -1262,66 +1283,60 @@ class ProductionGraphActionExecutor:
         action: AllowedActionV1,
         binding: AgentSourceBinding,
     ) -> GraphActionOutcome:
-        if binding.configuration_id is None:
-            raise GraphGuardRejected("database_target_binding_invalid")
-        connector = await self._database_connector_for_binding(binding)
-        schema = await connector.discover_schema()
-        version = await connector.version()
-        configuration = connector.configuration
-        if not isinstance(configuration, DatabaseConnectorConfiguration):
-            raise TypeError("SQL task resolved a non-database connector")
-        if configuration.source_role != binding.role:
-            raise GraphGuardRejected("database_target_binding_changed")
-        fixed_fields = _fixed_contract_fields()
-        missing_contract_fields = fixed_fields.difference(configuration.field_columns)
-        missing_physical_fields = set(configuration.field_columns.values()).difference(
-            schema.fields
+        materials = await self._database_mapping_materials(
+            context,
+            bindings_by_role={binding.role: binding},
         )
-        resolved = not missing_contract_fields and not missing_physical_fields
-        schema_fingerprint = _hash(
-            {
-                "schema": schema.model_dump(mode="json"),
-                "table": configuration.table_name,
-                "primary_key": configuration.primary_key,
-                "version_column": configuration.version_column,
-            }
+        enforce_configured_roles = frozenset(
+            role for role, mode in materials.mapping_modes.items() if mode == "explicit"
         )
-        payload = {
-            "schema_version": "source-ingestion-v3",
-            "mapping_version": "fixed-six-field-sql-mapping-v3",
-            "source_role": binding.role,
-            "connector_kind": "database",
-            "connector_id": binding.configuration_id,
-            "resolved": resolved,
-            "mapping": dict(configuration.field_columns) if resolved else {},
-            "schema_fingerprint": schema_fingerprint,
-            "source_version": version.value,
-            "safe_problem_codes": (
-                [] if resolved else ["database_schema_mapping_stale"]
-            ),
-            "model_calls": 0,
-        }
         async with self._session_factory() as session:
             async with session.begin():
+                (
+                    output,
+                    model_calls,
+                    cache_hit,
+                    deterministic,
+                ) = await self._resolve_database_mapping_output(
+                    session,
+                    context=context,
+                    action=action,
+                    materials=materials,
+                    mapping_schema_version="fixed-six-field-sql-mapping-v3",
+                    enforce_configured_roles=enforce_configured_roles,
+                )
+                payload = _database_mapping_role_checkpoint_payload(
+                    output,
+                    role=binding.role,
+                    connector_id=materials.connector_ids[binding.role],
+                    field_refs=materials.field_refs,
+                    schema_fingerprint=materials.schema_fingerprints[binding.role],
+                    source_version=materials.source_versions[binding.role],
+                    model_calls=model_calls,
+                    cache_hit=cache_hit,
+                )
                 await AgentRuntimeRepository(session).save_checkpoint(
                     context.run_id,
                     phase=AgentPhase.INGEST_AND_NORMALIZE,
                     checkpoint_key=binding.mapping_checkpoint_key,
                     input_hash=_hash(
                         {
-                            "connector_id": binding.configuration_id,
-                            "schema_fingerprint": schema_fingerprint,
-                            "source_version": version.value,
+                            "role": binding.role,
+                            "schema_fingerprint": (
+                                materials.schema_fingerprints[binding.role]
+                            ),
+                            "contract": context.ingestion_contract_version,
                         }
                     ),
                     payload=payload,
                 )
-                await self._record_deterministic_invocation(
-                    session,
-                    context=context,
-                    action=action,
-                    output=payload,
-                )
+                if deterministic:
+                    await self._record_deterministic_invocation(
+                        session,
+                        context=context,
+                        action=action,
+                        output=payload,
+                    )
         return _outcome(action)
 
     async def _normalize_api_source_v3(
@@ -4013,8 +4028,11 @@ def _database_mapping_output_from_config(
     field_refs: dict[str, dict[str, str]],
     schema_version: str = "fixed-six-field-sql-mapping-v2",
 ) -> DatabaseSchemaMappingOutput:
-    by_role: dict[str, tuple[DatabaseFieldMapping, ...]] = {}
-    for role in ("authoritative", "target"):
+    by_role: dict[str, tuple[DatabaseFieldMapping, ...]] = {
+        "authoritative": (),
+        "target": (),
+    }
+    for role in field_refs:
         refs_by_column = {
             column: field_ref for field_ref, column in field_refs[role].items()
         }
@@ -4048,20 +4066,31 @@ def _validate_database_mapping_output(
         raise ValueError("database mapping Skill returned another schema")
     if output.schema_version != expected_schema_version:
         raise ValueError("database mapping returned another contract version")
+    active_roles = tuple(
+        role for role in ("authoritative", "target") if role in field_refs
+    )
     unresolved = set(output.unresolved_required_fields)
     allowed_unresolved = {
         f"{role}.{field}"
-        for role in ("authoritative", "target")
+        for role in active_roles
         for field in _fixed_contract_fields()
     }
     if not unresolved <= allowed_unresolved:
         raise ValueError("database mapping returned an unknown unresolved field")
 
     compiled: dict[str, dict[str, str]] = {}
-    for role, mappings in (
-        ("authoritative", output.authoritative_mappings),
-        ("target", output.target_mappings),
-    ):
+    mappings_by_role = {
+        "authoritative": output.authoritative_mappings,
+        "target": output.target_mappings,
+    }
+    for role in ("authoritative", "target"):
+        mappings = mappings_by_role[role]
+        if role not in active_roles:
+            if mappings:
+                raise ValueError(
+                    f"{role} database mapping was returned without a source profile"
+                )
+            continue
         contract_fields = [mapping.contract_field for mapping in mappings]
         source_refs = [mapping.source_field_ref for mapping in mappings]
         if len(set(contract_fields)) != len(contract_fields):
@@ -4109,6 +4138,28 @@ def _validate_database_mapping_output(
                 f"{role} database mapping differs from the server allow-list"
             )
     return output
+
+
+def _database_mapping_cache_coordinates(
+    materials: _DatabaseMappingMaterials,
+) -> tuple[str, str, str, str]:
+    connector_ids = {
+        role: materials.connector_ids.get(role, f"non-database:{role}")
+        for role in ("authoritative", "target")
+    }
+    schema_fingerprints = {
+        role: materials.schema_fingerprints.get(
+            role,
+            _hash({"source_role": role, "connector_kind": "non-database"}),
+        )
+        for role in ("authoritative", "target")
+    }
+    return (
+        connector_ids["authoritative"],
+        connector_ids["target"],
+        schema_fingerprints["authoritative"],
+        schema_fingerprints["target"],
+    )
 
 
 def _entity_kinds_for_contract_field(field: str) -> tuple[str, ...]:
