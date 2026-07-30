@@ -1,0 +1,80 @@
+connectors:
+  authority-mysql:
+    credential_reference: secret://connectors/authority-mysql
+    dialect: mysql
+    database_name: authority_db
+    table_name: organization_people
+    primary_key: id
+    version_column: row_version
+    source_role: authoritative
+    field_columns:
+      category: category
+      name: name
+      number: number
+      class_name: class_name
+      phone: phone
+      email: email
+    allowed_columns:
+      - id
+      - row_version
+      - category
+      - name
+      - number
+      - class_name
+      - phone
+      - email
+    capabilities:
+      read: true
+      paginated: true
+
+  seewo-mysql:
+    credential_reference: secret://connectors/seewo-mysql
+    dialect: mysql
+    database_name: seewo_db
+    table_name: organization_people
+    primary_key: id
+    version_column: row_version
+    source_role: target
+    field_columns:
+      category: category
+      name: name
+      number: number
+      class_name: class_name
+      phone: phone
+      email: email
+    allowed_columns:
+      - id
+      - row_version
+      - category
+      - name
+      - number
+      - class_name
+      - phone
+      - email
+    capabilities:
+      read: true
+      paginated: true
+      create: true
+      update: true
+      delete: true
+      optimistic_version: true
+      read_after_write: true
+
+  seewo-data-mysql:
+    credential_reference: secret://connectors/seewo-data-mysql
+    dialect: mysql
+    database_name: seewo_data
+    table_name: data
+    primary_key: row_id
+    version_column: version
+    source_role: target
+    mapping:
+      mode: llm
+    capabilities:
+      read: true
+      paginated: true
+      create: true
+      update: true
+      delete: true
+      optimistic_version: true
+      read_after_write: true

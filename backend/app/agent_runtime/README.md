@@ -126,3 +126,8 @@ configured API/database connector façades and contract tests exist, but task su
 before task/lock creation with `connector_capability_failure` until connector input evidence and
 mutation sessions are durably bound to the worker. This fail-closed boundary prevents a
 configuration-only connector selection from becoming a stuck task.
+
+The `seewo-data-mysql` target requires the server-side `seewo_writer` credential to have read and
+write access to `seewo_data.data` (SELECT, INSERT, UPDATE, and DELETE). Grant that prerequisite
+out of band. Keep the credential value in `backend/.env` only; never place a DSN or password in
+the YAML descriptor, documentation, logs, or model-visible state.
