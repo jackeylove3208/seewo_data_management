@@ -476,21 +476,22 @@ def _rollback_identifier(
     after: object,
 ) -> str:
     prefix = f"database:{connector_id}:"
+    if isinstance(locator, str):
+        if locator.startswith(prefix):
+            identifier = locator[len(prefix) :].strip()
+            if identifier:
+                return identifier
+            raise ValueError("SQL rollback target locator lacks an identifier")
+        if ":" not in locator and locator.strip():
+            return locator.strip()
+        raise ValueError("SQL rollback target locator belongs to another connector")
     if operation == "create":
         values = after if isinstance(after, dict) else {}
         candidate = values.get("source_id") or values.get("number")
-        if isinstance(candidate, str) and candidate.startswith(prefix):
-            candidate = candidate[len(prefix) :]
         if candidate is None or not str(candidate).strip():
             raise ValueError("SQL rollback create lacks a stable identifier")
         return str(candidate).strip()
-    if not isinstance(locator, str):
-        raise ValueError("SQL rollback mutation lacks a target locator")
-    if locator.startswith(prefix):
-        return locator[len(prefix) :]
-    if ":" not in locator:
-        return locator
-    raise ValueError("SQL rollback target locator belongs to another connector")
+    raise ValueError("SQL rollback mutation lacks a target locator")
 
 
 def _fixed_values(value: object) -> dict[str, object]:

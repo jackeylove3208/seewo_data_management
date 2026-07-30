@@ -174,10 +174,17 @@ class SqlGovernanceExecutionHandler:
             idempotency_key=f"{plan.id}:{operation.id}",
             expected_version=raw_version,
         )
+        verified_identifier = _mutation_identifier(
+            operation=operation,
+            requested_identifier=identifier,
+            generated_identifiers=output_version.generated_identifiers,
+        )
         if operation.operation_type == "delete":
             verified = await connector.read_record(identifier) is None
         else:
-            verified = (await connector.verify([{"id": identifier, "after": after}])) == [True]
+            verified = (
+                await connector.verify([{"id": verified_identifier, "after": after}])
+            ) == [True]
         status = "succeeded" if verified else "verification_failed"
         output_hash = self.hash_version(output_version.value)
         output_target = await executions.create_target_version(
@@ -197,8 +204,10 @@ class SqlGovernanceExecutionHandler:
             ),
             storage_path=(f"database://{connector_id}/version/{output_hash}/{operation.id}"),
         )
-        if operation.operation_type == "create":
-            operation.target_source_identifier = f"database:{connector_id}:{identifier}"
+        if operation.operation_type == "create" and verified:
+            operation.target_source_identifier = (
+                f"database:{connector_id}:{verified_identifier}"
+            )
         return await AgentGovernanceRepository(session).record_operation_outcome(
             operation.id,
             status=status,
@@ -234,6 +243,19 @@ def _operation_identifier(
     if not identifier:
         raise ValueError("SQL mutation target locator lacks an identifier")
     return identifier
+
+
+def _mutation_identifier(
+    *,
+    operation: AgentGovernanceOperationRecord,
+    requested_identifier: str,
+    generated_identifiers: tuple[str | None, ...],
+) -> str:
+    if operation.operation_type != "create":
+        return requested_identifier
+    if len(generated_identifiers) != 1:
+        raise ConnectorConflictError("SQL create mutation result is incomplete")
+    return generated_identifiers[0] or requested_identifier
 
 
 def _fixed_values(value: dict[str, object] | None) -> dict[str, object]:

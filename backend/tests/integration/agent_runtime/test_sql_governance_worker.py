@@ -6,9 +6,11 @@ from app.agent_runtime.csv_rollback_handlers import _rollback_operation
 from app.agent_runtime.sql_governance_handlers import SqlGovernanceExecutionHandler
 from app.agent_runtime.sql_rollback_handlers import SqlRollbackExecutionHandler
 from app.agent_runtime.worker import AgentWorkContext
+from app.connectors.base import ConnectorVersion
 from app.connectors.configured import (
     ConfiguredApiConnector,
     ConnectorCapabilities,
+    ConnectorMutationResult,
     DatabaseConnectorConfiguration,
 )
 from app.models.agent_analysis import (
@@ -33,6 +35,35 @@ class StaticResolver:
     async def connector(self, connector_id: str) -> ConfiguredApiConnector:
         assert connector_id == "seewo-mysql"
         return self._connector
+
+
+class GeneratedKeyConnector:
+    def __init__(
+        self,
+        configuration: DatabaseConnectorConfiguration,
+        *,
+        current_version: str,
+    ) -> None:
+        self.configuration = configuration
+        self._current_version = current_version
+        self.verified_identifiers: list[str] = []
+
+    async def version(self) -> ConnectorVersion:
+        return ConnectorVersion(value=self._current_version)
+
+    async def apply(self, operations, *, idempotency_key: str, expected_version: str):
+        assert operations[0]["id"] == "S002"
+        assert idempotency_key
+        assert expected_version == self._current_version
+        self._current_version = "generated-key-version"
+        return ConnectorMutationResult(
+            version=ConnectorVersion(value=self._current_version),
+            generated_identifiers=("41",),
+        )
+
+    async def verify(self, expected):
+        self.verified_identifiers.extend(str(item["id"]) for item in expected)
+        return [True for _ in expected]
 
 
 @pytest.mark.asyncio
@@ -486,3 +517,37 @@ async def test_sql_governance_updates_mysql_target_and_verifies_result(
         assert recovered_rollback["status"] == "already_restored"
         assert recovered_rollback["verification"]["idempotent_recovery"] is True
         assert (await connector.read_record("student-1"))["phone"] == "13800000000"
+
+        generated_key_connector = GeneratedKeyConnector(
+            configuration,
+            current_version=(await connector.version()).value,
+        )
+        generated_create = AgentGovernanceOperationRecord(
+            plan_id=plan.id,
+            run_id=run.id,
+            task_id=task.id,
+            finding_id=finding.id,
+            operation_type="create",
+            entity_kind="student",
+            target_source_identifier=None,
+            before=None,
+            after={"name": "王五", "number": "S002"},
+            dependencies=[],
+            risk="high",
+            status="pending",
+            attempt_count=0,
+        )
+        session.add(generated_create)
+        await session.flush()
+        generated_result = await SqlGovernanceExecutionHandler(
+            StaticResolver(connector)
+        ).execute_operation(
+            session,
+            context,
+            operation_id=generated_create.id,
+            connector_override=generated_key_connector,  # type: ignore[arg-type]
+        )
+
+        assert generated_result.status == "succeeded"
+        assert generated_result.target_source_identifier == "database:seewo-mysql:41"
+        assert generated_key_connector.verified_identifiers == ["41"]

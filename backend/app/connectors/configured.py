@@ -84,6 +84,19 @@ class ConnectorSchema(BaseModel):
     columns: tuple[ConnectorColumnSchema, ...] = ()
 
 
+class ConnectorMutationResult(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    version: ConnectorVersion
+    generated_identifiers: tuple[str | None, ...]
+
+    @property
+    def value(self) -> str:
+        """Compatibility accessor for callers that previously received ConnectorVersion."""
+
+        return self.version.value
+
+
 class ConnectorConfiguration(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -235,7 +248,7 @@ class ConnectorStore(Protocol):
         expected_version: str,
         record_id_field: str,
         version_field: str,
-    ) -> str: ...
+    ) -> str | ConnectorMutationResult: ...
 
     async def verify(
         self, *, expected: list[dict[str, object]], record_id_field: str
@@ -277,7 +290,7 @@ class SqlAlchemyConnectorStore:
         self._engine = engine
         self._table = table
         self._configuration = configuration
-        self._idempotent_versions: dict[str, str] = {}
+        self._idempotent_results: dict[str, ConnectorMutationResult] = {}
 
     async def health(self) -> bool:
         try:
@@ -376,13 +389,14 @@ class SqlAlchemyConnectorStore:
         expected_version: str,
         record_id_field: str,
         version_field: str,
-    ) -> str:
-        prior = self._idempotent_versions.get(idempotency_key)
+    ) -> ConnectorMutationResult:
+        prior = self._idempotent_results.get(idempotency_key)
         if prior is not None:
             return prior
         self._effective_columns()
         allowed = set(self._configuration.field_columns)
         mutation_version = _next_database_version(expected_version, idempotency_key)
+        generated_identifiers: list[str | None] = []
         async with self._engine.begin() as connection:
             current = await connection.scalar(select(func.max(self._table.c[version_field])))
             current_value = str(current) if current is not None else "empty"
@@ -417,26 +431,47 @@ class SqlAlchemyConnectorStore:
                     )
                     if result.rowcount != 1:
                         raise ConnectorConflictError("database connector before value is stale")
+                    generated_identifiers.append(None)
                 elif kind == "delete":
                     result = await connection.execute(delete(self._table).where(and_(*predicate)))
                     if result.rowcount != 1:
                         raise ConnectorConflictError("database connector before value is stale")
+                    generated_identifiers.append(None)
                 elif kind == "create":
                     values = {
-                        record_id_field: identifier,
                         version_field: mutation_version,
                         **physical_after,
                     }
+                    generated_primary_key = _column_schema(
+                        self._table.c[record_id_field]
+                    ).generated
+                    if generated_primary_key:
+                        values.pop(record_id_field, None)
+                    else:
+                        values[record_id_field] = identifier
                     try:
-                        await connection.execute(insert(self._table).values(**values))
+                        result = await connection.execute(insert(self._table).values(**values))
                     except Exception as error:
                         raise ConnectorConflictError(
                             "database connector record already exists"
                         ) from error
+                    generated_identifier: str | None = None
+                    if generated_primary_key:
+                        primary_key = result.inserted_primary_key
+                        if not primary_key or primary_key[0] is None:
+                            raise ConnectorConflictError(
+                                "database connector did not return a generated primary key"
+                            )
+                        generated_identifier = str(primary_key[0])
+                    generated_identifiers.append(generated_identifier)
             current = await connection.scalar(select(func.max(self._table.c[version_field])))
             output_version = str(current) if current is not None else "empty"
-        self._idempotent_versions[idempotency_key] = output_version
-        return output_version
+        output = ConnectorMutationResult(
+            version=ConnectorVersion(value=output_version),
+            generated_identifiers=tuple(generated_identifiers),
+        )
+        self._idempotent_results[idempotency_key] = output
+        return output
 
     async def verify(
         self, *, expected: list[dict[str, object]], record_id_field: str
@@ -600,7 +635,7 @@ class ConfiguredApiConnector:
         *,
         idempotency_key: str,
         expected_version: str,
-    ) -> ConnectorVersion:
+    ) -> ConnectorMutationResult:
         self._require_frozen_mapping()
         if self.configuration.source_role != "target":
             raise ConnectorCapabilityError("authoritative connectors are read-only")
@@ -619,7 +654,12 @@ class ConfiguredApiConnector:
             record_id_field=self.configuration.record_id_field,
             version_field=self.configuration.version_field,
         )
-        return ConnectorVersion(value=output)
+        if isinstance(output, ConnectorMutationResult):
+            return output
+        return ConnectorMutationResult(
+            version=ConnectorVersion(value=output),
+            generated_identifiers=tuple(None for _ in operations),
+        )
 
     async def verify(self, expected: list[dict[str, object]]) -> list[bool]:
         self._require_read()

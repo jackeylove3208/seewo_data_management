@@ -8,6 +8,7 @@ from app.connectors.configured import (
     ConnectorCapabilities,
     ConnectorCapabilityError,
     ConnectorConflictError,
+    ConnectorMutationResult,
     DatabaseConnectorConfiguration,
     SqlAlchemyConnectorStore,
 )
@@ -467,6 +468,62 @@ async def test_llm_in_memory_connector_enforces_its_frozen_mapping_on_row_paths(
         "version": output.value,
         "full_name": "李四",
     }
+
+
+@pytest.mark.asyncio
+async def test_database_store_returns_generated_primary_key_for_create() -> None:
+    metadata = MetaData()
+    people = Table(
+        "seewo_people",
+        metadata,
+        Column("id", Integer, primary_key=True, autoincrement=True),
+        Column("version", String, nullable=False),
+        Column("name", String, nullable=False),
+    )
+    engine = create_async_engine("sqlite+aiosqlite://")
+    async with engine.begin() as connection:
+        await connection.run_sync(metadata.create_all)
+    configuration = DatabaseConnectorConfiguration(
+        credential_reference="secret://connectors/seewo-db",
+        table_name="seewo_people",
+        primary_key="id",
+        version_column="version",
+        field_columns={"name": "name"},
+        capabilities=ConnectorCapabilities(
+            read=True,
+            create=True,
+            optimistic_version=True,
+        ),
+    )
+    connector = ConfiguredApiConnector(
+        configuration=configuration,
+        store=SqlAlchemyConnectorStore(
+            engine=engine,
+            table=people,
+            configuration=configuration,
+        ),
+    )
+
+    output: ConnectorMutationResult = await connector.apply(
+        [
+            {
+                "operation": "create",
+                "id": "S001",
+                "after": {"name": "张三"},
+            }
+        ],
+        idempotency_key="generated-key-create",
+        expected_version="empty",
+    )
+
+    assert output.generated_identifiers == ("1",)
+    assert await connector.verify([{"id": "1", "after": {"name": "张三"}}]) == [True]
+    assert await connector.read_record("1") == {
+        "id": 1,
+        "version": output.version.value,
+        "name": "张三",
+    }
+    await engine.dispose()
 
 
 @pytest.mark.asyncio

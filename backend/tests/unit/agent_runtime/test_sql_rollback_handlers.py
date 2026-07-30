@@ -79,7 +79,7 @@ class _ConcurrentReadConnector(ConfiguredApiConnector):
         return await self._connector.verify(expected)
 
 
-def _connector() -> ConfiguredApiConnector:
+def _connector(*, record_id: str = "student-1") -> ConfiguredApiConnector:
     configuration = DatabaseConnectorConfiguration(
         credential_reference="secret://connectors/seewo-mysql",
         dialect="mysql",
@@ -120,7 +120,7 @@ def _connector() -> ConfiguredApiConnector:
         store=InMemoryConnectorStore(
             records=[
                 {
-                    "id": "student-1",
+                    "id": record_id,
                     "row_version": "v1",
                     "category": "student",
                     "name": "张三",
@@ -388,6 +388,33 @@ async def test_sql_rollback_replays_after_external_write_fact_persistence_fails(
 
     assert recovered["status"] == "already_restored"
     assert recovered["verification"]["idempotent_recovery"] is True
+
+
+@pytest.mark.asyncio
+async def test_sql_rollback_deletes_create_using_persisted_generated_locator(
+    monkeypatch,
+) -> None:
+    connector = _connector(record_id="41")
+    mutation, parent, task, context = _create_rollback_facts()
+    mutation["target_source_identifier"] = "database:seewo-mysql:41"
+    _checkpoints, _created_versions = _install_runtime_fakes(monkeypatch, parent)
+    handler = SqlRollbackExecutionHandler(_Resolver(connector))
+    session = _Session(task, parent)
+
+    await handler.plan(session, context)  # type: ignore[arg-type]
+    operation = _rollback_operation(
+        mutation,
+        target_version=f"sha256:{parent.file_sha256}",
+    )
+    fact = await handler.execute_operation(
+        session,  # type: ignore[arg-type]
+        context,
+        operation.id,
+    )
+
+    assert fact["status"] == "succeeded"
+    assert fact["target_source_identifier"] == "database:seewo-mysql:41"
+    assert await connector.read_record("41") is None
 
 
 @pytest.mark.asyncio
