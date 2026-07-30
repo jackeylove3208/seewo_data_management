@@ -88,7 +88,7 @@ async def _drop_migration_test_database(url: URL) -> None:
 
 async def _migration_test_schema_state(
     url: URL,
-) -> tuple[set[str], set[str], set[str], str, int, int]:
+) -> tuple[set[str], set[str], set[str], str, int, int, dict[str, int | None]]:
     engine = create_async_engine(url.set(drivername="postgresql+asyncpg"))
     try:
         async with engine.connect() as connection:
@@ -133,6 +133,22 @@ async def _migration_test_schema_state(
                 )
             )
             assert source_file_storage_name_length is not None
+            mapping_hash_lengths = dict(
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT column_name, character_maximum_length "
+                            "FROM information_schema.columns "
+                            "WHERE table_name = 'agent_database_schema_mappings' "
+                            "AND column_name IN ("
+                            "'authoritative_schema_fingerprint', "
+                            "'target_schema_fingerprint', "
+                            "'content_hash'"
+                            ")"
+                        )
+                    )
+                ).all()
+            )
             return (
                 versions,
                 extensions,
@@ -140,6 +156,7 @@ async def _migration_test_schema_state(
                 agent_analysis_trigger_function,
                 checkpoint_hash_length,
                 source_file_storage_name_length,
+                mapping_hash_lengths,
             )
     finally:
         await engine.dispose()
@@ -184,6 +201,7 @@ def test_clean_postgresql_migration_reaches_head(monkeypatch: pytest.MonkeyPatch
             trigger_function,
             checkpoint_hash_length,
             source_file_storage_name_length,
+            mapping_hash_lengths,
         ) = asyncio.run(
             _migration_test_schema_state(url)
         )
@@ -193,6 +211,11 @@ def test_clean_postgresql_migration_reaches_head(monkeypatch: pytest.MonkeyPatch
         assert "TG_OP = 'DELETE'" in trigger_function
         assert checkpoint_hash_length == 71
         assert source_file_storage_name_length == 128
+        assert mapping_hash_lengths == {
+            "authoritative_schema_fingerprint": 71,
+            "target_schema_fingerprint": 71,
+            "content_hash": 71,
+        }
         assert {
             "agent_graph_runs",
             "agent_graph_candidate_sets",

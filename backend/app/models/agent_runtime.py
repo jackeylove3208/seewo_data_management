@@ -178,13 +178,13 @@ class AgentDatabaseSchemaMappingRecord(Base, TimestampMixin):
     tenant_id: Mapped[str] = mapped_column(String(128), index=True)
     authoritative_connector_id: Mapped[str] = mapped_column(String(128))
     target_connector_id: Mapped[str] = mapped_column(String(128))
-    authoritative_schema_fingerprint: Mapped[str] = mapped_column(String(64))
-    target_schema_fingerprint: Mapped[str] = mapped_column(String(64))
+    authoritative_schema_fingerprint: Mapped[str] = mapped_column(String(71))
+    target_schema_fingerprint: Mapped[str] = mapped_column(String(71))
     ingestion_contract_version: Mapped[str] = mapped_column(String(64))
     skill_name: Mapped[str] = mapped_column(String(128))
     skill_version: Mapped[str] = mapped_column(String(64))
     mapping: Mapped[dict[str, Any]] = mapped_column(_json_type())
-    content_hash: Mapped[str] = mapped_column(String(64))
+    content_hash: Mapped[str] = mapped_column(String(71))
 
     __table_args__ = (
         UniqueConstraint(
