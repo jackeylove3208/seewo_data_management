@@ -215,6 +215,7 @@ async def test_ingestion_v3_flag_does_not_upgrade_a_non_api_task(session) -> Non
             new_agent_enabled=True,
             agent_graph_enabled=True,
             source_ingestion_v3_enabled=True,
+            _env_file=None,
         ),
     ).start(task_id=task.id, conversation_id=None)
 
