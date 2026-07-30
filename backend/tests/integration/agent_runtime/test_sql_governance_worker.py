@@ -25,6 +25,7 @@ from app.models.agent_runtime import AgentRunRecord
 from app.models.executions import TargetVersionRecord
 from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import Snapshot, SourceFile
+from app.repositories.executions import ExecutionRepository
 from tests.fixtures.connector_store import InMemoryConnectorStore
 
 
@@ -43,16 +44,20 @@ class GeneratedKeyConnector:
         configuration: DatabaseConnectorConfiguration,
         *,
         current_version: str,
+        verification_result: bool = True,
+        expected_identifier: str = "S002",
     ) -> None:
         self.configuration = configuration
         self._current_version = current_version
+        self._verification_result = verification_result
+        self._expected_identifier = expected_identifier
         self.verified_identifiers: list[str] = []
 
     async def version(self) -> ConnectorVersion:
         return ConnectorVersion(value=self._current_version)
 
     async def apply(self, operations, *, idempotency_key: str, expected_version: str):
-        assert operations[0]["id"] == "S002"
+        assert operations[0]["id"] == self._expected_identifier
         assert idempotency_key
         assert expected_version == self._current_version
         self._current_version = "generated-key-version"
@@ -63,12 +68,41 @@ class GeneratedKeyConnector:
 
     async def verify(self, expected):
         self.verified_identifiers.extend(str(item["id"]) for item in expected)
-        return [True for _ in expected]
+        return [self._verification_result for _ in expected]
+
+
+class DurableGeneratedKeyConnector:
+    def __init__(
+        self,
+        configuration: DatabaseConnectorConfiguration,
+        state: dict[str, object],
+    ) -> None:
+        self.configuration = configuration
+        self._state = state
+
+    async def version(self) -> ConnectorVersion:
+        return ConnectorVersion(value=str(self._state["version"]))
+
+    async def apply(self, operations, *, idempotency_key: str, expected_version: str):
+        assert operations[0]["id"] == "S004"
+        assert expected_version == self._state["version"]
+        self._state["apply_calls"] = int(self._state.get("apply_calls", 0)) + 1
+        self._state.setdefault("receipt", idempotency_key)
+        if self._state["receipt"] == idempotency_key:
+            self._state["version"] = "durable-generated-key-version"
+        return ConnectorMutationResult(
+            version=ConnectorVersion(value=str(self._state["version"])),
+            generated_identifiers=("42",),
+        )
+
+    async def verify(self, expected):
+        return [str(item["id"]) == "42" for item in expected]
 
 
 @pytest.mark.asyncio
 async def test_sql_governance_updates_mysql_target_and_verifies_result(
     database,
+    monkeypatch,
 ) -> None:
     configuration = DatabaseConnectorConfiguration(
         credential_reference="secret://connectors/seewo-mysql",
@@ -551,3 +585,105 @@ async def test_sql_governance_updates_mysql_target_and_verifies_result(
         assert generated_result.status == "succeeded"
         assert generated_result.target_source_identifier == "database:seewo-mysql:41"
         assert generated_key_connector.verified_identifiers == ["41"]
+
+        failed_verification_connector = GeneratedKeyConnector(
+            configuration,
+            current_version="generated-key-version",
+            verification_result=False,
+            expected_identifier="S003",
+        )
+        failed_verification_create = AgentGovernanceOperationRecord(
+            plan_id=plan.id,
+            run_id=run.id,
+            task_id=task.id,
+            finding_id=finding.id,
+            operation_type="create",
+            entity_kind="student",
+            target_source_identifier=None,
+            before=None,
+            after={"name": "赵六", "number": "S003"},
+            dependencies=[],
+            risk="high",
+            status="pending",
+            attempt_count=0,
+        )
+        session.add(failed_verification_create)
+        await session.flush()
+        failed_verification = await SqlGovernanceExecutionHandler(
+            StaticResolver(connector)
+        ).execute_operation(
+            session,
+            context,
+            operation_id=failed_verification_create.id,
+            connector_override=failed_verification_connector,  # type: ignore[arg-type]
+        )
+
+        assert failed_verification.status == "verification_failed"
+        assert (
+            failed_verification.target_source_identifier == "database:seewo-mysql:41"
+        )
+
+        await session.commit()
+        durable_state: dict[str, object] = {"version": "generated-key-version"}
+        recovery_operation = AgentGovernanceOperationRecord(
+            plan_id=plan.id,
+            run_id=run.id,
+            task_id=task.id,
+            finding_id=finding.id,
+            operation_type="create",
+            entity_kind="student",
+            target_source_identifier=None,
+            before=None,
+            after={"name": "钱七", "number": "S004"},
+            dependencies=[],
+            risk="high",
+            status="pending",
+            attempt_count=0,
+        )
+        session.add(recovery_operation)
+        await session.commit()
+        original_create_target_version = ExecutionRepository.create_target_version
+
+        async def fail_target_version(*_args, **_kwargs):
+            raise ValueError("metadata commit failed")
+
+        monkeypatch.setattr(
+            ExecutionRepository,
+            "create_target_version",
+            fail_target_version,
+        )
+        async with session.begin():
+            with pytest.raises(ValueError, match="metadata commit failed"):
+                await SqlGovernanceExecutionHandler(
+                    StaticResolver(connector)
+                ).execute_operation(
+                    session,
+                    context,
+                    operation_id=recovery_operation.id,
+                    connector_override=DurableGeneratedKeyConnector(
+                        configuration,
+                        durable_state,
+                    ),  # type: ignore[arg-type]
+                )
+
+        monkeypatch.setattr(
+            ExecutionRepository,
+            "create_target_version",
+            original_create_target_version,
+        )
+        async with session.begin():
+            recovered_create = await SqlGovernanceExecutionHandler(
+                StaticResolver(connector)
+            ).execute_operation(
+                session,
+                context,
+                operation_id=recovery_operation.id,
+                connector_override=DurableGeneratedKeyConnector(
+                    configuration,
+                    durable_state,
+                ),  # type: ignore[arg-type]
+            )
+
+        assert recovered_create.status == "succeeded"
+        assert recovered_create.target_source_identifier == "database:seewo-mysql:42"
+        assert durable_state["apply_calls"] == 2

@@ -110,17 +110,49 @@ class SqlGovernanceExecutionHandler:
             connector_id=connector_id,
             operation=operation,
         )
+        connector_operation: dict[str, object] = {
+            "operation": operation.operation_type,
+            "id": identifier,
+            "before": before,
+            "after": after,
+        }
+        idempotency_key = f"{plan.id}:{operation.id}"
         raw_version = (await connector.version()).value
         if self.hash_version(raw_version) != parent.file_sha256:
+            recovered_identifier = identifier
+            recovered_version = raw_version
             if operation.operation_type == "delete":
                 already_applied = await connector.read_record(identifier) is None
+            elif operation.operation_type == "create":
+                try:
+                    recovered = await connector.apply(
+                        [connector_operation],
+                        idempotency_key=idempotency_key,
+                        expected_version=raw_version,
+                    )
+                except ConnectorConflictError:
+                    already_applied = (
+                        await connector.verify([{"id": identifier, "after": after}])
+                    ) == [True]
+                else:
+                    recovered_identifier = _mutation_identifier(
+                        operation=operation,
+                        requested_identifier=identifier,
+                        generated_identifiers=recovered.generated_identifiers,
+                    )
+                    recovered_version = recovered.value
+                    already_applied = (
+                        await connector.verify(
+                            [{"id": recovered_identifier, "after": after}]
+                        )
+                    ) == [True]
             else:
                 already_applied = (
                     await connector.verify([{"id": identifier, "after": after}])
                 ) == [True]
             if not already_applied:
                 raise ConnectorConflictError("SQL target version changed outside the plan")
-            output_hash = self.hash_version(raw_version)
+            output_hash = self.hash_version(recovered_version)
             output_target = await executions.create_target_version(
                 task_id=context.task_id,
                 tenant_id=context.tenant_id,
@@ -140,7 +172,9 @@ class SqlGovernanceExecutionHandler:
                 ),
             )
             if operation.operation_type == "create":
-                operation.target_source_identifier = f"database:{connector_id}:{identifier}"
+                operation.target_source_identifier = (
+                    f"database:{connector_id}:{recovered_identifier}"
+                )
             return await AgentGovernanceRepository(session).record_operation_outcome(
                 operation.id,
                 status="succeeded",
@@ -152,6 +186,7 @@ class SqlGovernanceExecutionHandler:
                     "connector_id": connector_id,
                     "target_version_after": output_hash,
                     "output_target_version_id": str(output_target.id),
+                    "target_source_identifier": operation.target_source_identifier,
                 },
             )
         prior_success = await session.scalar(
@@ -163,15 +198,9 @@ class SqlGovernanceExecutionHandler:
         if prior_success is None and plan.target_version != f"sha256:{parent.file_sha256}":
             raise ConnectorConflictError("SQL target version is stale")
 
-        connector_operation: dict[str, object] = {
-            "operation": operation.operation_type,
-            "id": identifier,
-            "before": before,
-            "after": after,
-        }
         output_version = await connector.apply(
             [connector_operation],
-            idempotency_key=f"{plan.id}:{operation.id}",
+            idempotency_key=idempotency_key,
             expected_version=raw_version,
         )
         verified_identifier = _mutation_identifier(
@@ -204,7 +233,7 @@ class SqlGovernanceExecutionHandler:
             ),
             storage_path=(f"database://{connector_id}/version/{output_hash}/{operation.id}"),
         )
-        if operation.operation_type == "create" and verified:
+        if operation.operation_type == "create":
             operation.target_source_identifier = (
                 f"database:{connector_id}:{verified_identifier}"
             )
@@ -219,6 +248,7 @@ class SqlGovernanceExecutionHandler:
                 "target_version_before": self.hash_version(raw_version),
                 "target_version_after": output_hash,
                 "output_target_version_id": str(output_target.id),
+                "target_source_identifier": operation.target_source_identifier,
             },
             error_code=None if verified else "target_verification_failed",
         )
