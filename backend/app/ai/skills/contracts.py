@@ -1,7 +1,7 @@
-from typing import Literal
+from typing import Literal, Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.agent_graph.contracts import SupervisorContextV1, SupervisorDecisionV1
 from app.agent_graph.evidence import PairedRecordEvidenceV1
@@ -27,6 +27,7 @@ FixedFieldNormalizer = Literal[
     "normalize_phone",
     "normalize_email",
 ]
+MAX_DATABASE_SCHEMA_MAPPING_INPUT_BYTES = 256 * 1024
 
 
 class StrictContract(BaseModel):
@@ -158,6 +159,7 @@ class CsvSchemaMappingOutput(StrictContract):
 class DatabaseColumnProfile(StrictContract):
     source_field_ref: str = Field(min_length=1, max_length=512)
     column_name: str = Field(min_length=1, max_length=255)
+    sql_type: str = Field(min_length=1, max_length=255)
     inferred_type: Literal[
         "text",
         "identifier",
@@ -166,6 +168,9 @@ class DatabaseColumnProfile(StrictContract):
         "unknown",
     ]
     nullable: bool
+    primary_key: bool
+    generated: bool
+    autoincrement: bool
     candidate_contract_fields: tuple[FixedContractField, ...] = ()
 
 
@@ -175,6 +180,7 @@ class DatabaseSourceSchemaProfile(StrictContract):
     dialect: Literal["mysql", "postgresql"]
     relation_ref: str = Field(min_length=1, max_length=512)
     stable_key_ref: str = Field(min_length=1, max_length=512)
+    version_ref: str = Field(min_length=1, max_length=512)
     columns: tuple[DatabaseColumnProfile, ...] = Field(
         min_length=1,
         max_length=256,
@@ -182,10 +188,31 @@ class DatabaseSourceSchemaProfile(StrictContract):
 
 
 class DatabaseSchemaMappingInput(AgentSkillInput):
+    mapping_schema_version: Literal[
+        "fixed-six-field-sql-mapping-v2",
+        "fixed-six-field-sql-mapping-v3",
+    ] = "fixed-six-field-sql-mapping-v2"
     sources: tuple[DatabaseSourceSchemaProfile, ...] = Field(
-        min_length=2,
+        min_length=1,
         max_length=2,
     )
+
+    @model_validator(mode="after")
+    def validate_source_roles(self) -> Self:
+        roles = tuple(source.source_role for source in self.sources)
+        if len(set(roles)) != len(roles):
+            raise ValueError("database mapping source roles must be distinct")
+        if (
+            self.mapping_schema_version == "fixed-six-field-sql-mapping-v2"
+            and set(roles) != {"authoritative", "target"}
+        ):
+            raise ValueError("v2 requires both database source roles")
+        if (
+            len(self.model_dump_json().encode("utf-8"))
+            > MAX_DATABASE_SCHEMA_MAPPING_INPUT_BYTES
+        ):
+            raise ValueError("database schema metadata envelope exceeds the size limit")
+        return self
 
 
 class DatabaseFieldMapping(StrictContract):
@@ -196,7 +223,10 @@ class DatabaseFieldMapping(StrictContract):
 
 
 class DatabaseSchemaMappingOutput(StrictContract):
-    schema_version: Literal["fixed-six-field-sql-mapping-v2"]
+    schema_version: Literal[
+        "fixed-six-field-sql-mapping-v2",
+        "fixed-six-field-sql-mapping-v3",
+    ]
     authoritative_mappings: tuple[DatabaseFieldMapping, ...] = Field(max_length=6)
     target_mappings: tuple[DatabaseFieldMapping, ...] = Field(max_length=6)
     unresolved_required_fields: tuple[str, ...] = ()

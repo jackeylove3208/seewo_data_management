@@ -23,6 +23,7 @@ dependencies = [
   "pydantic-settings>=2.7,<3",
   "pgvector>=0.4,<1",
   "python-multipart>=0.0.20,<1",
+  "PyYAML>=6,<7",
   "rapidfuzz>=3.12,<4",
   "sqlalchemy[asyncio]>=2.0,<3",
   "uvicorn[standard]>=0.34,<1",
@@ -66,5 +67,5 @@ strict = true
 packages = ["app"]
 
 [[tool.mypy.overrides]]
-module = ["charset_normalizer.*"]
+module = ["charset_normalizer.*", "yaml"]
 ignore_missing_imports = true

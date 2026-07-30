@@ -7,6 +7,11 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent_runtime.database_mapping import (
+    connector_with_frozen_database_mapping,
+    run_requires_frozen_database_mapping,
+)
+from app.agent_runtime.errors import ExternalWriteRecoveryRequired
 from app.agent_runtime.worker import AgentWorkContext
 from app.connectors.configured import (
     ConfiguredApiConnector,
@@ -89,14 +94,38 @@ class SqlGovernanceExecutionHandler:
         target = task.agent_intent.get("target")
         if not isinstance(target, dict) or target.get("kind") != "database":
             raise ValueError("SQL Agent target selection changed")
-        connector_id = target.get("configuration_id")
-        if not isinstance(connector_id, str) or not connector_id:
+        selected_connector_id = target.get("configuration_id")
+        if not isinstance(selected_connector_id, str) or not selected_connector_id:
             raise ValueError("SQL Agent target connector ID is missing")
-        connector = connector_override or await self._connectors.connector(connector_id)
-        configuration = connector.configuration
+        configuration: DatabaseConnectorConfiguration
+        if await run_requires_frozen_database_mapping(
+            session,
+            task_id=context.task_id,
+            run_id=context.run_id,
+        ):
+            connector_id, connector, configuration = (
+                await connector_with_frozen_database_mapping(
+                    session,
+                    task_id=context.task_id,
+                    run_id=context.run_id,
+                    role="target",
+                    connectors=self._connectors,
+                    connector_override=connector_override,
+                )
+            )
+            if connector_id != selected_connector_id:
+                raise ValueError("SQL Agent target connector changed after task creation")
+        else:
+            connector_id = selected_connector_id
+            connector = connector_override or await self._connectors.connector(connector_id)
+            resolved_configuration = connector.configuration
+            if not isinstance(resolved_configuration, DatabaseConnectorConfiguration):
+                raise ConnectorCapabilityError(
+                    "SQL governance requires a configured target connector"
+                )
+            configuration = resolved_configuration
         if (
-            not isinstance(configuration, DatabaseConnectorConfiguration)
-            or configuration.source_role != "target"
+            configuration.source_role != "target"
         ):
             raise ConnectorCapabilityError("SQL governance requires a configured target connector")
 
@@ -110,17 +139,37 @@ class SqlGovernanceExecutionHandler:
             connector_id=connector_id,
             operation=operation,
         )
+        connector_operation: dict[str, object] = {
+            "operation": operation.operation_type,
+            "id": identifier,
+            "before": before,
+            "after": after,
+        }
+        idempotency_key = f"{plan.id}:{operation.id}"
         raw_version = (await connector.version()).value
         if self.hash_version(raw_version) != parent.file_sha256:
+            recovered_identifier = identifier
+            recovered_version = raw_version
             if operation.operation_type == "delete":
                 already_applied = await connector.read_record(identifier) is None
+            elif operation.operation_type == "create":
+                recovered_identifier, recovered_version = _durable_create_recovery(
+                    connector_id=connector_id,
+                    operation=operation,
+                )
+                already_applied = (
+                    await connector.verify(
+                        [{"id": recovered_identifier, "after": after}]
+                    )
+                ) == [True]
             else:
                 already_applied = (
                     await connector.verify([{"id": identifier, "after": after}])
                 ) == [True]
-            if not already_applied:
+            if not already_applied and operation.operation_type != "create":
                 raise ConnectorConflictError("SQL target version changed outside the plan")
-            output_hash = self.hash_version(raw_version)
+            status = "succeeded" if already_applied else "verification_failed"
+            output_hash = self.hash_version(recovered_version)
             output_target = await executions.create_target_version(
                 task_id=context.task_id,
                 tenant_id=context.tenant_id,
@@ -132,7 +181,8 @@ class SqlGovernanceExecutionHandler:
                     {
                         "operation_id": str(operation.id),
                         "operation": operation.operation_type,
-                        "recovered_external_version": raw_version,
+                        "recovered_external_version": recovered_version,
+                        "observed_external_version": raw_version,
                     }
                 ),
                 storage_path=(
@@ -140,19 +190,26 @@ class SqlGovernanceExecutionHandler:
                 ),
             )
             if operation.operation_type == "create":
-                operation.target_source_identifier = f"database:{connector_id}:{identifier}"
+                operation.target_source_identifier = (
+                    f"database:{connector_id}:{recovered_identifier}"
+                )
             return await AgentGovernanceRepository(session).record_operation_outcome(
                 operation.id,
-                status="succeeded",
+                status=status,
                 attempts=0,
                 actual_after=after if operation.operation_type != "delete" else None,
                 verification={
-                    "valid": True,
+                    "valid": already_applied,
                     "idempotent_recovery": True,
                     "connector_id": connector_id,
                     "target_version_after": output_hash,
+                    "target_version_value": recovered_version,
                     "output_target_version_id": str(output_target.id),
+                    "target_source_identifier": operation.target_source_identifier,
                 },
+                error_code=(
+                    None if already_applied else "target_verification_failed"
+                ),
             )
         prior_success = await session.scalar(
             select(AgentGovernanceOperationRecord.id).where(
@@ -163,21 +220,31 @@ class SqlGovernanceExecutionHandler:
         if prior_success is None and plan.target_version != f"sha256:{parent.file_sha256}":
             raise ConnectorConflictError("SQL target version is stale")
 
-        connector_operation: dict[str, object] = {
-            "operation": operation.operation_type,
-            "id": identifier,
-            "before": before,
-            "after": after,
-        }
         output_version = await connector.apply(
             [connector_operation],
-            idempotency_key=f"{plan.id}:{operation.id}",
+            idempotency_key=idempotency_key,
             expected_version=raw_version,
         )
+        verified_identifier = _mutation_identifier(
+            operation=operation,
+            requested_identifier=identifier,
+            generated_identifiers=output_version.generated_identifiers,
+        )
+        if operation.operation_type == "create":
+            operation.target_source_identifier = (
+                f"database:{connector_id}:{verified_identifier}"
+            )
+            operation.verification = {
+                "target_source_identifier": operation.target_source_identifier,
+                "target_version_value": output_version.value,
+            }
+            await session.flush()
         if operation.operation_type == "delete":
             verified = await connector.read_record(identifier) is None
         else:
-            verified = (await connector.verify([{"id": identifier, "after": after}])) == [True]
+            verified = (
+                await connector.verify([{"id": verified_identifier, "after": after}])
+            ) == [True]
         status = "succeeded" if verified else "verification_failed"
         output_hash = self.hash_version(output_version.value)
         output_target = await executions.create_target_version(
@@ -197,8 +264,6 @@ class SqlGovernanceExecutionHandler:
             ),
             storage_path=(f"database://{connector_id}/version/{output_hash}/{operation.id}"),
         )
-        if operation.operation_type == "create":
-            operation.target_source_identifier = f"database:{connector_id}:{identifier}"
         return await AgentGovernanceRepository(session).record_operation_outcome(
             operation.id,
             status=status,
@@ -209,7 +274,9 @@ class SqlGovernanceExecutionHandler:
                 "connector_id": connector_id,
                 "target_version_before": self.hash_version(raw_version),
                 "target_version_after": output_hash,
+                "target_version_value": output_version.value,
                 "output_target_version_id": str(output_target.id),
+                "target_source_identifier": operation.target_source_identifier,
             },
             error_code=None if verified else "target_verification_failed",
         )
@@ -234,6 +301,44 @@ def _operation_identifier(
     if not identifier:
         raise ValueError("SQL mutation target locator lacks an identifier")
     return identifier
+
+
+def _mutation_identifier(
+    *,
+    operation: AgentGovernanceOperationRecord,
+    requested_identifier: str,
+    generated_identifiers: tuple[str | None, ...],
+) -> str:
+    if operation.operation_type != "create":
+        return requested_identifier
+    if len(generated_identifiers) != 1:
+        raise ConnectorConflictError("SQL create mutation result is incomplete")
+    return generated_identifiers[0] or requested_identifier
+
+
+def _durable_create_recovery(
+    *,
+    connector_id: str,
+    operation: AgentGovernanceOperationRecord,
+) -> tuple[str, str]:
+    locator = operation.target_source_identifier
+    verification = operation.verification
+    prefix = f"database:{connector_id}:"
+    if (
+        not isinstance(locator, str)
+        or not locator.startswith(prefix)
+        or not locator[len(prefix) :]
+        or not isinstance(verification, dict)
+    ):
+        raise ExternalWriteRecoveryRequired(
+            "generated create recovery lacks a durable database locator"
+        )
+    version = verification.get("target_version_value")
+    if not isinstance(version, str) or not version:
+        raise ExternalWriteRecoveryRequired(
+            "generated create recovery lacks its original database version"
+        )
+    return locator[len(prefix) :], version
 
 
 def _fixed_values(value: dict[str, object] | None) -> dict[str, object]:
