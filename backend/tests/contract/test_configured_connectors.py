@@ -346,6 +346,54 @@ async def test_llm_database_connector_rejects_unknown_or_duplicate_frozen_column
 
 
 @pytest.mark.asyncio
+async def test_explicit_database_connector_ignores_supplied_frozen_mapping() -> None:
+    metadata = MetaData()
+    people = Table(
+        "seewo_people",
+        metadata,
+        Column("id", String, primary_key=True),
+        Column("version", String, nullable=False),
+        Column("full_name", String, nullable=False),
+        Column("home_address", String, nullable=True),
+    )
+    engine = create_async_engine("sqlite+aiosqlite://")
+    async with engine.begin() as connection:
+        await connection.run_sync(metadata.create_all)
+        await connection.execute(
+            insert(people),
+            {
+                "id": "student-1",
+                "version": "v1",
+                "full_name": "张三",
+                "home_address": "仍不得暴露",
+            },
+        )
+    configuration = DatabaseConnectorConfiguration(
+        credential_reference="secret://connectors/seewo-db",
+        table_name="seewo_people",
+        primary_key="id",
+        version_column="version",
+        field_columns={"name": "full_name"},
+        capabilities=ConnectorCapabilities(read=True),
+    )
+    connector = ConfiguredApiConnector(
+        configuration=configuration,
+        store=SqlAlchemyConnectorStore(engine=engine, table=people, configuration=configuration),
+    )
+
+    frozen = connector.with_frozen_mapping({"home_address": "home_address"})
+
+    assert frozen is connector
+    assert frozen.configuration.field_columns == {"name": "full_name"}
+    assert await frozen.read_record("student-1") == {
+        "id": "student-1",
+        "version": "v1",
+        "full_name": "张三",
+    }
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_llm_in_memory_connector_enforces_its_frozen_mapping_on_row_paths() -> None:
     configuration = DatabaseConnectorConfiguration(
         credential_reference="secret://connectors/seewo-db",

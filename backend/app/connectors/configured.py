@@ -523,9 +523,9 @@ class ConfiguredApiConnector:
     def with_frozen_mapping(self, mapping: Mapping[str, str]) -> "ConfiguredApiConnector":
         if not isinstance(self.configuration, DatabaseConnectorConfiguration):
             raise ConnectorCapabilityError("connector does not support database field mappings")
-        frozen_mapping = _canonical_mapping(mapping)
         if self.configuration.mapping.mode == "explicit":
             return self
+        frozen_mapping = _canonical_mapping(mapping)
         frozen_store = self._store.with_frozen_mapping(
             frozen_mapping,
             record_id_field=self.configuration.record_id_field,
