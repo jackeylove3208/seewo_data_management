@@ -1164,11 +1164,11 @@ class ProductionGraphActionExecutor:
                 expected_schema_version=mapping_schema_version,
             ),
         )
-        output = result.output
-        if not isinstance(output, DatabaseSchemaMappingOutput):
+        validated_output = result.output
+        if not isinstance(validated_output, DatabaseSchemaMappingOutput):
             raise RuntimeError("validated database mapping output changed type")
-        if not output.unresolved_required_fields:
-            mapping = output.model_dump(mode="json")
+        if not validated_output.unresolved_required_fields:
+            mapping = validated_output.model_dump(mode="json")
             await runtime.save_database_schema_mapping(
                 tenant_id=context.tenant_id,
                 authoritative_connector_id=authoritative_connector_id,
@@ -1181,7 +1181,7 @@ class ProductionGraphActionExecutor:
                 mapping=mapping,
                 content_hash=_hash(mapping),
             )
-        return output, result.attempt_count, False, False
+        return validated_output, result.attempt_count, False, False
 
     async def _resolve_database_mapping_v3(
         self,
@@ -1190,7 +1190,7 @@ class ProductionGraphActionExecutor:
         binding: AgentSourceBinding,
     ) -> GraphActionOutcome:
         async with self._session_factory() as session:
-            database_bindings = {
+            database_bindings: dict[str, AgentSourceBinding] = {
                 item.role: item
                 for item in await load_source_bindings(
                     session,
