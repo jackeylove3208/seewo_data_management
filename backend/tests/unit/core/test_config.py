@@ -55,11 +55,68 @@ connectors:
     assert connector.allowed_columns == ()
 
 
+def test_settings_loads_llm_database_connector_yaml_with_empty_allowed_columns(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "database-connectors.yaml"
+    config.write_text(
+        """
+connectors:
+  seewo-data-mysql:
+    credential_reference: secret://connectors/seewo-data-mysql
+    dialect: mysql
+    table_name: data
+    primary_key: row_id
+    version_column: version
+    mapping:
+      mode: llm
+    allowed_columns: []
+""",
+        encoding="utf-8",
+    )
+
+    settings = Settings(database_connector_config_file=config, _env_file=None)
+
+    assert settings.database_connector_configurations["seewo-data-mysql"].allowed_columns == ()
+
+
+def test_settings_rejects_explicit_mapping_without_required_allowed_columns() -> None:
+    with pytest.raises(ValueError, match="mapping exceeds its readable column allow-list"):
+        Settings(
+            database_connector_configurations={
+                "seewo-data-mysql": {
+                    "credential_reference": "secret://connectors/seewo-data-mysql",
+                    "dialect": "mysql",
+                    "table_name": "data",
+                    "primary_key": "row_id",
+                    "version_column": "version",
+                    "field_columns": {"name": "name"},
+                    "allowed_columns": ["row_id", "version"],
+                }
+            },
+            _env_file=None,
+        )
+
+
 def test_settings_rejects_invalid_database_connector_yaml(tmp_path: Path) -> None:
     config = tmp_path / "database-connectors.yaml"
     config.write_text("connectors: [", encoding="utf-8")
 
     with pytest.raises(ValueError, match="database connector configuration YAML"):
+        Settings(database_connector_config_file=config, _env_file=None)
+
+
+def test_settings_rejects_unknown_database_connector_yaml_keys(tmp_path: Path) -> None:
+    config = tmp_path / "database-connectors.yaml"
+    config.write_text(
+        """
+connectors: {}
+unexpected: true
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
         Settings(database_connector_config_file=config, _env_file=None)
 
 

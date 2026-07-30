@@ -134,6 +134,8 @@ class DatabaseConnectorConfiguration(ConnectorConfiguration):
         configured.setdefault("version_field", configured.get("version_column"))
         mapping = configured.get("mapping")
         mapping_mode = mapping.get("mode", "explicit") if isinstance(mapping, dict) else "explicit"
+        if mapping_mode == "llm" and configured.get("allowed_columns") in ([], ()):
+            configured.pop("allowed_columns")
         if "allowed_columns" not in configured and mapping_mode != "llm":
             configured["allowed_columns"] = tuple(
                 sorted(
