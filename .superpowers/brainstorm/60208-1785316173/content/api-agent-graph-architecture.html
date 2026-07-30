@@ -1,0 +1,174 @@
+<style>
+  .diagram-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.4fr);
+    gap: 18px;
+    margin: 22px 0 28px;
+  }
+  .architecture-panel {
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    border-radius: 16px;
+    padding: 18px;
+    background: rgba(15, 23, 42, 0.36);
+  }
+  .architecture-panel.recommended {
+    border-color: rgba(56, 189, 248, 0.52);
+    box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.08);
+  }
+  .flow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin: 14px 0;
+  }
+  .node {
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: rgba(51, 65, 85, 0.75);
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    font-size: 13px;
+    line-height: 1.3;
+  }
+  .node.ai { background: rgba(124, 58, 237, 0.22); border-color: rgba(167, 139, 250, 0.48); }
+  .node.safe { background: rgba(5, 150, 105, 0.18); border-color: rgba(52, 211, 153, 0.42); }
+  .node.graph { background: rgba(2, 132, 199, 0.2); border-color: rgba(56, 189, 248, 0.46); }
+  .node.warn { background: rgba(217, 119, 6, 0.18); border-color: rgba(251, 191, 36, 0.42); }
+  .arrow { color: #94a3b8; font-weight: 700; }
+  .plane {
+    border-left: 3px solid rgba(56, 189, 248, 0.7);
+    padding-left: 14px;
+    margin: 18px 0;
+  }
+  .plane.setup { border-color: rgba(167, 139, 250, 0.75); }
+  .plane.runtime { border-color: rgba(56, 189, 248, 0.75); }
+  .plane.contract { border-color: rgba(52, 211, 153, 0.75); }
+  .plane h4 { margin: 0 0 6px; }
+  .branch {
+    margin: 10px 0 2px 14px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: rgba(15, 23, 42, 0.48);
+    font-size: 13px;
+  }
+  .verdict {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 14px;
+  }
+  .verdict > div {
+    padding: 12px;
+    border-radius: 12px;
+    background: rgba(30, 41, 59, 0.55);
+    border: 1px solid rgba(148, 163, 184, 0.22);
+  }
+  .yes { color: #6ee7b7; font-weight: 700; }
+  .no { color: #fda4af; font-weight: 700; }
+  .update { color: #7dd3fc; font-weight: 700; }
+  @media (max-width: 900px) {
+    .diagram-grid, .verdict { grid-template-columns: 1fr; }
+  }
+</style>
+
+<h2>API 接入对 Agent Graph 的影响</h2>
+<p class="subtitle">结论：增加“连接配置域”和一个 API 快照动作；不要为钉钉、企微各复制一条 Graph。</p>
+
+<div class="diagram-grid">
+  <div class="architecture-panel">
+    <div class="label">当前 agent-sync-graph-v2</div>
+    <h3>来源类型被压成 CSV / Database</h3>
+    <div class="flow">
+      <span class="node">对话确认</span><span class="arrow">→</span>
+      <span class="node">学校锁</span><span class="arrow">→</span>
+      <span class="node graph">materialize_sources</span>
+    </div>
+    <div class="branch">远程 CSV：下载、校验、冻结</div>
+    <div class="branch">Database：直接进入检查</div>
+    <div class="branch"><span class="no">API：Schema 有 kind，但运行时没有真实分支</span></div>
+    <div class="flow">
+      <span class="node">inspect_sources</span><span class="arrow">→</span>
+      <span class="node">normalize</span><span class="arrow">→</span>
+      <span class="node">对账/审批/执行</span>
+    </div>
+    <p>问题不是后半段 Graph 不够，而是 API 没有可重放的来源快照，也没有租户级连接生命周期。</p>
+  </div>
+
+  <div class="architecture-panel recommended">
+    <div class="label">推荐 agent-sync-graph-v3</div>
+    <h3>连接配置与同步执行分离</h3>
+
+    <div class="plane setup">
+      <h4>① 连接配置域（Graph 外）</h4>
+      <div class="flow">
+        <span class="node ai">聊天识别“钉钉”</span><span class="arrow">→</span>
+        <span class="node">Provider Catalog</span><span class="arrow">→</span>
+        <span class="node safe">安全凭据卡</span><span class="arrow">→</span>
+        <span class="node safe">确定性连接测试</span><span class="arrow">→</span>
+        <span class="node">Connection Instance</span>
+      </div>
+      <p>不获取学校锁，不把 AppSecret 交给 LLM，不占用一次同步运行。</p>
+    </div>
+
+    <div class="plane runtime">
+      <h4>② 同步执行域（Graph 内）</h4>
+      <div class="flow">
+        <span class="node">任务确认</span><span class="arrow">→</span>
+        <span class="node">学校锁</span><span class="arrow">→</span>
+        <span class="node graph">materialize_sources</span><span class="arrow">→</span>
+        <span class="node">inspect</span><span class="arrow">→</span>
+        <span class="node">normalize</span><span class="arrow">→</span>
+        <span class="node">原有治理链路</span>
+      </div>
+      <div class="branch">remote_csv → materialize_remote_authority</div>
+      <div class="branch">api → <strong>capture_api_authority_snapshot</strong>（新增 action）</div>
+      <div class="branch">database/local_csv → source_already_stable</div>
+      <p>钉钉和企微只在 Adapter 内不同；Graph 只认识 connector kind、能力和快照证据。</p>
+    </div>
+
+    <div class="plane contract">
+      <h4>③ 统一数据合同</h4>
+      <div class="flow">
+        <span class="node">供应商原始记录</span><span class="arrow">→</span>
+        <span class="node safe">不可变 SourceSnapshot</span><span class="arrow">→</span>
+        <span class="node">OrganizationRecord</span>
+      </div>
+      <p>部门要求 ID/名称/父级；老师要求 UserID/姓名/部门关系。手机号和邮箱允许缺失，避免真实 API 因隐私权限被误判为异常。</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>节点与 Skill 的判断</h3>
+  <div class="verdict">
+    <div><span class="yes">增加 action</span><br>在现有 materialize_sources 下增加 API 快照动作。</div>
+    <div><span class="no">不增加厂商节点</span><br>不要创建 dingtalk_node、wecom_node，也不要把 OAuth 做成 Agent 节点。</div>
+    <div><span class="update">升级现有 Skill</span><br>对话、来源检查、规范化版本升级；OAuth、分页、重试全部留在确定性 Adapter。</div>
+  </div>
+</div>
+
+<h3>三种架构选择</h3>
+<p class="subtitle">点击一个方案；我推荐 B。</p>
+<div class="options">
+  <div class="option" data-choice="a-provider-graphs" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>每个厂商一套 Graph</h3>
+      <p>钉钉、企微分别增加认证、拉取、规范化节点。直观，但节点与测试会随厂商成倍增长。</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b-generic-materialization" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>通用 Graph + 专用 Adapter（推荐）</h3>
+      <p>Graph 只增加通用 API 快照动作；厂商差异封装在 Adapter，后半段治理链路完全复用。</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c-hidden-fetch" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Graph 不变，检查时直接请求 API</h3>
+      <p>改动最少，但分页期间数据会变化，难以审计、重放和幂等，不适合当前持久化 Graph。</p>
+    </div>
+  </div>
+</div>
