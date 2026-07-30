@@ -50,7 +50,7 @@ async def test_supervisor_uses_versioned_skill_and_returns_confirmation() -> Non
 
     assert decision.kind == "start_confirmation"
     assert decision.source_ref == "third-party/roster.csv"
-    assert "converse-school-data-sync@1.3.0" in provider.requests[0].messages[0].content
+    assert "converse-school-data-sync@1.4.0" in provider.requests[0].messages[0].content
     assert "不可信证据" in provider.requests[0].messages[0].content
 
 

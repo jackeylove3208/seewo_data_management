@@ -130,7 +130,7 @@ NEW_AGENT_SKILLS = {
 }
 
 NEW_AGENT_SKILL_VERSIONS = {
-    "converse-school-data-sync": "1.3.0",
+    "converse-school-data-sync": "1.4.0",
     "assess-agent-rollback-impact": "2.1.0",
     "execute-approved-rollback": "2.1.0",
 }
@@ -207,7 +207,7 @@ def test_remote_source_understanding_skill_has_only_bounded_read_tools() -> None
 
 
 def test_conversation_skill_advertises_direct_remote_csv_ingestion() -> None:
-    skill = SkillRegistry().load("converse-school-data-sync", "1.3.0")
+    skill = SkillRegistry().load("converse-school-data-sync", "1.4.0")
 
     for term in (
         "`conversation_remote_csv_enabled`",
@@ -242,7 +242,7 @@ def test_conversation_skill_advertises_direct_remote_csv_ingestion() -> None:
 
 
 def test_conversation_skill_selects_only_server_listed_api_connections() -> None:
-    skill = SkillRegistry().load("converse-school-data-sync", "1.3.0")
+    skill = SkillRegistry().load("converse-school-data-sync", "1.4.0")
 
     for term in (
         "`available_api_providers`",
@@ -254,6 +254,22 @@ def test_conversation_skill_selects_only_server_listed_api_connections() -> None
         "不得在对话中索要",
         "权限",
         "可见范围",
+    ):
+        assert term in skill.instructions
+
+
+def test_conversation_skill_allows_natural_non_executable_conversation() -> None:
+    skill = SkillRegistry().load("converse-school-data-sync", "1.4.0")
+
+    for term in (
+        "自然回应问候、感谢、情绪表达和轻量闲聊",
+        "不要求每轮都把话题强行拉回数据同步",
+        "不得机械复读固定欢迎语",
+        "回答后无需强制追问同步范围",
+        "非执行性对话统一使用 `clarification`",
+        "不得改变 `current_intent`",
+        "产品能力必须以可信输入",
+        "用户明确提出数据同步任务",
     ):
         assert term in skill.instructions
 

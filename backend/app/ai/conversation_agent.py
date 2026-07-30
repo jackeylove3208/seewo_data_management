@@ -33,7 +33,7 @@ class ConversationSupervisorAgent:
         self._reserved_output_tokens = reserved_output_tokens
 
     async def reply(self, context: ConversationAgentContext) -> ConversationAgentDecision:
-        skill = self._skills.load("converse-school-data-sync", "1.3.0")
+        skill = self._skills.load("converse-school-data-sync", "1.4.0")
         request = build_agent_request(
             skill,
             context.model_dump(mode="json"),
