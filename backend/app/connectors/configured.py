@@ -12,7 +12,7 @@ from hashlib import sha256
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import Table, and_, delete, func, insert, select, update
+from sqlalchemy import Integer, Table, and_, delete, func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.connectors.base import ConnectorVersion
@@ -61,12 +61,24 @@ class ConnectorPage(BaseModel):
     next_cursor: str | None
 
 
+class ConnectorColumnSchema(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    sql_type: str
+    nullable: bool
+    primary_key: bool
+    generated: bool
+    autoincrement: bool
+
+
 class ConnectorSchema(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     fields: tuple[str, ...]
     field_types: dict[str, str] = Field(default_factory=dict)
     nullable_fields: tuple[str, ...] = ()
+    columns: tuple[ConnectorColumnSchema, ...] = ()
 
 
 class ConnectorConfiguration(BaseModel):
@@ -232,6 +244,8 @@ class ConnectorStore(Protocol):
 
     async def schema(self) -> ConnectorSchema: ...
 
+    def with_frozen_mapping(self, mapping: Mapping[str, str]) -> "ConnectorStore": ...
+
 
 class SqlAlchemyConnectorStore:
     """Server-bound SQLAlchemy adapter over one predeclared table and allow-listed columns."""
@@ -244,7 +258,12 @@ class SqlAlchemyConnectorStore:
         configuration: DatabaseConnectorConfiguration,
     ) -> None:
         allowed_columns = set(configuration.allowed_columns)
-        if table.name != configuration.table_name or not allowed_columns.issubset(table.c.keys()):
+        required_columns = {
+            configuration.primary_key,
+            configuration.version_column,
+            *allowed_columns,
+        }
+        if table.name != configuration.table_name or not required_columns.issubset(table.c.keys()):
             raise ValueError("database connector table does not match its server configuration")
         self._engine = engine
         self._table = table
@@ -269,10 +288,7 @@ class SqlAlchemyConnectorStore:
     async def schema(self) -> ConnectorSchema:
         columns = tuple(
             sorted(
-                (
-                    self._table.c[column_name]
-                    for column_name in self._configuration.allowed_columns
-                ),
+                self._table.c,
                 key=lambda column: column.name,
             )
         )
@@ -280,6 +296,29 @@ class SqlAlchemyConnectorStore:
             fields=tuple(column.name for column in columns),
             field_types={column.name: str(column.type) for column in columns},
             nullable_fields=tuple(column.name for column in columns if column.nullable),
+            columns=tuple(_column_schema(column) for column in columns),
+        )
+
+    def with_frozen_mapping(self, mapping: Mapping[str, str]) -> "SqlAlchemyConnectorStore":
+        frozen_mapping = _frozen_mapping(mapping, self._table.c.keys())
+        configuration = self._configuration.model_copy(
+            update={
+                "field_columns": frozen_mapping,
+                "allowed_columns": tuple(
+                    dict.fromkeys(
+                        (
+                            self._configuration.primary_key,
+                            self._configuration.version_column,
+                            *frozen_mapping.values(),
+                        )
+                    )
+                ),
+            }
+        )
+        return SqlAlchemyConnectorStore(
+            engine=self._engine,
+            table=self._table,
+            configuration=configuration,
         )
 
     async def page(
@@ -293,8 +332,9 @@ class SqlAlchemyConnectorStore:
         offset = int(cursor) if cursor is not None else 0
         if offset < 0:
             raise ConnectorConflictError("database connector cursor is invalid")
-        selected_fields = fields or self._configuration.allowed_columns
-        if not set(selected_fields) <= set(self._configuration.allowed_columns):
+        effective_columns = self._effective_columns()
+        selected_fields = fields or effective_columns
+        if not set(selected_fields) <= set(effective_columns):
             raise ConnectorCapabilityError(
                 "database connector read references unavailable fields"
             )
@@ -325,6 +365,7 @@ class SqlAlchemyConnectorStore:
         prior = self._idempotent_versions.get(idempotency_key)
         if prior is not None:
             return prior
+        self._effective_columns()
         allowed = set(self._configuration.field_columns)
         mutation_version = _next_database_version(expected_version, idempotency_key)
         async with self._engine.begin() as connection:
@@ -386,6 +427,7 @@ class SqlAlchemyConnectorStore:
         self, *, expected: list[dict[str, object]], record_id_field: str
     ) -> list[bool]:
         outcomes: list[bool] = []
+        effective_columns = self._effective_columns()
         async with self._engine.connect() as connection:
             for item in expected:
                 identifier = item.get("id")
@@ -393,7 +435,7 @@ class SqlAlchemyConnectorStore:
                     select(
                         *(
                             self._table.c[column]
-                            for column in self._configuration.allowed_columns
+                            for column in effective_columns
                         )
                     ).where(self._table.c[record_id_field] == identifier)
                 )
@@ -409,25 +451,43 @@ class SqlAlchemyConnectorStore:
         return outcomes
 
     async def record(self, *, identifier: str, record_id_field: str) -> dict[str, object] | None:
+        effective_columns = self._effective_columns()
         async with self._engine.connect() as connection:
             result = await connection.execute(
                 select(
                     *(
-                        self._table.c[column]
-                        for column in self._configuration.allowed_columns
+                            self._table.c[column]
+                            for column in effective_columns
                     )
                 ).where(self._table.c[record_id_field] == identifier)
             )
             row = result.mappings().first()
         return dict(row) if row is not None else None
 
+    def _effective_columns(self) -> tuple[str, ...]:
+        if self._configuration.mapping.mode == "llm" and not self._configuration.field_columns:
+            raise ConnectorCapabilityError("database connector requires a frozen mapping")
+        return self._configuration.allowed_columns
+
 
 class ConfiguredApiConnector:
     """Capability-gated connector façade for a server-provisioned API/database store."""
 
-    def __init__(self, *, configuration: ConnectorConfiguration, store: ConnectorStore) -> None:
+    def __init__(
+        self,
+        *,
+        configuration: ConnectorConfiguration,
+        store: ConnectorStore,
+        mapping_frozen: bool | None = None,
+    ) -> None:
         self.configuration = configuration
         self._store = store
+        self._mapping_frozen = (
+            not isinstance(configuration, DatabaseConnectorConfiguration)
+            or configuration.mapping.mode == "explicit"
+            if mapping_frozen is None
+            else mapping_frozen
+        )
 
     async def health(self) -> ConnectorHealth:
         ready = await self._store.health()
@@ -445,6 +505,33 @@ class ConfiguredApiConnector:
         self._require_read()
         return await self._store.schema()
 
+    def with_frozen_mapping(self, mapping: Mapping[str, str]) -> "ConfiguredApiConnector":
+        if not isinstance(self.configuration, DatabaseConnectorConfiguration):
+            raise ConnectorCapabilityError("connector does not support database field mappings")
+        if self.configuration.mapping.mode == "explicit":
+            return self
+        frozen_mapping = dict(mapping)
+        frozen_store = self._store.with_frozen_mapping(frozen_mapping)
+        configuration = self.configuration.model_copy(
+            update={
+                "field_columns": frozen_mapping,
+                "allowed_columns": tuple(
+                    dict.fromkeys(
+                        (
+                            self.configuration.primary_key,
+                            self.configuration.version_column,
+                            *frozen_mapping.values(),
+                        )
+                    )
+                ),
+            }
+        )
+        return ConfiguredApiConnector(
+            configuration=configuration,
+            store=frozen_store,
+            mapping_frozen=True,
+        )
+
     async def read_pages(
         self,
         *,
@@ -452,16 +539,22 @@ class ConfiguredApiConnector:
         fields: tuple[str, ...] | None = None,
     ) -> AsyncIterator[ConnectorPage]:
         self._require_read()
+        self._require_frozen_mapping()
         if page_size < 1 or page_size > 1000:
             raise ValueError("page_size must be between 1 and 1000")
         cursor: str | None = None
         seen_cursors: set[str] = set()
+        mapped_fields = (
+            self.configuration.field_columns.values()
+            if fields is None and isinstance(self.configuration, DatabaseConnectorConfiguration)
+            else fields or ()
+        )
         selected_fields = tuple(
             dict.fromkeys(
                 (
                     self.configuration.record_id_field,
                     self.configuration.version_field,
-                    *(fields or ()),
+                    *mapped_fields,
                 )
             )
         )
@@ -489,6 +582,7 @@ class ConfiguredApiConnector:
         idempotency_key: str,
         expected_version: str,
     ) -> ConnectorVersion:
+        self._require_frozen_mapping()
         if self.configuration.source_role != "target":
             raise ConnectorCapabilityError("authoritative connectors are read-only")
         if not self.configuration.capabilities.optimistic_version:
@@ -510,6 +604,7 @@ class ConfiguredApiConnector:
 
     async def verify(self, expected: list[dict[str, object]]) -> list[bool]:
         self._require_read()
+        self._require_frozen_mapping()
         return await self._store.verify(
             expected=expected,
             record_id_field=self.configuration.record_id_field,
@@ -517,6 +612,7 @@ class ConfiguredApiConnector:
 
     async def read_record(self, identifier: str) -> dict[str, object] | None:
         self._require_read()
+        self._require_frozen_mapping()
         return await self._store.record(
             identifier=identifier,
             record_id_field=self.configuration.record_id_field,
@@ -526,12 +622,42 @@ class ConfiguredApiConnector:
         if not self.configuration.capabilities.read:
             raise ConnectorCapabilityError("connector lacks read capability")
 
+    def _require_frozen_mapping(self) -> None:
+        if not self._mapping_frozen:
+            raise ConnectorCapabilityError("database connector requires a frozen mapping")
+
 
 def _mapping(value: Mapping[str, object], key: str) -> dict[str, object]:
     candidate = value.get(key, {})
     if not isinstance(candidate, Mapping):
         raise ValueError(f"connector {key} must be an object")
     return {str(field): item for field, item in candidate.items()}
+
+
+def _column_schema(column: Any) -> ConnectorColumnSchema:
+    autoincrement = (
+        column.primary_key
+        and isinstance(column.type, Integer)
+        and column.autoincrement is not False
+    )
+    return ConnectorColumnSchema(
+        name=column.name,
+        sql_type=str(column.type),
+        nullable=column.nullable,
+        primary_key=column.primary_key,
+        generated=bool(column.identity or column.computed or autoincrement),
+        autoincrement=autoincrement,
+    )
+
+
+def _frozen_mapping(mapping: Mapping[str, str], columns: Any) -> dict[str, str]:
+    frozen_mapping = dict(mapping)
+    physical_columns = tuple(frozen_mapping.values())
+    if any(not isinstance(column, str) or column not in columns for column in physical_columns):
+        raise ConnectorCapabilityError("database connector mapping references unavailable columns")
+    if len(set(physical_columns)) != len(physical_columns):
+        raise ConnectorCapabilityError("database connector mapping references duplicate columns")
+    return frozen_mapping
 
 
 def _next_database_version(expected_version: str, idempotency_key: str) -> str:

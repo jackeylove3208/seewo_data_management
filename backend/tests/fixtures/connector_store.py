@@ -4,6 +4,7 @@ from hashlib import sha256
 
 from app.connectors.configured import (
     ConnectorCapabilityError,
+    ConnectorColumnSchema,
     ConnectorConflictError,
     ConnectorPage,
     ConnectorSchema,
@@ -30,9 +31,37 @@ class InMemoryConnectorStore:
         return self._current_version
 
     async def schema(self) -> ConnectorSchema:
+        fields = tuple(sorted({str(key) for record in self._records for key in record}))
         return ConnectorSchema(
-            fields=tuple(sorted({str(key) for record in self._records for key in record}))
+            fields=fields,
+            columns=tuple(
+                ConnectorColumnSchema(
+                    name=field,
+                    sql_type="unknown",
+                    nullable=True,
+                    primary_key=False,
+                    generated=False,
+                    autoincrement=False,
+                )
+                for field in fields
+            ),
         )
+
+    def with_frozen_mapping(self, mapping: Mapping[str, str]) -> "InMemoryConnectorStore":
+        physical_columns = tuple(mapping.values())
+        available_columns = {str(key) for record in self._records for key in record}
+        if any(
+            not isinstance(column, str) or column not in available_columns
+            for column in physical_columns
+        ):
+            raise ConnectorCapabilityError(
+                "database connector mapping references unavailable columns"
+            )
+        if len(set(physical_columns)) != len(physical_columns):
+            raise ConnectorCapabilityError(
+                "database connector mapping references duplicate columns"
+            )
+        return self
 
     async def page(
         self,

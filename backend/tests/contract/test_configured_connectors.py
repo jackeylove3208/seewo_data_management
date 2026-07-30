@@ -1,5 +1,5 @@
 import pytest
-from sqlalchemy import Column, MetaData, String, Table, insert
+from sqlalchemy import Column, Integer, MetaData, String, Table, insert
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.connectors.configured import (
@@ -185,12 +185,161 @@ async def test_database_store_reads_only_configured_table_and_stable_primary_key
     assert (await connector.version()).value == "v3"
     schema = await connector.discover_schema()
     assert schema.fields == (
+        "home_address",
         "id",
         "name",
         "version",
     )
     assert schema.field_types["id"].startswith("VARCHAR")
-    assert schema.nullable_fields == ()
+    assert schema.nullable_fields == ("home_address",)
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_llm_database_connector_exposes_full_schema_before_freezing_row_access() -> None:
+    metadata = MetaData()
+    people = Table(
+        "seewo_people",
+        metadata,
+        Column("id", Integer, primary_key=True, autoincrement=True),
+        Column("version", String, nullable=False),
+        Column("full_name", String, nullable=False),
+        Column("home_address", String, nullable=True),
+    )
+    engine = create_async_engine("sqlite+aiosqlite://")
+    async with engine.begin() as connection:
+        await connection.run_sync(metadata.create_all)
+        await connection.execute(
+            insert(people),
+            {
+                "version": "v1",
+                "full_name": "张三",
+                "home_address": "不得暴露",
+            },
+        )
+    configuration = DatabaseConnectorConfiguration(
+        credential_reference="secret://connectors/seewo-db",
+        table_name="seewo_people",
+        primary_key="id",
+        version_column="version",
+        mapping={"mode": "llm"},
+        capabilities=ConnectorCapabilities(
+            read=True,
+            paginated=True,
+            update=True,
+            optimistic_version=True,
+        ),
+    )
+    connector = ConfiguredApiConnector(
+        configuration=configuration,
+        store=SqlAlchemyConnectorStore(engine=engine, table=people, configuration=configuration),
+    )
+
+    schema = await connector.discover_schema()
+
+    assert schema.fields == ("full_name", "home_address", "id", "version")
+    assert {
+        column.name: (
+            column.sql_type,
+            column.nullable,
+            column.primary_key,
+            column.generated,
+            column.autoincrement,
+        )
+        for column in schema.columns
+    } == {
+        "full_name": ("VARCHAR", False, False, False, False),
+        "home_address": ("VARCHAR", True, False, False, False),
+        "id": ("INTEGER", False, True, True, True),
+        "version": ("VARCHAR", False, False, False, False),
+    }
+    with pytest.raises(ConnectorCapabilityError, match="frozen mapping"):
+        _ = [row async for page in connector.read_pages() for row in page.records]
+    with pytest.raises(ConnectorCapabilityError, match="frozen mapping"):
+        await connector.read_record("1")
+    with pytest.raises(ConnectorCapabilityError, match="frozen mapping"):
+        await connector.apply(
+            [{"operation": "update", "id": "1", "after": {"name": "李四"}}],
+            idempotency_key="unfrozen-update",
+            expected_version="v1",
+        )
+    with pytest.raises(ConnectorCapabilityError, match="frozen mapping"):
+        await connector.verify([{"id": "1", "after": {"name": "张三"}}])
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_llm_database_connector_limits_rows_to_frozen_mapping() -> None:
+    metadata = MetaData()
+    people = Table(
+        "seewo_people",
+        metadata,
+        Column("id", String, primary_key=True),
+        Column("version", String, nullable=False),
+        Column("full_name", String, nullable=False),
+        Column("home_address", String, nullable=True),
+    )
+    engine = create_async_engine("sqlite+aiosqlite://")
+    async with engine.begin() as connection:
+        await connection.run_sync(metadata.create_all)
+        await connection.execute(
+            insert(people),
+            {
+                "id": "student-1",
+                "version": "v1",
+                "full_name": "张三",
+                "home_address": "不得暴露",
+            },
+        )
+    configuration = DatabaseConnectorConfiguration(
+        credential_reference="secret://connectors/seewo-db",
+        table_name="seewo_people",
+        primary_key="id",
+        version_column="version",
+        mapping={"mode": "llm"},
+        capabilities=ConnectorCapabilities(read=True, paginated=True),
+    )
+    connector = ConfiguredApiConnector(
+        configuration=configuration,
+        store=SqlAlchemyConnectorStore(engine=engine, table=people, configuration=configuration),
+    ).with_frozen_mapping({"name": "full_name"})
+
+    rows = [row async for page in connector.read_pages() for row in page.records]
+
+    assert rows == [{"id": "student-1", "version": "v1", "full_name": "张三"}]
+    assert await connector.read_record("student-1") == rows[0]
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_llm_database_connector_rejects_unknown_or_duplicate_frozen_columns() -> None:
+    metadata = MetaData()
+    people = Table(
+        "seewo_people",
+        metadata,
+        Column("id", String, primary_key=True),
+        Column("version", String, nullable=False),
+        Column("full_name", String, nullable=False),
+    )
+    engine = create_async_engine("sqlite+aiosqlite://")
+    async with engine.begin() as connection:
+        await connection.run_sync(metadata.create_all)
+    configuration = DatabaseConnectorConfiguration(
+        credential_reference="secret://connectors/seewo-db",
+        table_name="seewo_people",
+        primary_key="id",
+        version_column="version",
+        mapping={"mode": "llm"},
+    )
+    connector = ConfiguredApiConnector(
+        configuration=configuration,
+        store=SqlAlchemyConnectorStore(engine=engine, table=people, configuration=configuration),
+    )
+
+    with pytest.raises(ConnectorCapabilityError, match="unavailable"):
+        connector.with_frozen_mapping({"name": "invented"})
+    with pytest.raises(ConnectorCapabilityError, match="duplicate"):
+        connector.with_frozen_mapping({"name": "full_name", "number": "full_name"})
     await engine.dispose()
 
 
