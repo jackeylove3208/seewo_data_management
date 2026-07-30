@@ -22,11 +22,26 @@
   and allow-list fields.
 - [ ] 2.5 Add the constrained runtime dependency `PyYAML>=6,<7`.
 
-## 3. Verification and handoff
+## 3. Fixed mapping and model safety contract
 
-- [ ] 3.1 Run `cd backend && .venv/bin/pytest tests/unit/core/test_config.py -q` and confirm the
+- [ ] 3.1 Define and validate the exact mapping fields `category`, `name`, `number`, `class_name`,
+  `phone`, and `email`; reject invented or extra keys for deterministic and model-produced mappings.
+- [ ] 3.2 Implement the model boundary so pre-mapping input is a bounded, sanitized schema-metadata
+  envelope only, with no raw rows, credentials, arbitrary SQL, generic table access, or unbounded
+  evidence; add denial/error handling for prohibited requests.
+- [ ] 3.3 Add focused contract tests for prohibited model inputs, bounded evidence, and extra mapping
+  keys, including the exact six-field output contract.
+- [ ] 3.4 Persist and consume `workflow_version`, `graph_version`, frozen source bindings, mapping
+  checkpoint keys, and mapping checkpoint results on resume; ensure current configuration affects
+  only newly created tasks.
+- [ ] 3.5 Add tests proving a historical task resumes from its persisted contract after configuration
+  changes and a new task freezes the current configuration independently.
+
+## 4. Verification and handoff
+
+- [ ] 4.1 Run `cd backend && .venv/bin/pytest tests/unit/core/test_config.py -q` and confirm the
   focused suite is GREEN.
-- [ ] 3.2 Run `cd backend && .venv/bin/ruff check app/connectors/config_file.py
+- [ ] 4.2 Run `cd backend && .venv/bin/ruff check app/connectors/config_file.py
   app/connectors/configured.py app/core/config.py` and resolve all reported errors.
-- [ ] 3.3 Run `openspec validate add-llm-database-schema-mapping --strict --no-interactive` and
+- [ ] 4.3 Run `openspec validate add-llm-database-schema-mapping --strict --no-interactive` and
   confirm the proposal, design, delta spec, and task checklist validate together.

@@ -1,5 +1,69 @@
 ## ADDED Requirements
 
+## MODIFIED Requirements
+
+### Requirement: Normalize new tasks to the three-entity six-field contract
+The system SHALL normalize new Agent tasks to department, student, and teacher records with exactly
+the fixed fields `category`, `name`, `number`, `class_name`, `phone`, and `email`; it SHALL reject
+invented or extra mapping keys, and SHALL treat `class_name` as applicable only to students.
+
+#### Scenario: Student row is normalized
+- **WHEN** an inspected row is identified as a student
+- **THEN** its canonical Agent payload contains only `category`, `name`, `number`, `class_name`,
+  `phone`, and `email`, plus the separately defined source locator, source role, and raw-row
+  provenance fields
+
+#### Scenario: Mapping invents an output key
+- **WHEN** a deterministic or model-produced mapping includes a key outside `category`, `name`,
+  `number`, `class_name`, `phone`, and `email`
+- **THEN** the backend rejects the mapping and does not create normalized input records
+
+#### Scenario: Historical task is read
+- **WHEN** an existing task contains legacy class or membership entity records
+- **THEN** historical APIs continue to decode them without routing them into the new Agent contract
+
+## ADDED Requirements
+
+### Requirement: Bound model-mediated schema mapping
+Before mapping a configured database schema, the system SHALL provide the model only a bounded,
+sanitized schema-metadata envelope and SHALL NOT provide raw rows, credentials, arbitrary SQL,
+generic table access, or unbounded evidence. The model result SHALL use exactly the six fixed output
+fields `category`, `name`, `number`, `class_name`, `phone`, and `email`; invented or extra keys SHALL
+be rejected.
+
+#### Scenario: Model receives schema metadata before mapping
+- **WHEN** an LLM-mode connector requires semantic mapping
+- **THEN** the model receives only bounded metadata such as table/column names, types, nullability,
+  and bounded relationship metadata, with no raw row values or credential material
+
+#### Scenario: Model requests prohibited access
+- **WHEN** a model request attempts arbitrary SQL, generic table access, raw-row retrieval, credential
+  access, or evidence beyond the configured metadata bound
+- **THEN** the model boundary denies the request, records a safe mapping error, and does not expand
+  the evidence supplied to the model
+
+#### Scenario: Model returns an invented field
+- **WHEN** a model mapping result contains a key other than `category`, `name`, `number`,
+  `class_name`, `phone`, or `email`
+- **THEN** the backend rejects the result and does not persist or apply the mapping
+
+### Requirement: Resume historical tasks from frozen mapping contracts
+The system SHALL resume historical tasks using their persisted `workflow_version`, `graph_version`,
+frozen source bindings, mapping checkpoint keys, and mapping checkpoint results. Changes to current
+connector configuration SHALL affect only tasks created after the change and SHALL NOT rewrite the
+persisted contract of an existing task or run.
+
+#### Scenario: Historical task resumes after configuration changes
+- **WHEN** a task created under one connector configuration is resumed after that configuration is
+  edited
+- **THEN** the worker uses the persisted workflow and graph versions, frozen source bindings, and
+  mapping checkpoint keys/results from that task rather than rereading current configuration
+
+#### Scenario: New task sees current configuration
+- **WHEN** a new task is created after an LLM mapping configuration changes
+- **THEN** the new task freezes the current validated configuration and its own mapping checkpoint
+  contract without altering historical tasks
+
 ### Requirement: Load strict database connector configuration from YAML
 The system SHALL expose an optional database connector configuration file, parse it with safe YAML
 loading, reject non-object roots, unknown keys, malformed entries, and duplicate connector IDs, and

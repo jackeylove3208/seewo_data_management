@@ -10,6 +10,12 @@ configuration split between an environment-only JSON map and ad hoc runtime assu
 - Add an optional YAML database-connector configuration file with strict, typed validation.
 - Add an explicit mapping mode so target connectors can opt into `llm` schema mapping without
   declaring physical field columns or an allow-list.
+- Constrain the LLM mapping contract to exactly `category`, `name`, `number`, `class_name`, `phone`,
+  and `email`; invented or extra output keys are invalid.
+- Require model calls to receive only bounded schema metadata before mapping and prohibit raw rows,
+  credentials, arbitrary SQL, generic table access, and unbounded evidence.
+- Preserve historical workflow, graph, source-binding, and mapping-checkpoint versions so
+  configuration changes affect only newly created tasks.
 - Merge YAML connector definitions with the legacy environment JSON map while rejecting duplicate
   connector IDs instead of silently overriding one source.
 - Resolve relative configuration-file paths against `backend/`, fail closed for malformed YAML or
@@ -35,3 +41,5 @@ None.
 - Database ingestion configuration consumed by connector inspection and schema-mapping workflows.
 - Existing environment JSON configuration remains supported; duplicate IDs become configuration
   errors rather than precedence-based overrides.
+- Historical task resumption remains pinned to persisted workflow and mapping contracts rather than
+  rereading current connector configuration.

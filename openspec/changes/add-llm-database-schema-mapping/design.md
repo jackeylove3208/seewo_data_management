@@ -17,6 +17,12 @@ a target is usable.
 - Expose `database_connector_config_file`, `DatabaseMappingConfiguration.mode`, and the merged
   `database_connector_configurations` map.
 - Support `explicit` and `llm` modes with mode-specific validation.
+- Define the LLM mapping output as exactly six fixed fields: `category`, `name`, `number`,
+  `class_name`, `phone`, and `email`; reject invented or extra keys.
+- Keep model access bounded to schema metadata before mapping and exclude raw rows, credentials,
+  arbitrary SQL, generic table access, and unbounded evidence.
+- Resume historical tasks from persisted workflow/graph versions, frozen source bindings, and
+  mapping checkpoint keys/results; current configuration applies only to new tasks.
 - Resolve relative file paths against `backend/`, reject malformed roots, unknown keys, duplicate
   IDs, and unresolved credential references safely.
 - Preserve legacy environment JSON loading and explicit-mode behavior.
@@ -68,6 +74,27 @@ is surfaced as a settings error before runtime use.
 Alternative considered: permissive parsing with ignored keys. Rejected because configuration typos
 could change the connector contract without operator visibility.
 
+### Keep model-mediated mapping bounded and fixed-contract
+
+Before a mapping decision, the model receives only a bounded, sanitized schema metadata envelope
+with an explicit size limit and no row values. The mapping result is validated against the exact
+six-field contract (`category`, `name`, `number`, `class_name`, `phone`, `email`); unknown or
+invented output keys are rejected. The model boundary has no credential, arbitrary SQL, generic
+table-access, or unbounded-evidence capability.
+
+Alternative considered: provide sample rows or a generic database tool so the model can infer
+semantics more freely. Rejected because those inputs increase privacy and exfiltration risk and
+make the mapping contract non-deterministic.
+
+### Freeze historical execution inputs
+
+At task/run creation, persist the workflow version, graph version, frozen source bindings, and
+mapping checkpoint keys/results. Resume logic uses those persisted values and does not reread the
+current connector configuration; configuration changes are selected only while creating new tasks.
+
+Alternative considered: re-resolve configuration on every resume. Rejected because a configuration
+edit could change the meaning of a historical run, invalidate checkpoint keys, or break replay.
+
 ## Risks / Trade-offs
 
 - [Risk] Adding PyYAML increases the runtime dependency surface. → Pin the supported major range
@@ -95,3 +122,5 @@ could change the connector contract without operator visibility.
   error formatting when wrapping YAML/parser failures.
 - The later LLM mapping implementation must define the bounded schema evidence and approval policy;
   this configuration change only selects the mapping mode.
+- The exact persistence columns and storage model for the frozen task/run contract should follow
+  the existing workflow-version and mapping-checkpoint implementation during application work.
