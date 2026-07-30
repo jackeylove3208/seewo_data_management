@@ -19,6 +19,7 @@ from app.connectors.configured import (
     DatabaseConnectorConfiguration,
     SqlAlchemyConnectorStore,
 )
+from app.models.agent_runtime import AgentRunRecord
 from app.models.executions import TargetVersionRecord
 from app.models.reconciliation import ReconciliationTask
 from app.repositories.executions import ExecutionRepository
@@ -35,6 +36,11 @@ class _Session:
             return self._task
         if model is TargetVersionRecord:
             return self._target
+        if model is AgentRunRecord:
+            return SimpleNamespace(
+                task_id=self._task.id,
+                ingestion_contract_version="model-mediated-ingestion-v1",
+            )
         raise AssertionError(f"unexpected model: {model}")
 
 

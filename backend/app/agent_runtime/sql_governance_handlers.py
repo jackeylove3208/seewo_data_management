@@ -7,6 +7,10 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent_runtime.database_mapping import (
+    connector_with_frozen_database_mapping,
+    run_requires_frozen_database_mapping,
+)
 from app.agent_runtime.errors import ExternalWriteRecoveryRequired
 from app.agent_runtime.worker import AgentWorkContext
 from app.connectors.configured import (
@@ -90,14 +94,38 @@ class SqlGovernanceExecutionHandler:
         target = task.agent_intent.get("target")
         if not isinstance(target, dict) or target.get("kind") != "database":
             raise ValueError("SQL Agent target selection changed")
-        connector_id = target.get("configuration_id")
-        if not isinstance(connector_id, str) or not connector_id:
+        selected_connector_id = target.get("configuration_id")
+        if not isinstance(selected_connector_id, str) or not selected_connector_id:
             raise ValueError("SQL Agent target connector ID is missing")
-        connector = connector_override or await self._connectors.connector(connector_id)
-        configuration = connector.configuration
+        configuration: DatabaseConnectorConfiguration
+        if await run_requires_frozen_database_mapping(
+            session,
+            task_id=context.task_id,
+            run_id=context.run_id,
+        ):
+            connector_id, connector, configuration = (
+                await connector_with_frozen_database_mapping(
+                    session,
+                    task_id=context.task_id,
+                    run_id=context.run_id,
+                    role="target",
+                    connectors=self._connectors,
+                    connector_override=connector_override,
+                )
+            )
+            if connector_id != selected_connector_id:
+                raise ValueError("SQL Agent target connector changed after task creation")
+        else:
+            connector_id = selected_connector_id
+            connector = connector_override or await self._connectors.connector(connector_id)
+            resolved_configuration = connector.configuration
+            if not isinstance(resolved_configuration, DatabaseConnectorConfiguration):
+                raise ConnectorCapabilityError(
+                    "SQL governance requires a configured target connector"
+                )
+            configuration = resolved_configuration
         if (
-            not isinstance(configuration, DatabaseConnectorConfiguration)
-            or configuration.source_role != "target"
+            configuration.source_role != "target"
         ):
             raise ConnectorCapabilityError("SQL governance requires a configured target connector")
 

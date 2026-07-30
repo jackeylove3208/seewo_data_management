@@ -67,5 +67,5 @@ strict = true
 packages = ["app"]
 
 [[tool.mypy.overrides]]
-module = ["charset_normalizer.*"]
+module = ["charset_normalizer.*", "yaml"]
 ignore_missing_imports = true

@@ -12,6 +12,10 @@ from app.agent_runtime.csv_rollback_handlers import (
     _rollback_operations,
     compare_csv_rollback_mutation,
 )
+from app.agent_runtime.database_mapping import (
+    connector_with_frozen_database_mapping,
+    run_requires_frozen_database_mapping,
+)
 from app.agent_runtime.errors import ExternalWriteRecoveryRequired
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentPhase
@@ -39,7 +43,9 @@ class SqlRollbackExecutionHandler:
         if task is None or not isinstance(task.agent_intent, dict):
             raise LookupError("SQL rollback task facts are missing")
         connector_id, connector, configuration = await self._connector_for_task(
-            task
+            session,
+            task,
+            run_id=context.run_id,
         )
         initial_parent = await session.get(
             TargetVersionRecord,
@@ -134,7 +140,9 @@ class SqlRollbackExecutionHandler:
         if task is None or not isinstance(task.agent_intent, dict):
             raise LookupError("SQL rollback task facts are missing")
         connector_id, connector, configuration = await self._connector_for_task(
-            task
+            session,
+            task,
+            run_id=context.run_id,
         )
 
         initial_parent = await session.get(
@@ -402,7 +410,10 @@ class SqlRollbackExecutionHandler:
 
     async def _connector_for_task(
         self,
+        session: AsyncSession,
         task: ReconciliationTask,
+        *,
+        run_id: UUID,
     ) -> tuple[
         str,
         ConfiguredApiConnector,
@@ -414,13 +425,33 @@ class SqlRollbackExecutionHandler:
         target = intent.get("target")
         if not isinstance(target, dict) or target.get("kind") != "database":
             raise ValueError("SQL rollback target selection is missing")
-        connector_id = target.get("configuration_id")
-        if not isinstance(connector_id, str) or not connector_id:
+        selected_connector_id = target.get("configuration_id")
+        if not isinstance(selected_connector_id, str) or not selected_connector_id:
             raise ValueError("SQL rollback target connector ID is missing")
-        connector = await self._connectors.connector(connector_id)
-        configuration = connector.configuration
-        if not isinstance(configuration, DatabaseConnectorConfiguration):
-            raise TypeError("SQL rollback resolved a non-database connector")
+        configuration: DatabaseConnectorConfiguration
+        if await run_requires_frozen_database_mapping(
+            session,
+            task_id=task.id,
+            run_id=run_id,
+        ):
+            connector_id, connector, configuration = (
+                await connector_with_frozen_database_mapping(
+                    session,
+                    task_id=task.id,
+                    run_id=run_id,
+                    role="target",
+                    connectors=self._connectors,
+                )
+            )
+            if connector_id != selected_connector_id:
+                raise ValueError("SQL rollback target connector changed after task creation")
+        else:
+            connector_id = selected_connector_id
+            connector = await self._connectors.connector(connector_id)
+            resolved_configuration = connector.configuration
+            if not isinstance(resolved_configuration, DatabaseConnectorConfiguration):
+                raise TypeError("SQL rollback resolved a non-database connector")
+            configuration = resolved_configuration
         return connector_id, connector, configuration
 
 
