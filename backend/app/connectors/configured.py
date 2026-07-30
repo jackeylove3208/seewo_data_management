@@ -19,6 +19,9 @@ from app.connectors.base import ConnectorVersion
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 _MUTATIONS = frozenset({"create", "update", "delete"})
+CANONICAL_DATABASE_MAPPING_FIELDS = frozenset(
+    {"category", "name", "number", "class_name", "phone", "email"}
+)
 
 
 class ConnectorCapabilityError(RuntimeError):
@@ -244,7 +247,13 @@ class ConnectorStore(Protocol):
 
     async def schema(self) -> ConnectorSchema: ...
 
-    def with_frozen_mapping(self, mapping: Mapping[str, str]) -> "ConnectorStore": ...
+    def with_frozen_mapping(
+        self,
+        mapping: Mapping[str, str],
+        *,
+        record_id_field: str,
+        version_field: str,
+    ) -> "ConnectorStore": ...
 
 
 class SqlAlchemyConnectorStore:
@@ -299,7 +308,13 @@ class SqlAlchemyConnectorStore:
             columns=tuple(_column_schema(column) for column in columns),
         )
 
-    def with_frozen_mapping(self, mapping: Mapping[str, str]) -> "SqlAlchemyConnectorStore":
+    def with_frozen_mapping(
+        self,
+        mapping: Mapping[str, str],
+        *,
+        record_id_field: str,
+        version_field: str,
+    ) -> "SqlAlchemyConnectorStore":
         frozen_mapping = _frozen_mapping(mapping, self._table.c.keys())
         configuration = self._configuration.model_copy(
             update={
@@ -508,10 +523,14 @@ class ConfiguredApiConnector:
     def with_frozen_mapping(self, mapping: Mapping[str, str]) -> "ConfiguredApiConnector":
         if not isinstance(self.configuration, DatabaseConnectorConfiguration):
             raise ConnectorCapabilityError("connector does not support database field mappings")
+        frozen_mapping = _canonical_mapping(mapping)
         if self.configuration.mapping.mode == "explicit":
             return self
-        frozen_mapping = dict(mapping)
-        frozen_store = self._store.with_frozen_mapping(frozen_mapping)
+        frozen_store = self._store.with_frozen_mapping(
+            frozen_mapping,
+            record_id_field=self.configuration.record_id_field,
+            version_field=self.configuration.version_field,
+        )
         configuration = self.configuration.model_copy(
             update={
                 "field_columns": frozen_mapping,
@@ -651,12 +670,19 @@ def _column_schema(column: Any) -> ConnectorColumnSchema:
 
 
 def _frozen_mapping(mapping: Mapping[str, str], columns: Any) -> dict[str, str]:
-    frozen_mapping = dict(mapping)
+    frozen_mapping = _canonical_mapping(mapping)
     physical_columns = tuple(frozen_mapping.values())
     if any(not isinstance(column, str) or column not in columns for column in physical_columns):
         raise ConnectorCapabilityError("database connector mapping references unavailable columns")
     if len(set(physical_columns)) != len(physical_columns):
         raise ConnectorCapabilityError("database connector mapping references duplicate columns")
+    return frozen_mapping
+
+
+def _canonical_mapping(mapping: Mapping[str, str]) -> dict[str, str]:
+    frozen_mapping = dict(mapping)
+    if not set(frozen_mapping) <= CANONICAL_DATABASE_MAPPING_FIELDS:
+        raise ConnectorCapabilityError("database connector mapping uses non-canonical fields")
     return frozen_mapping
 
 

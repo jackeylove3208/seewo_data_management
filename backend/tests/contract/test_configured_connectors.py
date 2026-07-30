@@ -340,7 +340,85 @@ async def test_llm_database_connector_rejects_unknown_or_duplicate_frozen_column
         connector.with_frozen_mapping({"name": "invented"})
     with pytest.raises(ConnectorCapabilityError, match="duplicate"):
         connector.with_frozen_mapping({"name": "full_name", "number": "full_name"})
+    with pytest.raises(ConnectorCapabilityError, match="canonical"):
+        connector.with_frozen_mapping({"home_address": "full_name"})
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_llm_in_memory_connector_enforces_its_frozen_mapping_on_row_paths() -> None:
+    configuration = DatabaseConnectorConfiguration(
+        credential_reference="secret://connectors/seewo-db",
+        table_name="seewo_people",
+        primary_key="id",
+        version_column="version",
+        mapping={"mode": "llm"},
+        capabilities=ConnectorCapabilities(
+            read=True,
+            update=True,
+            optimistic_version=True,
+        ),
+    )
+    connector = ConfiguredApiConnector(
+        configuration=configuration,
+        store=InMemoryConnectorStore(
+            records=[
+                {
+                    "id": "student-1",
+                    "version": "v1",
+                    "full_name": "张三",
+                    "home_address": "不得暴露",
+                }
+            ]
+        ),
+    ).with_frozen_mapping({"name": "full_name"})
+    version = await connector.version()
+
+    assert await connector.read_record("student-1") == {
+        "id": "student-1",
+        "version": "v1",
+        "full_name": "张三",
+    }
+    with pytest.raises(ConnectorCapabilityError, match="allow-listed"):
+        await connector.apply(
+            [{"operation": "update", "id": "student-1", "after": {"number": "N-1"}}],
+            idempotency_key="frozen-number-update",
+            expected_version=version.value,
+        )
+    with pytest.raises(ConnectorCapabilityError, match="allow-listed"):
+        await connector.apply(
+            [
+                {
+                    "operation": "update",
+                    "id": "student-1",
+                    "after": {"home_address": "不得修改"},
+                }
+            ],
+            idempotency_key="frozen-address-update",
+            expected_version=version.value,
+        )
+    with pytest.raises(ConnectorCapabilityError, match="allow-listed"):
+        await connector.verify([{"id": "student-1", "after": {"number": "N-1"}}])
+
+    output = await connector.apply(
+        [
+            {
+                "operation": "update",
+                "id": "student-1",
+                "before": {"name": "张三"},
+                "after": {"name": "李四"},
+            }
+        ],
+        idempotency_key="frozen-name-update",
+        expected_version=version.value,
+    )
+
+    assert await connector.verify([{"id": "student-1", "after": {"name": "李四"}}]) == [True]
+    assert await connector.read_record("student-1") == {
+        "id": "student-1",
+        "version": output.value,
+        "full_name": "李四",
+    }
 
 
 @pytest.mark.asyncio

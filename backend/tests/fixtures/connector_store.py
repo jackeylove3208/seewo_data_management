@@ -3,6 +3,7 @@ from collections.abc import Mapping
 from hashlib import sha256
 
 from app.connectors.configured import (
+    CANONICAL_DATABASE_MAPPING_FIELDS,
     ConnectorCapabilityError,
     ConnectorColumnSchema,
     ConnectorConflictError,
@@ -18,6 +19,8 @@ class InMemoryConnectorStore:
         self._records = [dict(record) for record in records]
         self._idempotent_versions: dict[str, str] = {}
         self._current_version: str | None = None
+        self._field_columns: dict[str, str] | None = None
+        self._effective_columns: tuple[str, ...] | None = None
 
     async def health(self) -> bool:
         return True
@@ -47,8 +50,17 @@ class InMemoryConnectorStore:
             ),
         )
 
-    def with_frozen_mapping(self, mapping: Mapping[str, str]) -> "InMemoryConnectorStore":
-        physical_columns = tuple(mapping.values())
+    def with_frozen_mapping(
+        self,
+        mapping: Mapping[str, str],
+        *,
+        record_id_field: str,
+        version_field: str,
+    ) -> "InMemoryConnectorStore":
+        frozen_mapping = dict(mapping)
+        if not set(frozen_mapping) <= CANONICAL_DATABASE_MAPPING_FIELDS:
+            raise ConnectorCapabilityError("database connector mapping uses non-canonical fields")
+        physical_columns = tuple(frozen_mapping.values())
         available_columns = {str(key) for record in self._records for key in record}
         if any(
             not isinstance(column, str) or column not in available_columns
@@ -61,7 +73,15 @@ class InMemoryConnectorStore:
             raise ConnectorCapabilityError(
                 "database connector mapping references duplicate columns"
             )
-        return self
+        frozen = InMemoryConnectorStore(records=[])
+        frozen._records = self._records
+        frozen._idempotent_versions = self._idempotent_versions
+        frozen._current_version = self._current_version
+        frozen._field_columns = frozen_mapping
+        frozen._effective_columns = tuple(
+            dict.fromkeys((record_id_field, version_field, *physical_columns))
+        )
+        return frozen
 
     async def page(
         self,
@@ -73,7 +93,12 @@ class InMemoryConnectorStore:
     ) -> ConnectorPage:
         ordered = sorted(self._records, key=lambda row: str(row.get(record_id_field, "")))
         start = int(cursor) if cursor is not None else 0
-        selected = set(fields or ())
+        selected_fields = fields or self._effective_columns or ()
+        if self._effective_columns is not None and not set(selected_fields) <= set(
+            self._effective_columns
+        ):
+            raise ConnectorCapabilityError("database connector read references unavailable fields")
+        selected = set(selected_fields)
         records = tuple(
             {
                 key: value
@@ -102,18 +127,20 @@ class InMemoryConnectorStore:
         for operation in operations:
             kind = operation["operation"]
             identifier = str(operation["id"])
+            before = self._physical_mapping(operation, "before")
+            after = self._physical_mapping(operation, "after")
             if kind == "update":
                 record = by_id.get(identifier)
                 if record is None or any(
                     record.get(key) != value
-                    for key, value in _mapping(operation, "before").items()
+                    for key, value in before.items()
                 ):
                     raise ConnectorConflictError("connector before value is stale")
-                record.update(_mapping(operation, "after"))
+                record.update(after)
             elif kind == "create":
                 if identifier in by_id:
                     raise ConnectorConflictError("connector record already exists")
-                record = {record_id_field: identifier, **_mapping(operation, "after")}
+                record = {record_id_field: identifier, **after}
                 self._records.append(record)
                 by_id[identifier] = record
             elif kind == "delete":
@@ -137,22 +164,37 @@ class InMemoryConnectorStore:
         self, *, expected: list[dict[str, object]], record_id_field: str
     ) -> list[bool]:
         by_id = {str(record.get(record_id_field)): record for record in self._records}
-        return [
-            (record := by_id.get(str(item.get("id")))) is not None
-            and all(
-                record.get(key) == value
-                for key, value in _mapping(item, "after").items()
+        outcomes: list[bool] = []
+        for item in expected:
+            record = by_id.get(str(item.get("id")))
+            after = self._physical_mapping(item, "after")
+            outcomes.append(
+                record is not None
+                and all(record.get(key) == value for key, value in after.items())
             )
-            for item in expected
-        ]
+        return outcomes
 
     async def record(
         self, *, identifier: str, record_id_field: str
     ) -> dict[str, object] | None:
         for record in self._records:
             if str(record.get(record_id_field)) == identifier:
-                return dict(record)
+                if self._effective_columns is None:
+                    return dict(record)
+                return {
+                    key: value
+                    for key, value in record.items()
+                    if key in self._effective_columns
+                }
         return None
+
+    def _physical_mapping(self, value: Mapping[str, object], key: str) -> dict[str, object]:
+        fields = _mapping(value, key)
+        if self._field_columns is None:
+            return fields
+        if not set(fields) <= set(self._field_columns):
+            raise ConnectorCapabilityError("database connector field is not allow-listed")
+        return {self._field_columns[field]: item for field, item in fields.items()}
 
 
 def _mapping(value: Mapping[str, object], key: str) -> dict[str, object]:
