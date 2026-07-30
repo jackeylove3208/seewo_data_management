@@ -21,9 +21,13 @@ from app.agent_graph.contracts import (
 )
 from app.agent_graph.worker import GraphCandidatePlan, GraphWorkContext
 from app.agent_runtime.repository import AgentRuntimeRepository
-from app.agent_runtime.source_bindings import resolve_source_bindings
+from app.agent_runtime.source_bindings import AgentSourceBinding, load_source_bindings
 from app.agent_runtime.state_machine import AgentPhase
-from app.connectors.database_runtime import DatabaseConnectorResolver
+from app.connectors.configured import ConfiguredApiConnector
+from app.connectors.database_runtime import (
+    ConfiguredDatabaseConnectorRuntime,
+    DatabaseConnectorResolver,
+)
 from app.ingestion.csv_reader import inspect_csv, read_csv_frame
 from app.models.agent_analysis import (
     AgentClarificationRecord,
@@ -609,7 +613,21 @@ class ProductionGraphCandidateProvider:
             if connector_id is not None:
                 if self._database_connectors is None:
                     raise RuntimeError("SQL connector runtime is unavailable")
-                connector = await self._database_connectors.connector(connector_id)
+                if context.ingestion_contract_version == "source-ingestion-v3":
+                    target_binding = next(
+                        binding
+                        for binding in await load_source_bindings(
+                            session,
+                            task_id=context.task_id,
+                            tenant_id=context.tenant_id,
+                        )
+                        if binding.role == "target"
+                    )
+                    connector = await self._database_connector_for_binding(
+                        target_binding
+                    )
+                else:
+                    connector = await self._database_connectors.connector(connector_id)
                 external_version_hash = hashlib.sha256(
                     (await connector.version()).value.encode()
                 ).hexdigest()
@@ -701,10 +719,11 @@ class ProductionGraphCandidateProvider:
     ) -> tuple[AllowedActionV1, ...]:
         completed = set(await session.scalars(select_transition_action_ids(context.graph_run_id)))
         if context.ingestion_contract_version == "source-ingestion-v3":
-            task = await session.get(ReconciliationTask, context.task_id)
-            if task is None:
-                raise LookupError("Agent graph task is missing")
-            bindings = resolve_source_bindings(task)
+            bindings = await load_source_bindings(
+                session,
+                task_id=context.task_id,
+                tenant_id=context.tenant_id,
+            )
             runtime = AgentRuntimeRepository(session)
             inspections = await _ingestion_checkpoints(
                 runtime,
@@ -925,10 +944,11 @@ class ProductionGraphCandidateProvider:
     ) -> tuple[AllowedActionV1, ...]:
         runtime = AgentRuntimeRepository(session)
         if context.ingestion_contract_version == "source-ingestion-v3":
-            task = await session.get(ReconciliationTask, context.task_id)
-            if task is None:
-                raise LookupError("Agent graph task is missing")
-            bindings = resolve_source_bindings(task)
+            bindings = await load_source_bindings(
+                session,
+                task_id=context.task_id,
+                tenant_id=context.tenant_id,
+            )
             inspections = await _ingestion_checkpoints(
                 runtime,
                 context.run_id,
@@ -1115,6 +1135,23 @@ class ProductionGraphCandidateProvider:
         if repair:
             raise RuntimeError("analysis repair node has no pending batch")
         return (_template(context, "enter_aggregate_risk"),)
+
+    async def _database_connector_for_binding(
+        self,
+        binding: AgentSourceBinding,
+    ) -> ConfiguredApiConnector:
+        if self._database_connectors is None:
+            raise RuntimeError("SQL connector runtime is unavailable")
+        configuration = binding.database_configuration()
+        if isinstance(self._database_connectors, ConfiguredDatabaseConnectorRuntime):
+            return await self._database_connectors.connector_for_configuration(
+                binding.configuration_id,
+                configuration,
+            )
+        connector = await self._database_connectors.connector(binding.configuration_id)
+        if connector.configuration != configuration:
+            raise RuntimeError("database target binding changed")
+        return connector
 
 
 def _template(context: GraphWorkContext, action_id: str) -> AllowedActionV1:

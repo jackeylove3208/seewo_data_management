@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent_runtime.worker import AgentWorkContext
 from app.connectors.configured import (
+    ConfiguredApiConnector,
     ConnectorCapabilityError,
     ConnectorConflictError,
     DatabaseConnectorConfiguration,
@@ -39,6 +40,7 @@ class SqlGovernanceExecutionHandler:
         context: AgentWorkContext,
         *,
         operation_id: UUID,
+        connector_override: ConfiguredApiConnector | None = None,
     ) -> AgentGovernanceOperationRecord:
         operation = await session.scalar(
             select(AgentGovernanceOperationRecord)
@@ -90,7 +92,7 @@ class SqlGovernanceExecutionHandler:
         connector_id = target.get("configuration_id")
         if not isinstance(connector_id, str) or not connector_id:
             raise ValueError("SQL Agent target connector ID is missing")
-        connector = await self._connectors.connector(connector_id)
+        connector = connector_override or await self._connectors.connector(connector_id)
         configuration = connector.configuration
         if (
             not isinstance(configuration, DatabaseConnectorConfiguration)

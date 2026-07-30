@@ -41,7 +41,9 @@ from app.models.analyses import AnalysisRecord
 from app.models.analysis_jobs import AnalysisJobRecord, AnalysisWorkItemRecord
 from app.models.api_connectors import (
     AgentExternalIdentityBindingRecord,
+    AgentSourceBindingRecord,
     ApiAuthoritySourceRecord,
+    ApiConfigurationSessionRecord,
     ApiConnectionRecord,
     ApiConnectionSecretRecord,
 )
@@ -103,6 +105,7 @@ __all__ = [
     "AgentGraphTransitionRecord",
     "AgentApprovalGroupRecord",
     "AgentExternalIdentityBindingRecord",
+    "AgentSourceBindingRecord",
     "AgentClarificationRecord",
     "AgentGovernanceOperationRecord",
     "AgentGovernancePlanRecord",
@@ -124,6 +127,7 @@ __all__ = [
     "AnalysisJobRecord",
     "AnalysisWorkItemRecord",
     "ApiAuthoritySourceRecord",
+    "ApiConfigurationSessionRecord",
     "ApiConnectionRecord",
     "ApiConnectionSecretRecord",
     "CanonicalEntityRecord",

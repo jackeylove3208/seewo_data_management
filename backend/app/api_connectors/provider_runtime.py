@@ -1,5 +1,6 @@
 import json
-from collections.abc import AsyncIterator, Mapping
+from asyncio import sleep
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -22,19 +23,35 @@ async def request_json(
     url: str,
     *,
     bad_request_code: str = "connector_provider_rejected",
+    sleeper: Callable[[float], Awaitable[None]] = sleep,
     **kwargs: Any,
 ) -> dict[str, Any]:
     host = (urlsplit(url).hostname or "").casefold()
     if host not in manifest.endpoint_hosts:
         raise ApiProviderError("connector_endpoint_policy_violation")
-    try:
-        response = await client.request(method, url, **kwargs)
-    except httpx.TimeoutException as error:
-        raise ApiProviderError("connector_timeout") from error
-    except httpx.RequestError as error:
-        raise ApiProviderError("connector_unavailable") from error
-    if response.history:
-        raise ApiProviderError("connector_endpoint_policy_violation")
+    response: httpx.Response | None = None
+    for attempt in range(3):
+        try:
+            response = await client.request(method, url, **kwargs)
+        except (httpx.TimeoutException, httpx.RequestError) as error:
+            if attempt < 2:
+                await sleeper(0.25 * (2**attempt))
+                continue
+            safe_code = (
+                "connector_timeout"
+                if isinstance(error, httpx.TimeoutException)
+                else "connector_unavailable"
+            )
+            raise ApiProviderError(safe_code) from error
+        if response.history:
+            raise ApiProviderError("connector_endpoint_policy_violation")
+        if response.status_code != 429 and response.status_code < 500:
+            break
+        if attempt < 2:
+            await sleeper(_retry_delay(response, attempt))
+            continue
+        break
+    assert response is not None
     if response.status_code in {401}:
         raise ApiProviderError("connector_authentication_failed")
     if response.status_code in {403}:
@@ -54,6 +71,17 @@ async def request_json(
     if not isinstance(payload, dict):
         raise ApiProviderError("connector_invalid_response")
     return payload
+
+
+def _retry_delay(response: httpx.Response, attempt: int) -> float:
+    retry_after = response.headers.get("Retry-After")
+    if retry_after is not None:
+        try:
+            parsed_delay: float = float(str(retry_after))
+            return min(max(parsed_delay, 0.0), 30.0)
+        except ValueError:
+            pass
+    return 0.25 * (2.0**attempt)
 
 
 def configured_person_kinds(

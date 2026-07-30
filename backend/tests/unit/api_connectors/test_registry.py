@@ -55,6 +55,7 @@ class FakeAdapter:
         if False:
             yield CapturedApiPage(page_number=1, records=(), next_cursor=None)
 
+
 def test_registry_resolves_audited_manifest_and_adapter() -> None:
     adapter = FakeAdapter()
     registry = ProviderRegistry()
@@ -72,6 +73,41 @@ def test_registry_rejects_duplicate_provider() -> None:
 
     with pytest.raises(ValueError, match="already registered"):
         registry.register(DINGTALK_MANIFEST, FakeAdapter())
+
+
+def test_registry_resolves_frozen_adapter_version_after_a_new_version_is_current() -> None:
+    old_adapter = FakeAdapter()
+    new_manifest = DINGTALK_MANIFEST.model_copy(
+        update={"manifest_version": "2.0.0", "adapter_version": "2.0.0"},
+    )
+
+    class NewAdapter(FakeAdapter):
+        manifest = new_manifest
+
+    new_adapter = NewAdapter()
+    registry = ProviderRegistry()
+    registry.register(DINGTALK_MANIFEST, old_adapter)
+    registry.register(new_manifest, new_adapter, make_current=True)
+
+    assert registry.manifest("dingtalk") is new_manifest
+    assert registry.adapter("dingtalk") is new_adapter
+    assert registry.adapter(
+        "dingtalk",
+        manifest_version="1.0.0",
+        adapter_version="1.0.0",
+    ) is old_adapter
+
+
+def test_registry_does_not_silently_upgrade_an_unavailable_frozen_version() -> None:
+    registry = ProviderRegistry()
+    registry.register(DINGTALK_MANIFEST, FakeAdapter())
+
+    with pytest.raises(KeyError, match="version"):
+        registry.adapter(
+            "dingtalk",
+            manifest_version="0.9.0",
+            adapter_version="0.9.0",
+        )
 
 
 def test_registry_rejects_adapter_manifest_mismatch() -> None:

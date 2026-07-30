@@ -46,6 +46,7 @@ class ApiConnectionCreate(BaseModel):
 class ApiConnectionRotateSecret(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    public_configuration: dict[str, object] | None = None
     secret: dict[str, str]
 
 

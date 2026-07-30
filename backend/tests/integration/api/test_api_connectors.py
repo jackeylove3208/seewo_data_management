@@ -155,10 +155,20 @@ def test_connection_lifecycle_never_returns_secret(
 
     rotated = client.post(
         f"/api/connectors/connections/{connection_id}/rotate-secret",
-        json={"secret": {"app_key": "new-app", "app_secret": "new-secret"}},
+        json={
+            "public_configuration": {
+                "organization_ref": "school-2",
+                "person_entity_kind": "student",
+            },
+            "secret": {"app_key": "new-app", "app_secret": "new-secret"},
+        },
     )
     assert rotated.status_code == 200, rotated.text
     assert rotated.json()["state"] == "pending"
+    assert rotated.json()["public_configuration"] == {
+        "organization_ref": "school-2",
+        "person_entity_kind": "student",
+    }
     assert "secret" not in json.dumps(rotated.json()).lower()
 
     retested = client.post(f"/api/connectors/connections/{connection_id}/test")
@@ -293,7 +303,7 @@ def test_empty_visibility_is_not_eligible_for_synchronization(
     assert response.json()["last_safe_error_code"] == "connector_visibility_empty"
 
 
-def test_configuration_session_is_one_time_and_display_name_is_unique(
+def test_configuration_session_is_transactional_and_consumed_only_after_success(
     connector_client: tuple[TestClient, FakeDingTalkAdapter],
 ) -> None:
     client, _adapter = connector_client
@@ -314,8 +324,12 @@ def test_configuration_session_is_one_time_and_display_name_is_unique(
 
     payload["display_name"] = "另一个连接"
     replay = client.post("/api/connectors/connections", json=payload)
-    assert replay.status_code == 422
-    assert "session" in replay.json()["detail"]
+    assert replay.status_code == 201
+
+    payload["display_name"] = "第三个连接"
+    consumed = client.post("/api/connectors/connections", json=payload)
+    assert consumed.status_code == 422
+    assert "session" in consumed.json()["detail"]
 
 
 def test_external_identity_binding_endpoints_are_audited_and_tenant_scoped(

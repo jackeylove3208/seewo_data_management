@@ -39,6 +39,12 @@ export interface AgentApiConnectionConfiguration {
   provider_id: string;
   display_name: string;
   required_secret_fields: string[];
+  public_configuration: {
+    person_entity_kind: "teacher" | "student";
+    root_department_id: number;
+    number_field?: string;
+    class_name_field?: string;
+  };
   secret: Record<string, string>;
   connection_id?: string | null;
 }
@@ -407,7 +413,10 @@ async function configureApiConnection(
     await requestJson(`/api/connectors/connections/${connectionId}/rotate-secret`, {
       method: "POST",
       headers: jsonHeaders,
-      body: JSON.stringify({ secret: configuration.secret }),
+      body: JSON.stringify({
+        public_configuration: configuration.public_configuration,
+        secret: configuration.secret,
+      }),
     });
   } else {
     const session = await requestJson<{ id: string }>(
@@ -427,7 +436,7 @@ async function configureApiConnection(
           configuration_session_id: session.id,
           provider_id: configuration.provider_id,
           display_name: configuration.display_name,
-          public_configuration: { person_entity_kind: "teacher" },
+          public_configuration: configuration.public_configuration,
           secret: configuration.secret,
         }),
       },

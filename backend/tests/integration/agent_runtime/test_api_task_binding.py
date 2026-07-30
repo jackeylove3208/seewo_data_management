@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -33,7 +34,11 @@ from app.models.agent_analysis import (
     AgentInputRecord,
     AgentWorkItemRecord,
 )
-from app.models.api_connectors import ApiAuthoritySourceRecord, ApiConnectionRecord
+from app.models.api_connectors import (
+    AgentSourceBindingRecord,
+    ApiAuthoritySourceRecord,
+    ApiConnectionRecord,
+)
 from app.models.mappings import EntityMapping
 from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import (
@@ -231,6 +236,7 @@ async def _seed_connection(
         capabilities={"entity.teacher.read": True},
         visibility_summary={"visible": True, "teacher_count": 2},
         state="active",
+        last_tested_at=datetime.now(UTC),
         created_by="operator-1",
         updated_by="operator-1",
     )
@@ -292,6 +298,13 @@ async def test_api_task_binds_resource_and_selects_graph_v2_without_provider_cal
                     select(Snapshot).where(Snapshot.task_id == task.id)
                 )
             )
+            role_bindings = tuple(
+                await session.scalars(
+                    select(AgentSourceBindingRecord)
+                    .where(AgentSourceBindingRecord.task_id == task.id)
+                    .order_by(AgentSourceBindingRecord.role)
+                )
+            )
 
     assert run.ingestion_contract_version == "source-ingestion-v3"
     assert graph.graph_version == "agent-sync-graph-v2"
@@ -302,6 +315,20 @@ async def test_api_task_binds_resource_and_selects_graph_v2_without_provider_cal
     assert [source.source_role for source in sources] == ["target"]
     assert sources[0].storage_path == "database://seewo-mysql"
     assert [snapshot.source_role for snapshot in snapshots] == ["target"]
+    assert [binding.role for binding in role_bindings] == [
+        "authoritative",
+        "target",
+    ]
+    target_binding = role_bindings[1]
+    assert target_binding.configuration_id == "seewo-mysql"
+    assert target_binding.snapshot_id == snapshots[0].id
+    assert target_binding.frozen_public_configuration["table_name"] == (
+        settings.database_connector_configurations["seewo-mysql"].table_name
+    )
+    assert target_binding.credential_reference == (
+        settings.database_connector_configurations["seewo-mysql"].credential_reference
+    )
+    assert len(target_binding.configuration_fingerprint) == 64
     assert adapter.calls == 0
 
     context = GraphWorkContext(
@@ -358,6 +385,36 @@ async def test_api_task_rejects_cross_tenant_connection_before_creating_task(
                 )
             assert await session.scalar(select(ReconciliationTask)) is None
     assert adapter.calls == 0
+
+
+async def test_api_task_rejects_a_stale_connection_test_before_task_creation(
+    database,
+) -> None:
+    key = Fernet.generate_key()
+    settings = _settings(key)
+    registry = ProviderRegistry()
+    registry.register(MANIFEST, AdapterMustNotRun())
+    async with database.session_factory() as session:
+        async with session.begin():
+            connection = await _seed_connection(session, fernet_key=key)
+            connection.last_tested_at = datetime.now(UTC) - timedelta(days=2)
+
+            with pytest.raises(
+                AgentConnectorCapabilityFailure,
+                match="tested again",
+            ):
+                await AgentTaskService(
+                    session,
+                    operator=OperatorContext(
+                        operator_id="operator-1",
+                        tenant_id="school-1",
+                    ),
+                    settings=settings,
+                    provider_registry=registry,
+                ).create(
+                    _intent(connection.id),
+                    idempotency_key="api-task-stale-connection",
+                )
 
 
 async def test_graph_api_materialization_action_publishes_task_bound_authority(

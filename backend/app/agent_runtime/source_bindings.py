@@ -1,53 +1,79 @@
+import hashlib
+import json
 from dataclasses import dataclass
-from typing import Literal, Protocol, cast
+from typing import Literal, cast
+from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.connectors.configured import DatabaseConnectorConfiguration
+from app.models.api_connectors import AgentSourceBindingRecord
 
 SourceRoleName = Literal["authoritative", "target"]
-ConnectorKind = Literal["csv", "local", "remote_csv", "database", "api"]
-
-_CONNECTOR_KINDS = frozenset({"csv", "local", "remote_csv", "database", "api"})
-_MAPPING_KINDS = {"api": "api", "database": "database"}
-
-
-class _TaskWithIntent(Protocol):
-    @property
-    def agent_intent(self) -> object: ...
+ConnectorKind = Literal["api", "database"]
 
 
 @dataclass(frozen=True, slots=True)
 class AgentSourceBinding:
     role: SourceRoleName
     connector_kind: ConnectorKind
-    configuration_id: str | None
+    configuration_id: str
+    frozen_public_configuration: dict[str, object]
+    credential_reference: str
     mapping_checkpoint_key: str
     normalization_checkpoint_key: str
 
-
-def resolve_source_bindings(task: _TaskWithIntent) -> tuple[AgentSourceBinding, ...]:
-    if not isinstance(task.agent_intent, dict):
-        raise ValueError("Agent task intent is missing")
-
-    bindings: list[AgentSourceBinding] = []
-    for role, intent_key in (
-        ("authoritative", "source"),
-        ("target", "target"),
-    ):
-        selection = task.agent_intent.get(intent_key)
-        if not isinstance(selection, dict):
-            raise ValueError(f"Agent {role} selection is missing")
-        kind = selection.get("kind")
-        if not isinstance(kind, str) or kind not in _CONNECTOR_KINDS:
-            raise ValueError(f"Agent {role} connector kind is invalid")
-        configuration_id = selection.get("configuration_id")
-        if configuration_id is not None and not isinstance(configuration_id, str):
-            raise ValueError(f"Agent {role} configuration ID is invalid")
-        mapping_kind = _MAPPING_KINDS.get(kind, "csv")
-        bindings.append(
-            AgentSourceBinding(
-                role=cast(SourceRoleName, role),
-                connector_kind=cast(ConnectorKind, kind),
-                configuration_id=configuration_id,
-                mapping_checkpoint_key=f"graph-{mapping_kind}-field-mapping-v3:{role}",
-                normalization_checkpoint_key=f"graph-source-normalization-v3:{role}",
-            )
+    def database_configuration(self) -> DatabaseConnectorConfiguration:
+        if self.connector_kind != "database":
+            raise ValueError("source binding is not a database connector")
+        configuration = DatabaseConnectorConfiguration.model_validate(
+            self.frozen_public_configuration
         )
-    return tuple(bindings)
+        if configuration.credential_reference != self.credential_reference:
+            raise ValueError("source binding credential reference changed")
+        return configuration
+
+
+async def load_source_bindings(
+    session: AsyncSession,
+    *,
+    task_id: UUID,
+    tenant_id: str,
+) -> tuple[AgentSourceBinding, AgentSourceBinding]:
+    records = tuple(
+        await session.scalars(
+            select(AgentSourceBindingRecord)
+            .where(
+                AgentSourceBindingRecord.task_id == task_id,
+                AgentSourceBindingRecord.tenant_id == tenant_id,
+            )
+            .order_by(AgentSourceBindingRecord.role)
+        )
+    )
+    bindings = tuple(_binding_from_record(record) for record in records)
+    by_role = {binding.role: binding for binding in bindings}
+    if len(bindings) != 2 or set(by_role) != {"authoritative", "target"}:
+        raise ValueError("source role bindings are incomplete")
+    return by_role["authoritative"], by_role["target"]
+
+
+def _binding_from_record(record: AgentSourceBindingRecord) -> AgentSourceBinding:
+    public_configuration = dict(record.frozen_public_configuration)
+    if _configuration_fingerprint(public_configuration) != record.configuration_fingerprint:
+        raise ValueError("source binding configuration fingerprint changed")
+    return AgentSourceBinding(
+        role=cast(SourceRoleName, record.role),
+        connector_kind=cast(ConnectorKind, record.connector_kind),
+        configuration_id=record.configuration_id,
+        frozen_public_configuration=public_configuration,
+        credential_reference=record.credential_reference,
+        mapping_checkpoint_key=record.mapping_checkpoint_key,
+        normalization_checkpoint_key=record.normalization_checkpoint_key,
+    )
+
+
+def _configuration_fingerprint(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()

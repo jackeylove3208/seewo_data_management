@@ -146,6 +146,7 @@ class ApiConnectionService:
         operator_id: str,
         connection_id: UUID,
         secret: Mapping[str, str],
+        public_configuration: Mapping[str, object] | None = None,
     ) -> SafeApiConnection:
         record = await self._owned(connection_id, tenant_id)
         if record.state == "disabled":
@@ -156,6 +157,8 @@ class ApiConnectionService:
             connection_id=connection_id,
             payload=secret,
         )
+        if public_configuration is not None:
+            record.public_configuration = dict(public_configuration)
         record.capabilities = {}
         record.visibility_summary = {}
         record.state = "pending"

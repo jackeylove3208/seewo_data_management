@@ -1,8 +1,9 @@
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any
+from typing import Annotated
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent_runtime.external_identity_service import (
@@ -19,6 +20,7 @@ from app.api_connectors.service import (
     ApiConnectionValidationError,
 )
 from app.core.security import OperatorContext
+from app.models.api_connectors import ApiConfigurationSessionRecord
 from app.schemas.api_connectors import (
     ApiConfigurationSessionCreate,
     ApiConfigurationSessionRead,
@@ -81,11 +83,16 @@ async def create_api_configuration_session(
         ) from error
     session_id = uuid4()
     expires_at = datetime.now(UTC) + _CONFIGURATION_SESSION_TTL
-    request.app.state.api_configuration_sessions[session_id] = {
-        "tenant_id": operator.tenant_id,
-        "provider_id": payload.provider_id,
-        "expires_at": expires_at,
-    }
+    session.add(
+        ApiConfigurationSessionRecord(
+            id=session_id,
+            tenant_id=operator.tenant_id,
+            provider_id=payload.provider_id,
+            expires_at=expires_at,
+            consumed_at=None,
+        )
+    )
+    await session.flush()
     return ApiConfigurationSessionRead(
         id=session_id,
         provider_id=payload.provider_id,
@@ -105,7 +112,7 @@ async def create_api_connection(
     session: Annotated[AsyncSession, Depends(get_session)],
     operator: Annotated[OperatorContext, Depends(get_operator_context)],
 ) -> ApiConnectionRead:
-    _consume_configuration_session(request, operator, payload)
+    await _consume_configuration_session(session, operator, payload)
     service = _service(request, session)
     try:
         connection = await service.create(
@@ -189,6 +196,7 @@ async def rotate_api_connection_secret(
             operator_id=operator.operator_id,
             connection_id=connection_id,
             secret=payload.secret,
+            public_configuration=payload.public_configuration,
         )
     except ApiConnectionNotFoundError as error:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
@@ -237,25 +245,39 @@ def _service(request: Request, session: AsyncSession) -> ApiConnectionService:
     )
 
 
-def _consume_configuration_session(
-    request: Request,
+async def _consume_configuration_session(
+    session: AsyncSession,
     operator: OperatorContext,
     payload: ApiConnectionCreate,
 ) -> None:
-    session_data: dict[str, Any] | None = request.app.state.api_configuration_sessions.pop(
-        payload.configuration_session_id,
-        None,
+    configuration_session = await session.scalar(
+        select(ApiConfigurationSessionRecord)
+        .where(
+            ApiConfigurationSessionRecord.id == payload.configuration_session_id,
+            ApiConfigurationSessionRecord.tenant_id == operator.tenant_id,
+            ApiConfigurationSessionRecord.provider_id == payload.provider_id,
+        )
+        .with_for_update()
     )
+    expires_at = (
+        configuration_session.expires_at
+        if configuration_session is not None
+        else None
+    )
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
     if (
-        session_data is None
-        or session_data["tenant_id"] != operator.tenant_id
-        or session_data["provider_id"] != payload.provider_id
-        or session_data["expires_at"] <= datetime.now(UTC)
+        configuration_session is None
+        or configuration_session.consumed_at is not None
+        or expires_at is None
+        or expires_at <= datetime.now(UTC)
     ):
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="API configuration session is invalid or expired",
         )
+    configuration_session.consumed_at = datetime.now(UTC)
+    await session.flush()
 
 
 @external_identity_router.get(

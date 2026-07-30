@@ -1,27 +1,30 @@
-from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
-from app.agent_runtime.source_bindings import resolve_source_bindings
+from app.agent_runtime.source_bindings import (
+    _binding_from_record,
+    _configuration_fingerprint,
+)
+from app.models.api_connectors import AgentSourceBindingRecord
 
 
 def test_api_database_roles_are_resolved_independently() -> None:
-    task = SimpleNamespace(
-        agent_intent={
-            "source": {"kind": "api", "configuration_id": "ding-school"},
-            "target": {"kind": "database", "configuration_id": "seewo-mysql"},
-        }
+    record = AgentSourceBindingRecord(
+        tenant_id="school-1",
+        task_id=uuid4(),
+        role="target",
+        connector_kind="database",
+        configuration_id="seewo-mysql",
+        snapshot_id=uuid4(),
+        configuration_fingerprint=_configuration_fingerprint({}),
+        frozen_public_configuration={},
+        credential_reference="secret://seewo-mysql",
+        mapping_checkpoint_key="graph-database-field-mapping-v3:target",
+        normalization_checkpoint_key="graph-source-normalization-v3:target",
     )
 
-    authority, target = resolve_source_bindings(task)
-
-    assert authority.role == "authoritative"
-    assert authority.connector_kind == "api"
-    assert authority.configuration_id == "ding-school"
-    assert authority.mapping_checkpoint_key == "graph-api-field-mapping-v3:authoritative"
-    assert authority.normalization_checkpoint_key == (
-        "graph-source-normalization-v3:authoritative"
-    )
+    target = _binding_from_record(record)
 
     assert target.role == "target"
     assert target.connector_kind == "database"
@@ -30,12 +33,20 @@ def test_api_database_roles_are_resolved_independently() -> None:
     assert target.normalization_checkpoint_key == "graph-source-normalization-v3:target"
 
 
-def test_role_binding_rejects_a_missing_selection() -> None:
-    task = SimpleNamespace(
-        agent_intent={
-            "source": {"kind": "api", "configuration_id": "ding-school"},
-        }
+def test_role_binding_rejects_a_changed_frozen_configuration() -> None:
+    record = AgentSourceBindingRecord(
+        tenant_id="school-1",
+        task_id=uuid4(),
+        role="target",
+        connector_kind="database",
+        configuration_id="seewo-mysql",
+        snapshot_id=uuid4(),
+        configuration_fingerprint="0" * 64,
+        frozen_public_configuration={"table_name": "changed"},
+        credential_reference="secret://seewo-mysql",
+        mapping_checkpoint_key="graph-database-field-mapping-v3:target",
+        normalization_checkpoint_key="graph-source-normalization-v3:target",
     )
 
-    with pytest.raises(ValueError, match="target selection is missing"):
-        resolve_source_bindings(task)
+    with pytest.raises(ValueError, match="fingerprint changed"):
+        _binding_from_record(record)

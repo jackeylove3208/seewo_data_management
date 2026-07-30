@@ -50,7 +50,7 @@ from app.agent_runtime.csv_rollback_handlers import (
 )
 from app.agent_runtime.local_publication import publish_local_target
 from app.agent_runtime.repository import AgentRuntimeRepository
-from app.agent_runtime.source_bindings import AgentSourceBinding, resolve_source_bindings
+from app.agent_runtime.source_bindings import AgentSourceBinding, load_source_bindings
 from app.agent_runtime.sql_governance_handlers import SqlGovernanceExecutionHandler
 from app.agent_runtime.sql_rollback_handlers import SqlRollbackExecutionHandler
 from app.agent_runtime.state_machine import AgentPhase
@@ -433,7 +433,11 @@ class ProductionGraphActionExecutor:
     ) -> GraphActionOutcome:
         if context.ingestion_contract_version == "source-ingestion-v3":
             role = _source_role(_only(action.resource_ids))
-            binding = await self._source_binding(context.task_id, role)
+            binding = await self._source_binding(
+                context.task_id,
+                context.tenant_id,
+                role,
+            )
             if binding.connector_kind == "api":
                 return await self._inspect_api_source_v3(context, action, binding)
             if binding.connector_kind == "database":
@@ -741,7 +745,11 @@ class ProductionGraphActionExecutor:
         if context.ingestion_contract_version == "source-ingestion-v3":
             resource_id = _only(action.resource_ids)
             role = _source_role(resource_id)
-            binding = await self._source_binding(context.task_id, role)
+            binding = await self._source_binding(
+                context.task_id,
+                context.tenant_id,
+                role,
+            )
             if resource_id.endswith(":mapping"):
                 if binding.connector_kind == "api":
                     return await self._resolve_api_mapping_v3(
@@ -896,7 +904,7 @@ class ProductionGraphActionExecutor:
     ) -> GraphActionOutcome:
         if binding.configuration_id is None:
             raise GraphGuardRejected("database_target_binding_invalid")
-        connector = await self._database_connector(binding.configuration_id)
+        connector = await self._database_connector_for_binding(binding)
         schema = await connector.discover_schema()
         version = await connector.version()
         configuration = connector.configuration
@@ -1048,7 +1056,7 @@ class ProductionGraphActionExecutor:
     ) -> GraphActionOutcome:
         if binding.configuration_id is None:
             raise GraphGuardRejected("database_target_binding_invalid")
-        connector = await self._database_connector(binding.configuration_id)
+        connector = await self._database_connector_for_binding(binding)
         async with self._session_factory() as session:
             task = await session.get(ReconciliationTask, context.task_id)
             if task is None:
@@ -1473,13 +1481,15 @@ class ProductionGraphActionExecutor:
     async def _source_binding(
         self,
         task_id: UUID,
+        tenant_id: str,
         role: str,
     ) -> AgentSourceBinding:
         async with self._session_factory() as session:
-            task = await session.get(ReconciliationTask, task_id)
-            if task is None:
-                raise LookupError("Agent graph task is missing")
-            for binding in resolve_source_bindings(task):
+            for binding in await load_source_bindings(
+                session,
+                task_id=task_id,
+                tenant_id=tenant_id,
+            ):
                 if binding.role == role:
                     return binding
         raise GraphGuardRejected("source_role_binding_invalid")
@@ -1504,6 +1514,23 @@ class ProductionGraphActionExecutor:
         if self._database_connectors is None:
             raise RuntimeError("SQL Agent connector runtime is unavailable")
         return await self._database_connectors.connector(connector_id)
+
+    async def _database_connector_for_binding(
+        self,
+        binding: AgentSourceBinding,
+    ) -> ConfiguredApiConnector:
+        if self._database_connectors is None:
+            raise RuntimeError("SQL Agent connector runtime is unavailable")
+        configuration = binding.database_configuration()
+        if isinstance(self._database_connectors, ConfiguredDatabaseConnectorRuntime):
+            return await self._database_connectors.connector_for_configuration(
+                binding.configuration_id,
+                configuration,
+            )
+        connector = await self._database_connectors.connector(binding.configuration_id)
+        if connector.configuration != configuration:
+            raise GraphGuardRejected("database_target_binding_changed")
+        return connector
 
     async def _resolve_csv_mapping_v2(
         self,
@@ -2005,7 +2032,21 @@ class ProductionGraphActionExecutor:
                     )
                     if not isinstance(connector_id, str):
                         raise ValueError("SQL Agent target connector ID is missing")
-                    connector = await self._database_connector(connector_id)
+                    if context.ingestion_contract_version == "source-ingestion-v3":
+                        target_binding = next(
+                            binding
+                            for binding in await load_source_bindings(
+                                session,
+                                task_id=context.task_id,
+                                tenant_id=context.tenant_id,
+                            )
+                            if binding.role == "target"
+                        )
+                        connector = await self._database_connector_for_binding(
+                            target_binding
+                        )
+                    else:
+                        connector = await self._database_connector(connector_id)
                     external_version_hash = SqlGovernanceExecutionHandler.hash_version(
                         (await connector.version()).value
                     )
@@ -2089,6 +2130,7 @@ class ProductionGraphActionExecutor:
                     return _outcome(action)
                 task = await session.get(ReconciliationTask, context.task_id)
                 database_task = _task_uses_database(task)
+                target_connector: ConfiguredApiConnector | None = None
                 if not database_task and not self._csv_execution_enabled:
                     raise RuntimeError(
                         "Agent graph CSV execution is disabled before a writable plan"
@@ -2096,6 +2138,22 @@ class ProductionGraphActionExecutor:
                 if database_task and self._sql_governance is None:
                     raise RuntimeError(
                         "Agent graph SQL execution is disabled before a writable plan"
+                    )
+                if (
+                    database_task
+                    and context.ingestion_contract_version == "source-ingestion-v3"
+                ):
+                    target_binding = next(
+                        binding
+                        for binding in await load_source_bindings(
+                            session,
+                            task_id=context.task_id,
+                            tenant_id=context.tenant_id,
+                        )
+                        if binding.role == "target"
+                    )
+                    target_connector = await self._database_connector_for_binding(
+                        target_binding
                     )
 
                 async def execute_operation(operation_id: UUID) -> OperationOutcome:
@@ -2109,6 +2167,7 @@ class ProductionGraphActionExecutor:
                             session,
                             legacy_context,
                             operation_id=operation_id,
+                            connector_override=target_connector,
                         )
                     else:
                         record = await self._governance.execute_operation(

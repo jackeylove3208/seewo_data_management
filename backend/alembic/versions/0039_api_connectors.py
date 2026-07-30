@@ -39,6 +39,23 @@ def upgrade() -> None:
     )
 
     op.create_table(
+        "api_configuration_sessions",
+        sa.Column("id", sa.Uuid(), nullable=False),
+        sa.Column("tenant_id", sa.String(length=128), nullable=False),
+        sa.Column("provider_id", sa.String(length=64), nullable=False),
+        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("consumed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    for name, columns in (
+        ("ix_api_configuration_sessions_tenant_id", ["tenant_id"]),
+        ("ix_api_configuration_sessions_provider_id", ["provider_id"]),
+        ("ix_api_configuration_sessions_expires_at", ["expires_at"]),
+    ):
+        op.create_index(name, "api_configuration_sessions", columns, unique=False)
+
+    op.create_table(
         "api_connections",
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("tenant_id", sa.String(length=128), nullable=False),
@@ -146,6 +163,60 @@ def upgrade() -> None:
         op.create_index(name, "api_authority_sources", columns, unique=unique)
 
     op.create_table(
+        "agent_source_bindings",
+        sa.Column("id", sa.Uuid(), nullable=False),
+        sa.Column("tenant_id", sa.String(length=128), nullable=False),
+        sa.Column("task_id", sa.Uuid(), nullable=False),
+        sa.Column("role", sa.String(length=32), nullable=False),
+        sa.Column("connector_kind", sa.String(length=32), nullable=False),
+        sa.Column("configuration_id", sa.String(length=512), nullable=False),
+        sa.Column("snapshot_id", sa.Uuid(), nullable=True),
+        sa.Column("configuration_fingerprint", sa.String(length=64), nullable=False),
+        sa.Column("frozen_public_configuration", sa.JSON(), nullable=False),
+        sa.Column("credential_reference", sa.String(length=512), nullable=False),
+        sa.Column("mapping_checkpoint_key", sa.String(length=255), nullable=False),
+        sa.Column("normalization_checkpoint_key", sa.String(length=255), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.CheckConstraint(
+            "role IN ('authoritative', 'target')",
+            name="ck_agent_source_binding_role",
+        ),
+        sa.CheckConstraint(
+            "connector_kind IN ('api', 'database')",
+            name="ck_agent_source_binding_connector_kind",
+        ),
+        sa.ForeignKeyConstraint(
+            ["snapshot_id"],
+            ["snapshots.id"],
+            ondelete="RESTRICT",
+        ),
+        sa.ForeignKeyConstraint(
+            ["task_id"],
+            ["reconciliation_tasks.id"],
+            ondelete="RESTRICT",
+        ),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index(
+        "ix_agent_source_bindings_tenant_id",
+        "agent_source_bindings",
+        ["tenant_id"],
+        unique=False,
+    )
+    op.create_index(
+        "ix_agent_source_bindings_task_id",
+        "agent_source_bindings",
+        ["task_id"],
+        unique=False,
+    )
+    op.create_index(
+        "uq_agent_source_bindings_task_role",
+        "agent_source_bindings",
+        ["task_id", "role"],
+        unique=True,
+    )
+
+    op.create_table(
         "agent_external_identity_bindings",
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("tenant_id", sa.String(length=128), nullable=False),
@@ -233,6 +304,8 @@ def downgrade() -> None:
         if "api_connections" not in tables:
             return
     op.drop_table("agent_external_identity_bindings")
+    op.drop_table("agent_source_bindings")
     op.drop_table("api_authority_sources")
     op.drop_table("api_connections")
+    op.drop_table("api_configuration_sessions")
     op.drop_table("api_connection_secrets")

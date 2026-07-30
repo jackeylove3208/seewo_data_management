@@ -35,6 +35,12 @@ export function ConversationApiConnectionCard({
   const [displayName, setDisplayName] = useState(
     connection.display_name ?? `${providerLabel(connection.provider_id)}组织连接`,
   );
+  const [personEntityKind, setPersonEntityKind] = useState<"teacher" | "student">(
+    "teacher",
+  );
+  const [rootDepartmentId, setRootDepartmentId] = useState("1");
+  const [numberField, setNumberField] = useState("");
+  const [classNameField, setClassNameField] = useState("");
   const [secret, setSecret] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
@@ -47,6 +53,13 @@ export function ConversationApiConnectionCard({
     setError(undefined);
   }, [connection.connection_id, connection.display_name, connection.provider_id]);
 
+  useEffect(() => {
+    setPersonEntityKind("teacher");
+    setRootDepartmentId("1");
+    setNumberField("");
+    setClassNameField("");
+  }, [connection.provider_id]);
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!configure || submitting) return;
@@ -57,6 +70,14 @@ export function ConversationApiConnectionCard({
         provider_id: connection.provider_id,
         display_name: displayName.trim(),
         required_secret_fields: connection.required_secret_fields,
+        public_configuration: {
+          person_entity_kind: personEntityKind,
+          root_department_id: Number(rootDepartmentId),
+          ...(numberField.trim() ? { number_field: numberField.trim() } : {}),
+          ...(personEntityKind === "student" && classNameField.trim()
+            ? { class_name_field: classNameField.trim() }
+            : {}),
+        },
         secret: Object.fromEntries(
           connection.required_secret_fields.map((field) => [
             field,
@@ -95,6 +116,51 @@ export function ConversationApiConnectionCard({
               onChange={(event) => setDisplayName(event.target.value)}
             />
           </label>
+          <label>
+            <span>人员类型</span>
+            <select
+              aria-label="人员类型"
+              value={personEntityKind}
+              onChange={(event) => setPersonEntityKind(
+                event.target.value as "teacher" | "student",
+              )}
+            >
+              <option value="teacher">教师</option>
+              <option value="student">学生</option>
+            </select>
+          </label>
+          <label>
+            <span>根部门 ID</span>
+            <input
+              aria-label="根部门 ID"
+              type="number"
+              min="1"
+              step="1"
+              required
+              value={rootDepartmentId}
+              onChange={(event) => setRootDepartmentId(event.target.value)}
+            />
+          </label>
+          <label>
+            <span>人员编号字段</span>
+            <input
+              aria-label="人员编号字段"
+              value={numberField}
+              placeholder="可选，例如 student_number"
+              onChange={(event) => setNumberField(event.target.value)}
+            />
+          </label>
+          {personEntityKind === "student" && (
+            <label>
+              <span>班级字段</span>
+              <input
+                aria-label="班级字段"
+                value={classNameField}
+                placeholder="可选，例如 class_name"
+                onChange={(event) => setClassNameField(event.target.value)}
+              />
+            </label>
+          )}
           {connection.required_secret_fields.map((field) => (
             <label key={field}>
               <span>{secretFieldLabels[field] ?? field}</span>

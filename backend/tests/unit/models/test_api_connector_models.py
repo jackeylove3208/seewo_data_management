@@ -4,7 +4,9 @@ from uuid import UUID, uuid4
 
 from app.models.api_connectors import (
     AgentExternalIdentityBindingRecord,
+    AgentSourceBindingRecord,
     ApiAuthoritySourceRecord,
+    ApiConfigurationSessionRecord,
     ApiConnectionRecord,
 )
 
@@ -64,6 +66,23 @@ def test_external_binding_is_unique_per_authority_and_target_locator() -> None:
     )
     assert isinstance(record.id, UUID) or record.id is None
     assert record.status == "active"
+
+
+def test_source_bindings_are_unique_per_task_role() -> None:
+    assert _constraint_names(AgentSourceBindingRecord) >= {
+        "uq_agent_source_bindings_task_role",
+    }
+
+
+def test_configuration_session_tracks_single_use_state() -> None:
+    record = ApiConfigurationSessionRecord(
+        tenant_id="school-1",
+        provider_id="dingtalk",
+        expires_at=datetime.now(UTC),
+        consumed_at=None,
+    )
+
+    assert record.consumed_at is None
 
 
 def _constraint_names(model: type[Any]) -> set[str]:

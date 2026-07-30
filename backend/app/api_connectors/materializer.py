@@ -22,7 +22,11 @@ from app.api_connectors.secrets import (
     SecretReferenceError,
 )
 from app.core.config import Settings
-from app.models.api_connectors import ApiAuthoritySourceRecord, ApiConnectionRecord
+from app.models.api_connectors import (
+    AgentSourceBindingRecord,
+    ApiAuthoritySourceRecord,
+    ApiConnectionRecord,
+)
 from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import Snapshot, SourceFile
 from app.schemas.agent_ingestion import AgentEntityKind
@@ -171,6 +175,16 @@ class ApiAuthorityMaterializer:
             record.page_count = len(pages)
             record.captured_at = datetime.now(UTC)
             record.safe_problem_code = None
+            binding = await session.scalar(
+                select(AgentSourceBindingRecord).where(
+                    AgentSourceBindingRecord.task_id == task.id,
+                    AgentSourceBindingRecord.tenant_id == task.tenant_id,
+                    AgentSourceBindingRecord.role == "authoritative",
+                )
+            )
+            if binding is None or binding.configuration_id != str(connection.id):
+                raise ApiSourceFailure("connector_source_binding_invalid")
+            binding.snapshot_id = snapshot.id
             await session.flush()
             return source_file
         except ApiSourceFailure as error:
@@ -209,26 +223,15 @@ class ApiAuthorityMaterializer:
         connection: ApiConnectionRecord,
     ) -> OrganizationApiAdapter:
         try:
-            manifest = self._registry.manifest(connection.provider_id)
-            adapter = self._registry.adapter(connection.provider_id)
+            manifest, adapter = self._registry.resolve(
+                connection.provider_id,
+                manifest_version=source.manifest_version,
+                adapter_version=source.adapter_version,
+            )
         except KeyError as error:
-            raise ApiSourceFailure("connector_provider_unavailable") from error
-        frozen_contract = (
-            source.manifest_version,
-            source.adapter_version,
-            source.projection_version,
-        )
-        current_contract = (
-            manifest.manifest_version,
-            manifest.adapter_version,
-            manifest.projection_version,
-        )
-        connection_contract = (
-            connection.manifest_version,
-            connection.adapter_version,
-        )
-        if frozen_contract != current_contract or connection_contract != current_contract[:2]:
-            raise ApiSourceFailure("connector_provider_contract_stale")
+            raise ApiSourceFailure("connector_provider_contract_unavailable") from error
+        if source.projection_version != manifest.projection_version:
+            raise ApiSourceFailure("connector_provider_contract_unavailable")
         return adapter
 
     @staticmethod

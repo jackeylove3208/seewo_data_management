@@ -62,9 +62,6 @@ Keep Markdown concise, use sentence-case headings, and wrap commands and paths i
 
 Every implemented capability should include focused automated tests. Mirror source boundaries under `tests/`, name tests after observable behavior, and include cases for API failure, partial batch execution, idempotent retries, audit recording, and rollback conflicts. Use synthetic organization data only; never copy real teacher or student records into fixtures.
 
-Organization connector coverage must use the synthetic DingTalk/WeCom contract servers and fake
-MySQL stores. Tests must not call live provider endpoints or load real application credentials.
-
 ## Commit & Pull Request Guidelines
 
 No Git history is available, so no repository-specific convention can be inferred. Use Conventional Commits (`feat:`, `fix:`, `docs:`, `test:`) with imperative summaries. Pull requests should reference the relevant OpenSpec change, explain behavior and risk, list verification commands, and include screenshots for user-interface changes. Call out API contract changes, migrations, and rollback limitations explicitly.
@@ -72,7 +69,3 @@ No Git history is available, so no repository-specific convention can be inferre
 ## Security & Configuration
 
 Never commit credentials, tokens, exported organization data, or unredacted logs. Keep secrets in ignored environment files, mask sensitive fields in screenshots, and obtain operator identity from authenticated backend context rather than client-supplied IDs.
-
-API application secrets enter only the connector configuration endpoints and encrypted secret
-store. Do not add them to conversation messages, task intent, Graph state, Skill/MCP payloads,
-events, reports, or provider-error text.

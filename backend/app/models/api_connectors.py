@@ -75,6 +75,16 @@ class ApiConnectionSecretRecord(Base, TimestampMixin):
     key_version: Mapped[str] = mapped_column(String(64))
 
 
+class ApiConfigurationSessionRecord(Base, TimestampMixin):
+    __tablename__ = "api_configuration_sessions"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(128), index=True)
+    provider_id: Mapped[str] = mapped_column(String(64), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class ApiAuthoritySourceRecord(Base, TimestampMixin):
     __tablename__ = "api_authority_sources"
 
@@ -142,6 +152,49 @@ class ApiAuthoritySourceRecord(Base, TimestampMixin):
         CheckConstraint(
             "page_count IS NULL OR page_count >= 0",
             name="ck_api_authority_source_page_count",
+        ),
+    )
+
+
+class AgentSourceBindingRecord(Base, TimestampMixin):
+    __tablename__ = "agent_source_bindings"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(128), index=True)
+    task_id: Mapped[UUID] = mapped_column(
+        ForeignKey("reconciliation_tasks.id", ondelete="RESTRICT"),
+        index=True,
+    )
+    role: Mapped[str] = mapped_column(String(32))
+    connector_kind: Mapped[str] = mapped_column(String(32))
+    configuration_id: Mapped[str] = mapped_column(String(512))
+    snapshot_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("snapshots.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    configuration_fingerprint: Mapped[str] = mapped_column(String(64))
+    frozen_public_configuration: Mapped[dict[str, Any]] = mapped_column(
+        _json(),
+        default=dict,
+    )
+    credential_reference: Mapped[str] = mapped_column(String(512))
+    mapping_checkpoint_key: Mapped[str] = mapped_column(String(255))
+    normalization_checkpoint_key: Mapped[str] = mapped_column(String(255))
+
+    __table_args__ = (
+        Index(
+            "uq_agent_source_bindings_task_role",
+            "task_id",
+            "role",
+            unique=True,
+        ),
+        CheckConstraint(
+            "role IN ('authoritative', 'target')",
+            name="ck_agent_source_binding_role",
+        ),
+        CheckConstraint(
+            "connector_kind IN ('api', 'database')",
+            name="ck_agent_source_binding_connector_kind",
         ),
     )
 

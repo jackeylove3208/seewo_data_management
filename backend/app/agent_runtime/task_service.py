@@ -1,5 +1,6 @@
 import hashlib
 import json
+from datetime import UTC, datetime, timedelta
 from typing import cast
 from uuid import UUID, uuid4
 
@@ -16,7 +17,11 @@ from app.core.config import Settings
 from app.core.security import OperatorContext
 from app.local_sources.service import LocalSourceService
 from app.models.agent_runtime import AgentRunRecord, SchoolTaskLockRecord
-from app.models.api_connectors import ApiAuthoritySourceRecord, ApiConnectionRecord
+from app.models.api_connectors import (
+    AgentSourceBindingRecord,
+    ApiAuthoritySourceRecord,
+    ApiConnectionRecord,
+)
 from app.models.reconciliation import ReconciliationTask
 from app.models.remote_sources import RemoteSourceRecord
 from app.models.reporting import AgentReportRecord, AgentRollbackCycleRecord
@@ -337,6 +342,19 @@ class AgentTaskService:
             )
         if connection.state != "active":
             raise AgentConnectorCapabilityFailure("API connection is not active")
+        last_tested_at = connection.last_tested_at
+        if last_tested_at is not None and last_tested_at.tzinfo is None:
+            last_tested_at = last_tested_at.replace(tzinfo=UTC)
+        if (
+            last_tested_at is None
+            or self.settings is None
+            or last_tested_at
+            <= datetime.now(UTC)
+            - timedelta(seconds=self.settings.api_connector_test_max_age_seconds)
+        ):
+            raise AgentConnectorCapabilityFailure(
+                "API connection must be tested again before synchronization"
+            )
         try:
             manifest = self.provider_registry.manifest(connection.provider_id)
         except KeyError as error:
@@ -510,27 +528,59 @@ class AgentTaskService:
         )
         self.session.add(target_file)
         await self.session.flush()
-        self.session.add(
-            _agent_snapshot(
-                task.id,
-                target_file,
-                mapping_version="agent-sql-v3",
-            )
+        target_snapshot = _agent_snapshot(
+            task.id,
+            target_file,
+            mapping_version="agent-sql-v3",
         )
+        self.session.add(target_snapshot)
+        await self.session.flush()
         selected_entities = sorted(task.entity_types)
-        self.session.add(
-            ApiAuthoritySourceRecord(
-                tenant_id=task.tenant_id,
-                task_id=task.id,
-                connection_id=connection.id,
-                frozen_public_configuration=dict(connection.public_configuration),
-                frozen_secret_ref=connection.secret_ref,
-                selected_entities=selected_entities,
-                selection_hash=_hash(selected_entities),
-                state="registered",
-                manifest_version=manifest.manifest_version,
-                adapter_version=manifest.adapter_version,
-                projection_version=manifest.projection_version,
+        api_source = ApiAuthoritySourceRecord(
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            connection_id=connection.id,
+            frozen_public_configuration=dict(connection.public_configuration),
+            frozen_secret_ref=connection.secret_ref,
+            selected_entities=selected_entities,
+            selection_hash=_hash(selected_entities),
+            state="registered",
+            manifest_version=manifest.manifest_version,
+            adapter_version=manifest.adapter_version,
+            projection_version=manifest.projection_version,
+        )
+        self.session.add(api_source)
+        target_configuration = target.model_dump(mode="json")
+        self.session.add_all(
+            (
+                AgentSourceBindingRecord(
+                    tenant_id=task.tenant_id,
+                    task_id=task.id,
+                    role=SourceRole.AUTHORITATIVE.value,
+                    connector_kind="api",
+                    configuration_id=str(connection.id),
+                    snapshot_id=None,
+                    configuration_fingerprint=_hash(connection.public_configuration),
+                    frozen_public_configuration=dict(connection.public_configuration),
+                    credential_reference=connection.secret_ref,
+                    mapping_checkpoint_key="graph-api-field-mapping-v3:authoritative",
+                    normalization_checkpoint_key=(
+                        "graph-source-normalization-v3:authoritative"
+                    ),
+                ),
+                AgentSourceBindingRecord(
+                    tenant_id=task.tenant_id,
+                    task_id=task.id,
+                    role=SourceRole.TARGET.value,
+                    connector_kind="database",
+                    configuration_id=target_configuration_id,
+                    snapshot_id=target_snapshot.id,
+                    configuration_fingerprint=_hash(target_configuration),
+                    frozen_public_configuration=target_configuration,
+                    credential_reference=target.credential_reference,
+                    mapping_checkpoint_key="graph-database-field-mapping-v3:target",
+                    normalization_checkpoint_key="graph-source-normalization-v3:target",
+                ),
             )
         )
         await self.session.flush()

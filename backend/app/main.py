@@ -44,7 +44,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 read_timeout=configured.api_connector_read_timeout_seconds,
             )
         )
-        app.state.api_configuration_sessions = {}
         if configured.auto_create_schema:
             async with app.state.database.engine.begin() as connection:
                 await connection.run_sync(Base.metadata.create_all)

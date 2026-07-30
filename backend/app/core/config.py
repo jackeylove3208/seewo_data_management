@@ -118,6 +118,7 @@ class Settings(BaseSettings):
     api_connector_secret_key: SecretStr | None = None
     api_connector_connect_timeout_seconds: PositiveFloat = 10
     api_connector_read_timeout_seconds: PositiveFloat = 30
+    api_connector_test_max_age_seconds: PositiveInt = 24 * 60 * 60
     remote_source_max_redirects: int = Field(default=3, ge=0, le=5)
     remote_source_connect_timeout_seconds: PositiveFloat = 10
     remote_source_read_timeout_seconds: PositiveFloat = 30

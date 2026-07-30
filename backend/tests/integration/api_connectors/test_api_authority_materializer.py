@@ -9,6 +9,7 @@ from cryptography.fernet import Fernet
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent_runtime.source_bindings import _configuration_fingerprint
 from app.api_connectors.contracts import (
     CapturedApiPage,
     ConnectionTestResult,
@@ -19,7 +20,11 @@ from app.api_connectors.materializer import ApiAuthorityMaterializer, ApiSourceF
 from app.api_connectors.registry import ProviderRegistry
 from app.api_connectors.secrets import EncryptedDatabaseSecretStore
 from app.core.config import Settings
-from app.models.api_connectors import ApiAuthoritySourceRecord, ApiConnectionRecord
+from app.models.api_connectors import (
+    AgentSourceBindingRecord,
+    ApiAuthoritySourceRecord,
+    ApiConnectionRecord,
+)
 from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import Snapshot, SourceFile
 from app.schemas.agent_ingestion import AgentEntityKind
@@ -141,6 +146,23 @@ async def _seed_source(
         projection_version=MANIFEST.projection_version,
     )
     session.add(source)
+    session.add(
+        AgentSourceBindingRecord(
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            role="authoritative",
+            connector_kind="api",
+            configuration_id=str(connection.id),
+            snapshot_id=None,
+            configuration_fingerprint=_configuration_fingerprint(
+                connection.public_configuration
+            ),
+            frozen_public_configuration=dict(connection.public_configuration),
+            credential_reference=connection.secret_ref,
+            mapping_checkpoint_key="graph-api-field-mapping-v3:authoritative",
+            normalization_checkpoint_key="graph-source-normalization-v3:authoritative",
+        )
+    )
     await session.flush()
     return task, source
 
