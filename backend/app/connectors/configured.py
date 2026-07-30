@@ -12,7 +12,7 @@ from hashlib import sha256
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import Integer, Table, UniqueConstraint, and_, delete, func, insert, select, update
+from sqlalchemy import Integer, Table, and_, delete, func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.connectors.base import ConnectorVersion
@@ -148,7 +148,6 @@ class DatabaseConnectorConfiguration(ConnectorConfiguration):
     table_name: str
     primary_key: str
     version_column: str
-    mutation_receipt_column: str | None = None
     mapping: DatabaseMappingConfiguration = Field(default_factory=DatabaseMappingConfiguration)
     field_columns: dict[str, str] = Field(default_factory=dict)
     allowed_columns: tuple[str, ...] = ()
@@ -184,7 +183,6 @@ class DatabaseConnectorConfiguration(ConnectorConfiguration):
         "table_name",
         "primary_key",
         "version_column",
-        "mutation_receipt_column",
     )
     @classmethod
     def _safe_database_identifier(cls, value: str | None) -> str | None:
@@ -216,12 +214,6 @@ class DatabaseConnectorConfiguration(ConnectorConfiguration):
     def _database_fields_are_consistent(self) -> "DatabaseConnectorConfiguration":
         if self.record_id_field != self.primary_key or self.version_field != self.version_column:
             raise ValueError("database identifier and version fields must match configured columns")
-        if self.mutation_receipt_column in {
-            self.primary_key,
-            self.version_column,
-            *self.field_columns.values(),
-        }:
-            raise ValueError("database connector mutation receipt column must be private")
         if self.mapping.mode == "llm":
             return self
         required_columns = {
@@ -291,19 +283,10 @@ class SqlAlchemyConnectorStore:
         required_columns = {
             configuration.primary_key,
             configuration.version_column,
-            configuration.mutation_receipt_column,
             *allowed_columns,
-        } - {None}
+        }
         if table.name != configuration.table_name or not required_columns.issubset(table.c.keys()):
             raise ValueError("database connector table does not match its server configuration")
-        if (
-            configuration.mutation_receipt_column is not None
-            and not _has_unique_column_constraint(
-                table,
-                configuration.mutation_receipt_column,
-            )
-        ):
-            raise ValueError("database connector mutation receipt column must be unique")
         self._engine = engine
         self._table = table
         self._configuration = configuration
@@ -412,24 +395,18 @@ class SqlAlchemyConnectorStore:
             return prior
         self._effective_columns()
         allowed = set(self._configuration.field_columns)
-        mutation_version = _next_database_version(expected_version, idempotency_key)
+        mutation_version = _next_database_version(
+            expected_version,
+            idempotency_key,
+            version_column=self._table.c[version_field],
+        )
         generated_identifiers: list[str | None] = []
         async with self._engine.begin() as connection:
-            recovered = await self._recovered_generated_create_result(
-                connection,
-                operations=operations,
-                idempotency_key=idempotency_key,
-                record_id_field=record_id_field,
-                version_field=version_field,
-            )
-            if recovered is not None:
-                self._idempotent_results[idempotency_key] = recovered
-                return recovered
             current = await connection.scalar(select(func.max(self._table.c[version_field])))
             current_value = str(current) if current is not None else "empty"
             if current_value != expected_version:
                 raise ConnectorConflictError("database connector target version is stale")
-            for index, operation in enumerate(operations):
+            for operation in operations:
                 kind = operation.get("operation")
                 identifier = operation.get("id")
                 if not isinstance(kind, str) or kind not in _MUTATIONS or identifier is None:
@@ -474,16 +451,6 @@ class SqlAlchemyConnectorStore:
                     ).generated
                     if generated_primary_key:
                         values.pop(record_id_field, None)
-                        receipt_column = self._configuration.mutation_receipt_column
-                        if receipt_column is None:
-                            raise ConnectorCapabilityError(
-                                "database connector generated keys require a mutation "
-                                "receipt column"
-                            )
-                        values[receipt_column] = _mutation_receipt_key(
-                            idempotency_key,
-                            index,
-                        )
                     else:
                         values[record_id_field] = identifier
                     try:
@@ -509,44 +476,6 @@ class SqlAlchemyConnectorStore:
         )
         self._idempotent_results[idempotency_key] = output
         return output
-
-    async def _recovered_generated_create_result(
-        self,
-        connection: Any,
-        *,
-        operations: list[dict[str, object]],
-        idempotency_key: str,
-        record_id_field: str,
-        version_field: str,
-    ) -> ConnectorMutationResult | None:
-        if not _column_schema(self._table.c[record_id_field]).generated:
-            return None
-        receipt_column = self._configuration.mutation_receipt_column
-        generated_indexes = [
-            index
-            for index, operation in enumerate(operations)
-            if operation.get("operation") == "create"
-        ]
-        if not generated_indexes:
-            return None
-        if receipt_column is None:
-            return None
-        generated_identifiers: list[str | None] = [None] * len(operations)
-        for index in generated_indexes:
-            identifier = await connection.scalar(
-                select(self._table.c[record_id_field]).where(
-                    self._table.c[receipt_column]
-                    == _mutation_receipt_key(idempotency_key, index)
-                )
-            )
-            if identifier is None:
-                return None
-            generated_identifiers[index] = str(identifier)
-        current = await connection.scalar(select(func.max(self._table.c[version_field])))
-        return ConnectorMutationResult(
-            version=ConnectorVersion(value=str(current) if current is not None else "empty"),
-            generated_identifiers=tuple(generated_identifiers),
-        )
 
     async def verify(
         self, *, expected: list[dict[str, object]], record_id_field: str
@@ -805,23 +734,33 @@ def _canonical_mapping(mapping: Mapping[str, str]) -> dict[str, str]:
     return frozen_mapping
 
 
-def _has_unique_column_constraint(table: Table, column_name: str) -> bool:
-    return any(
-        isinstance(constraint, UniqueConstraint)
-        and tuple(column.name for column in constraint.columns) == (column_name,)
-        for constraint in table.constraints
-    ) or any(
-        index.unique and tuple(column.name for column in index.columns) == (column_name,)
-        for index in table.indexes
-    )
-
-
-def _mutation_receipt_key(idempotency_key: str, operation_index: int) -> str:
-    return sha256(f"{idempotency_key}:{operation_index}".encode()).hexdigest()
-
-
-def _next_database_version(expected_version: str, idempotency_key: str) -> str:
+def _next_database_version(
+    expected_version: str,
+    idempotency_key: str,
+    *,
+    version_column: Any,
+) -> int | str:
     """Build a bounded token that sorts after every version issued by this adapter."""
+
+    if isinstance(version_column.type, Integer):
+        if expected_version == "empty":
+            current = 0
+        else:
+            try:
+                current = int(expected_version)
+            except ValueError as error:
+                raise ConnectorConflictError(
+                    "database connector numeric version is invalid"
+                ) from error
+            if str(current) != expected_version or current < 0:
+                raise ConnectorConflictError("database connector numeric version is invalid")
+        next_version = current + 1
+        bits = 64 if "BIGINT" in str(version_column.type).upper() else 32
+        unsigned = bool(getattr(version_column.type, "unsigned", False))
+        maximum = (1 << bits) - 1 if unsigned else (1 << (bits - 1)) - 1
+        if next_version > maximum:
+            raise ConnectorConflictError("database connector numeric version is exhausted")
+        return next_version
 
     prior_counter = 0
     if expected_version.startswith("z~") and len(expected_version) >= 15:

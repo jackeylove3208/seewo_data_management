@@ -3,6 +3,9 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import Column, Integer, MetaData, String, Table
+from sqlalchemy.dialects.mysql import BIGINT
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.agent_runtime.csv_rollback_handlers import _rollback_operation
 from app.agent_runtime.errors import ExternalWriteRecoveryRequired
@@ -14,6 +17,7 @@ from app.connectors.configured import (
     ConnectorCapabilities,
     ConnectorConflictError,
     DatabaseConnectorConfiguration,
+    SqlAlchemyConnectorStore,
 )
 from app.models.executions import TargetVersionRecord
 from app.models.reconciliation import ReconciliationTask
@@ -415,6 +419,97 @@ async def test_sql_rollback_deletes_create_using_persisted_generated_locator(
     assert fact["status"] == "succeeded"
     assert fact["target_source_identifier"] == "database:seewo-mysql:41"
     assert await connector.read_record("41") is None
+
+
+@pytest.mark.asyncio
+async def test_sql_rollback_deletes_bigint_versioned_generated_create(
+    monkeypatch,
+) -> None:
+    metadata = MetaData()
+    data = Table(
+        "data",
+        metadata,
+        Column("row_id", Integer, primary_key=True, autoincrement=True),
+        Column("category", String),
+        Column("name", String, nullable=False),
+        Column("number", String),
+        Column("class_name", String),
+        Column("phone", String),
+        Column("email", String),
+        Column("version", BIGINT(unsigned=True), nullable=False),
+        Column("updated_at", String),
+    )
+    engine = create_async_engine("sqlite+aiosqlite://")
+    async with engine.begin() as connection:
+        await connection.run_sync(metadata.create_all)
+    configuration = DatabaseConnectorConfiguration(
+        credential_reference="secret://connectors/seewo-mysql",
+        dialect="mysql",
+        table_name="data",
+        primary_key="row_id",
+        version_column="version",
+        field_columns={
+            "category": "category",
+            "name": "name",
+            "number": "number",
+            "class_name": "class_name",
+            "phone": "phone",
+            "email": "email",
+        },
+        capabilities=ConnectorCapabilities(
+            read=True,
+            create=True,
+            delete=True,
+            optimistic_version=True,
+        ),
+    )
+    connector = ConfiguredApiConnector(
+        configuration=configuration,
+        store=SqlAlchemyConnectorStore(
+            engine=engine,
+            table=data,
+            configuration=configuration,
+        ),
+    )
+    mutation, parent, task, context = _create_rollback_facts()
+    created = await connector.apply(
+        [
+            {
+                "operation": "create",
+                "id": "S001",
+                "after": {
+                    key: value
+                    for key, value in mutation["after"].items()
+                    if key != "source_id"
+                },
+            }
+        ],
+        idempotency_key="generated-bigint-create",
+        expected_version="empty",
+    )
+    mutation["target_source_identifier"] = (
+        f"database:seewo-mysql:{created.generated_identifiers[0]}"
+    )
+    parent.file_sha256 = sha256(created.value.encode()).hexdigest()
+    _checkpoints, _created_versions = _install_runtime_fakes(monkeypatch, parent)
+    handler = SqlRollbackExecutionHandler(_Resolver(connector))
+    session = _Session(task, parent)
+
+    await handler.plan(session, context)  # type: ignore[arg-type]
+    operation = _rollback_operation(
+        mutation,
+        target_version=f"sha256:{parent.file_sha256}",
+    )
+    fact = await handler.execute_operation(
+        session,  # type: ignore[arg-type]
+        context,
+        operation.id,
+    )
+
+    assert created.value == "1"
+    assert fact["status"] == "succeeded"
+    assert await connector.read_record("1") is None
+    await engine.dispose()
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,9 @@
+import os
+from uuid import uuid4
+
 import pytest
 from sqlalchemy import Column, Integer, MetaData, String, Table, insert
+from sqlalchemy.dialects.mysql import BIGINT
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.connectors.base import ConnectorVersion
@@ -475,22 +479,26 @@ async def test_llm_in_memory_connector_enforces_its_frozen_mapping_on_row_paths(
 async def test_database_store_returns_generated_primary_key_for_create() -> None:
     metadata = MetaData()
     people = Table(
-        "seewo_people",
+        "data",
         metadata,
-        Column("id", Integer, primary_key=True, autoincrement=True),
-        Column("version", String, nullable=False),
+        Column("row_id", Integer, primary_key=True, autoincrement=True),
+        Column("category", String),
         Column("name", String, nullable=False),
-        Column("mutation_receipt", String, nullable=False, unique=True),
+        Column("number", String),
+        Column("class_name", String),
+        Column("phone", String),
+        Column("email", String),
+        Column("version", BIGINT(unsigned=True), nullable=False),
+        Column("updated_at", String),
     )
     engine = create_async_engine("sqlite+aiosqlite://")
     async with engine.begin() as connection:
         await connection.run_sync(metadata.create_all)
     configuration = DatabaseConnectorConfiguration(
         credential_reference="secret://connectors/seewo-db",
-        table_name="seewo_people",
-        primary_key="id",
+        table_name="data",
+        primary_key="row_id",
         version_column="version",
-        mutation_receipt_column="mutation_receipt",
         field_columns={"name": "name"},
         capabilities=ConnectorCapabilities(
             read=True,
@@ -520,39 +528,103 @@ async def test_database_store_returns_generated_primary_key_for_create() -> None
     )
 
     assert output.generated_identifiers == ("1",)
+    assert output.value == "1"
     assert await connector.verify([{"id": "1", "after": {"name": "张三"}}]) == [True]
     assert await connector.read_record("1") == {
-        "id": 1,
-        "version": output.version.value,
+        "row_id": 1,
         "name": "张三",
+        "version": 1,
     }
     await engine.dispose()
 
 
 @pytest.mark.asyncio
-async def test_database_store_recovers_mixed_operations_from_unique_receipts() -> None:
+@pytest.mark.skipif(
+    not os.getenv("TASK5_MYSQL_TEST_DATABASE_URL"),
+    reason="requires an explicitly configured disposable MySQL database",
+)
+async def test_asyncmy_returns_generated_key_for_exact_data_schema() -> None:
+    database_url = os.environ["TASK5_MYSQL_TEST_DATABASE_URL"]
+    if not database_url.startswith("mysql+asyncmy://"):
+        pytest.fail("TASK5_MYSQL_TEST_DATABASE_URL must use mysql+asyncmy")
+    metadata = MetaData()
+    data = Table(
+        f"task5_generated_{uuid4().hex}",
+        metadata,
+        Column("row_id", BIGINT(unsigned=True), primary_key=True, autoincrement=True),
+        Column("category", String(255)),
+        Column("name", String(255), nullable=False),
+        Column("number", String(255)),
+        Column("class_name", String(255)),
+        Column("phone", String(255)),
+        Column("email", String(255)),
+        Column("version", BIGINT(unsigned=True), nullable=False),
+        Column("updated_at", String(255)),
+    )
+    engine = create_async_engine(database_url)
+    configuration = DatabaseConnectorConfiguration(
+        credential_reference="secret://connectors/seewo-data-mysql",
+        dialect="mysql",
+        table_name=data.name,
+        primary_key="row_id",
+        version_column="version",
+        field_columns={"name": "name"},
+        capabilities=ConnectorCapabilities(
+            read=True,
+            create=True,
+            optimistic_version=True,
+        ),
+    )
+    connector = ConfiguredApiConnector(
+        configuration=configuration,
+        store=SqlAlchemyConnectorStore(
+            engine=engine,
+            table=data,
+            configuration=configuration,
+        ),
+    )
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(metadata.create_all)
+        output = await connector.apply(
+            [{"operation": "create", "id": "S001", "after": {"name": "张三"}}],
+            idempotency_key="asyncmy-generated-key-create",
+            expected_version="empty",
+        )
+
+        assert output.generated_identifiers == ("1",)
+        assert output.value == "1"
+        assert await connector.verify(
+            [{"id": "1", "after": {"name": "张三"}}]
+        ) == [True]
+    finally:
+        async with engine.begin() as connection:
+            await connection.run_sync(metadata.drop_all)
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_database_store_mixed_mutation_aligns_generated_identifiers() -> None:
     metadata = MetaData()
     people = Table(
-        "seewo_people",
+        "data",
         metadata,
-        Column("id", Integer, primary_key=True, autoincrement=True),
-        Column("version", String, nullable=False),
+        Column("row_id", Integer, primary_key=True, autoincrement=True),
         Column("name", String, nullable=False),
-        Column("mutation_receipt", String, nullable=True, unique=True),
+        Column("version", BIGINT(unsigned=True), nullable=False),
     )
     engine = create_async_engine("sqlite+aiosqlite://")
     async with engine.begin() as connection:
         await connection.run_sync(metadata.create_all)
         await connection.execute(
             insert(people),
-            {"version": "v1", "name": "旧名", "mutation_receipt": "seed"},
+            {"version": 1, "name": "旧名"},
         )
     configuration = DatabaseConnectorConfiguration(
         credential_reference="secret://connectors/seewo-db",
-        table_name="seewo_people",
-        primary_key="id",
+        table_name="data",
+        primary_key="row_id",
         version_column="version",
-        mutation_receipt_column="mutation_receipt",
         field_columns={"name": "name"},
         capabilities=ConnectorCapabilities(
             read=True,
@@ -584,7 +656,7 @@ async def test_database_store_recovers_mixed_operations_from_unique_receipts() -
     ).apply(
         operations,
         idempotency_key="mixed-generated-key-create",
-        expected_version="v1",
+        expected_version="1",
     )
     recreated = ConfiguredApiConnector(
         configuration=configuration,
@@ -595,15 +667,15 @@ async def test_database_store_recovers_mixed_operations_from_unique_receipts() -
         ),
     )
 
-    recovered = await recreated.apply(
-        operations,
-        idempotency_key="mixed-generated-key-create",
-        expected_version="v1",
-    )
-
     assert first.generated_identifiers == (None, "2")
-    assert recovered == first
+    assert first.value == "2"
     assert await recreated.verify([{"id": "2", "after": {"name": "王五"}}]) == [True]
+    with pytest.raises(ConnectorConflictError, match="stale"):
+        await recreated.apply(
+            operations,
+            idempotency_key="mixed-generated-key-create",
+            expected_version="1",
+        )
     await engine.dispose()
 
 
