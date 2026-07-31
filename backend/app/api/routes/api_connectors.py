@@ -20,6 +20,7 @@ from app.api_connectors.service import (
     ApiConnectionValidationError,
 )
 from app.core.security import OperatorContext
+from app.models.agent_runtime import AgentConversationRecord
 from app.models.api_connectors import ApiConfigurationSessionRecord
 from app.schemas.api_connectors import (
     ApiConfigurationSessionCreate,
@@ -83,11 +84,30 @@ async def create_api_configuration_session(
         ) from error
     session_id = uuid4()
     expires_at = datetime.now(UTC) + _CONFIGURATION_SESSION_TTL
+    connection_scope = "persistent"
+    if payload.conversation_id is not None:
+        conversation = await session.scalar(
+            select(AgentConversationRecord).where(
+                AgentConversationRecord.id == payload.conversation_id,
+                AgentConversationRecord.tenant_id == operator.tenant_id,
+                AgentConversationRecord.created_by == operator.operator_id,
+                AgentConversationRecord.status == "active",
+            )
+        )
+        if conversation is None:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                detail="Active conversation not found",
+            )
+        connection_scope = "task_ephemeral"
     session.add(
         ApiConfigurationSessionRecord(
             id=session_id,
             tenant_id=operator.tenant_id,
             provider_id=payload.provider_id,
+            conversation_id=payload.conversation_id,
+            created_by=operator.operator_id,
+            connection_scope=connection_scope,
             expires_at=expires_at,
             consumed_at=None,
         )
@@ -112,7 +132,11 @@ async def create_api_connection(
     session: Annotated[AsyncSession, Depends(get_session)],
     operator: Annotated[OperatorContext, Depends(get_operator_context)],
 ) -> ApiConnectionRead:
-    await _consume_configuration_session(session, operator, payload)
+    configuration_session = await _consume_configuration_session(
+        session,
+        operator,
+        payload,
+    )
     service = _service(request, session)
     try:
         connection = await service.create(
@@ -122,6 +146,8 @@ async def create_api_connection(
             display_name=payload.display_name,
             public_configuration=payload.public_configuration,
             secret=payload.secret,
+            scope=configuration_session.connection_scope,
+            conversation_id=configuration_session.conversation_id,
         )
     except (ApiConnectionValidationError, ValueError) as error:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
@@ -249,13 +275,14 @@ async def _consume_configuration_session(
     session: AsyncSession,
     operator: OperatorContext,
     payload: ApiConnectionCreate,
-) -> None:
+) -> ApiConfigurationSessionRecord:
     configuration_session = await session.scalar(
         select(ApiConfigurationSessionRecord)
         .where(
             ApiConfigurationSessionRecord.id == payload.configuration_session_id,
             ApiConfigurationSessionRecord.tenant_id == operator.tenant_id,
             ApiConfigurationSessionRecord.provider_id == payload.provider_id,
+            ApiConfigurationSessionRecord.created_by == operator.operator_id,
         )
         .with_for_update()
     )
@@ -278,6 +305,7 @@ async def _consume_configuration_session(
         )
     configuration_session.consumed_at = datetime.now(UTC)
     await session.flush()
+    return configuration_session
 
 
 @external_identity_router.get(

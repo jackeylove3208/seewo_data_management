@@ -36,6 +36,7 @@ export interface AgentApiConnectionCard {
 }
 
 export interface AgentApiConnectionConfiguration {
+  conversation_id?: string;
   provider_id: string;
   display_name: string;
   required_secret_fields: string[];
@@ -425,7 +426,12 @@ async function configureApiConnection(
       {
         method: "POST",
         headers: jsonHeaders,
-        body: JSON.stringify({ provider_id: configuration.provider_id }),
+        body: JSON.stringify({
+          provider_id: configuration.provider_id,
+          ...(configuration.conversation_id
+            ? { conversation_id: configuration.conversation_id }
+            : {}),
+        }),
       },
     );
     const connection = await requestJson<ApiConnectionResponse>(

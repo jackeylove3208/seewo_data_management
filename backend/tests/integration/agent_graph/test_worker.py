@@ -1,6 +1,7 @@
 import asyncio
 
 import pytest
+from cryptography.fernet import Fernet
 from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError
 
@@ -22,14 +23,20 @@ from app.agent_graph.worker import (
 )
 from app.agent_runtime.errors import ExternalWriteRecoveryRequired
 from app.agent_runtime.service import AgentSupervisorService
+from app.api_connectors.secrets import (
+    EncryptedDatabaseSecretStore,
+    SecretReferenceError,
+)
 from app.core.security import OperatorContext
 from app.models.agent_graph import AgentSupervisorDecisionRecord
 from app.models.agent_runtime import (
+    AgentConversationRecord,
     AgentFailureRecord,
     AgentRunRecord,
     AgentTaskEventRecord,
     SchoolTaskLockRecord,
 )
+from app.models.api_connectors import ApiConnectionRecord
 from app.models.reconciliation import ReconciliationTask
 
 
@@ -964,8 +971,46 @@ async def test_graph_termination_drains_through_report_before_releasing_lock(
     database,
 ) -> None:
     task_id, run_id = await _start_graph_run(database)
+    key = Fernet.generate_key()
+    secret_ref = ""
+    connection_id = None
     async with database.session_factory() as session:
         async with session.begin():
+            conversation = AgentConversationRecord(
+                tenant_id="school-graph-worker",
+                created_by="operator-1",
+                status="active",
+                context={},
+            )
+            session.add(conversation)
+            await session.flush()
+            secret_ref = await EncryptedDatabaseSecretStore(
+                session,
+                fernet_key=key,
+            ).put(
+                tenant_id="school-graph-worker",
+                payload={"app_key": "app", "app_secret": "secret"},
+            )
+            connection = ApiConnectionRecord(
+                tenant_id="school-graph-worker",
+                provider_id="dingtalk",
+                display_name="终止前临时连接",
+                scope="task_ephemeral",
+                conversation_id=conversation.id,
+                task_id=task_id,
+                public_configuration={},
+                secret_ref=secret_ref,
+                manifest_version="1.0.0",
+                adapter_version="1.0.0",
+                capabilities={},
+                visibility_summary={},
+                state="active",
+                created_by="operator-1",
+                updated_by="operator-1",
+            )
+            session.add(connection)
+            await session.flush()
+            connection_id = connection.id
             await AgentSupervisorService(
                 session,
                 operator=OperatorContext(
@@ -1016,6 +1061,18 @@ async def test_graph_termination_drains_through_report_before_releasing_lock(
         assert task.status == "terminated"
         assert state.current_node == "terminal"
         assert active_lock is None
+        connection = await session.get(ApiConnectionRecord, connection_id)
+        assert connection is not None
+        assert connection.state == "disabled"
+        assert connection.disabled_reason == "task_terminated"
+        with pytest.raises(SecretReferenceError, match="unavailable"):
+            await EncryptedDatabaseSecretStore(
+                session,
+                fernet_key=key,
+            ).get(
+                tenant_id="school-graph-worker",
+                secret_ref=secret_ref,
+            )
 
 
 @pytest.mark.asyncio

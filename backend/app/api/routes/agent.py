@@ -428,6 +428,7 @@ async def get_current_agent_conversation(
         request,
         session,
         tenant_id=operator.tenant_id,
+        conversation_id=conversation.id,
     )
     run = await session.scalar(
         select(AgentRunRecord)
@@ -607,6 +608,7 @@ async def send_agent_message(
         request,
         session,
         tenant_id=operator.tenant_id,
+        conversation_id=conversation.id,
     )
     provider = getattr(
         request.app.state,
@@ -3500,12 +3502,14 @@ async def _conversation_api_catalog(
     session: AsyncSession,
     *,
     tenant_id: str,
+    conversation_id: UUID,
 ) -> ConversationApiCatalog:
     if not request.app.state.settings.new_agent_api_connector_enabled:
         return ConversationApiCatalog(providers=(), connections=())
     return await load_conversation_api_catalog(
         session,
         tenant_id=tenant_id,
+        conversation_id=conversation_id,
         registry=request.app.state.api_provider_registry,
     )
 

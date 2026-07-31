@@ -13,6 +13,7 @@ from app.agent_reporting.rollback_cycles import (
 )
 from app.agent_runtime.repository import AgentRunNotFound, AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentPhase, AgentRunKind, AgentRunStatus
+from app.api_connectors.secrets import revoke_task_ephemeral_connection
 from app.core.config import Settings
 from app.core.security import OperatorContext
 from app.models.agent_analysis import AgentGovernanceOperationRecord
@@ -388,6 +389,12 @@ class AgentSupervisorService:
         if task is not None:
             task.status = "terminated"
             task.stage = "terminal"
+            await revoke_task_ephemeral_connection(
+                self.session,
+                tenant_id=run.tenant_id,
+                task_id=run.task_id,
+                reason="task_terminated",
+            )
         run = await self.repository.transition_run(
             run_id, requested_status=AgentRunStatus.TERMINATED
         )

@@ -23,10 +23,12 @@ function providerLabel(providerId: string) {
 
 export function ConversationApiConnectionCard({
   connection,
+  conversationId,
   configure,
   onChange,
 }: {
   connection: AgentApiConnectionCard;
+  conversationId: string;
   configure?: (
     configuration: AgentApiConnectionConfiguration,
   ) => Promise<AgentApiConnectionCard>;
@@ -35,10 +37,10 @@ export function ConversationApiConnectionCard({
   const [displayName, setDisplayName] = useState(
     connection.display_name ?? `${providerLabel(connection.provider_id)}组织连接`,
   );
-  const [personEntityKind, setPersonEntityKind] = useState<"teacher" | "student">(
-    "teacher",
-  );
-  const [rootDepartmentId, setRootDepartmentId] = useState("1");
+  const [personEntityKind, setPersonEntityKind] = useState<
+    "" | "teacher" | "student"
+  >("");
+  const [rootDepartmentId, setRootDepartmentId] = useState("");
   const [numberField, setNumberField] = useState("");
   const [classNameField, setClassNameField] = useState("");
   const [secret, setSecret] = useState<Record<string, string>>({});
@@ -54,11 +56,12 @@ export function ConversationApiConnectionCard({
   }, [connection.connection_id, connection.display_name, connection.provider_id]);
 
   useEffect(() => {
-    setPersonEntityKind("teacher");
-    setRootDepartmentId("1");
+    if (connection.state !== "configuration_required") return;
+    setPersonEntityKind("");
+    setRootDepartmentId("");
     setNumberField("");
     setClassNameField("");
-  }, [connection.provider_id]);
+  }, [connection.display_name, connection.provider_id, connection.state]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -67,11 +70,12 @@ export function ConversationApiConnectionCard({
     setError(undefined);
     try {
       const configured = await configure({
+        conversation_id: conversationId,
         provider_id: connection.provider_id,
         display_name: displayName.trim(),
         required_secret_fields: connection.required_secret_fields,
         public_configuration: {
-          person_entity_kind: personEntityKind,
+          person_entity_kind: personEntityKind as "teacher" | "student",
           root_department_id: Number(rootDepartmentId),
           ...(numberField.trim() ? { number_field: numberField.trim() } : {}),
           ...(personEntityKind === "student" && classNameField.trim()
@@ -84,7 +88,9 @@ export function ConversationApiConnectionCard({
             secret[field]?.trim() ?? "",
           ]),
         ),
-        connection_id: connection.connection_id,
+        ...(connection.connection_id
+          ? { connection_id: connection.connection_id }
+          : {}),
       });
       setSecret({});
       onChange(configured);
@@ -120,11 +126,13 @@ export function ConversationApiConnectionCard({
             <span>人员类型</span>
             <select
               aria-label="人员类型"
+              required
               value={personEntityKind}
               onChange={(event) => setPersonEntityKind(
                 event.target.value as "teacher" | "student",
               )}
             >
+              <option value="" disabled>请选择</option>
               <option value="teacher">教师</option>
               <option value="student">学生</option>
             </select>

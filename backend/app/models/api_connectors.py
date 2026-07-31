@@ -31,6 +31,23 @@ class ApiConnectionRecord(Base, TimestampMixin):
     tenant_id: Mapped[str] = mapped_column(String(128), index=True)
     provider_id: Mapped[str] = mapped_column(String(64), index=True)
     display_name: Mapped[str] = mapped_column(String(255))
+    scope: Mapped[str] = mapped_column(
+        String(32),
+        default="persistent",
+        server_default="persistent",
+        index=True,
+    )
+    conversation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_conversations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    task_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("reconciliation_tasks.id", ondelete="RESTRICT"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
     public_configuration: Mapped[dict[str, Any]] = mapped_column(_json(), default=dict)
     secret_ref: Mapped[str] = mapped_column(String(128))
     manifest_version: Mapped[str] = mapped_column(String(64))
@@ -43,6 +60,11 @@ class ApiConnectionRecord(Base, TimestampMixin):
         nullable=True,
     )
     last_safe_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    credentials_revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    disabled_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_by: Mapped[str] = mapped_column(String(255), index=True)
     updated_by: Mapped[str] = mapped_column(String(255), index=True)
     updated_at: Mapped[datetime] = mapped_column(
@@ -63,6 +85,20 @@ class ApiConnectionRecord(Base, TimestampMixin):
             "state IN ('pending', 'active', 'invalid', 'disabled')",
             name="ck_api_connection_state",
         ),
+        CheckConstraint(
+            "scope IN ('persistent', 'task_ephemeral')",
+            name="ck_api_connection_scope",
+        ),
+        CheckConstraint(
+            "(scope = 'persistent' AND conversation_id IS NULL AND task_id IS NULL) "
+            "OR (scope = 'task_ephemeral' AND "
+            "(conversation_id IS NOT NULL OR credentials_revoked_at IS NOT NULL))",
+            name="ck_api_connection_scope_binding",
+        ),
+        CheckConstraint(
+            "credentials_revoked_at IS NULL OR state = 'disabled'",
+            name="ck_api_connection_revoked_state",
+        ),
     )
 
 
@@ -81,6 +117,17 @@ class ApiConfigurationSessionRecord(Base, TimestampMixin):
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     tenant_id: Mapped[str] = mapped_column(String(128), index=True)
     provider_id: Mapped[str] = mapped_column(String(64), index=True)
+    conversation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_conversations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    created_by: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    connection_scope: Mapped[str] = mapped_column(
+        String(32),
+        default="persistent",
+        server_default="persistent",
+    )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

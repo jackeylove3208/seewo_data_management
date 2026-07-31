@@ -1,5 +1,6 @@
 import json
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import NoReturn
 from uuid import UUID
 
@@ -168,6 +169,103 @@ async def delete_unreferenced_secret(
     if connection_reference or source_reference:
         return
     await session.delete(secret)
+
+
+async def revoke_ephemeral_connection(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    connection_id: UUID,
+    reason: str,
+) -> None:
+    allowed_reasons = {
+        "snapshot_materialized",
+        "conversation_reset",
+        "task_terminated",
+        "task_failed",
+        "superseded",
+        "configuration_expired",
+    }
+    if reason not in allowed_reasons:
+        raise ValueError("ephemeral connection revocation reason is invalid")
+    connection = await session.scalar(
+        select(ApiConnectionRecord)
+        .where(
+            ApiConnectionRecord.id == connection_id,
+            ApiConnectionRecord.tenant_id == _validated_tenant_id(tenant_id),
+        )
+        .with_for_update()
+    )
+    if (
+        connection is None
+        or connection.scope != "task_ephemeral"
+        or connection.credentials_revoked_at is not None
+    ):
+        return
+    secret = await session.scalar(
+        select(ApiConnectionSecretRecord).where(
+            ApiConnectionSecretRecord.id == _parse_secret_reference(
+                connection.secret_ref
+            ),
+            ApiConnectionSecretRecord.tenant_id == tenant_id,
+        )
+    )
+    if secret is not None:
+        await session.delete(secret)
+        await session.flush()
+    connection.state = "disabled"
+    connection.credentials_revoked_at = datetime.now(UTC)
+    connection.disabled_reason = reason
+
+
+async def revoke_task_ephemeral_connection(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    task_id: UUID,
+    reason: str,
+) -> None:
+    connection_id = await session.scalar(
+        select(ApiConnectionRecord.id).where(
+            ApiConnectionRecord.tenant_id == _validated_tenant_id(tenant_id),
+            ApiConnectionRecord.task_id == task_id,
+            ApiConnectionRecord.scope == "task_ephemeral",
+        )
+    )
+    if connection_id is None:
+        return
+    await revoke_ephemeral_connection(
+        session,
+        tenant_id=tenant_id,
+        connection_id=connection_id,
+        reason=reason,
+    )
+
+
+async def revoke_conversation_ephemeral_connections(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    conversation_id: UUID,
+    reason: str,
+) -> None:
+    connection_ids = tuple(
+        await session.scalars(
+            select(ApiConnectionRecord.id).where(
+                ApiConnectionRecord.tenant_id == _validated_tenant_id(tenant_id),
+                ApiConnectionRecord.conversation_id == conversation_id,
+                ApiConnectionRecord.scope == "task_ephemeral",
+                ApiConnectionRecord.task_id.is_(None),
+            )
+        )
+    )
+    for connection_id in connection_ids:
+        await revoke_ephemeral_connection(
+            session,
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            reason=reason,
+        )
 
 
 def _build_fernet(value: bytes | str | SecretStr) -> Fernet:

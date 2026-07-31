@@ -18,8 +18,12 @@ from app.api_connectors.contracts import (
 )
 from app.api_connectors.materializer import ApiAuthorityMaterializer, ApiSourceFailure
 from app.api_connectors.registry import ProviderRegistry
-from app.api_connectors.secrets import EncryptedDatabaseSecretStore
+from app.api_connectors.secrets import (
+    EncryptedDatabaseSecretStore,
+    SecretReferenceError,
+)
 from app.core.config import Settings
+from app.models.agent_runtime import AgentConversationRecord
 from app.models.api_connectors import (
     AgentSourceBindingRecord,
     ApiAuthoritySourceRecord,
@@ -91,7 +95,18 @@ async def _seed_source(
     session: AsyncSession,
     *,
     fernet_key: bytes,
+    ephemeral: bool = False,
 ) -> tuple[ReconciliationTask, ApiAuthoritySourceRecord]:
+    conversation = None
+    if ephemeral:
+        conversation = AgentConversationRecord(
+            tenant_id="school-1",
+            created_by="operator-1",
+            status="active",
+            context={},
+        )
+        session.add(conversation)
+        await session.flush()
     task = ReconciliationTask(
         tenant_id="school-1",
         scope_id="all",
@@ -120,6 +135,9 @@ async def _seed_source(
         tenant_id=task.tenant_id,
         provider_id=MANIFEST.provider_id,
         display_name="权威通讯录",
+        scope="task_ephemeral" if ephemeral else "persistent",
+        conversation_id=conversation.id if conversation is not None else None,
+        task_id=task.id if ephemeral else None,
         public_configuration={"person_entity_kind": "teacher"},
         secret_ref=secret_ref,
         manifest_version=MANIFEST.manifest_version,
@@ -245,6 +263,54 @@ async def test_api_materializer_publishes_complete_immutable_jsonl_and_replays(
     assert persisted.page_count == 2
     assert persisted.content_sha256 == source.sha256
     assert snapshot is not None and snapshot.source_role == "authoritative"
+
+
+async def test_api_materializer_revokes_ephemeral_credentials_after_publication(
+    session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    key = Fernet.generate_key()
+    task, api_source = await _seed_source(
+        session,
+        fernet_key=key,
+        ephemeral=True,
+    )
+    await session.commit()
+    materializer = ApiAuthorityMaterializer(
+        Settings(upload_root=tmp_path / "uploads", _env_file=None),
+        registry=_registry(
+            FakeCaptureAdapter(
+                (
+                    CapturedApiPage(
+                        page_number=1,
+                        records=(_teacher("teacher-1"),),
+                        next_cursor=None,
+                    ),
+                )
+            )
+        ),
+        fernet_key=key,
+    )
+
+    await materializer.materialize(
+        session,
+        task_id=task.id,
+        api_source_id=api_source.id,
+    )
+
+    connection = await session.get(ApiConnectionRecord, api_source.connection_id)
+    assert connection is not None
+    assert connection.state == "disabled"
+    assert connection.disabled_reason == "snapshot_materialized"
+    assert connection.credentials_revoked_at is not None
+    with pytest.raises(SecretReferenceError, match="unavailable"):
+        await EncryptedDatabaseSecretStore(
+            session,
+            fernet_key=key,
+        ).get(
+            tenant_id=task.tenant_id,
+            secret_ref=api_source.frozen_secret_ref,
+        )
 
 
 async def test_partial_api_capture_is_not_published(

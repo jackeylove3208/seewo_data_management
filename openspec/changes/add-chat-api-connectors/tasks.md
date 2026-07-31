@@ -58,3 +58,10 @@
 - [x] 8.3 Add clean PostgreSQL migration smoke coverage for all additive tables
 - [x] 8.4 Run backend pytest, ruff, mypy, frontend tests, lint, typecheck, build, and strict OpenSpec validation
 - [x] 8.5 Document safe provider configuration, local synthetic testing, and rollout/rollback commands
+
+## 9. Task-scoped conversational credentials
+
+- [x] 9.1 Require a fresh conversation-bound organization API connection for every chat task
+- [x] 9.2 Atomically bind each temporary connection to one task and reject historical reuse
+- [x] 9.3 Revoke temporary credentials after immutable capture, terminal failure, termination, or conversation reset
+- [x] 9.4 Reset the complete secure configuration form while preserving same-attempt failure retries

@@ -34,6 +34,7 @@ from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentPhase
 from app.ai.graph_subagents import GraphSubAgentFailure
 from app.ai.graph_supervisor import GraphSupervisorAgent, GraphSupervisorFailure
+from app.api_connectors.secrets import revoke_task_ephemeral_connection
 from app.models.agent_runtime import SchoolTaskLockRecord
 from app.models.reconciliation import ReconciliationTask
 from app.remote_sources.network import RemoteSourceFailure
@@ -523,6 +524,16 @@ class AgentGraphWorker:
                         raise AgentGraphNotFound("Agent graph task disappeared at terminal")
                     task.stage = "terminal"
                     task.status = terminal_status
+                    await revoke_task_ephemeral_connection(
+                        session,
+                        tenant_id=context.tenant_id,
+                        task_id=context.task_id,
+                        reason=(
+                            "task_terminated"
+                            if terminal_status == "terminated"
+                            else "snapshot_materialized"
+                        ),
+                    )
                     await runtime.release_school_lock(
                         tenant_id=context.tenant_id,
                         run_id=context.run_id,
@@ -673,6 +684,12 @@ class AgentGraphWorker:
                 state.status = "failed"
                 task.status = "failed"
                 task.error = {"code": code, "message": message}
+                await revoke_task_ephemeral_connection(
+                    session,
+                    tenant_id=context.tenant_id,
+                    task_id=context.task_id,
+                    reason="task_failed",
+                )
                 await runtime.record_failure(
                     run.id,
                     phase=AgentPhase(run.phase),
@@ -750,6 +767,12 @@ class AgentGraphWorker:
                 state.status = "failed"
                 task.status = "failed"
                 task.error = {"code": code, "message": message}
+                await revoke_task_ephemeral_connection(
+                    session,
+                    tenant_id=context.tenant_id,
+                    task_id=context.task_id,
+                    reason="task_failed",
+                )
                 await runtime.record_failure(
                     run.id,
                     phase=AgentPhase(run.phase),

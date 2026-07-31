@@ -1,5 +1,7 @@
 import json
+import re
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from cryptography.fernet import Fernet
@@ -82,6 +84,8 @@ def test_conversation_returns_safe_configuration_card_without_secret_values(
 
     assert response.status_code == 200, response.text
     card = response.json()["api_connection"]
+    display_name = card.pop("display_name")
+    assert re.fullmatch(r"fake-org临时连接-\d{8}-\d{6}", display_name)
     assert card == {
         "provider_id": MANIFEST.provider_id,
         "state": "configuration_required",
@@ -92,18 +96,47 @@ def test_conversation_returns_safe_configuration_card_without_secret_values(
     assert "public_configuration" not in response.json()["api_connection"]
 
 
-def test_confirmed_api_connection_creates_one_idempotent_graph_task(
+def test_conversation_does_not_reuse_a_persistent_api_connection(
     api_conversation_client,
 ) -> None:
-    client, key, adapter = api_conversation_client
+    client, key, _adapter = api_conversation_client
 
     async def seed():
         async with client.app.state.database.session_factory() as session:
             async with session.begin():
                 return await _seed_connection(session, fernet_key=key)
 
-    connection = client.portal.call(seed)
+    client.portal.call(seed)
+
+    response = client.post(
+        f"/api/agent/conversations/{_conversation(client)}/messages",
+        json={"message": "重新连接钉钉并同步老师"},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload.get("start_confirmation") is None
+    assert payload["api_connection"]["state"] == "configuration_required"
+    assert payload["api_connection"].get("connection_id") is None
+
+
+def test_confirmed_api_connection_creates_one_idempotent_graph_task(
+    api_conversation_client,
+) -> None:
+    client, key, adapter = api_conversation_client
     conversation_id = _conversation(client)
+
+    async def seed():
+        async with client.app.state.database.session_factory() as session:
+            async with session.begin():
+                return await _seed_connection(
+                    session,
+                    fernet_key=key,
+                    scope="task_ephemeral",
+                    conversation_id=UUID(conversation_id),
+                )
+
+    connection = client.portal.call(seed)
     message = client.post(
         f"/api/agent/conversations/{conversation_id}/messages",
         json={"message": "把组织 API 的老师同步到希沃 MySQL"},

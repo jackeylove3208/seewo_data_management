@@ -29,6 +29,31 @@ secret reference and SHALL allow only the backend provider runtime to resolve th
 - **WHEN** an authenticated tenant requests or references a connection owned by another tenant
 - **THEN** the backend returns not found or forbidden without disclosing connection metadata
 
+### Requirement: Scope conversational credentials to one task
+The system SHALL create a new task-ephemeral organization API connection for each conversational
+task, bind it first to the originating conversation and then atomically to at most one task, and
+SHALL NOT offer persistent or historical connections as conversational task sources.
+
+#### Scenario: Conversation creates a connection
+- **WHEN** a user submits the secure connector card from an active conversation
+- **THEN** the one-time configuration session creates a connection bound to that tenant, operator,
+  and conversation without exposing its secret
+
+#### Scenario: Task claims a connection
+- **WHEN** the user confirms an API-authority task
+- **THEN** task creation atomically verifies and binds the unclaimed current-conversation
+  connection, and a different conversation or task cannot claim it
+
+#### Scenario: Immutable capture completes
+- **WHEN** the complete task-bound API authority snapshot is published
+- **THEN** the encrypted task credential is revoked immediately while the safe connection,
+  frozen-reference, and snapshot audit records remain
+
+#### Scenario: Task ends before capture
+- **WHEN** a task fails or terminates before immutable API capture completes, or its unbound
+  conversation is reset
+- **THEN** the encrypted credential is revoked idempotently and the connection becomes disabled
+
 ### Requirement: Test connection capabilities and visibility safely
 The system SHALL test authentication, required read capabilities, selected-entity support, and
 organization visibility without creating a reconciliation task or target mutation and SHALL persist

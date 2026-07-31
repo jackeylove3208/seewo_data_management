@@ -24,6 +24,25 @@ class ApiConnectionRepository:
         )
         return tuple(rows)
 
+    async def list_ephemeral_for_conversation(
+        self,
+        *,
+        tenant_id: str,
+        conversation_id: UUID,
+    ) -> tuple[ApiConnectionRecord, ...]:
+        rows = await self._session.scalars(
+            select(ApiConnectionRecord)
+            .where(
+                ApiConnectionRecord.tenant_id == tenant_id,
+                ApiConnectionRecord.scope == "task_ephemeral",
+                ApiConnectionRecord.conversation_id == conversation_id,
+                ApiConnectionRecord.task_id.is_(None),
+                ApiConnectionRecord.credentials_revoked_at.is_(None),
+            )
+            .order_by(ApiConnectionRecord.display_name, ApiConnectionRecord.id)
+        )
+        return tuple(rows)
+
     async def get_for_tenant(
         self,
         connection_id: UUID,

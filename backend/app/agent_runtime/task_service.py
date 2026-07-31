@@ -76,7 +76,8 @@ class AgentTaskService:
         api_manifest: ProviderManifest | None = None
         if intent.source.kind == "api" and intent.target.kind == "database":
             api_connection, api_manifest = await self._load_api_authority_connection(
-                intent
+                intent,
+                conversation_id=conversation_id,
             )
         payload = intent.model_dump(mode="json")
         request_hash = _hash(
@@ -326,6 +327,8 @@ class AgentTaskService:
     async def _load_api_authority_connection(
         self,
         intent: AgentTaskIntent,
+        *,
+        conversation_id: UUID | None,
     ) -> tuple[ApiConnectionRecord, ProviderManifest]:
         assert intent.source.configuration_id is not None
         assert self.provider_registry is not None
@@ -339,6 +342,21 @@ class AgentTaskService:
         if connection is None:
             raise AgentConnectorCapabilityFailure(
                 "API connection is unavailable for this tenant"
+            )
+        if conversation_id is not None and (
+            connection.scope != "task_ephemeral"
+            or connection.conversation_id != conversation_id
+        ):
+            raise AgentConnectorCapabilityFailure(
+                "Conversation API tasks require a task-ephemeral connection"
+            )
+        if connection.task_id is not None:
+            raise AgentConnectorCapabilityFailure(
+                "API connection is already bound to another task"
+            )
+        if connection.credentials_revoked_at is not None:
+            raise AgentConnectorCapabilityFailure(
+                "API connection credentials are revoked"
             )
         if connection.state != "active":
             raise AgentConnectorCapabilityFailure("API connection is not active")
@@ -499,6 +517,8 @@ class AgentTaskService:
     ) -> None:
         if self.settings is None:
             raise ValueError("API Agent task requires server connector settings")
+        if connection.scope == "task_ephemeral":
+            connection.task_id = task.id
         target = self.settings.database_connector_configurations[
             target_configuration_id
         ]

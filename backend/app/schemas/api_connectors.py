@@ -22,6 +22,7 @@ class ApiConfigurationSessionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     provider_id: str = Field(min_length=1, max_length=64)
+    conversation_id: UUID | None = None
 
 
 class ApiConfigurationSessionRead(BaseModel):

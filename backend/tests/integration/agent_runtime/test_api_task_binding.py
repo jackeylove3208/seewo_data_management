@@ -13,6 +13,7 @@ from app.agent_graph.production_executor import ProductionGraphActionExecutor
 from app.agent_graph.repository import AgentGraphRepository
 from app.agent_graph.runtime import ProductionGraphCandidateProvider
 from app.agent_graph.worker import GraphWorkContext
+from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.task_service import (
     AgentConnectorCapabilityFailure,
     AgentTaskService,
@@ -217,6 +218,8 @@ async def _seed_connection(
     *,
     fernet_key: bytes,
     tenant_id: str = "school-1",
+    scope: str = "persistent",
+    conversation_id=None,
 ) -> ApiConnectionRecord:
     secret_ref = await EncryptedDatabaseSecretStore(
         session,
@@ -229,6 +232,8 @@ async def _seed_connection(
         tenant_id=tenant_id,
         provider_id=MANIFEST.provider_id,
         display_name="权威通讯录",
+        scope=scope,
+        conversation_id=conversation_id,
         public_configuration={"person_entity_kind": "teacher"},
         secret_ref=secret_ref,
         manifest_version=MANIFEST.manifest_version,
@@ -350,6 +355,77 @@ async def test_api_task_binds_resource_and_selects_graph_v2_without_provider_cal
     assert len(actions) == 1
     assert actions[0].graph_action_kind == "materialize_remote_authority"
     assert actions[0].resource_ids == (f"api-source:{api_source.id}",)
+
+
+async def test_conversation_api_task_rejects_a_persistent_connection(
+    database,
+) -> None:
+    key = Fernet.generate_key()
+    settings = _settings(key)
+    registry = ProviderRegistry()
+    registry.register(MANIFEST, AdapterMustNotRun())
+    async with database.session_factory() as session:
+        async with session.begin():
+            conversation = await AgentRuntimeRepository(session).create_conversation(
+                tenant_id="school-1",
+                created_by="operator-1",
+            )
+            connection = await _seed_connection(session, fernet_key=key)
+
+            with pytest.raises(
+                AgentConnectorCapabilityFailure,
+                match="task-ephemeral",
+            ):
+                await AgentTaskService(
+                    session,
+                    operator=OperatorContext(
+                        operator_id="operator-1",
+                        tenant_id="school-1",
+                    ),
+                    settings=settings,
+                    provider_registry=registry,
+                ).create(
+                    _intent(connection.id),
+                    idempotency_key="persistent-conversation-api-task",
+                    conversation_id=conversation.id,
+                )
+
+
+async def test_conversation_api_task_atomically_binds_its_ephemeral_connection(
+    database,
+) -> None:
+    key = Fernet.generate_key()
+    settings = _settings(key)
+    registry = ProviderRegistry()
+    registry.register(MANIFEST, AdapterMustNotRun())
+    async with database.session_factory() as session:
+        async with session.begin():
+            conversation = await AgentRuntimeRepository(session).create_conversation(
+                tenant_id="school-1",
+                created_by="operator-1",
+            )
+            connection = await _seed_connection(
+                session,
+                fernet_key=key,
+                scope="task_ephemeral",
+                conversation_id=conversation.id,
+            )
+
+            task, _run = await AgentTaskService(
+                session,
+                operator=OperatorContext(
+                    operator_id="operator-1",
+                    tenant_id="school-1",
+                ),
+                settings=settings,
+                provider_registry=registry,
+            ).create(
+                _intent(connection.id),
+                idempotency_key="ephemeral-conversation-api-task",
+                conversation_id=conversation.id,
+            )
+
+            assert connection.task_id == task.id
 
 
 async def test_api_task_rejects_cross_tenant_connection_before_creating_task(

@@ -8,7 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api_connectors.secrets import (
     EncryptedDatabaseSecretStore,
     SecretReferenceError,
+    revoke_ephemeral_connection,
 )
+from app.models.agent_runtime import AgentConversationRecord
 from app.models.api_connectors import ApiConnectionRecord, ApiConnectionSecretRecord
 
 
@@ -146,3 +148,59 @@ async def test_secret_rotation_rejects_cross_tenant_connection(
             connection_id=connection.id,
             payload={"app_key": "new-app", "app_secret": "new-secret"},
         )
+
+
+async def test_ephemeral_connection_revocation_is_immediate_and_idempotent(
+    session: AsyncSession,
+    fernet_key: bytes,
+) -> None:
+    conversation = AgentConversationRecord(
+        tenant_id="school-1",
+        created_by="operator-1",
+        status="active",
+        context={},
+    )
+    session.add(conversation)
+    await session.flush()
+    store = EncryptedDatabaseSecretStore(session, fernet_key=fernet_key)
+    secret_ref = await store.put(
+        tenant_id="school-1",
+        payload={"app_key": "app", "app_secret": "secret"},
+    )
+    connection = ApiConnectionRecord(
+        tenant_id="school-1",
+        provider_id="dingtalk",
+        display_name="钉钉临时连接",
+        scope="task_ephemeral",
+        conversation_id=conversation.id,
+        public_configuration={},
+        secret_ref=secret_ref,
+        manifest_version="1.0.0",
+        adapter_version="1.0.0",
+        capabilities={},
+        visibility_summary={},
+        state="active",
+        created_by="operator-1",
+        updated_by="operator-1",
+    )
+    session.add(connection)
+    await session.flush()
+
+    await revoke_ephemeral_connection(
+        session,
+        tenant_id="school-1",
+        connection_id=connection.id,
+        reason="snapshot_materialized",
+    )
+    await revoke_ephemeral_connection(
+        session,
+        tenant_id="school-1",
+        connection_id=connection.id,
+        reason="snapshot_materialized",
+    )
+
+    assert connection.state == "disabled"
+    assert connection.disabled_reason == "snapshot_materialized"
+    assert connection.credentials_revoked_at is not None
+    with pytest.raises(SecretReferenceError, match="unavailable"):
+        await store.get(tenant_id="school-1", secret_ref=secret_ref)

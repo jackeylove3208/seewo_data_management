@@ -735,9 +735,10 @@ export function ConversationCreatePage({
               </div>
             </article>
           ))}
-          {apiConnection && !taskActive && (
+          {apiConnection && conversationId && !taskActive && (
             <ConversationApiConnectionCard
               connection={apiConnection}
+              conversationId={conversationId}
               configure={backendApi.configureApiConnection}
               onChange={setApiConnection}
             />

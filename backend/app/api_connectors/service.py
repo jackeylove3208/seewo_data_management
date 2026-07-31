@@ -55,6 +55,8 @@ class ApiConnectionService:
         display_name: str,
         public_configuration: Mapping[str, object],
         secret: Mapping[str, str],
+        scope: str = "persistent",
+        conversation_id: UUID | None = None,
     ) -> SafeApiConnection:
         manifest = self._manifest(provider_id)
         _validate_secret_shape(secret, manifest)
@@ -67,12 +69,20 @@ class ApiConnectionService:
         )
         if existing is not None:
             raise ApiConnectionConflictError("connection display name already exists")
+        if scope not in {"persistent", "task_ephemeral"}:
+            raise ApiConnectionValidationError("connection scope is invalid")
+        if (scope == "task_ephemeral") != (conversation_id is not None):
+            raise ApiConnectionValidationError(
+                "task-ephemeral connections require a conversation"
+            )
 
         secret_ref = await self._secrets.put(tenant_id=tenant_id, payload=secret)
         record = ApiConnectionRecord(
             tenant_id=tenant_id,
             provider_id=provider_id,
             display_name=normalized_display_name,
+            scope=scope,
+            conversation_id=conversation_id,
             public_configuration=dict(public_configuration),
             secret_ref=secret_ref,
             manifest_version=manifest.manifest_version,

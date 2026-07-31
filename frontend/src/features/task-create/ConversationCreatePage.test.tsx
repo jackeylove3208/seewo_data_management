@@ -275,6 +275,7 @@ describe("backend Agent conversation", () => {
           provider_id: "dingtalk",
           state: "configuration_required",
           required_secret_fields: ["app_key", "app_secret"],
+          display_name: "钉钉临时连接-20260731-094800",
           capabilities: {},
           visibility_summary: {},
         },
@@ -286,6 +287,9 @@ describe("backend Agent conversation", () => {
     render(<ConversationCreatePage agentApi={backend} />);
 
     const card = await screen.findByLabelText("API 连接配置");
+    expect(within(card).getByLabelText("连接名称")).toHaveValue(
+      "钉钉临时连接-20260731-094800",
+    );
     await user.clear(within(card).getByLabelText("连接名称"));
     await user.type(within(card).getByLabelText("连接名称"), "学校钉钉");
     await user.selectOptions(within(card).getByLabelText("人员类型"), "student");
@@ -298,6 +302,7 @@ describe("backend Agent conversation", () => {
     await user.click(within(card).getByRole("button", { name: "保存并测试连接" }));
 
     await waitFor(() => expect(configureApiConnection).toHaveBeenCalledWith({
+      conversation_id: "conversation-api",
       provider_id: "dingtalk",
       display_name: "学校钉钉",
       required_secret_fields: ["app_key", "app_secret"],
@@ -321,6 +326,7 @@ describe("backend Agent conversation", () => {
 
     expect(await within(card).findByText("连接测试通过")).toBeInTheDocument();
     expect(configureApiConnection).toHaveBeenLastCalledWith({
+      conversation_id: "conversation-api",
       provider_id: "dingtalk",
       display_name: "学校钉钉",
       required_secret_fields: ["app_key", "app_secret"],

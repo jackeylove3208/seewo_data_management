@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,6 +59,7 @@ class ConversationApiCatalog:
                 provider_id=provider.provider_id,
                 state="configuration_required",
                 required_secret_fields=provider.required_secret_fields,
+                display_name=_temporary_display_name(provider.provider_id),
             )
         return AgentApiConnectionCard(
             provider_id=provider.provider_id,
@@ -75,6 +77,7 @@ async def load_conversation_api_catalog(
     session: AsyncSession,
     *,
     tenant_id: str,
+    conversation_id: UUID,
     registry: ProviderRegistry,
 ) -> ConversationApiCatalog:
     providers = tuple(
@@ -88,7 +91,10 @@ async def load_conversation_api_catalog(
             for provider_id in registry.provider_ids()
         )
     )
-    records = await ApiConnectionRepository(session).list_for_tenant(tenant_id)
+    records = await ApiConnectionRepository(session).list_ephemeral_for_conversation(
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+    )
     connections = tuple(
         ConversationApiConnection(
             connection_id=record.id,
@@ -110,3 +116,12 @@ async def load_conversation_api_catalog(
         for record in records
     )
     return ConversationApiCatalog(providers=providers, connections=connections)
+
+
+def _temporary_display_name(provider_id: str) -> str:
+    provider_name = {
+        "dingtalk": "钉钉",
+        "wecom": "企业微信",
+    }.get(provider_id, provider_id)
+    timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    return f"{provider_name}临时连接-{timestamp}"

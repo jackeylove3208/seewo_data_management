@@ -2,19 +2,27 @@
 
 ### Requirement: Configure and select organization API connections safely
 The conversation SHALL identify a registered organization provider, list only safe tenant-owned
-connection views, direct missing credentials to a one-time secure configuration session, and create
-an API-authority/database-target intent only after connection capability, visibility, entity
-selection, and target validation succeed.
+connection views, require a new conversation-bound configuration session for every organization
+API task, and create an API-authority/database-target intent only after the task-scoped connection
+capability, visibility, entity selection, and target validation succeed.
 
 #### Scenario: User asks to synchronize DingTalk
-- **WHEN** the user names DingTalk and no active tenant connection is available
-- **THEN** the Agent presents a secure-configuration action without requesting the application
-  secret in conversation
+- **WHEN** the user names DingTalk, including when reusable tenant connections already exist
+- **THEN** the Agent presents a fresh secure-configuration action without requesting the
+  application secret in conversation or selecting a historical connection
+
+#### Scenario: User configures a task-scoped connection
+- **WHEN** the secure card is opened for a new DingTalk task
+- **THEN** it supplies an editable generated connection name and requires the user to resubmit the
+  organization scope, entity configuration, AppKey, and AppSecret without copying values from a
+  previous task
 
 #### Scenario: User selects a tested connection
-- **WHEN** a tenant-owned connection has current required capabilities and non-empty visibility
+- **WHEN** a current-conversation task-scoped connection has current required capabilities and
+  non-empty visibility
 - **THEN** the conversation stores only its connection ID, provider ID, safe display name, selected
-  entities, and target reference in private intent
+  entities, and target reference in private intent and cannot select persistent, cross-conversation,
+  already-bound, or revoked connections
 
 #### Scenario: User confirms task start
 - **WHEN** the API authority, MySQL target, whole-school scope, and selected entities are valid

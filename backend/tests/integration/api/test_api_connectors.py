@@ -1,6 +1,7 @@
 import json
 from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from cryptography.fernet import Fernet
@@ -16,6 +17,7 @@ from app.api_connectors.contracts import (
 from app.api_connectors.registry import ProviderRegistry
 from app.core.security import OperatorContext
 from app.main import create_app
+from app.models.api_connectors import ApiConnectionRecord
 from app.schemas.agent_ingestion import AgentEntityKind
 from tests.integration.repositories.test_agent_external_identity import (
     _seed_context,
@@ -123,6 +125,96 @@ def _create_connection(client: TestClient) -> dict[str, object]:
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def test_conversation_configuration_creates_a_task_ephemeral_connection(
+    connector_client: tuple[TestClient, FakeDingTalkAdapter],
+) -> None:
+    client, _adapter = connector_client
+    conversation = client.post("/api/agent/conversations").json()
+    configuration_session = client.post(
+        "/api/connectors/configuration-sessions",
+        json={
+            "provider_id": "dingtalk",
+            "conversation_id": conversation["id"],
+        },
+    )
+    assert configuration_session.status_code == 201, configuration_session.text
+
+    created = client.post(
+        "/api/connectors/connections",
+        json={
+            "configuration_session_id": configuration_session.json()["id"],
+            "provider_id": "dingtalk",
+            "display_name": "钉钉临时连接-测试",
+            "public_configuration": {
+                "person_entity_kind": "student",
+                "root_department_id": 42,
+                "number_field": "student_number",
+                "class_name_field": "class_name",
+            },
+            "secret": {"app_key": "app", "app_secret": "secret"},
+        },
+    )
+
+    assert created.status_code == 201, created.text
+
+    async def inspect_connection():
+        async with client.app.state.database.session_factory() as session:
+            return await session.get(ApiConnectionRecord, UUID(created.json()["id"]))
+
+    record = client.portal.call(inspect_connection)
+    assert record is not None
+    assert record.scope == "task_ephemeral"
+    assert str(record.conversation_id) == conversation["id"]
+    assert record.task_id is None
+    assert record.credentials_revoked_at is None
+
+
+def test_conversation_reset_revokes_an_unbound_ephemeral_connection(
+    connector_client: tuple[TestClient, FakeDingTalkAdapter],
+) -> None:
+    client, _adapter = connector_client
+    conversation = client.post("/api/agent/conversations").json()
+    configuration_session = client.post(
+        "/api/connectors/configuration-sessions",
+        json={
+            "provider_id": "dingtalk",
+            "conversation_id": conversation["id"],
+        },
+    ).json()
+    created = client.post(
+        "/api/connectors/connections",
+        json={
+            "configuration_session_id": configuration_session["id"],
+            "provider_id": "dingtalk",
+            "display_name": "即将撤销的临时连接",
+            "public_configuration": {
+                "person_entity_kind": "teacher",
+                "root_department_id": 1,
+            },
+            "secret": {"app_key": "app", "app_secret": "secret"},
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    reset = client.post(
+        "/api/agent/conversations/current/reset",
+        headers={"Idempotency-Key": "reset-ephemeral-connection"},
+        json={},
+    )
+    assert reset.status_code == 201, reset.text
+
+    async def inspect_connection():
+        async with client.app.state.database.session_factory() as session:
+            return await session.get(ApiConnectionRecord, UUID(created.json()["id"]))
+
+    record = client.portal.call(inspect_connection)
+    assert record is not None
+    assert record.state == "disabled"
+    assert record.disabled_reason == "conversation_reset"
+    assert record.credentials_revoked_at is not None
+    assert record.conversation_id is None
 
 
 def test_connection_lifecycle_never_returns_secret(

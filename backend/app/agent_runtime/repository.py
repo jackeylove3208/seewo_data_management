@@ -13,6 +13,7 @@ from app.agent_runtime.state_machine import (
     AgentRunStatus,
     transition,
 )
+from app.api_connectors.secrets import revoke_conversation_ephemeral_connections
 from app.models.agent_runtime import (
     AgentCheckpointRecord,
     AgentConversationMessageRecord,
@@ -140,6 +141,21 @@ class AgentRuntimeRepository:
         )
         if active_lock is not None:
             raise ConversationResetConflict(active_lock.owner_task_id)
+        conversation_ids = tuple(
+            await self.session.scalars(
+                select(AgentConversationRecord.id).where(
+                    AgentConversationRecord.tenant_id == tenant_id,
+                    AgentConversationRecord.created_by == created_by,
+                )
+            )
+        )
+        for conversation_id in conversation_ids:
+            await revoke_conversation_ephemeral_connections(
+                self.session,
+                tenant_id=tenant_id,
+                conversation_id=conversation_id,
+                reason="conversation_reset",
+            )
         await self.session.execute(
             delete(AgentConversationRecord).where(
                 AgentConversationRecord.tenant_id == tenant_id,

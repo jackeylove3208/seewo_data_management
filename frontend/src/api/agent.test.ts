@@ -110,6 +110,7 @@ describe("Agent API", () => {
       }), { status: 200 }));
 
     const result = await agentApi.configureApiConnection?.({
+      conversation_id: "conversation-1",
       provider_id: "dingtalk",
       display_name: "学校钉钉",
       required_secret_fields: ["app_key", "app_secret"],
@@ -128,6 +129,10 @@ describe("Agent API", () => {
       "/api/connectors/connections",
       "/api/connectors/connections/connection-1/test",
     ]);
+    expect(JSON.parse(String((calls[0]?.[1] as RequestInit).body))).toEqual({
+      provider_id: "dingtalk",
+      conversation_id: "conversation-1",
+    });
     expect(JSON.parse(String((calls[1]?.[1] as RequestInit).body))).toEqual({
       configuration_session_id: "configuration-session-1",
       provider_id: "dingtalk",

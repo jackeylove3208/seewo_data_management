@@ -20,6 +20,7 @@ from app.api_connectors.registry import ProviderRegistry
 from app.api_connectors.secrets import (
     EncryptedDatabaseSecretStore,
     SecretReferenceError,
+    revoke_ephemeral_connection,
 )
 from app.core.config import Settings
 from app.models.api_connectors import (
@@ -186,6 +187,12 @@ class ApiAuthorityMaterializer:
                 raise ApiSourceFailure("connector_source_binding_invalid")
             binding.snapshot_id = snapshot.id
             await session.flush()
+            await revoke_ephemeral_connection(
+                session,
+                tenant_id=record.tenant_id,
+                connection_id=connection.id,
+                reason="snapshot_materialized",
+            )
             return source_file
         except ApiSourceFailure as error:
             await self._mark_failed(session, record, error.code, temporary)
