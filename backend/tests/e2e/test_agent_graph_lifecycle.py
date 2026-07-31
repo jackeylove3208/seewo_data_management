@@ -344,6 +344,7 @@ class ScriptedSkillProvider:
                     "schema_version": "agent-contract-v1",
                     "title_zh": "组织数据同步报告",
                     "summary_zh": "已完成组织数据分析、治理与结果核验。",
+                    "input_exception_analyses": [],
                     "fact_refs": [fact_ref],
                     "rollback_evidence_eligible": rollback_eligible,
                 }

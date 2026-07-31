@@ -320,9 +320,18 @@ class GovernanceReportInput(AgentSkillInput):
     fact_refs: tuple[str, ...] = Field(min_length=1)
 
 
+class InputExceptionAnalysis(StrictContract):
+    reason_code: str = Field(min_length=1, max_length=128)
+    title_zh: str = Field(min_length=1)
+    analysis_zh: str = Field(min_length=1)
+    impact_zh: str = Field(min_length=1)
+    suggestion_zh: str = Field(min_length=1)
+
+
 class AgentGovernanceReport(AgentSkillOutput):
     title_zh: str = Field(min_length=1)
     summary_zh: str = Field(min_length=1)
+    input_exception_analyses: tuple[InputExceptionAnalysis, ...]
     fact_refs: tuple[str, ...] = Field(min_length=1)
     rollback_evidence_eligible: bool
 

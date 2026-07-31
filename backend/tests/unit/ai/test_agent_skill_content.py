@@ -166,6 +166,45 @@ REQUIRED_SECTIONS = (
 )
 
 
+def test_agent_governance_report_skill_has_standard_discovery_metadata() -> None:
+    registry = SkillRegistry()
+    skill = registry.load("generate-agent-governance-report", "1.0.0")
+
+    assert skill.description is not None
+    assert skill.description.startswith("Use when ")
+    for trigger in (
+        "terminal outcome",
+        "partial success",
+        "abnormal input",
+        "model failure",
+        "user termination",
+        "rollback",
+    ):
+        assert trigger in skill.description
+    assert skill.phase == "generate_report"
+    assert skill.input_schema == "GovernanceReportInput"
+    assert skill.output_schema == "AgentGovernanceReport"
+    assert set(skill.allowed_tools) == {
+        "read_report_fact_manifest",
+        "submit_report_narrative",
+    }
+
+    content = (
+        registry.root / "generate-agent-governance-report" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    frontmatter = content.split("---\n", maxsplit=2)[1]
+    for required_line in (
+        "version: 1.0.0",
+        "phase: generate_report",
+        "allowed_tools: [read_report_fact_manifest, submit_report_narrative]",
+        "input_schema: GovernanceReportInput",
+        "output_schema: AgentGovernanceReport",
+    ):
+        assert required_line in frontmatter
+    assert "metadata:" not in frontmatter
+    assert "allowed-tools:" not in frontmatter
+
+
 def test_every_new_agent_skill_is_a_complete_operating_procedure() -> None:
     registry = SkillRegistry()
 

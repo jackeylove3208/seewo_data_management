@@ -105,6 +105,13 @@ describe("Agent synchronization report", () => {
         narrative: {
           title_zh: "部分执行同步报告",
           summary_zh: "部分获批变更未能完成。",
+          input_exception_analyses: [{
+            reason_code: "authority_field_unavailable",
+            title_zh: "权威学生数据缺少班级字段",
+            analysis_zh: "钉钉权威数据中有 7 条学生记录未提供班级字段。",
+            impact_zh: "身份匹配仍可继续，但无法分析或治理学生班级差异。",
+            suggestion_zh: "请检查钉钉接口权限、数据范围和班级字段映射。",
+          }],
         },
       },
       facts: {
@@ -148,6 +155,16 @@ describe("Agent synchronization report", () => {
     expect(exclusion).not.toBeNull();
     expect(
       within(exclusion as HTMLElement).getByText("输入异常"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("权威学生数据缺少班级字段")).toBeInTheDocument();
+    expect(
+      screen.getByText("钉钉权威数据中有 7 条学生记录未提供班级字段。"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("身份匹配仍可继续，但无法分析或治理学生班级差异。"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("请检查钉钉接口权限、数据范围和班级字段映射。"),
     ).toBeInTheDocument();
     expect(container.querySelector(".agent-report-metric-error")).not.toBeNull();
     client.clear();

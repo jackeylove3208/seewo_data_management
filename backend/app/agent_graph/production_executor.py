@@ -1491,29 +1491,33 @@ class ProductionGraphActionExecutor:
                 persisted = await repository.persist_inputs(outcome.records)
                 marks = _bind_input_marks(outcome.marks, persisted)
                 await repository.persist_marks(marks)
-                executions = ExecutionRepository(session)
-                current = await executions.current_target_version(context.task_id)
-                if current is None:
-                    version_hash = SqlGovernanceExecutionHandler.hash_version(
-                        source_version
+                if binding.role == "target":
+                    executions = ExecutionRepository(session)
+                    current = await executions.current_target_version(
+                        context.task_id
                     )
-                    await executions.create_target_version(
-                        task_id=context.task_id,
-                        tenant_id=context.tenant_id,
-                        source_snapshot_id=snapshot.id,
-                        parent_version_id=None,
-                        batch_id=None,
-                        file_sha256=version_hash,
-                        content_hash=_raw_hash(
-                            {
-                                "connector_id": binding.configuration_id,
-                                "source_version": source_version,
-                            }
-                        ),
-                        storage_path=(
-                            f"database://{binding.configuration_id}/version/{version_hash}"
-                        ),
-                    )
+                    if current is None:
+                        version_hash = SqlGovernanceExecutionHandler.hash_version(
+                            source_version
+                        )
+                        await executions.create_target_version(
+                            task_id=context.task_id,
+                            tenant_id=context.tenant_id,
+                            source_snapshot_id=snapshot.id,
+                            parent_version_id=None,
+                            batch_id=None,
+                            file_sha256=version_hash,
+                            content_hash=_raw_hash(
+                                {
+                                    "connector_id": binding.configuration_id,
+                                    "source_version": source_version,
+                                }
+                            ),
+                            storage_path=(
+                                f"database://{binding.configuration_id}/task/"
+                                f"{context.task_id}/version/{version_hash}"
+                            ),
+                        )
                 payload = {
                     "schema_version": "source-ingestion-v3",
                     "mapping_version": "fixed-six-field-sql-mapping-v3",
@@ -1685,7 +1689,8 @@ class ProductionGraphActionExecutor:
                                 }
                             ),
                             storage_path=(
-                                f"database://{connector_id}/version/{version_hash}"
+                                f"database://{connector_id}/task/"
+                                f"{context.task_id}/version/{version_hash}"
                             ),
                         )
                 payload = {

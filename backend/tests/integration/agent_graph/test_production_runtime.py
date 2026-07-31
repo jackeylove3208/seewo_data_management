@@ -1598,8 +1598,85 @@ async def test_sql_v2_target_normalization_stores_raw_target_version_hash(
     assert len(version.file_sha256) == 64
     assert len(version.content_hash) == 64
     assert version.storage_path == (
-        f"database://seewo-mysql/version/{version.file_sha256}"
+        f"database://seewo-mysql/task/{context.task_id}/version/{version.file_sha256}"
     )
+
+
+@pytest.mark.asyncio
+async def test_sql_target_normalization_allows_same_database_version_across_tasks(
+    database,
+) -> None:
+    contexts = (
+        await _sql_ingestion_v2_context(database),
+        await _sql_ingestion_v2_context(database),
+    )
+    target_connector = _sql_test_connector(
+        connector_id="seewo-mysql",
+        role="target",
+    )
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=ModelMustNotRun(),
+        tokenization_secret="test-tokenization-secret",
+        database_connectors=StaticDatabaseConnectorRuntime(
+            {
+                "authority-postgres": _sql_test_connector(
+                    connector_id="authority-postgres",
+                    role="authoritative",
+                ),
+                "seewo-mysql": target_connector,
+            }
+        ),
+    )
+
+    for context in contexts:
+        normalized_context = replace(context, current_node="normalize_input_batches")
+        await executor(
+            normalized_context,
+            AllowedActionV1(
+                action_id="resolve_database_fixed_field_mapping",
+                graph_action_kind="normalize_next_batch",
+                kind="run_deterministic",
+                resource_ids=("source-pair:current",),
+                required_evidence=("mapping:fixed-six-field-v2",),
+                risk="low",
+                requires_human=False,
+                successor_node="normalize_input_batches",
+            ),
+        )
+        await executor(
+            normalized_context,
+            AllowedActionV1(
+                action_id="normalize_target_full",
+                graph_action_kind="normalize_next_batch",
+                kind="run_deterministic",
+                resource_ids=("source:target:full",),
+                required_evidence=("normalized:target:full",),
+                risk="low",
+                requires_human=False,
+                successor_node="normalize_input_batches",
+            ),
+        )
+
+    async with database.session_factory() as session:
+        versions = tuple(
+            await session.scalars(
+                select(TargetVersionRecord)
+                .where(
+                    TargetVersionRecord.task_id.in_(
+                        context.task_id for context in contexts
+                    )
+                )
+                .order_by(TargetVersionRecord.task_id)
+            )
+        )
+
+    assert len(versions) == 2
+    assert versions[0].file_sha256 == versions[1].file_sha256
+    assert versions[0].storage_path != versions[1].storage_path
+    assert {version.task_id for version in versions} == {
+        context.task_id for context in contexts
+    }
 
 
 @pytest.mark.asyncio
@@ -1943,6 +2020,9 @@ async def test_sql_v3_routes_mappable_inspection_through_skill_to_normalization(
                 AgentInputRecord.source_role == "authoritative",
             )
         )
+        target_version = await ExecutionRepository(session).current_target_version(
+            context.task_id
+        )
 
     assert len(provider.requests) == 1
     assert target_inspection is not None
@@ -1951,6 +2031,11 @@ async def test_sql_v3_routes_mappable_inspection_through_skill_to_normalization(
     assert validation_action.action_id == "build_identity_index"
     assert record is not None
     assert record.number == "S001"
+    assert target_version is not None
+    assert target_version.storage_path == (
+        f"database://seewo-mysql/task/{context.task_id}/version/"
+        f"{target_version.file_sha256}"
+    )
 
 
 @pytest.mark.asyncio
@@ -3405,6 +3490,7 @@ async def test_legacy_database_rollback_report_reads_csv_checkpoint_facts(
                         "schema_version": "agent-contract-v1",
                         "title_zh": "历史 SQL 回滚报告",
                         "summary_zh": "已根据兼容检查点恢复回滚事实。",
+                        "input_exception_analyses": [],
                         "fact_refs": [fact_ref],
                         "rollback_evidence_eligible": True,
                     }

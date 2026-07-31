@@ -81,6 +81,20 @@ async def test_graph_report_uses_model_narrative_but_server_facts(session) -> No
         record_id=manifest.manifest_id,
     )
     facts = {
+        "excluded_findings": [
+            {
+                "source_role": "authoritative",
+                "reason": "authority_field_unavailable",
+                "affected_fields": ["class_name"],
+                "inclusion_state": "included",
+                "disposition": "source_field_unavailable",
+                "safe_evidence": {
+                    "entity_kind": "student",
+                    "missing_count": 7,
+                    "missing_fields": "class_name",
+                },
+            }
+        ],
         "mutations": [
             {
                 "id": str(uuid4()),
@@ -116,6 +130,21 @@ async def test_graph_report_uses_model_narrative_but_server_facts(session) -> No
                     "schema_version": "agent-contract-v1",
                     "title_zh": "学校数据同步完成报告",
                     "summary_zh": "本次同步已完成，治理操作已经服务端验证。",
+                    "input_exception_analyses": [
+                        {
+                            "reason_code": "authority_field_unavailable",
+                            "title_zh": "权威学生数据缺少班级字段",
+                            "analysis_zh": (
+                                "钉钉权威数据中有 7 条学生记录未提供班级字段。"
+                            ),
+                            "impact_zh": (
+                                "身份匹配仍可继续，但无法分析或治理学生班级差异。"
+                            ),
+                            "suggestion_zh": (
+                                "请检查钉钉接口权限、数据范围和班级字段映射。"
+                            ),
+                        }
+                    ],
                     "fact_refs": [fact_ref],
                     "rollback_evidence_eligible": True,
                 }
@@ -163,6 +192,17 @@ async def test_graph_report_uses_model_narrative_but_server_facts(session) -> No
     assert result.report.facts["student_phone"] == "13800138000"
     assert "13800138000" not in str(result.report.content)
     assert result.report.generated_by == "agent-graph-report-skill-v1"
+    analyses = result.report.content["narrative"]["input_exception_analyses"]
+    assert analyses == [
+        {
+            "reason_code": "authority_field_unavailable",
+            "title_zh": "权威学生数据缺少班级字段",
+            "analysis_zh": "钉钉权威数据中有 7 条学生记录未提供班级字段。",
+            "impact_zh": "身份匹配仍可继续，但无法分析或治理学生班级差异。",
+            "suggestion_zh": "请检查钉钉接口权限、数据范围和班级字段映射。",
+        }
+    ]
+    assert result.report.rollback_eligible is True
     invocation = await session.scalar(
         select(AgentSubAgentInvocationRecord).where(
             AgentSubAgentInvocationRecord.skill_name

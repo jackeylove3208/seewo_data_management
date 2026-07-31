@@ -1,5 +1,6 @@
 ---
 name: generate-agent-governance-report
+description: Use when an Agent organization-data reconciliation or rollback task reaches a reportable terminal outcome, including completion, partial success, abnormal input, model failure, user termination, or rollback.
 version: 1.0.0
 phase: generate_report
 allowed_tools: [read_report_fact_manifest, submit_report_narrative]
@@ -32,7 +33,8 @@ output_schema: AgentGovernanceReport
 1. 先用 `read_report_fact_manifest` 读取 evidence manifest 绑定的事实摘要，核对任务、运行、
    租户、报告阶段和事实引用一致；不得把另一个任务或回滚链的事实合并。
 2. 汇总接入结果：连接器种类/安全状态、可识别实体、第三方和希沃总量、被标记/排除数量、
-   稳定原因码。第三方无效行说明缺失字段及其对匹配覆盖的影响。
+   稳定原因码。对每一种不同的输入异常原因码生成一条 `input_exception_analyses`，不得遗漏或
+   重复。第三方无效行说明来源、实体类型、缺失字段、受影响记录数及其对匹配覆盖的影响。
 3. 汇总分析结果：target_extra、target_duplicate、target_missing、field_difference、
    identity_conflict、authority_invalid 的事实数量、中文类别和已验证方案；正确数据不逐条列出。
 4. 汇总人工与审批：冲突说明及二次确认结果、高风险冻结组的同意/拒绝/过期/未决状态，
@@ -63,6 +65,11 @@ output_schema: AgentGovernanceReport
 按“接入—分析—人工决策—执行—后续/回滚”顺序用简体中文总结。`fact_refs` 只能原样引用输入，
 不能增加。`rollback_evidence_eligible` 必须与服务端 mutation 事实一致。不得输出 Markdown
 表格、原始学生手机号、UUID 堆叠、内部哈希、凭据或技术堆栈。
+
+`input_exception_analyses` 按稳定原因码聚合，而不是逐行罗列。每项必须包含原样
+`reason_code`、面向用户的 `title_zh`、具体事实说明 `analysis_zh`、对匹配或治理范围的
+`impact_zh`、可执行的 `suggestion_zh`。数字、字段和实体类型只能来自事实；没有输入异常时
+输出空数组。异常分析只是报告叙述，不得改变 mutation、执行结果或回滚资格。
 
 ## 禁止事项
 

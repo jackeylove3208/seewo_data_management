@@ -105,6 +105,11 @@ class GraphReportExecutor:
         }:
             raise ValueError("report Skill is not allowed at the current graph node")
         expected_refs = tuple(invocation.input_payload.get("fact_refs", ()))
+        expected_exception_codes = {
+            str(item["reason"])
+            for item in facts.get("excluded_findings", ())
+            if isinstance(item, Mapping) and item.get("reason")
+        }
 
         def validate(output: BaseModel) -> BaseModel:
             if not isinstance(output, AgentGovernanceReport):
@@ -113,6 +118,15 @@ class GraphReportExecutor:
                 raise ValueError("report narrative changed frozen fact references")
             if output.rollback_evidence_eligible is not expected_rollback_eligible:
                 raise ValueError("report narrative changed rollback eligibility")
+            actual_exception_codes = [
+                item.reason_code for item in output.input_exception_analyses
+            ]
+            if len(actual_exception_codes) != len(set(actual_exception_codes)):
+                raise ValueError("report narrative duplicated an input exception analysis")
+            if set(actual_exception_codes) != expected_exception_codes:
+                raise ValueError(
+                    "report narrative did not cover the frozen input exception reasons"
+                )
             return output
 
         result = await self._runner.run(
@@ -136,6 +150,10 @@ class GraphReportExecutor:
             narrative={
                 "title_zh": output.title_zh,
                 "summary_zh": output.summary_zh,
+                "input_exception_analyses": [
+                    item.model_dump(mode="json")
+                    for item in output.input_exception_analyses
+                ],
                 "fact_refs": list(output.fact_refs),
             },
             generated_by="agent-graph-report-skill-v1",

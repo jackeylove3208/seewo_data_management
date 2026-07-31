@@ -90,6 +90,7 @@ export function AgentReportPage() {
 
   const facts = report.data.facts;
   const narrative = record(report.data.content.narrative);
+  const exceptionAnalyses = records(narrative.input_exception_analyses);
   const findings = records(facts.findings);
   const excluded = records(facts.excluded_findings ?? facts.invalid_rows);
   const mutations = records(facts.mutations);
@@ -235,6 +236,18 @@ export function AgentReportPage() {
             <span className="agent-report-section-icon"><ShieldAlert size={20} /></span>
             <div><p>EXCEPTIONS</p><h2>输入异常与排除项</h2></div>
           </header>
+          {exceptionAnalyses.length > 0 && (
+            <ol className="agent-report-exception-analyses">
+              {exceptionAnalyses.map((item, index) => (
+                <li key={text(item.reason_code, `exception-analysis-${index}`)}>
+                  <h3>{text(item.title_zh, "输入异常分析")}</h3>
+                  <p>{text(item.analysis_zh)}</p>
+                  <p><strong>影响：</strong>{text(item.impact_zh)}</p>
+                  <p><strong>建议：</strong>{text(item.suggestion_zh)}</p>
+                </li>
+              ))}
+            </ol>
+          )}
           <ul className="agent-report-exclusions">
             {excluded.map((item, index) => (
               <li key={`${text(item.source, "input")}-${index}`}>
