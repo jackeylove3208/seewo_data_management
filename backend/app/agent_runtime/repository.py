@@ -122,12 +122,27 @@ class AgentRuntimeRepository:
             tenant_id=tenant_id,
             created_by=created_by,
         )
-        repeated = await self.session.scalar(
-            select(AgentConversationRecord).where(
-                AgentConversationRecord.tenant_id == tenant_id,
-                AgentConversationRecord.created_by == created_by,
-                AgentConversationRecord.reset_idempotency_key == idempotency_key,
+        conversations = tuple(
+            await self.session.scalars(
+                select(AgentConversationRecord)
+                .where(
+                    AgentConversationRecord.tenant_id == tenant_id,
+                    AgentConversationRecord.created_by == created_by,
+                )
+                .order_by(
+                    AgentConversationRecord.created_at,
+                    AgentConversationRecord.id,
+                )
+                .with_for_update()
             )
+        )
+        repeated = next(
+            (
+                conversation
+                for conversation in conversations
+                if conversation.reset_idempotency_key == idempotency_key
+            ),
+            None,
         )
         if repeated is not None:
             return repeated
@@ -141,14 +156,7 @@ class AgentRuntimeRepository:
         )
         if active_lock is not None:
             raise ConversationResetConflict(active_lock.owner_task_id)
-        conversation_ids = tuple(
-            await self.session.scalars(
-                select(AgentConversationRecord.id).where(
-                    AgentConversationRecord.tenant_id == tenant_id,
-                    AgentConversationRecord.created_by == created_by,
-                )
-            )
-        )
+        conversation_ids = tuple(conversation.id for conversation in conversations)
         for conversation_id in conversation_ids:
             await revoke_conversation_ephemeral_connections(
                 self.session,
