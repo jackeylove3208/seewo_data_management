@@ -105,11 +105,24 @@ class GraphReportExecutor:
         }:
             raise ValueError("report Skill is not allowed at the current graph node")
         expected_refs = tuple(invocation.input_payload.get("fact_refs", ()))
-        expected_exception_codes = {
-            str(item["reason"])
-            for item in facts.get("excluded_findings", ())
-            if isinstance(item, Mapping) and item.get("reason")
-        }
+        input_diagnostics = facts.get("input_diagnostics")
+        exclusive_reason_counts = (
+            input_diagnostics.get("reason_counts")
+            if isinstance(input_diagnostics, Mapping)
+            else None
+        )
+        if isinstance(exclusive_reason_counts, Mapping):
+            expected_exception_codes = {
+                str(reason)
+                for reason, value in exclusive_reason_counts.items()
+                if isinstance(value, int) and value > 0
+            }
+        else:
+            expected_exception_codes = {
+                str(item["reason"])
+                for item in facts.get("excluded_findings", ())
+                if isinstance(item, Mapping) and item.get("reason")
+            }
 
         def validate(output: BaseModel) -> BaseModel:
             if not isinstance(output, AgentGovernanceReport):

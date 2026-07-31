@@ -33,8 +33,11 @@ summed to produce reader-facing record totals. The report-generation skill will 
 require summaries and `input_exception_analyses` to use exclusive counts and to explain distinct
 effects without restating a broader group.
 
-The frontend will continue to render the model's structured analyses. It will not infer overlap
-from prose or hide arbitrary cards because overlap resolution belongs at the fact boundary.
+The frontend will continue to render the model's structured analyses and will use the explicit
+overlap diagnostics for the anomaly metric and raw-fact fallback. It will not infer overlap from
+prose. `authority_invalid` findings belong to the input-exception section and are excluded from
+the actionable “问题分析与治理方案” list so the same source defect is not presented in both
+sections.
 
 ## Data flow
 
@@ -45,8 +48,10 @@ from prose or hide arbitrary cards because overlap resolution belongs at the fac
    field counts calculated only from the selected groups.
 4. The report model reads those diagnostics and produces distinct analyses whose mentioned
    record counts do not overlap.
-5. Existing report validation still verifies complete reason-code coverage and immutable fact
-   references.
+5. Report validation verifies complete coverage of the mutually exclusive positive reason
+   counts and immutable fact references.
+6. The frontend displays `unique_marked_input_count`, suppresses raw reasons identified as
+   overlaps, and keeps `authority_invalid` out of the actionable governance list.
 
 ## Compatibility and error handling
 
@@ -66,4 +71,6 @@ contradict raw facts. Report validation continues to reject omitted or duplicate
   the exclusive total is seven, with counts `4 + 3`.
 - Update report-skill tests to require exclusive diagnostics as the source for narrative totals
   and prohibit summing overlapping raw reason occurrences.
+- Add frontend tests for the unique anomaly metric, absorbed raw reason codes, and
+  `authority_invalid` section ownership.
 - Run focused backend tests, the backend suite, Ruff, and mypy.

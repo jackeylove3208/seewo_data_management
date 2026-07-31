@@ -205,6 +205,23 @@ def test_agent_governance_report_skill_has_standard_discovery_metadata() -> None
     assert "allowed-tools:" not in frontmatter
 
 
+def test_agent_governance_report_uses_mutually_exclusive_exception_totals() -> None:
+    instructions = SkillRegistry().load(
+        "generate-agent-governance-report",
+        "1.0.0",
+    ).instructions
+
+    for term in (
+        "互斥",
+        "unique_marked_input_count",
+        "reason_counts",
+        "overlapped_reason_counts",
+        "不得汇总 excluded_findings",
+        "authority_invalid 只在输入异常",
+    ):
+        assert term in instructions
+
+
 def test_every_new_agent_skill_is_a_complete_operating_procedure() -> None:
     registry = SkillRegistry()
 

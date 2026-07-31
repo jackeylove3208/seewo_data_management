@@ -143,12 +143,13 @@ async def test_terminal_report_includes_safe_input_diagnostics(session) -> None:
 
     assert facts["input_diagnostics"] == {
         "marked_input_counts": {"authoritative": 1, "target": 1},
+        "unique_marked_input_count": 2,
         "reason_counts": {
-            "authority_field_unavailable": 1,
             "authority_identity_absent": 1,
             "target_row_invalid": 1,
         },
-        "unavailable_field_counts": {"email": 1, "phone": 1},
+        "overlapped_reason_counts": {"authority_field_unavailable": 1},
+        "unavailable_field_counts": {},
         "identity_absent_count": 1,
     }
     assert facts["excluded_findings"][0] == {

@@ -104,12 +104,24 @@ export function AgentReportPage() {
   const narrative = record(report.data.content.narrative);
   const exceptionAnalyses = records(narrative.input_exception_analyses);
   const findings = uniqueRecordsById(records(facts.findings));
+  const governanceFindings = findings.filter(
+    (item) => text(item.kind, "") !== "authority_invalid",
+  );
   const excluded = records(facts.excluded_findings ?? facts.invalid_rows);
+  const inputDiagnostics = record(facts.input_diagnostics);
+  const overlappedReasonCounts = record(inputDiagnostics.overlapped_reason_counts);
   const exceptionReasonCodes = new Set(
     exceptionAnalyses.map((item) => text(item.reason_code, "")).filter(Boolean),
   );
+  const overlappedReasonCodes = new Set(Object.keys(overlappedReasonCounts));
   const remainingExclusions = excluded.filter(
-    (item) => !exceptionReasonCodes.has(text(item.reason, "")),
+    (item) => {
+      const reason = text(item.reason, "");
+      return !exceptionReasonCodes.has(reason) && !overlappedReasonCodes.has(reason);
+    },
+  );
+  const inputExceptionCount = count(
+    inputDiagnostics.unique_marked_input_count ?? excluded.length,
   );
   const mutations = records(facts.mutations);
   const mutationSummary = record(facts.mutation_summary);
@@ -125,8 +137,8 @@ export function AgentReportPage() {
       ? report.data.terminal_state === "completed_with_conflicts"
         ? "部分数据的当前值与可安全回滚的值不一致，系统已跳过这些冲突项。"
         : "目标数据已经完成回滚；已处于原状态的记录不会重复写入。"
-      : findings.length
-      ? `Agent 共发现 ${findings.length} 项需要处理的问题，并依据审核结果完成治理。`
+      : governanceFindings.length
+      ? `Agent 共发现 ${governanceFindings.length} 项需要处理的问题，并依据审核结果完成治理。`
       : "Agent 已完成本次数据核验，没有发现需要治理的问题。",
   );
   const publicationStatus = text(publication.status, "not_applicable");
@@ -170,8 +182,8 @@ export function AgentReportPage() {
           </>
         ) : (
           <>
-            <article><span>需要处理</span><strong>{findings.length}</strong></article>
-            <article><span>输入异常</span><strong>{excluded.length}</strong></article>
+            <article><span>需要处理</span><strong>{governanceFindings.length}</strong></article>
+            <article><span>输入异常</span><strong>{inputExceptionCount}</strong></article>
             <article><span>成功变更</span><strong>{text(mutationSummary.succeeded, "0")}</strong></article>
             <article className={hasFailedMutations ? "agent-report-metric-error" : undefined}>
               <span>失败变更</span><strong>{failedMutationCount}</strong>
@@ -201,9 +213,9 @@ export function AgentReportPage() {
           <span className="agent-report-section-icon"><ShieldAlert size={20} /></span>
           <div><p>ANALYSIS</p><h2>问题分析与治理方案</h2></div>
         </header>
-        {findings.length ? (
+        {governanceFindings.length ? (
           <ol className="agent-report-findings">
-            {findings.map((item, index) => {
+            {governanceFindings.map((item, index) => {
               const identity = [
                 text(item.entity_name, ""),
                 item.entity_number ? `编号 ${text(item.entity_number)}` : "",

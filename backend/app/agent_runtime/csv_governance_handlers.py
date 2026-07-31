@@ -744,25 +744,61 @@ def _input_diagnostics(
         "authoritative": set(),
         "target": set(),
     }
-    reason_counts: dict[str, int] = {}
-    unavailable_field_counts: dict[str, int] = {}
-    identity_absent_inputs: set[UUID] = set()
+    marks_by_input: dict[
+        UUID,
+        list[tuple[AgentInputMarkRecord, str]],
+    ] = {}
     for mark, source_role in mark_rows:
         marked_inputs[source_role].add(mark.input_record_id)
-        reason_counts[mark.reason_code] = reason_counts.get(mark.reason_code, 0) + 1
-        if mark.reason_code == "authority_field_unavailable":
-            for field in set(mark.affected_fields):
+        marks_by_input.setdefault(mark.input_record_id, []).append((mark, source_role))
+
+    reason_counts: dict[str, int] = {}
+    overlapped_reason_counts: dict[str, int] = {}
+    unavailable_field_counts: dict[str, int] = {}
+    identity_absent_inputs: set[UUID] = set()
+    for input_record_id, input_marks in marks_by_input.items():
+        selected_mark, _source_role = min(
+            input_marks,
+            key=lambda item: (
+                _report_reason_priority(item[0]),
+                item[0].reason_code,
+            ),
+        )
+        reason_counts[selected_mark.reason_code] = (
+            reason_counts.get(selected_mark.reason_code, 0) + 1
+        )
+        if selected_mark.reason_code == "authority_field_unavailable":
+            for field in set(selected_mark.affected_fields):
                 unavailable_field_counts[field] = unavailable_field_counts.get(field, 0) + 1
-        elif mark.reason_code == "authority_identity_absent":
-            identity_absent_inputs.add(mark.input_record_id)
+        elif selected_mark.reason_code == "authority_identity_absent":
+            identity_absent_inputs.add(input_record_id)
+        for mark, _role in input_marks:
+            if mark is selected_mark:
+                continue
+            overlapped_reason_counts[mark.reason_code] = (
+                overlapped_reason_counts.get(mark.reason_code, 0) + 1
+            )
+
     return {
         "marked_input_counts": {
             role: len(input_ids) for role, input_ids in marked_inputs.items()
         },
+        "unique_marked_input_count": len(marks_by_input),
         "reason_counts": dict(sorted(reason_counts.items())),
+        "overlapped_reason_counts": dict(sorted(overlapped_reason_counts.items())),
         "unavailable_field_counts": dict(sorted(unavailable_field_counts.items())),
         "identity_absent_count": len(identity_absent_inputs),
     }
+
+
+def _report_reason_priority(mark: AgentInputMarkRecord) -> int:
+    if mark.reason_code == "authority_identity_absent":
+        return 0
+    if mark.inclusion_state in {"anomaly", "excluded"}:
+        return 1
+    if mark.reason_code == "authority_field_unavailable":
+        return 3
+    return 2
 
 
 def _report_finding(

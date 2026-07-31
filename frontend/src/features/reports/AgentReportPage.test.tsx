@@ -106,32 +106,61 @@ describe("Agent synchronization report", () => {
           title_zh: "部分执行同步报告",
           summary_zh: "部分获批变更未能完成。",
           input_exception_analyses: [{
-            reason_code: "authority_field_unavailable",
-            title_zh: "权威学生数据缺少班级字段",
-            analysis_zh: "钉钉权威数据中有 7 条学生记录未提供班级字段。",
-            impact_zh: "身份匹配仍可继续，但无法分析或治理学生班级差异。",
-            suggestion_zh: "请检查钉钉接口权限、数据范围和班级字段映射。",
+            reason_code: "authority_identity_absent",
+            title_zh: "权威部门数据缺少身份标识",
+            analysis_zh: "钉钉权威数据中有 4 条部门记录缺少身份标识。",
+            impact_zh: "这些部门记录无法可靠匹配，已从治理范围排除。",
+            suggestion_zh: "请补充可用于匹配的部门编号后重新运行任务。",
           }],
         },
       },
       facts: {
-        findings: [{
-          id: "finding-failed",
-          category_zh: "多余教师",
-          entity_name: "测试教师",
-          operator_decision: "approved",
-          execution_status: "failed",
-        }],
+        findings: [
+          {
+            id: "finding-failed",
+            kind: "target_extra",
+            category_zh: "多余教师",
+            entity_name: "测试教师",
+            operator_decision: "approved",
+            execution_status: "failed",
+          },
+          {
+            id: "authority-invalid-1",
+            kind: "authority_invalid",
+            category_zh: "权威记录缺少身份标识",
+            analysis_zh: "部门记录缺少编号、电话和邮箱。",
+            execution_status: "not_executed",
+          },
+          {
+            id: "authority-invalid-2",
+            kind: "authority_invalid",
+            category_zh: "权威记录缺少身份标识",
+            analysis_zh: "部门记录缺少编号、电话和邮箱。",
+            execution_status: "not_executed",
+          },
+        ],
         excluded_findings: [
           {
             reason: "authority_field_unavailable",
             disposition: "source_field_unavailable",
           },
           {
+            reason: "authority_identity_absent",
+            disposition: "mandatory_ai_anomaly",
+          },
+          {
             reason: "目标记录缺少身份字段",
             disposition: "target_extra",
           },
         ],
+        input_diagnostics: {
+          marked_input_counts: { authoritative: 4, target: 0 },
+          unique_marked_input_count: 4,
+          reason_counts: { authority_identity_absent: 4 },
+          overlapped_reason_counts: { authority_field_unavailable: 4 },
+          unavailable_field_counts: {},
+          identity_absent_count: 4,
+        },
         mutations: [{
           id: "operation-failed",
           operation: "delete",
@@ -155,6 +184,8 @@ describe("Agent synchronization report", () => {
     expect(await screen.findByText("部分完成")).toBeInTheDocument();
     const finding = container.querySelector(".agent-report-findings > li");
     expect(finding).not.toBeNull();
+    expect(container.querySelectorAll(".agent-report-findings > li")).toHaveLength(1);
+    expect(screen.queryByText("权威记录缺少身份标识")).not.toBeInTheDocument();
     expect(within(finding as HTMLElement).getByText("已同意")).toBeInTheDocument();
     expect(within(finding as HTMLElement).getByText("执行失败")).toBeInTheDocument();
     const exclusion = container.querySelector(".agent-report-exclusions > li");
@@ -162,16 +193,19 @@ describe("Agent synchronization report", () => {
     expect(
       within(exclusion as HTMLElement).getByText("输入异常"),
     ).toBeInTheDocument();
-    expect(screen.getByText("权威学生数据缺少班级字段")).toBeInTheDocument();
+    expect(screen.getByText("权威部门数据缺少身份标识")).toBeInTheDocument();
     expect(
-      screen.getByText("钉钉权威数据中有 7 条学生记录未提供班级字段。"),
+      screen.getByText("钉钉权威数据中有 4 条部门记录缺少身份标识。"),
     ).toBeInTheDocument();
     expect(
-      screen.getByText("身份匹配仍可继续，但无法分析或治理学生班级差异。"),
+      screen.getByText("这些部门记录无法可靠匹配，已从治理范围排除。"),
     ).toBeInTheDocument();
     expect(
-      screen.getByText("请检查钉钉接口权限、数据范围和班级字段映射。"),
+      screen.getByText("请补充可用于匹配的部门编号后重新运行任务。"),
     ).toBeInTheDocument();
+    const exceptionMetric = [...container.querySelectorAll(".agent-report-metrics article")]
+      .find((item) => within(item as HTMLElement).queryByText("输入异常"));
+    expect(within(exceptionMetric as HTMLElement).getByText("4")).toBeInTheDocument();
     expect(screen.queryByText("authority_field_unavailable")).not.toBeInTheDocument();
     expect(container.querySelectorAll(".agent-report-exclusions > li")).toHaveLength(1);
     expect(

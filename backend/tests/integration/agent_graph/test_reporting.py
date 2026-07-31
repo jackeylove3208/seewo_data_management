@@ -93,8 +93,28 @@ async def test_graph_report_uses_model_narrative_but_server_facts(session) -> No
                     "missing_count": 7,
                     "missing_fields": "class_name",
                 },
-            }
+            },
+            {
+                "source_role": "authoritative",
+                "reason": "authority_identity_absent",
+                "affected_fields": ["number"],
+                "inclusion_state": "anomaly",
+                "disposition": "mandatory_ai_anomaly",
+                "safe_evidence": {
+                    "entity_kind": "department",
+                    "missing_count": 4,
+                    "missing_fields": "number",
+                },
+            },
         ],
+        "input_diagnostics": {
+            "marked_input_counts": {"authoritative": 4, "target": 0},
+            "unique_marked_input_count": 4,
+            "reason_counts": {"authority_identity_absent": 4},
+            "overlapped_reason_counts": {"authority_field_unavailable": 4},
+            "unavailable_field_counts": {},
+            "identity_absent_count": 4,
+        },
         "mutations": [
             {
                 "id": str(uuid4()),
@@ -132,16 +152,16 @@ async def test_graph_report_uses_model_narrative_but_server_facts(session) -> No
                     "summary_zh": "本次同步已完成，治理操作已经服务端验证。",
                     "input_exception_analyses": [
                         {
-                            "reason_code": "authority_field_unavailable",
-                            "title_zh": "权威学生数据缺少班级字段",
+                            "reason_code": "authority_identity_absent",
+                            "title_zh": "权威部门数据缺少身份标识",
                             "analysis_zh": (
-                                "钉钉权威数据中有 7 条学生记录未提供班级字段。"
+                                "钉钉权威数据中有 4 条部门记录缺少身份标识。"
                             ),
                             "impact_zh": (
-                                "身份匹配仍可继续，但无法分析或治理学生班级差异。"
+                                "这些部门记录无法可靠匹配，已从治理范围排除。"
                             ),
                             "suggestion_zh": (
-                                "请检查钉钉接口权限、数据范围和班级字段映射。"
+                                "请补充可用于匹配的部门编号后重新运行任务。"
                             ),
                         }
                     ],
@@ -195,11 +215,11 @@ async def test_graph_report_uses_model_narrative_but_server_facts(session) -> No
     analyses = result.report.content["narrative"]["input_exception_analyses"]
     assert analyses == [
         {
-            "reason_code": "authority_field_unavailable",
-            "title_zh": "权威学生数据缺少班级字段",
-            "analysis_zh": "钉钉权威数据中有 7 条学生记录未提供班级字段。",
-            "impact_zh": "身份匹配仍可继续，但无法分析或治理学生班级差异。",
-            "suggestion_zh": "请检查钉钉接口权限、数据范围和班级字段映射。",
+            "reason_code": "authority_identity_absent",
+            "title_zh": "权威部门数据缺少身份标识",
+            "analysis_zh": "钉钉权威数据中有 4 条部门记录缺少身份标识。",
+            "impact_zh": "这些部门记录无法可靠匹配，已从治理范围排除。",
+            "suggestion_zh": "请补充可用于匹配的部门编号后重新运行任务。",
         }
     ]
     assert result.report.rollback_eligible is True

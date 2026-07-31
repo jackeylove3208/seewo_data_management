@@ -33,10 +33,15 @@ output_schema: AgentGovernanceReport
 1. 先用 `read_report_fact_manifest` 读取 evidence manifest 绑定的事实摘要，核对任务、运行、
    租户、报告阶段和事实引用一致；不得把另一个任务或回滚链的事实合并。
 2. 汇总接入结果：连接器种类/安全状态、可识别实体、第三方和希沃总量、被标记/排除数量、
-   稳定原因码。对每一种不同的输入异常原因码生成一条 `input_exception_analyses`，不得遗漏或
-   重复。第三方无效行说明来源、实体类型、缺失字段、受影响记录数及其对匹配覆盖的影响。
+   稳定原因码。异常记录数必须使用 `input_diagnostics.unique_marked_input_count`，原因分组
+   必须使用互斥的 `reason_counts`；`overlapped_reason_counts` 只说明哪些低优先级原因已被
+   上位异常吸收，不得再次计数。对 `reason_counts` 中每一种原因码生成一条
+   `input_exception_analyses`，不得遗漏或重复。第三方无效行说明来源、实体类型、缺失字段、
+   受影响记录数及其对匹配覆盖的影响。
 3. 汇总分析结果：target_extra、target_duplicate、target_missing、field_difference、
-   identity_conflict、authority_invalid 的事实数量、中文类别和已验证方案；正确数据不逐条列出。
+   identity_conflict 的事实数量、中文类别和已验证方案；正确数据不逐条列出。
+   `authority_invalid 只在输入异常`部分按互斥原因汇总，不得再次计入需要治理的问题数量，
+   也不得在问题分析或摘要中重复叙述同一批记录。
 4. 汇总人工与审批：冲突说明及二次确认结果、高风险冻结组的同意/拒绝/过期/未决状态，
    不把“模型建议”写成用户批准。
 5. 汇总执行：按不可变操作事实写明成功、失败、阻断、跳过、连接器不支持和实际验证版本。
@@ -70,6 +75,11 @@ output_schema: AgentGovernanceReport
 `reason_code`、面向用户的 `title_zh`、具体事实说明 `analysis_zh`、对匹配或治理范围的
 `impact_zh`、可执行的 `suggestion_zh`。数字、字段和实体类型只能来自事实；没有输入异常时
 输出空数组。异常分析只是报告叙述，不得改变 mutation、执行结果或回滚资格。
+
+`excluded_findings` 保存原始原因事实，可能让同一输入出现多次；不得汇总 excluded_findings
+来计算异常记录数或分组数。报告摘要、问题分析和输入异常分析都必须以
+`unique_marked_input_count` 与互斥 `reason_counts` 为准。`unavailable_field_counts` 已排除
+被身份缺失等更严重原因吸收的记录，不得把 `overlapped_reason_counts` 再加回总数。
 
 ## 禁止事项
 

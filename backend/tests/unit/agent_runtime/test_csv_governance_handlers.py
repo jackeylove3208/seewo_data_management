@@ -1,9 +1,11 @@
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
 from app.agent_runtime.csv_governance_handlers import (
     _changed_values,
+    _input_diagnostics,
     _require_target_identity,
 )
 
@@ -85,3 +87,57 @@ def test_target_identity_guard_rejects_a_locator_for_another_entity() -> None:
                 "number": "T-999",
             },
         )
+
+
+def test_input_diagnostics_count_overlapping_marks_once_by_severity() -> None:
+    mark_rows = []
+    for _ in range(4):
+        input_record_id = uuid4()
+        mark_rows.extend(
+            (
+                (
+                    SimpleNamespace(
+                        input_record_id=input_record_id,
+                        reason_code="authority_field_unavailable",
+                        affected_fields=["email", "number", "phone"],
+                        inclusion_state="included",
+                    ),
+                    "authoritative",
+                ),
+                (
+                    SimpleNamespace(
+                        input_record_id=input_record_id,
+                        reason_code="authority_identity_absent",
+                        affected_fields=["email", "number", "phone"],
+                        inclusion_state="anomaly",
+                    ),
+                    "authoritative",
+                ),
+            )
+        )
+    for _ in range(3):
+        mark_rows.append(
+            (
+                SimpleNamespace(
+                    input_record_id=uuid4(),
+                    reason_code="authority_field_unavailable",
+                    affected_fields=["class_name"],
+                    inclusion_state="included",
+                ),
+                "authoritative",
+            )
+        )
+
+    diagnostics = _input_diagnostics(tuple(mark_rows))
+
+    assert diagnostics == {
+        "marked_input_counts": {"authoritative": 7, "target": 0},
+        "unique_marked_input_count": 7,
+        "reason_counts": {
+            "authority_field_unavailable": 3,
+            "authority_identity_absent": 4,
+        },
+        "overlapped_reason_counts": {"authority_field_unavailable": 4},
+        "unavailable_field_counts": {"class_name": 3},
+        "identity_absent_count": 4,
+    }
