@@ -1202,6 +1202,10 @@ select {
   border-left: 3px solid #f59e0b;
 }
 
+.agent-report-exception-analysis {
+  padding: 20px;
+}
+
 .agent-report-exception-analyses h3,
 .agent-report-exception-analyses p {
   margin: 0;

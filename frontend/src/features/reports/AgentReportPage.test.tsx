@@ -122,10 +122,16 @@ describe("Agent synchronization report", () => {
           operator_decision: "approved",
           execution_status: "failed",
         }],
-        excluded_findings: [{
-          reason: "目标记录缺少身份字段",
-          disposition: "target_extra",
-        }],
+        excluded_findings: [
+          {
+            reason: "authority_field_unavailable",
+            disposition: "source_field_unavailable",
+          },
+          {
+            reason: "目标记录缺少身份字段",
+            disposition: "target_extra",
+          },
+        ],
         mutations: [{
           id: "operation-failed",
           operation: "delete",
@@ -166,7 +172,54 @@ describe("Agent synchronization report", () => {
     expect(
       screen.getByText("请检查钉钉接口权限、数据范围和班级字段映射。"),
     ).toBeInTheDocument();
+    expect(screen.queryByText("authority_field_unavailable")).not.toBeInTheDocument();
+    expect(container.querySelectorAll(".agent-report-exclusions > li")).toHaveLength(1);
+    expect(
+      container.querySelector(".agent-report-exception-analyses > li"),
+    ).toHaveClass("agent-report-exception-analysis");
     expect(container.querySelector(".agent-report-metric-error")).not.toBeNull();
+    client.clear();
+  });
+
+  it("renders a duplicated unexecuted finding only once", async () => {
+    vi.spyOn(agentApi, "report").mockResolvedValue({
+      id: "report-unexecuted",
+      task_id: "task-report-1",
+      kind: "sync",
+      terminal_state: "completed",
+      rollback_eligible: false,
+      deletion_eligible: false,
+      created_at: "2026-07-31T08:00:00Z",
+      content: { narrative: {} },
+      facts: {
+        findings: [
+          {
+            id: "finding-unexecuted",
+            category_zh: "待处理学生信息",
+            analysis_zh: "缺少可执行的审批结论。",
+            solution_zh: "等待人工审核后再执行。",
+            execution_status: "not_executed",
+          },
+          {
+            id: "finding-unexecuted",
+            category_zh: "待处理学生信息",
+            analysis_zh: "缺少可执行的审批结论。",
+            solution_zh: "等待人工审核后再执行。",
+            execution_status: "not_executed",
+          },
+        ],
+        excluded_findings: [],
+        mutations: [],
+        mutation_summary: { succeeded: 0, failed: 0 },
+      },
+    });
+
+    const { client, container } = renderPage();
+
+    await screen.findByText("待处理学生信息");
+    expect(container.querySelectorAll(".agent-report-findings > li")).toHaveLength(1);
+    expect(screen.getAllByText("缺少可执行的审批结论。")).toHaveLength(1);
+    expect(screen.getByText("未执行")).toBeInTheDocument();
     client.clear();
   });
 

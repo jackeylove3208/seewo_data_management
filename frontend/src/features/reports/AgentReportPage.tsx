@@ -20,6 +20,18 @@ function records(value: unknown): ReportItem[] {
     : [];
 }
 
+function uniqueRecordsById(items: ReportItem[]) {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const id = text(item.id, "");
+    if (!id || seen.has(id)) {
+      return !id;
+    }
+    seen.add(id);
+    return true;
+  });
+}
+
 function text(value: unknown, fallback = "—") {
   return typeof value === "string" || typeof value === "number" ? String(value) : fallback;
 }
@@ -91,8 +103,14 @@ export function AgentReportPage() {
   const facts = report.data.facts;
   const narrative = record(report.data.content.narrative);
   const exceptionAnalyses = records(narrative.input_exception_analyses);
-  const findings = records(facts.findings);
+  const findings = uniqueRecordsById(records(facts.findings));
   const excluded = records(facts.excluded_findings ?? facts.invalid_rows);
+  const exceptionReasonCodes = new Set(
+    exceptionAnalyses.map((item) => text(item.reason_code, "")).filter(Boolean),
+  );
+  const remainingExclusions = excluded.filter(
+    (item) => !exceptionReasonCodes.has(text(item.reason, "")),
+  );
   const mutations = records(facts.mutations);
   const mutationSummary = record(facts.mutation_summary);
   const publication = record(facts.publication);
@@ -230,7 +248,7 @@ export function AgentReportPage() {
         ) : <Empty description="没有需要治理的问题" />}
       </section>
 
-      {excluded.length > 0 && (
+      {(exceptionAnalyses.length > 0 || remainingExclusions.length > 0) && (
         <section className="agent-report-section">
           <header>
             <span className="agent-report-section-icon"><ShieldAlert size={20} /></span>
@@ -239,7 +257,10 @@ export function AgentReportPage() {
           {exceptionAnalyses.length > 0 && (
             <ol className="agent-report-exception-analyses">
               {exceptionAnalyses.map((item, index) => (
-                <li key={text(item.reason_code, `exception-analysis-${index}`)}>
+                <li
+                  className="agent-report-exception-analysis"
+                  key={text(item.reason_code, `exception-analysis-${index}`)}
+                >
                   <h3>{text(item.title_zh, "输入异常分析")}</h3>
                   <p>{text(item.analysis_zh)}</p>
                   <p><strong>影响：</strong>{text(item.impact_zh)}</p>
@@ -248,16 +269,18 @@ export function AgentReportPage() {
               ))}
             </ol>
           )}
-          <ul className="agent-report-exclusions">
-            {excluded.map((item, index) => (
-              <li key={`${text(item.source, "input")}-${index}`}>
-                <span>
-                  {text(item.reason ?? item.disposition ?? item.source, "输入数据不符合规范")}
-                </span>
-                <Tag color="orange">输入异常</Tag>
-              </li>
-            ))}
-          </ul>
+          {remainingExclusions.length > 0 && (
+            <ul className="agent-report-exclusions">
+              {remainingExclusions.map((item, index) => (
+                <li key={`${text(item.source, "input")}-${index}`}>
+                  <span>
+                    {text(item.reason ?? item.disposition ?? item.source, "输入数据不符合规范")}
+                  </span>
+                  <Tag color="orange">输入异常</Tag>
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
       )}
 
