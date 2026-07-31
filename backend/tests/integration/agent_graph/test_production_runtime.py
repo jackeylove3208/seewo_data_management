@@ -29,7 +29,7 @@ from app.agent_runtime.source_bindings import _configuration_fingerprint
 from app.agent_runtime.sql_governance_handlers import SqlGovernanceExecutionHandler
 from app.agent_runtime.state_machine import AgentPhase, AgentRunKind
 from app.ai.graph_subagents import GraphSubAgentFailure
-from app.ai.providers.base import LLMResponse, ModelUsage
+from app.ai.providers.base import LLMResponse, ModelProviderError, ModelUsage
 from app.ai.skills.contracts import CsvFieldMapping, CsvSchemaMappingOutput
 from app.connectors.base import ConnectorVersion
 from app.connectors.configured import (
@@ -528,7 +528,7 @@ async def test_termination_report_uses_verified_facts_without_calling_model(
 
 
 @pytest.mark.asyncio
-async def test_terminal_report_falls_back_after_one_model_attempt(
+async def test_terminal_report_retries_model_and_persists_model_report(
     database,
     tmp_path: Path,
 ) -> None:
@@ -546,7 +546,33 @@ async def test_terminal_report_falls_back_after_one_model_attempt(
         requires_human=False,
         successor_node="terminal",
     )
-    provider = ModelMustNotRun()
+    fact_ref = f"report-facts:{context.run_id}:{context.graph_cursor}"
+
+    class RetryingReportProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete_json_once(self, _request):
+            self.calls += 1
+            if self.calls == 1:
+                raise ModelProviderError("synthetic transient report outage")
+            result = {
+                "schema_version": "agent-contract-v1",
+                "title_zh": "模型生成的数据同步报告",
+                "summary_zh": "模型已根据核验事实生成报告。",
+                "input_exception_analyses": [],
+                "fact_refs": [fact_ref],
+                "rollback_evidence_eligible": False,
+            }
+            return LLMResponse(
+                output={"result": result},
+                provider="scripted",
+                model="report-model",
+                request_id=f"retrying-report-{self.calls}",
+                usage=ModelUsage(input_tokens=10, output_tokens=10),
+            )
+
+    provider = RetryingReportProvider()
     executor = ProductionGraphActionExecutor(
         database.session_factory,
         provider=provider,
@@ -556,7 +582,7 @@ async def test_terminal_report_falls_back_after_one_model_attempt(
     outcome = await executor._generate_report(context, action)
 
     assert outcome.action_id == action.action_id
-    assert provider.calls == 1
+    assert provider.calls == 2
     async with database.session_factory() as session:
         report = await session.scalar(
             select(AgentReportRecord).where(
@@ -565,7 +591,8 @@ async def test_terminal_report_falls_back_after_one_model_attempt(
         )
     assert report is not None
     assert report.terminal_state == "completed"
-    assert report.generated_by == "agent-graph-report-fallback-v1"
+    assert report.generated_by == "agent-graph-report-skill-v1"
+    assert report.content["narrative"]["title_zh"] == "模型生成的数据同步报告"
 
 
 @pytest.mark.asyncio

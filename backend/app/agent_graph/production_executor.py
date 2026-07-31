@@ -2673,7 +2673,7 @@ class ProductionGraphActionExecutor:
                         tools=fact_tools.handlers(),
                     ),
                     operator=operator,
-                    max_retries=0,
+                    max_retries=self._max_retries,
                 )
                 rollback_eligible = has_fully_verified_mutations(
                     terminal_state,
