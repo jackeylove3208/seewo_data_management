@@ -3697,6 +3697,39 @@ body {
   line-height: 1.6;
 }
 
+.api-connection-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.api-connection-form > label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--v2-ink-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.api-connection-form > label > input,
+.api-connection-form > label > select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid var(--v2-line-strong);
+  border-radius: 5px;
+  color: var(--v2-ink);
+  background: var(--v2-surface);
+}
+
+.api-connection-form > label > select {
+  padding-right: 32px;
+}
+
 .start-confirmation {
   border-color: #b9d8cc;
   background: #f4fbf7;

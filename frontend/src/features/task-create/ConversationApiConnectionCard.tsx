@@ -111,7 +111,10 @@ export function ConversationApiConnectionCard({
       {active ? (
         <p>连接测试通过</p>
       ) : (
-        <form onSubmit={(event) => void submit(event)}>
+        <form
+          className="api-connection-form"
+          onSubmit={(event) => void submit(event)}
+        >
           <label>
             <span>连接名称</span>
             <input

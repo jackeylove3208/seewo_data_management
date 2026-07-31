@@ -33,3 +33,24 @@ it("clears credential inputs after a failed submission", async () => {
   expect(within(card).getByLabelText("AppKey")).toHaveValue("");
   expect(within(card).getByLabelText("AppSecret")).toHaveValue("");
 });
+
+it("uses a single-column form for DingTalk connection fields", () => {
+  render(
+    <ConversationApiConnectionCard
+      conversationId="00000000-0000-0000-0000-000000000001"
+      connection={{
+        provider_id: "dingtalk",
+        state: "configuration_required",
+        required_secret_fields: ["app_key", "app_secret"],
+        display_name: "钉钉临时连接-测试",
+        capabilities: {},
+        visibility_summary: {},
+      }}
+      configure={vi.fn()}
+      onChange={vi.fn()}
+    />,
+  );
+
+  expect(screen.getByLabelText("API 连接配置").querySelector("form"))
+    .toHaveClass("api-connection-form");
+});
