@@ -17,6 +17,8 @@ from tests.integration.agent_runtime.test_api_task_binding import (
     _settings,
 )
 
+DINGTALK_MANIFEST = MANIFEST.model_copy(update={"provider_id": "dingtalk"})
+
 
 class ApiConversationProvider:
     async def complete_json_once(self, request: LLMRequest) -> LLMResponse:
@@ -26,7 +28,7 @@ class ApiConversationProvider:
         if not connections:
             result = {
                 "kind": "api_configuration",
-                "api_provider_id": MANIFEST.provider_id,
+                "api_provider_id": DINGTALK_MANIFEST.provider_id,
                 "message_zh": "需要先安全配置组织 API 连接。",
             }
         else:
@@ -58,8 +60,9 @@ def api_conversation_client(tmp_path: Path):
         }
     )
     adapter = AdapterMustNotRun()
+    adapter.manifest = DINGTALK_MANIFEST
     registry = ProviderRegistry()
-    registry.register(MANIFEST, adapter)
+    registry.register(DINGTALK_MANIFEST, adapter)
     with TestClient(create_app(settings)) as client:
         client.app.state.api_provider_registry = registry
         client.app.state.conversation_provider = ApiConversationProvider()
@@ -85,9 +88,12 @@ def test_conversation_returns_safe_configuration_card_without_secret_values(
     assert response.status_code == 200, response.text
     card = response.json()["api_connection"]
     display_name = card.pop("display_name")
-    assert re.fullmatch(r"fake-org临时连接-\d{8}-\d{6}", display_name)
+    assert re.fullmatch(
+        r"钉钉临时连接-\d{8}-\d{6}-[0-9a-f]{6}",
+        display_name,
+    )
     assert card == {
-        "provider_id": MANIFEST.provider_id,
+        "provider_id": DINGTALK_MANIFEST.provider_id,
         "state": "configuration_required",
         "required_secret_fields": ["client_id", "client_secret"],
         "capabilities": {},
@@ -104,7 +110,11 @@ def test_conversation_does_not_reuse_a_persistent_api_connection(
     async def seed():
         async with client.app.state.database.session_factory() as session:
             async with session.begin():
-                return await _seed_connection(session, fernet_key=key)
+                return await _seed_connection(
+                    session,
+                    fernet_key=key,
+                    manifest=DINGTALK_MANIFEST,
+                )
 
     client.portal.call(seed)
 
@@ -134,6 +144,7 @@ def test_confirmed_api_connection_creates_one_idempotent_graph_task(
                     fernet_key=key,
                     scope="task_ephemeral",
                     conversation_id=UUID(conversation_id),
+                    manifest=DINGTALK_MANIFEST,
                 )
 
     connection = client.portal.call(seed)

@@ -29,10 +29,11 @@ secret reference and SHALL allow only the backend provider runtime to resolve th
 - **WHEN** an authenticated tenant requests or references a connection owned by another tenant
 - **THEN** the backend returns not found or forbidden without disclosing connection metadata
 
-### Requirement: Scope conversational credentials to one task
-The system SHALL create a new task-ephemeral organization API connection for each conversational
+### Requirement: Scope conversational DingTalk credentials to one task
+The system SHALL create a new task-ephemeral DingTalk connection for each conversational DingTalk
 task, bind it first to the originating conversation and then atomically to at most one task, and
-SHALL NOT offer persistent or historical connections as conversational task sources.
+SHALL NOT offer persistent or historical DingTalk connections as conversational task sources.
+Other providers SHALL retain their existing connection lifecycle until explicitly migrated.
 
 #### Scenario: Conversation creates a connection
 - **WHEN** a user submits the secure connector card from an active conversation

@@ -25,7 +25,7 @@ from app.models.agent_analysis import (
     AgentModelBatchRecord,
     AgentWorkItemRecord,
 )
-from app.models.agent_runtime import AgentRunRecord
+from app.models.agent_runtime import AgentConversationRecord, AgentRunRecord
 from app.models.analyses import AnalysisRecord
 from app.models.api_connectors import (
     AgentSourceBindingRecord,
@@ -190,17 +190,31 @@ async def test_deletes_materialized_api_source_before_its_task(
         ciphertext=b"rotated",
         key_version="fernet-v1",
     )
+    conversation = AgentConversationRecord(
+        tenant_id=removable.tenant_id,
+        created_by="operator-1",
+        status="active",
+        context={},
+    )
+    session.add(conversation)
+    await session.flush()
     connection = ApiConnectionRecord(
         tenant_id=removable.tenant_id,
         provider_id="dingtalk",
         display_name="待删除任务的连接",
+        scope="task_ephemeral",
+        conversation_id=conversation.id,
+        task_id=removable.id,
+        consumed_task_id=removable.id,
         public_configuration={},
         secret_ref="pending",
         manifest_version="v1",
         adapter_version="v1",
         capabilities={},
         visibility_summary={},
-        state="active",
+        state="disabled",
+        credentials_revoked_at=datetime.now(UTC),
+        disabled_reason="snapshot_materialized",
         created_by="operator-1",
         updated_by="operator-1",
     )
@@ -276,7 +290,11 @@ async def test_deletes_materialized_api_source_before_its_task(
     assert await session.get(AgentSourceBindingRecord, binding.id) is None
     assert await session.get(ApiAuthoritySourceRecord, api_source.id) is None
     assert await session.get(ReconciliationTask, removable.id) is None
-    assert await session.get(ApiConnectionRecord, connection.id) is not None
+    retained_connection = await session.get(ApiConnectionRecord, connection.id)
+    assert retained_connection is not None
+    await session.refresh(retained_connection)
+    assert retained_connection.task_id is None
+    assert retained_connection.consumed_task_id == removable.id
     assert await session.get(ApiConnectionSecretRecord, frozen_secret.id) is None
     assert await session.get(ApiConnectionSecretRecord, current_secret.id) is not None
     assert not artifact.exists()

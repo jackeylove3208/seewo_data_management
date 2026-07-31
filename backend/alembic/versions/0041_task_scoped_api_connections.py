@@ -34,6 +34,7 @@ def upgrade() -> None:
             "scope",
             "conversation_id",
             "task_id",
+            "consumed_task_id",
             "credentials_revoked_at",
             "disabled_reason",
         } <= connection_columns:
@@ -83,6 +84,7 @@ def upgrade() -> None:
         )
         batch_op.add_column(sa.Column("conversation_id", sa.Uuid(), nullable=True))
         batch_op.add_column(sa.Column("task_id", sa.Uuid(), nullable=True))
+        batch_op.add_column(sa.Column("consumed_task_id", sa.Uuid(), nullable=True))
         batch_op.add_column(
             sa.Column("credentials_revoked_at", sa.DateTime(timezone=True), nullable=True)
         )
@@ -101,7 +103,7 @@ def upgrade() -> None:
             "reconciliation_tasks",
             ["task_id"],
             ["id"],
-            ondelete="RESTRICT",
+            ondelete="SET NULL",
         )
         batch_op.create_index("ix_api_connections_scope", ["scope"], unique=False)
         batch_op.create_index(
@@ -113,6 +115,11 @@ def upgrade() -> None:
             "ix_api_connections_task_id",
             ["task_id"],
             unique=True,
+        )
+        batch_op.create_index(
+            "ix_api_connections_consumed_task_id",
+            ["consumed_task_id"],
+            unique=False,
         )
         batch_op.create_check_constraint(
             "ck_api_connection_scope",
@@ -147,6 +154,7 @@ def downgrade() -> None:
             type_="check",
         )
         batch_op.drop_constraint("ck_api_connection_scope", type_="check")
+        batch_op.drop_index("ix_api_connections_consumed_task_id")
         batch_op.drop_index("ix_api_connections_task_id")
         batch_op.drop_index("ix_api_connections_conversation_id")
         batch_op.drop_index("ix_api_connections_scope")
@@ -160,6 +168,7 @@ def downgrade() -> None:
         )
         batch_op.drop_column("disabled_reason")
         batch_op.drop_column("credentials_revoked_at")
+        batch_op.drop_column("consumed_task_id")
         batch_op.drop_column("task_id")
         batch_op.drop_column("conversation_id")
         batch_op.drop_column("scope")

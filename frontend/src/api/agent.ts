@@ -418,6 +418,7 @@ async function configureApiConnection(
       body: JSON.stringify({
         public_configuration: configuration.public_configuration,
         secret: configuration.secret,
+        conversation_id: configuration.conversation_id,
       }),
     });
   } else {

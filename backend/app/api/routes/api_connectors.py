@@ -13,6 +13,7 @@ from app.agent_runtime.external_identity_service import (
     ExternalIdentityBindingValidation,
 )
 from app.api.dependencies import get_operator_context, get_session
+from app.api_connectors.policy import uses_task_scoped_conversation_credentials
 from app.api_connectors.service import (
     ApiConnectionConflictError,
     ApiConnectionNotFoundError,
@@ -99,13 +100,18 @@ async def create_api_configuration_session(
                 status.HTTP_404_NOT_FOUND,
                 detail="Active conversation not found",
             )
-        connection_scope = "task_ephemeral"
+        if uses_task_scoped_conversation_credentials(payload.provider_id):
+            connection_scope = "task_ephemeral"
     session.add(
         ApiConfigurationSessionRecord(
             id=session_id,
             tenant_id=operator.tenant_id,
             provider_id=payload.provider_id,
-            conversation_id=payload.conversation_id,
+            conversation_id=(
+                payload.conversation_id
+                if connection_scope == "task_ephemeral"
+                else None
+            ),
             created_by=operator.operator_id,
             connection_scope=connection_scope,
             expires_at=expires_at,
@@ -223,6 +229,7 @@ async def rotate_api_connection_secret(
             connection_id=connection_id,
             secret=payload.secret,
             public_configuration=payload.public_configuration,
+            conversation_id=payload.conversation_id,
         )
     except ApiConnectionNotFoundError as error:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error

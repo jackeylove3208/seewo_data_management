@@ -43,9 +43,14 @@ class ApiConnectionRecord(Base, TimestampMixin):
         index=True,
     )
     task_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("reconciliation_tasks.id", ondelete="RESTRICT"),
+        ForeignKey("reconciliation_tasks.id", ondelete="SET NULL"),
         nullable=True,
         unique=True,
+        index=True,
+    )
+    consumed_task_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        nullable=True,
         index=True,
     )
     public_configuration: Mapped[dict[str, Any]] = mapped_column(_json(), default=dict)

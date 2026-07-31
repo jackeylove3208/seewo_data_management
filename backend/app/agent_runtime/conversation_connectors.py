@@ -1,11 +1,13 @@
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from uuid import UUID
+from datetime import UTC, datetime, timedelta
+from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api_connectors.policy import uses_task_scoped_conversation_credentials
 from app.api_connectors.registry import ProviderRegistry
 from app.api_connectors.repository import ApiConnectionRepository
+from app.api_connectors.secrets import revoke_expired_ephemeral_connections
 from app.schemas.agent_api import AgentApiConnectionCard
 from app.schemas.agent_conversation import (
     ConversationApiConnection,
@@ -80,6 +82,11 @@ async def load_conversation_api_catalog(
     conversation_id: UUID,
     registry: ProviderRegistry,
 ) -> ConversationApiCatalog:
+    await revoke_expired_ephemeral_connections(
+        session,
+        tenant_id=tenant_id,
+        expires_before=datetime.now(UTC) - timedelta(hours=24),
+    )
     providers = tuple(
         ConversationApiProvider(
             provider_id=manifest.provider_id,
@@ -91,9 +98,22 @@ async def load_conversation_api_catalog(
             for provider_id in registry.provider_ids()
         )
     )
-    records = await ApiConnectionRepository(session).list_ephemeral_for_conversation(
-        tenant_id=tenant_id,
-        conversation_id=conversation_id,
+    records = tuple(
+        record
+        for record in await ApiConnectionRepository(session).list_for_tenant(tenant_id)
+        if (
+            (
+                uses_task_scoped_conversation_credentials(record.provider_id)
+                and record.scope == "task_ephemeral"
+                and record.conversation_id == conversation_id
+                and record.task_id is None
+                and record.credentials_revoked_at is None
+            )
+            or (
+                not uses_task_scoped_conversation_credentials(record.provider_id)
+                and record.scope == "persistent"
+            )
+        )
     )
     connections = tuple(
         ConversationApiConnection(
@@ -124,4 +144,4 @@ def _temporary_display_name(provider_id: str) -> str:
         "wecom": "企业微信",
     }.get(provider_id, provider_id)
     timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    return f"{provider_name}临时连接-{timestamp}"
+    return f"{provider_name}临时连接-{timestamp}-{uuid4().hex[:6]}"

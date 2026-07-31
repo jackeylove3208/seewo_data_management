@@ -11,6 +11,10 @@ class ApiConnectionRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    @property
+    def session(self) -> AsyncSession:
+        return self._session
+
     async def add(self, record: ApiConnectionRecord) -> ApiConnectionRecord:
         self._session.add(record)
         await self._session.flush()
@@ -55,6 +59,23 @@ class ApiConnectionRepository:
                     ApiConnectionRecord.id == connection_id,
                     ApiConnectionRecord.tenant_id == tenant_id,
                 )
+            ),
+        )
+
+    async def get_for_tenant_for_update(
+        self,
+        connection_id: UUID,
+        tenant_id: str,
+    ) -> ApiConnectionRecord | None:
+        return cast(
+            ApiConnectionRecord | None,
+            await self._session.scalar(
+                select(ApiConnectionRecord)
+                .where(
+                    ApiConnectionRecord.id == connection_id,
+                    ApiConnectionRecord.tenant_id == tenant_id,
+                )
+                .with_for_update()
             ),
         )
 

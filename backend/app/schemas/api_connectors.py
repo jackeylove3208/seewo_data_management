@@ -49,6 +49,7 @@ class ApiConnectionRotateSecret(BaseModel):
 
     public_configuration: dict[str, object] | None = None
     secret: dict[str, str]
+    conversation_id: UUID | None = None
 
 
 class ApiConnectionRead(BaseModel):

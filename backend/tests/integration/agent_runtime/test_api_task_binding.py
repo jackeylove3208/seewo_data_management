@@ -220,6 +220,7 @@ async def _seed_connection(
     tenant_id: str = "school-1",
     scope: str = "persistent",
     conversation_id=None,
+    manifest: ProviderManifest = MANIFEST,
 ) -> ApiConnectionRecord:
     secret_ref = await EncryptedDatabaseSecretStore(
         session,
@@ -230,14 +231,14 @@ async def _seed_connection(
     )
     connection = ApiConnectionRecord(
         tenant_id=tenant_id,
-        provider_id=MANIFEST.provider_id,
+        provider_id=manifest.provider_id,
         display_name="权威通讯录",
         scope=scope,
         conversation_id=conversation_id,
         public_configuration={"person_entity_kind": "teacher"},
         secret_ref=secret_ref,
-        manifest_version=MANIFEST.manifest_version,
-        adapter_version=MANIFEST.adapter_version,
+        manifest_version=manifest.manifest_version,
+        adapter_version=manifest.adapter_version,
         capabilities={"entity.teacher.read": True},
         visibility_summary={"visible": True, "teacher_count": 2},
         state="active",
@@ -362,15 +363,22 @@ async def test_conversation_api_task_rejects_a_persistent_connection(
 ) -> None:
     key = Fernet.generate_key()
     settings = _settings(key)
+    dingtalk_manifest = MANIFEST.model_copy(update={"provider_id": "dingtalk"})
+    adapter = AdapterMustNotRun()
+    adapter.manifest = dingtalk_manifest
     registry = ProviderRegistry()
-    registry.register(MANIFEST, AdapterMustNotRun())
+    registry.register(dingtalk_manifest, adapter)
     async with database.session_factory() as session:
         async with session.begin():
             conversation = await AgentRuntimeRepository(session).create_conversation(
                 tenant_id="school-1",
                 created_by="operator-1",
             )
-            connection = await _seed_connection(session, fernet_key=key)
+            connection = await _seed_connection(
+                session,
+                fernet_key=key,
+                manifest=dingtalk_manifest,
+            )
 
             with pytest.raises(
                 AgentConnectorCapabilityFailure,
@@ -389,6 +397,39 @@ async def test_conversation_api_task_rejects_a_persistent_connection(
                     idempotency_key="persistent-conversation-api-task",
                     conversation_id=conversation.id,
                 )
+
+
+async def test_non_dingtalk_conversation_task_keeps_persistent_connection_compatible(
+    database,
+) -> None:
+    key = Fernet.generate_key()
+    settings = _settings(key)
+    registry = ProviderRegistry()
+    registry.register(MANIFEST, AdapterMustNotRun())
+    async with database.session_factory() as session:
+        async with session.begin():
+            conversation = await AgentRuntimeRepository(session).create_conversation(
+                tenant_id="school-1",
+                created_by="operator-1",
+            )
+            connection = await _seed_connection(session, fernet_key=key)
+
+            task, _run = await AgentTaskService(
+                session,
+                operator=OperatorContext(
+                    operator_id="operator-1",
+                    tenant_id="school-1",
+                ),
+                settings=settings,
+                provider_registry=registry,
+            ).create(
+                _intent(connection.id),
+                idempotency_key="persistent-non-dingtalk-conversation-task",
+                conversation_id=conversation.id,
+            )
+
+            assert task.id is not None
+            assert connection.task_id is None
 
 
 async def test_conversation_api_task_atomically_binds_its_ephemeral_connection(
@@ -411,7 +452,7 @@ async def test_conversation_api_task_atomically_binds_its_ephemeral_connection(
                 conversation_id=conversation.id,
             )
 
-            task, _run = await AgentTaskService(
+            service = AgentTaskService(
                 session,
                 operator=OperatorContext(
                     operator_id="operator-1",
@@ -419,13 +460,21 @@ async def test_conversation_api_task_atomically_binds_its_ephemeral_connection(
                 ),
                 settings=settings,
                 provider_registry=registry,
-            ).create(
+            )
+            task, _run = await service.create(
+                _intent(connection.id),
+                idempotency_key="ephemeral-conversation-api-task",
+                conversation_id=conversation.id,
+            )
+            replayed_task, _replayed_run = await service.create(
                 _intent(connection.id),
                 idempotency_key="ephemeral-conversation-api-task",
                 conversation_id=conversation.id,
             )
 
             assert connection.task_id == task.id
+            assert connection.consumed_task_id == task.id
+            assert replayed_task.id == task.id
 
 
 async def test_api_task_rejects_cross_tenant_connection_before_creating_task(

@@ -92,11 +92,11 @@ export function ConversationApiConnectionCard({
           ? { connection_id: connection.connection_id }
           : {}),
       });
-      setSecret({});
       onChange(configured);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "连接配置失败，请重试。");
     } finally {
+      setSecret({});
       setSubmitting(false);
     }
   }

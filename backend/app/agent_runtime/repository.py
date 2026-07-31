@@ -156,6 +156,16 @@ class AgentRuntimeRepository:
                 conversation_id=conversation_id,
                 reason="conversation_reset",
             )
+        active_lock = await self.session.scalar(
+            select(SchoolTaskLockRecord)
+            .where(
+                SchoolTaskLockRecord.tenant_id == tenant_id,
+                SchoolTaskLockRecord.active.is_(True),
+            )
+            .with_for_update()
+        )
+        if active_lock is not None:
+            raise ConversationResetConflict(active_lock.owner_task_id)
         await self.session.execute(
             delete(AgentConversationRecord).where(
                 AgentConversationRecord.tenant_id == tenant_id,

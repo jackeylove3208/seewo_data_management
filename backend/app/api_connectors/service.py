@@ -12,7 +12,10 @@ from app.api_connectors.contracts import (
 )
 from app.api_connectors.registry import ProviderRegistry
 from app.api_connectors.repository import ApiConnectionRepository
-from app.api_connectors.secrets import EncryptedDatabaseSecretStore
+from app.api_connectors.secrets import (
+    EncryptedDatabaseSecretStore,
+    revoke_conversation_ephemeral_connections,
+)
 from app.models.api_connectors import ApiConnectionRecord
 
 
@@ -75,6 +78,15 @@ class ApiConnectionService:
             raise ApiConnectionValidationError(
                 "task-ephemeral connections require a conversation"
             )
+        if scope == "task_ephemeral":
+            _validate_dingtalk_task_configuration(provider_id, public_configuration)
+            assert conversation_id is not None
+            await revoke_conversation_ephemeral_connections(
+                self._repository.session,
+                tenant_id=tenant_id,
+                conversation_id=conversation_id,
+                reason="superseded",
+            )
 
         secret_ref = await self._secrets.put(tenant_id=tenant_id, payload=secret)
         record = ApiConnectionRecord(
@@ -119,9 +131,17 @@ class ApiConnectionService:
         operator_id: str,
         connection_id: UUID,
     ) -> SafeApiConnection:
-        record = await self._owned(connection_id, tenant_id)
+        record = await self._owned_for_update(connection_id, tenant_id)
         if record.state == "disabled":
             raise ApiConnectionConflictError("connection is disabled")
+        if record.scope == "task_ephemeral" and (
+            record.created_by != operator_id
+            or record.task_id is not None
+            or record.credentials_revoked_at is not None
+        ):
+            raise ApiConnectionConflictError(
+                "task-ephemeral connection cannot be tested"
+            )
         manifest = self._manifest(record.provider_id)
         if (
             record.manifest_version != manifest.manifest_version
@@ -157,10 +177,29 @@ class ApiConnectionService:
         connection_id: UUID,
         secret: Mapping[str, str],
         public_configuration: Mapping[str, object] | None = None,
+        conversation_id: UUID | None = None,
     ) -> SafeApiConnection:
-        record = await self._owned(connection_id, tenant_id)
+        record = await self._owned_for_update(connection_id, tenant_id)
         if record.state == "disabled":
             raise ApiConnectionConflictError("connection is disabled")
+        if record.scope == "task_ephemeral":
+            if (
+                record.created_by != operator_id
+                or record.conversation_id != conversation_id
+                or record.task_id is not None
+                or record.credentials_revoked_at is not None
+            ):
+                raise ApiConnectionConflictError(
+                    "task-ephemeral connection cannot be rotated"
+                )
+            if public_configuration is None:
+                raise ApiConnectionValidationError(
+                    "complete DingTalk configuration is required"
+                )
+            _validate_dingtalk_task_configuration(
+                record.provider_id,
+                public_configuration,
+            )
         _validate_secret_shape(secret, self._manifest(record.provider_id))
         await self._secrets.rotate(
             tenant_id=tenant_id,
@@ -204,6 +243,19 @@ class ApiConnectionService:
             raise ApiConnectionNotFoundError("API connection not found")
         return record
 
+    async def _owned_for_update(
+        self,
+        connection_id: UUID,
+        tenant_id: str,
+    ) -> ApiConnectionRecord:
+        record = await self._repository.get_for_tenant_for_update(
+            connection_id,
+            tenant_id,
+        )
+        if record is None:
+            raise ApiConnectionNotFoundError("API connection not found")
+        return record
+
     def _manifest(self, provider_id: str) -> ProviderManifest:
         try:
             return self._registry.manifest(provider_id)
@@ -221,6 +273,35 @@ def _validate_secret_shape(
         raise ApiConnectionValidationError(
             "connection secret does not match the provider credential schema"
         )
+
+
+def _validate_dingtalk_task_configuration(
+    provider_id: str,
+    configuration: Mapping[str, object],
+) -> None:
+    if provider_id != "dingtalk":
+        return
+    if configuration.get("person_entity_kind") not in {"teacher", "student"}:
+        raise ApiConnectionValidationError(
+            "DingTalk personnel type must be teacher or student"
+        )
+    root_department_id = configuration.get("root_department_id")
+    if (
+        isinstance(root_department_id, bool)
+        or not isinstance(root_department_id, int)
+        or root_department_id <= 0
+    ):
+        raise ApiConnectionValidationError(
+            "DingTalk root department ID must be a positive integer"
+        )
+    for field_name in ("number_field", "class_name_field"):
+        value = configuration.get(field_name)
+        if value is not None and (
+            not isinstance(value, str) or not value.strip()
+        ):
+            raise ApiConnectionValidationError(
+                f"DingTalk {field_name} must be a non-blank string"
+            )
 
 
 def _safe_view(record: ApiConnectionRecord) -> SafeApiConnection:

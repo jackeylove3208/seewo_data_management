@@ -12,6 +12,7 @@ from app.agent_runtime.observability import agent_observability
 from app.agent_runtime.repository import AgentRuntimeRepository, SchoolLockConflict
 from app.agent_runtime.service import AgentSupervisorService
 from app.api_connectors.contracts import ProviderManifest
+from app.api_connectors.policy import uses_task_scoped_conversation_credentials
 from app.api_connectors.registry import ProviderRegistry
 from app.core.config import Settings
 from app.core.security import OperatorContext
@@ -74,11 +75,6 @@ class AgentTaskService:
         self._validate_connector_runtime(intent, conversation_id=conversation_id)
         api_connection: ApiConnectionRecord | None = None
         api_manifest: ProviderManifest | None = None
-        if intent.source.kind == "api" and intent.target.kind == "database":
-            api_connection, api_manifest = await self._load_api_authority_connection(
-                intent,
-                conversation_id=conversation_id,
-            )
         payload = intent.model_dump(mode="json")
         request_hash = _hash(
             {
@@ -100,6 +96,11 @@ class AgentTaskService:
                 raise AgentTaskConflict("Agent task exists without a runtime")
             return existing, run
 
+        if intent.source.kind == "api" and intent.target.kind == "database":
+            api_connection, api_manifest = await self._load_api_authority_connection(
+                intent,
+                conversation_id=conversation_id,
+            )
         remote_source = await self._load_remote_source(
             intent,
             conversation_id=conversation_id,
@@ -343,9 +344,13 @@ class AgentTaskService:
             raise AgentConnectorCapabilityFailure(
                 "API connection is unavailable for this tenant"
             )
-        if conversation_id is not None and (
-            connection.scope != "task_ephemeral"
-            or connection.conversation_id != conversation_id
+        if (
+            conversation_id is not None
+            and uses_task_scoped_conversation_credentials(connection.provider_id)
+            and (
+                connection.scope != "task_ephemeral"
+                or connection.conversation_id != conversation_id
+            )
         ):
             raise AgentConnectorCapabilityFailure(
                 "Conversation API tasks require a task-ephemeral connection"
@@ -519,6 +524,7 @@ class AgentTaskService:
             raise ValueError("API Agent task requires server connector settings")
         if connection.scope == "task_ephemeral":
             connection.task_id = task.id
+            connection.consumed_task_id = task.id
         target = self.settings.database_connector_configurations[
             target_configuration_id
         ]

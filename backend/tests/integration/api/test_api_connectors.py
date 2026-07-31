@@ -171,6 +171,124 @@ def test_conversation_configuration_creates_a_task_ephemeral_connection(
     assert record.credentials_revoked_at is None
 
 
+def test_conversation_configuration_requires_fresh_dingtalk_scope_fields(
+    connector_client: tuple[TestClient, FakeDingTalkAdapter],
+) -> None:
+    client, _adapter = connector_client
+    conversation = client.post("/api/agent/conversations").json()
+    configuration_session = client.post(
+        "/api/connectors/configuration-sessions",
+        json={
+            "provider_id": "dingtalk",
+            "conversation_id": conversation["id"],
+        },
+    ).json()
+
+    created = client.post(
+        "/api/connectors/connections",
+        json={
+            "configuration_session_id": configuration_session["id"],
+            "provider_id": "dingtalk",
+            "display_name": "缺少范围配置",
+            "public_configuration": {},
+            "secret": {"app_key": "app", "app_secret": "secret"},
+        },
+    )
+
+    assert created.status_code == 422
+    assert "personnel type" in created.json()["detail"]
+
+
+def test_new_conversation_connection_supersedes_previous_unbound_connection(
+    connector_client: tuple[TestClient, FakeDingTalkAdapter],
+) -> None:
+    client, _adapter = connector_client
+    conversation = client.post("/api/agent/conversations").json()
+
+    def create(display_name: str) -> dict[str, object]:
+        configuration_session = client.post(
+            "/api/connectors/configuration-sessions",
+            json={
+                "provider_id": "dingtalk",
+                "conversation_id": conversation["id"],
+            },
+        ).json()
+        response = client.post(
+            "/api/connectors/connections",
+            json={
+                "configuration_session_id": configuration_session["id"],
+                "provider_id": "dingtalk",
+                "display_name": display_name,
+                "public_configuration": {
+                    "person_entity_kind": "teacher",
+                    "root_department_id": 1,
+                },
+                "secret": {"app_key": "app", "app_secret": "secret"},
+            },
+        )
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    previous = create("钉钉临时连接-旧")
+    current = create("钉钉临时连接-新")
+
+    async def inspect_connections():
+        async with client.app.state.database.session_factory() as session:
+            return (
+                await session.get(ApiConnectionRecord, UUID(previous["id"])),
+                await session.get(ApiConnectionRecord, UUID(current["id"])),
+            )
+
+    old_record, current_record = client.portal.call(inspect_connections)
+    assert old_record is not None
+    assert old_record.state == "disabled"
+    assert old_record.disabled_reason == "superseded"
+    assert old_record.credentials_revoked_at is not None
+    assert current_record is not None
+    assert current_record.credentials_revoked_at is None
+
+
+def test_ephemeral_connection_rotation_requires_its_conversation(
+    connector_client: tuple[TestClient, FakeDingTalkAdapter],
+) -> None:
+    client, _adapter = connector_client
+    conversation = client.post("/api/agent/conversations").json()
+    configuration_session = client.post(
+        "/api/connectors/configuration-sessions",
+        json={
+            "provider_id": "dingtalk",
+            "conversation_id": conversation["id"],
+        },
+    ).json()
+    created = client.post(
+        "/api/connectors/connections",
+        json={
+            "configuration_session_id": configuration_session["id"],
+            "provider_id": "dingtalk",
+            "display_name": "不可跨对话轮换",
+            "public_configuration": {
+                "person_entity_kind": "teacher",
+                "root_department_id": 1,
+            },
+            "secret": {"app_key": "app", "app_secret": "secret"},
+        },
+    ).json()
+
+    rotated = client.post(
+        f"/api/connectors/connections/{created['id']}/rotate-secret",
+        json={
+            "conversation_id": "00000000-0000-0000-0000-000000000001",
+            "public_configuration": {
+                "person_entity_kind": "teacher",
+                "root_department_id": 1,
+            },
+            "secret": {"app_key": "new", "app_secret": "new-secret"},
+        },
+    )
+
+    assert rotated.status_code == 409
+
+
 def test_conversation_reset_revokes_an_unbound_ephemeral_connection(
     connector_client: tuple[TestClient, FakeDingTalkAdapter],
 ) -> None:
