@@ -1142,6 +1142,23 @@ async def test_remote_materialization_action_publishes_only_task_bound_authority
 
 
 @pytest.mark.asyncio
+async def test_remote_csv_v3_materialization_selects_the_remote_source(
+    database,
+) -> None:
+    context, remote_source_id = await _remote_materialization_context(database)
+    context = replace(
+        context,
+        ingestion_contract_version="source-ingestion-v3",
+    )
+
+    plan = await ProductionGraphCandidateProvider(database.session_factory)(context)
+    actions = [item.action for item in plan.candidate_evaluations if item.passed]
+
+    assert len(actions) == 1
+    assert actions[0].resource_ids == (f"remote-source:{remote_source_id}",)
+
+
+@pytest.mark.asyncio
 async def test_remote_materialization_failure_stops_before_source_inspection(
     database,
     tmp_path: Path,

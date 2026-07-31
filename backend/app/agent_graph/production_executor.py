@@ -458,6 +458,8 @@ class ProductionGraphActionExecutor:
                     action,
                     binding,
                 )
+            if binding.connector_kind == "csv":
+                return await self._inspect_csv_source_v2(context, action)
             raise GraphGuardRejected("ingestion_v3_connector_kind_unsupported")
         if context.ingestion_contract_version == "source-ingestion-v2":
             if await self._task_source_mode(context.task_id) == "database":
@@ -783,6 +785,12 @@ class ProductionGraphActionExecutor:
                         action,
                         binding,
                     )
+                if binding.connector_kind == "csv":
+                    return await self._resolve_csv_mapping_v3(
+                        context,
+                        action,
+                        binding,
+                    )
             elif resource_id.endswith(":full"):
                 if binding.connector_kind == "api":
                     return await self._normalize_api_source_v3(
@@ -792,6 +800,12 @@ class ProductionGraphActionExecutor:
                     )
                 if binding.connector_kind == "database":
                     return await self._normalize_database_source_v3(
+                        context,
+                        action,
+                        binding,
+                    )
+                if binding.connector_kind == "csv":
+                    return await self._normalize_csv_source_v3(
                         context,
                         action,
                         binding,
@@ -867,6 +881,191 @@ class ProductionGraphActionExecutor:
                     source_role=AgentSourceRole(role),
                     output=output,
                     resolve_phone_token=tools.resolve_phone_token,
+                )
+        return _outcome(action)
+
+    async def _resolve_csv_mapping_v3(
+        self,
+        context: GraphWorkContext,
+        action: AllowedActionV1,
+        binding: AgentSourceBinding,
+    ) -> GraphActionOutcome:
+        async with self._session_factory() as session:
+            async with session.begin():
+                _snapshot, source = await _source_snapshot(
+                    session,
+                    task_id=context.task_id,
+                    role=binding.role,
+                )
+                headers = inspect_csv(Path(source.storage_path)).headers
+                mapper = AgentContractMapper()
+                unresolved: tuple[str, ...] = ()
+                try:
+                    mapper.assert_recognizable_headers(headers)
+                    field_mapping = mapper.resolve_header_mapping(headers)
+                    model_calls = 0
+                except AgentContractError:
+                    profiles, field_refs = _csv_source_profiles(
+                        {binding.role: (_snapshot, source)}
+                    )
+                    _tools, runner, manifest_id = await self._analysis_runtime(
+                        session,
+                        context=context,
+                        action=action,
+                    )
+                    result = await runner.run(
+                        GraphSkillInvocation(
+                            task_id=context.task_id,
+                            run_id=context.run_id,
+                            graph_run_id=context.graph_run_id,
+                            graph_node=context.current_node,
+                            graph_cursor=context.graph_cursor,
+                            action_id=action.action_id,
+                            evidence_manifest_id=manifest_id,
+                            skill_name="map-csv-organization-schema",
+                            skill_version="1.0.0",
+                            input_payload=CsvSchemaMappingInput(
+                                task_id=context.task_id,
+                                run_id=context.run_id,
+                                phase=AgentPhase.INGEST_AND_NORMALIZE,
+                                evidence_refs=action.required_evidence,
+                                sources=profiles,
+                            ).model_dump(mode="json"),
+                        ),
+                        result_validator=lambda output: _validate_csv_mapping_output(
+                            output,
+                            field_refs=field_refs,
+                            roles=(binding.role,),
+                        ),
+                    )
+                    output = result.output
+                    if not isinstance(output, CsvSchemaMappingOutput):
+                        raise RuntimeError(
+                            "validated CSV mapping output changed type"
+                        ) from None
+                    items = (
+                        output.authoritative_mappings
+                        if binding.role == "authoritative"
+                        else output.target_mappings
+                    )
+                    unresolved = tuple(
+                        item
+                        for item in output.unresolved_required_fields
+                        if item.startswith(f"{binding.role}.")
+                    )
+                    field_mapping = {
+                        item.contract_field: field_refs[binding.role][
+                            item.source_field_ref
+                        ]
+                        for item in items
+                    }
+                    model_calls = result.attempt_count
+                payload = {
+                    "schema_version": "fixed-six-field-csv-mapping-v3",
+                    "resolved": not unresolved,
+                    "mapping": field_mapping,
+                    "source_hash": source.sha256,
+                    "model_calls": model_calls,
+                }
+                await AgentRuntimeRepository(session).save_checkpoint(
+                    context.run_id,
+                    phase=AgentPhase.INGEST_AND_NORMALIZE,
+                    checkpoint_key=binding.mapping_checkpoint_key,
+                    input_hash=_hash(
+                        {
+                            "role": binding.role,
+                            "source_hash": source.sha256,
+                            "contract": context.ingestion_contract_version,
+                        }
+                    ),
+                    payload=payload,
+                )
+                await self._record_deterministic_invocation(
+                    session,
+                    context=context,
+                    action=action,
+                    output=payload,
+                )
+        return _outcome(action)
+
+    async def _normalize_csv_source_v3(
+        self,
+        context: GraphWorkContext,
+        action: AllowedActionV1,
+        binding: AgentSourceBinding,
+    ) -> GraphActionOutcome:
+        async with self._session_factory() as session:
+            async with session.begin():
+                task = await session.get(ReconciliationTask, context.task_id)
+                if task is None:
+                    raise LookupError("Agent graph task is missing")
+                snapshot, source = await _source_snapshot(
+                    session,
+                    task_id=context.task_id,
+                    role=binding.role,
+                )
+                mapping = await AgentRuntimeRepository(session).get_checkpoint(
+                    context.run_id,
+                    phase=AgentPhase.INGEST_AND_NORMALIZE,
+                    checkpoint_key=binding.mapping_checkpoint_key,
+                )
+                frozen_mapping = (
+                    mapping.payload.get("mapping") if mapping is not None else None
+                )
+                if (
+                    mapping is None
+                    or not mapping.payload.get("resolved", False)
+                    or not isinstance(frozen_mapping, dict)
+                    or not all(
+                        isinstance(field, str) and isinstance(header, str)
+                        for field, header in frozen_mapping.items()
+                    )
+                ):
+                    raise GraphGuardRejected("csv_authority_mapping_unavailable")
+                outcome = AgentCsvIngestionAdapter().inspect_csv(
+                    path=Path(source.storage_path),
+                    task_id=context.task_id,
+                    run_id=context.run_id,
+                    snapshot_id=snapshot.id,
+                    tenant_id=context.tenant_id,
+                    source_role=AgentSourceRole(binding.role),
+                    selected_entities=_selected_agent_entities(task.entity_types),
+                    field_mapping={
+                        str(field): str(header)
+                        for field, header in frozen_mapping.items()
+                    },
+                )
+                repository = AgentAnalysisRepository(session)
+                persisted = await repository.persist_inputs(outcome.records)
+                marks = _bind_input_marks(outcome.marks, persisted)
+                await repository.persist_marks(marks)
+                payload = {
+                    "schema_version": "source-ingestion-v3",
+                    "mapping_version": "fixed-six-field-csv-mapping-v3",
+                    "source_role": binding.role,
+                    "connector_kind": "csv",
+                    "record_count": len(persisted),
+                    "mark_count": len(marks),
+                    "model_calls": 0,
+                }
+                await AgentRuntimeRepository(session).save_checkpoint(
+                    context.run_id,
+                    phase=AgentPhase.INGEST_AND_NORMALIZE,
+                    checkpoint_key=binding.normalization_checkpoint_key,
+                    input_hash=_hash(
+                        {
+                            "source_hash": source.sha256,
+                            "mapping": frozen_mapping,
+                            "selected_entities": sorted(task.entity_types),
+                        }
+                    ),
+                    payload=payload,
+                )
+                await self._record_deterministic_invocation(
+                    session,
+                    context=context,
+                    action=action,
+                    output=payload,
                 )
         return _outcome(action)
 
@@ -3789,13 +3988,15 @@ def _safe_csv_problem_code(error: CsvFormatError | AgentContractError) -> str:
 def _csv_source_profiles(
     materials: dict[str, tuple[Snapshot, SourceFile]],
 ) -> tuple[
-    tuple[CsvSourceSchemaProfile, CsvSourceSchemaProfile],
+    tuple[CsvSourceSchemaProfile, ...],
     dict[str, dict[str, str]],
 ]:
     profiles: list[CsvSourceSchemaProfile] = []
     field_refs: dict[str, dict[str, str]] = {}
     mapper = AgentContractMapper()
     for role in ("authoritative", "target"):
+        if role not in materials:
+            continue
         _snapshot, source = materials[role]
         path = Path(source.storage_path)
         inspection = inspect_csv(path)
@@ -3829,7 +4030,7 @@ def _csv_source_profiles(
                 columns=tuple(columns),
             )
         )
-    return (profiles[0], profiles[1]), field_refs
+    return tuple(profiles), field_refs
 
 
 def _infer_csv_column_type(values: list[str]) -> str:
@@ -3852,7 +4053,7 @@ def _infer_csv_column_type(values: list[str]) -> str:
 
 
 def _deterministic_csv_pair_mapping(
-    profiles: tuple[CsvSourceSchemaProfile, CsvSourceSchemaProfile],
+    profiles: tuple[CsvSourceSchemaProfile, ...],
 ) -> CsvSchemaMappingOutput | None:
     by_role: dict[str, tuple[CsvFieldMapping, ...]] = {}
     mapper = AgentContractMapper()
@@ -3902,13 +4103,19 @@ def _validate_csv_mapping_output(
     output: object,
     *,
     field_refs: dict[str, dict[str, str]],
+    roles: tuple[str, ...] = ("authoritative", "target"),
 ) -> CsvSchemaMappingOutput:
     if not isinstance(output, CsvSchemaMappingOutput):
         raise ValueError("CSV mapping Skill returned another schema")
-    for role, mappings in (
-        ("authoritative", output.authoritative_mappings),
-        ("target", output.target_mappings),
-    ):
+    mappings_by_role = {
+        "authoritative": output.authoritative_mappings,
+        "target": output.target_mappings,
+    }
+    for role in {"authoritative", "target"} - set(roles):
+        if mappings_by_role[role]:
+            raise ValueError(f"{role} CSV mapping was not requested")
+    for role in roles:
+        mappings = mappings_by_role[role]
         contract_fields = [mapping.contract_field for mapping in mappings]
         source_refs = [mapping.source_field_ref for mapping in mappings]
         if len(set(contract_fields)) != len(contract_fields):
@@ -3930,7 +4137,7 @@ def _validate_csv_mapping_output(
                 raise ValueError("class_name CSV mapping only applies to students")
     allowed_unresolved = {
         f"{role}.{field}"
-        for role in ("authoritative", "target")
+        for role in roles
         for field in ("category", "name", "number", "class_name", "phone", "email")
     }
     unresolved = set(output.unresolved_required_fields)
@@ -3938,10 +4145,8 @@ def _validate_csv_mapping_output(
         raise ValueError("CSV mapping repeats an unresolved field")
     if not unresolved <= allowed_unresolved:
         raise ValueError("CSV mapping returned an unknown unresolved field")
-    for role, mappings in (
-        ("authoritative", output.authoritative_mappings),
-        ("target", output.target_mappings),
-    ):
+    for role in roles:
+        mappings = mappings_by_role[role]
         mapped_fields = {mapping.contract_field for mapping in mappings}
         unresolved_fields = {
             item.removeprefix(f"{role}.")

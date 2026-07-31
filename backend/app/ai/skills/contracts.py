@@ -139,7 +139,7 @@ class CsvSourceSchemaProfile(StrictContract):
 
 
 class CsvSchemaMappingInput(AgentSkillInput):
-    sources: tuple[CsvSourceSchemaProfile, ...] = Field(min_length=2, max_length=2)
+    sources: tuple[CsvSourceSchemaProfile, ...] = Field(min_length=1, max_length=2)
 
 
 class CsvFieldMapping(StrictContract):

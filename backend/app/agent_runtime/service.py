@@ -85,7 +85,10 @@ class AgentSupervisorService:
                 if self.settings is not None
                 and self.settings.source_ingestion_v3_enabled
                 and task.workflow_version == "agent-graph-v1"
-                and _uses_api_authority(task)
+                and (
+                    _uses_api_authority(task)
+                    or _uses_csv_database_pair(task)
+                )
                 else (
                     "source-ingestion-v2"
                     if self.settings is not None
@@ -101,7 +104,10 @@ class AgentSupervisorService:
                     self.settings.source_ingestion_v2_enabled
                     or (
                         self.settings.source_ingestion_v3_enabled
-                        and _uses_api_authority(task)
+                        and (
+                            _uses_api_authority(task)
+                            or _uses_csv_database_pair(task)
+                        )
                     )
                 )
                 and task.workflow_version == "agent-graph-v1"
@@ -450,3 +456,16 @@ def _uses_api_authority(task: ReconciliationTask) -> bool:
         return False
     source = task.agent_intent.get("source")
     return isinstance(source, dict) and source.get("kind") == "api"
+
+
+def _uses_csv_database_pair(task: ReconciliationTask) -> bool:
+    if not isinstance(task.agent_intent, dict):
+        return False
+    source = task.agent_intent.get("source")
+    target = task.agent_intent.get("target")
+    return (
+        isinstance(source, dict)
+        and source.get("kind") in {"csv", "local", "remote_csv"}
+        and isinstance(target, dict)
+        and target.get("kind") == "database"
+    )

@@ -464,18 +464,16 @@ class ProductionGraphCandidateProvider:
         if context.current_node == "inspect_sources":
             return await self._inspection_actions(session, context)
         if context.current_node == "materialize_sources":
-            if context.ingestion_contract_version == "source-ingestion-v3":
-                api_source_id = await session.scalar(
-                    select(ApiAuthoritySourceRecord.id).where(
-                        ApiAuthoritySourceRecord.task_id == context.task_id,
-                        ApiAuthoritySourceRecord.tenant_id == context.tenant_id,
-                        ApiAuthoritySourceRecord.state.in_(
-                            ("registered", "materializing", "ready", "failed")
-                        ),
-                    )
+            api_source_id = await session.scalar(
+                select(ApiAuthoritySourceRecord.id).where(
+                    ApiAuthoritySourceRecord.task_id == context.task_id,
+                    ApiAuthoritySourceRecord.tenant_id == context.tenant_id,
+                    ApiAuthoritySourceRecord.state.in_(
+                        ("registered", "materializing", "ready", "failed")
+                    ),
                 )
-                if api_source_id is None:
-                    raise LookupError("Task-bound API authority source is missing")
+            )
+            if api_source_id is not None:
                 template = _template(context, "materialize_remote_authority")
                 return (
                     template.model_copy(
@@ -773,13 +771,18 @@ class ProductionGraphCandidateProvider:
                             successor="normalize_input_batches",
                             kind=(
                                 "dispatch_sub_agent"
-                                if binding.connector_kind == "database"
+                                if binding.connector_kind in {"database", "csv"}
                                 and mapping_required
                                 else "run_deterministic"
                             ),
                             sub_agent=(
-                                "database-schema-mapping"
-                                if binding.connector_kind == "database"
+                                (
+                                    "database-schema-mapping"
+                                    if binding.connector_kind == "database"
+                                    else "csv-schema-mapping"
+                                )
+                                if binding.connector_kind
+                                in {"database", "csv"}
                                 and mapping_required
                                 else None
                             ),

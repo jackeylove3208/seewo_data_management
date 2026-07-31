@@ -1060,6 +1060,9 @@ async def start_manual_agent_task(
     if (
         body.source.kind in {"api", "database", "remote_csv"}
         or body.target.kind in {"api", "database", "remote_csv"}
+    ) and not (
+        body.source.kind == "csv"
+        and body.target.kind == "database"
     ):
         raise HTTPException(
             422,

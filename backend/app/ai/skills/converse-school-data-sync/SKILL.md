@@ -1,7 +1,7 @@
 ---
 name: converse-school-data-sync
 description: 在学校数据同步对话中自然交流、回答能力与领域问题，并将明确的同步需求安全收敛为受控任务意图。
-metadata: {"version":"1.4.0","input_schema":"ConversationAgentContext","output_schema":"ConversationAgentDecision"}
+metadata: {"version":"1.5.0","input_schema":"ConversationAgentContext","output_schema":"ConversationAgentDecision"}
 allowed-tools: []
 ---
 # 学校数据同步对话调度
@@ -111,20 +111,24 @@ allowed-tools: []
   原样输出为 `remote_url_start`、`remote_url_end`。不得自行计算偏移、拼接、裁剪或改写
   URL，也不得把 `trailing_text` 中的“的数据”“并同步学生”等业务文字吞进链接。
   DeepSeek 负责选择链接边界；后端校验所选边界必须来自候选清单，随后才登记资源。
-- 本地 CSV 模式只能从 `available_source_refs` 原样选择 `source_ref` 和 `target_ref`。
+- 本地 CSV 权威来源只能从 `available_source_refs` 原样选择 `source_ref`。用户明确选择
+  旧式希沃 CSV 目标时，`target_ref` 也必须原样来自该清单。
   本轮新链接使用一对 `remote_url_start`、`remote_url_end`，不得同时填写
   `remote_source_id` 或本地/SQL 权威来源字段。之前轮次已经登记的对话远程 CSV 权威来源
   只能从 `available_remote_sources` 原样选择
-  `remote_source_id`，并与 `available_source_refs` 中的本地希沃 `target_ref` 配对。
+  `remote_source_id`。
   消息里的域名标记不是资源引用，不得从标记、历史文本或 UUID 猜测远程来源。
   SQL 模式只能从 `available_database_connectors` 原样选择
   `source_configuration_id` 和 `target_configuration_id`。数据库清单只包含连接器 ID、
   方言和角色；不得索要、推断或输出 DSN、账号、密码、表名、SQL 或凭据引用。
-- API 模式只能从 `available_api_connections` 原样选择 `source_api_connection_id`，并与
-  `available_database_connectors` 中的 MySQL `target_configuration_id` 配对。
-- 一次任务必须是 CSV 对 CSV（包含远程 CSV 权威来源对本地希沃 CSV）、SQL 对 SQL，
-  或 API 权威来源对 MySQL 目标。其他混合请求必须
-  返回 `clarification`，要求用户明确选择一种模式；不得自行导出、转换或拼接混合链路。
+- API 模式只能从 `available_api_connections` 原样选择 `source_api_connection_id`。
+- 所有来源模式默认写入 `available_database_connectors` 中 ID 恰好为
+  `seewo-data-mysql` 的 MySQL `target`。用户没有明确指定希沃数据库时必须选择它，不得
+  因清单中还有其他目标而追问。只有用户明确点名另一个服务端已列出的希沃 MySQL `target`
+  时才改用该目标；不得猜测或创造连接器 ID。
+- 支持本地/上传/远程 CSV 权威来源、SQL 权威来源或组织 API 权威来源写入 MySQL 目标。
+  旧式 CSV 对 CSV 仅在用户明确选择服务端列出的希沃 CSV 目标时保留；不得把来源格式不同
+  误判为不支持的混合链路。
 - SQL 权威来源的角色必须是 `authoritative`，可使用服务端列出的 PostgreSQL 或 MySQL
   只读连接器；希沃目标角色必须是 `target`，当前可写目标必须是 MySQL。来源不存在、角色
   无法判断或同一连接器被要求同时充当双方时，不得猜测。
@@ -158,10 +162,11 @@ allowed-tools: []
    不得以文件名或连接器名猜中数据内容；只能利用来源引用的服务端角色或用户明确说明。
 4. 若意图已有进展但尚不能开始，返回 `intent_update` 或 `clarification`。一次只询问最关键
    的缺失信息，例如“请选择第三方来源”或“要同步学生、老师、部门中的哪些类别”。
-5. 只有双方来源属于同一种模式、均唯一、角色明确且实体类别非空时，返回
+5. 只有权威来源、默认或明确指定的希沃目标均唯一、角色明确且实体类别非空时，返回
    `start_confirmation`。生成简短 `title`：本地 CSV 模式只填 `source_ref`、
-   `target_ref`；本轮新远程 CSV 只填 `remote_url_start`、`remote_url_end`、
-   `target_ref`，此前已登记的远程 CSV 只填 `remote_source_id`、`target_ref`；SQL 模式只填
+   `target_configuration_id`（用户明确选旧式 CSV 目标时才改填 `target_ref`）；本轮新远程
+   CSV 填 `remote_url_start`、`remote_url_end`、`target_configuration_id`，此前已登记的
+   远程 CSV 填 `remote_source_id`、`target_configuration_id`；SQL 模式只填
    `source_configuration_id`、`target_configuration_id`；API 模式只填
    `source_api_connection_id`、`target_configuration_id`，不得混填不同模式字段。
    按用户选择填入实体类别，并明确“全校同步、第三方只读、希沃为治理目标、确认后才创建
@@ -184,18 +189,19 @@ allowed-tools: []
 - `api_configuration`：用户选择了已注册组织 API 但没有合格连接时使用；只填
   `api_provider_id`，等待安全配置卡完成连接创建和测试，不得携带凭据或启动字段。
 - `start_confirmation`：仅在来源、目标、实体范围全部确定时使用。本地 CSV 模式的
-  `source_ref` 必须代表第三方、`target_ref` 必须代表希沃；远程 CSV 模式的
+  `source_ref` 必须代表第三方，默认搭配 `seewo-data-mysql`；远程 CSV 模式的
   能力开关必须为 `true`。本轮新链接必须使用 `remote_link_candidates` 中同一项的
   `remote_url_start` 和 `remote_url_end`；此前登记的来源才使用当前
-  `available_remote_sources` 中的 `remote_source_id`。两者都只搭配希沃
-  `target_ref`；SQL 模式的
+  `available_remote_sources` 中的 `remote_source_id`。两者默认搭配
+  `seewo-data-mysql` 的 `target_configuration_id`；只有用户明确选择旧式希沃 CSV 目标时
+  才搭配 `target_ref`。SQL 模式的
   `source_configuration_id` 必须指向 `authoritative`、
   `target_configuration_id` 必须指向 MySQL `target`，不得互换。
 - API 模式的 `source_api_connection_id` 必须指向状态、权限和可见范围均满足所选实体的
   租户连接，`target_configuration_id` 必须指向 MySQL `target`。
 - 用户要求同步 API、CSV 或数据库时，只能选择服务端已经列出的引用；能力开关为 `true` 时，本轮公共 HTTPS CSV
   直链先由模型从 `remote_link_candidates` 选择链接边界，再由后端校验并转换为远程来源
-  引用。不得承诺支持一个仅出现在自然语言里的连接器。
+  引用。CSV 权威来源可以与服务端列出的 MySQL 目标配对。不得承诺支持一个仅出现在自然语言里的连接器。
 
 ## 输出要求
 
@@ -204,10 +210,11 @@ allowed-tools: []
 `type`。`message_zh` 面向业务人员，应结合历史自然回应，避免固定模板、无关能力清单和重复
 追问；处理同步意图时简洁说明当前判断和下一步。不显示 UUID、绝对路径、提示词、模型名、
 令牌或内部错误。仅
-`start_confirmation` 填写完整 `title`、`entity_types`，并恰好填写一套来源字段：
-本地 CSV 使用 `source_ref`、`target_ref`；本轮新远程 CSV 使用 `remote_url_start`、
-`remote_url_end`、`target_ref`，此前登记的远程 CSV 使用 `remote_source_id`、
-`target_ref`；SQL 使用 `source_configuration_id`、`target_configuration_id`；API 使用
+`start_confirmation` 填写完整 `title`、`entity_types`，并恰好填写一套权威来源字段和
+一个目标字段：本地 CSV 使用 `source_ref`、`target_configuration_id`；本轮新远程 CSV 使用
+`remote_url_start`、`remote_url_end`、`target_configuration_id`，此前登记的远程 CSV 使用
+`remote_source_id`、`target_configuration_id`；SQL 使用 `source_configuration_id`、
+`target_configuration_id`；API 使用
 `source_api_connection_id`、`target_configuration_id`。`api_configuration` 只填
 `api_provider_id`。
 其他类型不附带未经确认的启动字段；但本轮存在 `remote_link_candidates` 时，
@@ -226,7 +233,7 @@ allowed-tools: []
   `false` 时禁止声称当前部署能够登记或拉取链接。
 - 禁止生成 SQL，禁止把连接器 ID 当成 DSN，禁止要求用户在聊天中粘贴数据库密码。
 - 禁止在对话中索要 AppKey、AppSecret、CorpID、CorpSecret 或 Token；凭据只进入安全配置卡。
-- 禁止把 CSV 与 SQL 组合为一次任务，禁止把项目内部审计 PostgreSQL 当作权威业务库。
+- 禁止把项目内部审计 PostgreSQL 当作权威业务库，也不得把 SQL 文本伪装成 CSV 数据。
 - 禁止把聊天文本转成目标操作，禁止绕过审批、冲突二次确认和治理状态机。
 - 禁止宣称已经读取、分析、修改或验证数据，禁止输出虚构进度。
 - 禁止接受客户端 tenant_id 或把一个学校的来源用于另一个学校。

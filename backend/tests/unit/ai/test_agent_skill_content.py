@@ -143,7 +143,7 @@ NEW_AGENT_SKILLS = {
 }
 
 NEW_AGENT_SKILL_VERSIONS = {
-    "converse-school-data-sync": "1.4.0",
+    "converse-school-data-sync": "1.5.0",
     "assess-agent-rollback-impact": "2.1.0",
     "execute-approved-rollback": "2.1.0",
 }
@@ -421,7 +421,7 @@ def test_database_schema_mapping_v2_still_requires_both_database_roles() -> None
 
 
 def test_conversation_skill_advertises_direct_remote_csv_ingestion() -> None:
-    skill = SkillRegistry().load("converse-school-data-sync", "1.4.0")
+    skill = SkillRegistry().load("converse-school-data-sync", "1.5.0")
 
     for term in (
         "`conversation_remote_csv_enabled`",
@@ -456,7 +456,7 @@ def test_conversation_skill_advertises_direct_remote_csv_ingestion() -> None:
 
 
 def test_conversation_skill_selects_only_server_listed_api_connections() -> None:
-    skill = SkillRegistry().load("converse-school-data-sync", "1.4.0")
+    skill = SkillRegistry().load("converse-school-data-sync", "1.5.0")
 
     for term in (
         "`available_api_providers`",
@@ -472,8 +472,16 @@ def test_conversation_skill_selects_only_server_listed_api_connections() -> None
         assert term in skill.instructions
 
 
+def test_conversation_skill_does_not_forbid_csv_to_mysql() -> None:
+    skill = SkillRegistry().load("converse-school-data-sync", "1.5.0")
+
+    assert "支持本地/上传/远程 CSV 权威来源" in skill.instructions
+    assert "CSV 权威来源可以与服务端列出的 MySQL 目标配对" in skill.instructions
+    assert "禁止把 CSV 与 SQL 组合为一次任务" not in skill.instructions
+
+
 def test_conversation_skill_allows_natural_non_executable_conversation() -> None:
-    skill = SkillRegistry().load("converse-school-data-sync", "1.4.0")
+    skill = SkillRegistry().load("converse-school-data-sync", "1.5.0")
 
     for term in (
         "自然回应问候、感谢、情绪表达和轻量闲聊",

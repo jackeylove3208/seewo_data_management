@@ -349,6 +349,66 @@ def test_migration_revision_identifiers_fit_alembic_default_version_column() -> 
     assert all(len(revision) <= 32 for revision in revision_identifiers)
 
 
+def test_csv_binding_migration_refuses_a_lossy_downgrade(tmp_path: Path) -> None:
+    database_path = tmp_path / "csv-binding-downgrade.db"
+    sync_url = f"sqlite:///{database_path}"
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", sync_url)
+    command.upgrade(config, "head")
+    engine = create_engine(sync_url)
+    task_id = uuid4().hex
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO reconciliation_tasks (
+                    id, tenant_id, scope_id, snapshot_mode, entity_types, status,
+                    stage, workflow_version, task_kind, title, agent_intent,
+                    idempotency_key, request_hash, created_at
+                ) VALUES (
+                    :id, 'school-1', 'all', 'full', '[\"student\"]', 'completed',
+                    'reporting', 'agent-graph-v1', 'sync', 'CSV 数据库任务',
+                    :intent, :key, :request_hash, CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": task_id,
+                "intent": (
+                    '{"source":{"kind":"csv"},'
+                    '"target":{"kind":"database","configuration_id":"seewo-data-mysql"}}'
+                ),
+                "key": f"csv-database-{uuid4()}",
+                "request_hash": "e" * 64,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO agent_source_bindings (
+                    id, tenant_id, task_id, role, connector_kind,
+                    configuration_id, snapshot_id, configuration_fingerprint,
+                    frozen_public_configuration, credential_reference,
+                    mapping_checkpoint_key, normalization_checkpoint_key,
+                    created_at
+                ) VALUES (
+                    :id, 'school-1', :task_id, 'authoritative', 'csv',
+                    'upload-1', NULL, :fingerprint, '{}', 'none://csv-authority',
+                    'mapping', 'normalization', CURRENT_TIMESTAMP
+                )
+                """
+            ),
+            {
+                "id": uuid4().hex,
+                "task_id": task_id,
+                "fingerprint": "f" * 64,
+            },
+        )
+
+    with pytest.raises(RuntimeError, match="CSV source bindings"):
+        command.downgrade(config, "0041_task_scoped_api_connections")
+
+
 def test_source_storage_ownership_backfills_local_references_and_guards_downgrade(
     tmp_path: Path,
     monkeypatch,

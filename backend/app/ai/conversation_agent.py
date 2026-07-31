@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from app.ai.agent_analysis_service import SingleAttemptModelProvider
 from app.ai.agent_prompting import build_agent_request
 from app.ai.conversation_context import ensure_conversation_request_fits
+from app.ai.providers.base import ModelProviderError
 from app.ai.skills.registry import SkillRegistry
 from app.schemas.agent_conversation import (
     ConversationAgentContext,
@@ -26,14 +27,18 @@ class ConversationSupervisorAgent:
         *,
         max_context_tokens: int = 65_536,
         reserved_output_tokens: int = 2_048,
+        max_attempts: int = 3,
     ) -> None:
+        if max_attempts < 1:
+            raise ValueError("conversation model attempts must be positive")
         self._provider = provider
         self._skills = skills or SkillRegistry()
         self._max_context_tokens = max_context_tokens
         self._reserved_output_tokens = reserved_output_tokens
+        self._max_attempts = max_attempts
 
     async def reply(self, context: ConversationAgentContext) -> ConversationAgentDecision:
-        skill = self._skills.load("converse-school-data-sync", "1.4.0")
+        skill = self._skills.load("converse-school-data-sync", "1.5.0")
         request = build_agent_request(
             skill,
             context.model_dump(mode="json"),
@@ -44,9 +49,54 @@ class ConversationSupervisorAgent:
             max_context_tokens=self._max_context_tokens,
             reserved_output_tokens=self._reserved_output_tokens,
         )
-        response = await self._provider.complete_json_once(request)
-        decision = _parse_decision(response.output)
-        return _validate_source_references(decision, context)
+        last_error: ConversationModelResponseError | ModelProviderError | None = None
+        for attempt in range(1, self._max_attempts + 1):
+            try:
+                response = await self._provider.complete_json_once(request)
+                decision = _parse_decision(response.output)
+                decision = _apply_default_target(decision, context)
+                return _validate_source_references(decision, context)
+            except (ConversationModelResponseError, ModelProviderError) as error:
+                last_error = error
+                if attempt == self._max_attempts:
+                    raise
+        assert last_error is not None
+        raise last_error
+
+
+def _apply_default_target(
+    decision: ConversationAgentDecision,
+    context: ConversationAgentContext,
+) -> ConversationAgentDecision:
+    if (
+        decision.kind not in {"intent_update", "start_confirmation"}
+        or decision.target_ref is not None
+        or decision.target_configuration_id is not None
+        or context.current_intent.get("target") is not None
+        or not (
+            decision.source_ref is not None
+            or decision.source_configuration_id is not None
+            or decision.source_api_connection_id is not None
+            or decision.remote_source_id is not None
+            or decision.remote_url_start is not None
+        )
+    ):
+        return decision
+    default_target = next(
+        (
+            item
+            for item in context.available_database_connectors
+            if item.connector_id == "seewo-data-mysql"
+            and item.dialect == "mysql"
+            and item.source_role == "target"
+        ),
+        None,
+    )
+    if default_target is None:
+        return decision
+    return decision.model_copy(
+        update={"target_configuration_id": default_target.connector_id}
+    )
 
 
 def _parse_decision(output: dict[str, Any]) -> ConversationAgentDecision:
@@ -102,10 +152,25 @@ def _validate_source_references(
             decision.remote_source_id
             or decision.source_ref
             or decision.source_configuration_id
-            or decision.target_configuration_id
         )
         target_is_valid = (
-            decision.target_ref is None or decision.target_ref in references
+            (
+                decision.target_ref is not None
+                and decision.target_ref in references
+                and decision.target_configuration_id is None
+            )
+            or (
+                decision.target_ref is None
+                and _database_target_is_valid(
+                    decision.target_configuration_id,
+                    context,
+                )
+            )
+            or (
+                decision.kind != "start_confirmation"
+                and decision.target_ref is None
+                and decision.target_configuration_id is None
+            )
         )
         if (
             selected_boundary in allowed_boundaries
@@ -136,10 +201,25 @@ def _validate_source_references(
         mixed_remote_selection = bool(
             decision.source_ref
             or decision.source_configuration_id
-            or decision.target_configuration_id
         )
         target_is_valid = (
-            decision.target_ref is None or decision.target_ref in references
+            (
+                decision.target_ref is not None
+                and decision.target_ref in references
+                and decision.target_configuration_id is None
+            )
+            or (
+                decision.target_ref is None
+                and _database_target_is_valid(
+                    decision.target_configuration_id,
+                    context,
+                )
+            )
+            or (
+                decision.kind != "start_confirmation"
+                and decision.target_ref is None
+                and decision.target_configuration_id is None
+            )
         )
         if (
             not mixed_remote_selection
@@ -161,6 +241,21 @@ def _validate_source_references(
         if value
     }
     if selected_local and selected_database:
+        source_is_local = (
+            decision.source_ref is not None
+            and decision.target_ref is None
+            and decision.source_configuration_id is None
+            and decision.target_configuration_id is not None
+        )
+        if (
+            source_is_local
+            and decision.source_ref in references
+            and _database_target_is_valid(
+                decision.target_configuration_id,
+                context,
+            )
+        ):
+            return decision
         return ConversationAgentDecision(
             kind="clarification",
             message_zh=(
@@ -208,6 +303,18 @@ def _validate_source_references(
     return ConversationAgentDecision(
         kind="clarification",
         message_zh="可用本地数据来源已变化，请从服务端列出的来源中重新确认。",
+    )
+
+
+def _database_target_is_valid(
+    connector_id: str | None,
+    context: ConversationAgentContext,
+) -> bool:
+    return any(
+        item.connector_id == connector_id
+        and item.dialect == "mysql"
+        and item.source_role == "target"
+        for item in context.available_database_connectors
     )
 
 

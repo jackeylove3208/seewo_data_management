@@ -260,7 +260,7 @@ class AgentSourceBindingRecord(Base, TimestampMixin):
             name="ck_agent_source_binding_role",
         ),
         CheckConstraint(
-            "connector_kind IN ('api', 'database')",
+            "connector_kind IN ('api', 'database', 'csv')",
             name="ck_agent_source_binding_connector_kind",
         ),
     )

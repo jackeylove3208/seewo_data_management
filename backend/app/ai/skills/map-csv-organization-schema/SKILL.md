@@ -9,7 +9,7 @@ allowed-tools: []
 ## 身份与目标
 
 担任数据接入阶段的 CSV 结构理解 sub-agent。仅在后端别名规则无法唯一理解陌生表头时，
-把第三方权威 CSV 与希沃目标 CSV 的现有列映射到固定六字段：
+把输入中一个或两个 CSV 来源的现有列映射到固定六字段：
 `category`、`name`、`number`、`class_name`、`phone`、`email`。
 本 Skill 不读取文件、不规范化数据行、不判断差异、不生成治理操作，也不得生成第七个字段。
 
@@ -18,7 +18,7 @@ allowed-tools: []
 
 ## 可信输入与证据边界
 
-- 只信任输入中的 `task_id`、`run_id`、`phase`、`evidence_refs` 和两个 `sources` 画像。
+- 只信任输入中的 `task_id`、`run_id`、`phase`、`evidence_refs` 和一至两个 `sources` 画像。
 - 每个 `source_field_ref` 是后端生成的不可改写引用。输出只能原样引用清单内的引用。
 - `header`、推测类型、空值率、唯一率及候选字段只用于判断列语义；它们不等于真实数据内容。
 - 不假设存在未提供的列、工作表、文件、SQL 表或关联关系。
@@ -27,7 +27,8 @@ allowed-tools: []
 
 ## 执行流程
 
-1. 确认恰好有 `authoritative` 和 `target` 两个来源画像，分别代表第三方与希沃。
+1. 确认有一个或两个来源画像；CSV→MySQL 模式只提供 `authoritative` CSV，CSV→CSV
+   模式同时提供 `authoritative` 和 `target`。
 2. 对每个来源独立审查全部列，优先使用后端候选字段，再结合列名、类型、空值率和唯一率判断。
 3. 每个物理列最多映射一个固定字段；每个固定字段在同一来源最多绑定一个物理列。
 4. `category` 表示部门、学生、教师三选一；如果来源通过分表表达实体且没有类别列，不能虚构
@@ -38,7 +39,8 @@ allowed-tools: []
 8. 选择与字段一致的 `normalizer_id`：类别用 `normalize_category`，姓名和班级用 `trim_text`，
    编号用 `trim_identifier`，电话用 `normalize_phone`，邮箱用 `normalize_email`。
 9. 无法可靠确定时不猜测，把 `来源角色.固定字段` 写入 `unresolved_required_fields`。
-10. 对第三方和希沃分别输出完整映射草案，然后停止；后端负责引用、唯一性和必填字段校验。
+10. 仅对输入中存在的来源输出完整映射草案；未提供的来源输出空映射且不得列入未解决字段。
+    后端负责引用、唯一性和必填字段校验。
 
 ## 决策规则
 
@@ -53,8 +55,8 @@ allowed-tools: []
 ## 输出要求
 
 只输出 `CsvSchemaMappingOutput` 严格 JSON。`schema_version` 必须是
-`fixed-six-field-mapping-v2`。`authoritative_mappings` 和 `target_mappings` 分别只引用对应
-来源的 `source_field_ref`。不得输出解释性 Markdown、SQL、路径、样本值、置信度或 schema
+`fixed-six-field-mapping-v2`。`authoritative_mappings` 和 `target_mappings` 分别只引用输入中
+对应来源的 `source_field_ref`；输入未提供的角色必须输出空数组。不得输出解释性 Markdown、SQL、路径、样本值、置信度或 schema
 之外的字段。所有字符串使用输入已有标识或固定枚举，不得创造物理字段。
 
 ## 禁止事项
@@ -68,6 +70,6 @@ allowed-tools: []
 
 ## 停止条件
 
-完成双方映射草案后立即停止。任一必填字段证据不足时，在
+完成已提供来源的映射草案后立即停止。任一必填字段证据不足时，在
 `unresolved_required_fields` 中明确列出并停止，不继续尝试读取数据。发现引用不在清单、
 来源角色缺失、画像重复或合同不一致时，返回无越权映射的安全结果并把相关字段列为未解决。

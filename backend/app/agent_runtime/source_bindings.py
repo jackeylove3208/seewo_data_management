@@ -11,7 +11,7 @@ from app.connectors.configured import DatabaseConnectorConfiguration
 from app.models.api_connectors import AgentSourceBindingRecord
 
 SourceRoleName = Literal["authoritative", "target"]
-ConnectorKind = Literal["api", "database"]
+ConnectorKind = Literal["api", "database", "csv"]
 
 
 @dataclass(frozen=True, slots=True)

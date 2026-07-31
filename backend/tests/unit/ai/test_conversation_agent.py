@@ -20,6 +20,20 @@ class CapturingProvider:
         return LLMResponse(output=self.output, provider="stub", model="stub")
 
 
+class SequencedProvider:
+    def __init__(self, outputs: list[dict[str, object]]) -> None:
+        self.outputs = outputs
+        self.requests: list[LLMRequest] = []
+
+    async def complete_json_once(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        return LLMResponse(
+            output=self.outputs[len(self.requests) - 1],
+            provider="stub",
+            model="stub",
+        )
+
+
 def _context(**overrides: object) -> ConversationAgentContext:
     values: dict[str, object] = {
         "conversation_id": uuid4(),
@@ -50,7 +64,7 @@ async def test_supervisor_uses_versioned_skill_and_returns_confirmation() -> Non
 
     assert decision.kind == "start_confirmation"
     assert decision.source_ref == "third-party/roster.csv"
-    assert "converse-school-data-sync@1.4.0" in provider.requests[0].messages[0].content
+    assert "converse-school-data-sync@1.5.0" in provider.requests[0].messages[0].content
     assert "不可信证据" in provider.requests[0].messages[0].content
 
 
@@ -165,6 +179,86 @@ async def test_supervisor_accepts_model_selected_remote_link_boundary() -> None:
     assert decision.kind == "start_confirmation"
     assert decision.remote_url_start == 3
     assert decision.remote_url_end == 46
+
+
+@pytest.mark.asyncio
+async def test_supervisor_defaults_remote_csv_authority_to_seewo_data_mysql() -> None:
+    provider = CapturingProvider(
+        {
+            "result": {
+                "kind": "start_confirmation",
+                "title": "远程学生同步",
+                "entity_types": ["student"],
+                "remote_url_start": 3,
+                "remote_url_end": 46,
+                "message_zh": "已确认远程学生 CSV。",
+            }
+        }
+    )
+
+    decision = await ConversationSupervisorAgent(provider).reply(
+        _context(
+            conversation_remote_csv_enabled=True,
+            remote_link_candidates=(
+                {
+                    "start": 3,
+                    "end": 46,
+                    "display_url": "https://data.example.test/roster.csv",
+                    "trailing_text": "的数据",
+                },
+            ),
+            available_database_connectors=(
+                {
+                    "connector_id": "seewo-data-mysql",
+                    "dialect": "mysql",
+                    "source_role": "target",
+                },
+            ),
+        )
+    )
+
+    assert decision.kind == "start_confirmation"
+    assert decision.target_configuration_id == "seewo-data-mysql"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_defaults_remote_csv_at_message_start_to_seewo_data_mysql() -> None:
+    provider = CapturingProvider(
+        {
+            "result": {
+                "kind": "start_confirmation",
+                "title": "远程学生同步",
+                "entity_types": ["student"],
+                "remote_url_start": 0,
+                "remote_url_end": 43,
+                "message_zh": "已确认远程学生 CSV。",
+            }
+        }
+    )
+
+    decision = await ConversationSupervisorAgent(provider).reply(
+        _context(
+            conversation_remote_csv_enabled=True,
+            remote_link_candidates=(
+                {
+                    "start": 0,
+                    "end": 43,
+                    "display_url": "https://data.example.test/roster.csv",
+                    "trailing_text": "",
+                },
+            ),
+            available_database_connectors=(
+                {
+                    "connector_id": "seewo-data-mysql",
+                    "dialect": "mysql",
+                    "source_role": "target",
+                },
+            ),
+        )
+    )
+
+    assert decision.kind == "start_confirmation"
+    assert decision.target_configuration_id == "seewo-data-mysql"
 
 
 @pytest.mark.asyncio
@@ -376,6 +470,154 @@ async def test_supervisor_accepts_eligible_api_authority_with_mysql_target() -> 
 
 
 @pytest.mark.asyncio
+async def test_supervisor_defaults_unspecified_target_to_seewo_data_mysql() -> None:
+    connection_id = uuid4()
+    provider = CapturingProvider(
+        {
+            "result": {
+                "kind": "start_confirmation",
+                "title": "钉钉学生同步",
+                "entity_types": ["student"],
+                "source_api_connection_id": str(connection_id),
+                "message_zh": "已确认钉钉学生同步。",
+            }
+        }
+    )
+
+    decision = await ConversationSupervisorAgent(provider).reply(
+        _context(
+            available_source_refs=(),
+            available_api_connections=(
+                {
+                    "connection_id": connection_id,
+                    "provider_id": "dingtalk",
+                    "display_name": "学校钉钉",
+                    "state": "active",
+                    "capabilities": {"entity.student.read": True},
+                    "visibility_summary": {
+                        "visible": True,
+                        "student_count": 3,
+                    },
+                },
+            ),
+            available_database_connectors=(
+                {
+                    "connector_id": "seewo-mysql",
+                    "dialect": "mysql",
+                    "source_role": "target",
+                },
+                {
+                    "connector_id": "seewo-data-mysql",
+                    "dialect": "mysql",
+                    "source_role": "target",
+                },
+            ),
+        )
+    )
+
+    assert decision.kind == "start_confirmation"
+    assert decision.target_configuration_id == "seewo-data-mysql"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_does_not_replace_explicit_target_from_current_intent() -> None:
+    provider = CapturingProvider(
+        {
+            "result": {
+                "kind": "start_confirmation",
+                "title": "学生同步",
+                "entity_types": ["student"],
+                "source_configuration_id": "dingtalk-students",
+                "message_zh": "沿用已选目标。",
+            }
+        }
+    )
+
+    decision = await ConversationSupervisorAgent(provider).reply(
+        _context(
+            current_intent={
+                "target": {
+                    "kind": "database",
+                    "configuration_id": "seewo-archive-mysql",
+                }
+            },
+            available_database_connectors=(
+                {
+                    "connector_id": "dingtalk-students",
+                    "dialect": "mysql",
+                    "source_role": "authoritative",
+                },
+                {
+                    "connector_id": "seewo-data-mysql",
+                    "dialect": "mysql",
+                    "source_role": "target",
+                },
+                {
+                    "connector_id": "seewo-archive-mysql",
+                    "dialect": "mysql",
+                    "source_role": "target",
+                },
+            ),
+        )
+    )
+
+    assert decision.target_configuration_id is None
+
+
+@pytest.mark.asyncio
+async def test_supervisor_defaults_local_csv_authority_to_seewo_data_mysql() -> None:
+    provider = CapturingProvider(
+        {
+            "result": {
+                "kind": "start_confirmation",
+                "title": "CSV 学生同步",
+                "entity_types": ["student"],
+                "source_ref": "third-party/roster.csv",
+                "message_zh": "已确认 CSV 学生同步。",
+            }
+        }
+    )
+
+    decision = await ConversationSupervisorAgent(provider).reply(
+        _context(
+            available_database_connectors=(
+                {
+                    "connector_id": "seewo-data-mysql",
+                    "dialect": "mysql",
+                    "source_role": "target",
+                },
+            ),
+        )
+    )
+
+    assert decision.kind == "start_confirmation"
+    assert decision.source_ref == "third-party/roster.csv"
+    assert decision.target_configuration_id == "seewo-data-mysql"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_retries_invalid_model_output_within_one_reply() -> None:
+    provider = SequencedProvider(
+        [
+            {"result": {"kind": "start_confirmation"}},
+            {
+                "result": {
+                    "kind": "clarification",
+                    "message_zh": "请告诉我需要同步的数据来源。",
+                }
+            },
+        ]
+    )
+
+    decision = await ConversationSupervisorAgent(provider).reply(
+        _context(available_source_refs=())
+    )
+
+    assert decision.kind == "clarification"
+    assert len(provider.requests) == 2
+
+
+@pytest.mark.asyncio
 async def test_supervisor_reports_unknown_mysql_target_without_blaming_api_permissions() -> None:
     connection_id = uuid4()
     provider = CapturingProvider(
@@ -504,7 +746,7 @@ async def test_supervisor_rejects_api_connection_without_selected_visibility() -
 
 
 @pytest.mark.asyncio
-async def test_supervisor_rejects_csv_sql_mixed_selection() -> None:
+async def test_supervisor_accepts_csv_authority_with_mysql_target() -> None:
     provider = CapturingProvider(
         {
             "result": {
@@ -530,8 +772,9 @@ async def test_supervisor_rejects_csv_sql_mixed_selection() -> None:
         )
     )
 
-    assert decision.kind == "clarification"
-    assert "同一种" in decision.message_zh
+    assert decision.kind == "start_confirmation"
+    assert decision.source_ref == "third-party/roster.csv"
+    assert decision.target_configuration_id == "seewo-mysql"
 
 
 @pytest.mark.asyncio

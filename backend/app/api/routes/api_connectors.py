@@ -160,6 +160,44 @@ async def create_api_connection(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
     except ApiConnectionConflictError as error:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
+    if configuration_session.conversation_id is not None:
+        conversation = await session.scalar(
+            select(AgentConversationRecord)
+            .where(
+                AgentConversationRecord.id == configuration_session.conversation_id,
+                AgentConversationRecord.tenant_id == operator.tenant_id,
+                AgentConversationRecord.status == "active",
+            )
+            .with_for_update()
+        )
+        entity_kind = payload.public_configuration.get("person_entity_kind")
+        if conversation is not None and entity_kind in {"student", "teacher"}:
+            default_target = request.app.state.settings.database_connector_configurations.get(
+                "seewo-data-mysql"
+            )
+            conversation.context = {
+                **conversation.context,
+                "title": conversation.context.get("title")
+                or f"钉钉{'学生' if entity_kind == 'student' else '教师'}同步",
+                "entity_types": [entity_kind],
+                "source": {
+                    "kind": "api",
+                    "configuration_id": str(connection.id),
+                },
+                **(
+                    {
+                        "target": {
+                            "kind": "database",
+                            "configuration_id": "seewo-data-mysql",
+                        }
+                    }
+                    if default_target is not None
+                    and default_target.source_role == "target"
+                    and default_target.dialect == "mysql"
+                    and conversation.context.get("target") is None
+                    else {}
+                ),
+            }
     return ApiConnectionRead.model_validate(connection, from_attributes=True)
 
 

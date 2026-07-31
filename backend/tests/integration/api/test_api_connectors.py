@@ -18,6 +18,7 @@ from app.api_connectors.contracts import (
 from app.api_connectors.registry import ProviderRegistry
 from app.core.security import OperatorContext
 from app.main import create_app
+from app.models.agent_runtime import AgentConversationRecord
 from app.models.api_connectors import ApiConnectionRecord
 from app.schemas.agent_ingestion import AgentEntityKind
 from tests.integration.repositories.test_agent_external_identity import (
@@ -99,6 +100,36 @@ def connector_client(tmp_path: Path):
                 "version_field": "etag",
             }
         },
+        database_connector_configurations={
+            "seewo-data-mysql": {
+                "credential_reference": "secret://connectors/seewo-data-mysql",
+                "dialect": "mysql",
+                "table_name": "organization_people",
+                "primary_key": "id",
+                "version_column": "row_version",
+                "field_columns": {
+                    "category": "category",
+                    "name": "name",
+                    "number": "number",
+                    "class_name": "class_name",
+                    "phone": "phone",
+                    "email": "email",
+                },
+                "source_role": "target",
+                "capabilities": {
+                    "read": True,
+                    "paginated": True,
+                    "create": True,
+                    "update": True,
+                    "delete": True,
+                    "optimistic_version": True,
+                    "read_after_write": True,
+                },
+            }
+        },
+        database_connector_credentials={
+            "secret://connectors/seewo-data-mysql": "mysql+asyncmy://hidden"
+        },
     )
     adapter = FakeDingTalkAdapter()
     registry = ProviderRegistry()
@@ -170,6 +201,59 @@ def test_conversation_configuration_creates_a_task_ephemeral_connection(
     assert str(record.conversation_id) == conversation["id"]
     assert record.task_id is None
     assert record.credentials_revoked_at is None
+    current = client.get("/api/agent/conversations/current")
+    assert current.status_code == 200, current.text
+    assert current.json()["intent"]["entity_types"] == ["student"]
+
+
+def test_conversation_configuration_preserves_an_existing_explicit_target(
+    connector_client: tuple[TestClient, FakeDingTalkAdapter],
+) -> None:
+    client, _adapter = connector_client
+    conversation = client.post("/api/agent/conversations").json()
+
+    async def select_explicit_target() -> None:
+        async with client.app.state.database.session_factory() as session:
+            async with session.begin():
+                record = await session.get(
+                    AgentConversationRecord,
+                    UUID(conversation["id"]),
+                )
+                assert record is not None
+                record.context = {
+                    "target": {
+                        "kind": "database",
+                        "configuration_id": "seewo-archive-mysql",
+                    }
+                }
+
+    client.portal.call(select_explicit_target)
+    configuration_session = client.post(
+        "/api/connectors/configuration-sessions",
+        json={
+            "provider_id": "dingtalk",
+            "conversation_id": conversation["id"],
+        },
+    ).json()
+    created = client.post(
+        "/api/connectors/connections",
+        json={
+            "configuration_session_id": configuration_session["id"],
+            "provider_id": "dingtalk",
+            "display_name": "钉钉学生连接",
+            "public_configuration": {
+                "person_entity_kind": "student",
+                "root_department_id": 42,
+            },
+            "secret": {"app_key": "app", "app_secret": "secret"},
+        },
+    )
+
+    assert created.status_code == 201, created.text
+    current = client.get("/api/agent/conversations/current")
+    target = current.json()["intent"]["target"]
+    assert target["kind"] == "database"
+    assert target["configuration_id"] == "seewo-archive-mysql"
 
 
 def test_conversation_configuration_requires_fresh_dingtalk_scope_fields(

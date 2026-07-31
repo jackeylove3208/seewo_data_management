@@ -574,6 +574,72 @@ def test_manual_api_rejects_non_csv_connector_before_task_and_lock_are_created(
     assert agent_client.get("/api/agent/history").json()["items"] == []
 
 
+def test_manual_uploaded_csv_can_start_a_mysql_target_task(tmp_path: Path) -> None:
+    fixed_fields = {
+        "category": "category",
+        "name": "name",
+        "number": "number",
+        "class_name": "class_name",
+        "phone": "phone",
+        "email": "email",
+    }
+    settings = build_test_settings(
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'csv-mysql-api.db'}",
+        upload_root=tmp_path / "uploads",
+        snapshot_root=tmp_path / "snapshots",
+        quarantine_root=tmp_path / "quarantine",
+        export_root=tmp_path / "exports",
+        auto_create_schema=True,
+        new_agent_enabled=True,
+        agent_graph_enabled=True,
+        source_ingestion_v3_enabled=True,
+        agent_graph_sql_execution_enabled=True,
+        new_agent_analysis_only=False,
+        tokenization_secret="test-tokenization-secret",
+        database_connector_configurations={
+            "seewo-data-mysql": {
+                "credential_reference": "secret://connectors/seewo-data-mysql",
+                "dialect": "mysql",
+                "table_name": "organization_people",
+                "primary_key": "id",
+                "version_column": "row_version",
+                "field_columns": fixed_fields,
+                "source_role": "target",
+                "capabilities": {
+                    "read": True,
+                    "paginated": True,
+                    "create": True,
+                    "update": True,
+                    "delete": True,
+                    "optimistic_version": True,
+                    "read_after_write": True,
+                },
+            }
+        },
+        database_connector_credentials={
+            "secret://connectors/seewo-data-mysql": "mysql+asyncmy://hidden"
+        },
+    )
+    with TestClient(create_app(settings)) as client:
+        source_id = _upload(client, tmp_path, "authoritative", "students-to-mysql.csv")
+        response = client.post(
+            "/api/agent/tasks",
+            headers={"Idempotency-Key": "manual-csv-to-mysql"},
+            json={
+                "title": "CSV 学生同步到希沃数据库",
+                "entity_types": ["student"],
+                "source": {"kind": "csv", "upload_id": source_id},
+                "target": {
+                    "kind": "database",
+                    "configuration_id": "seewo-data-mysql",
+                },
+            },
+        )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["workflow_version"] == "agent-graph-v1"
+
+
 def test_manual_api_rejects_remote_csv_before_task_and_lock_are_created(
     agent_client: TestClient,
 ) -> None:
@@ -820,7 +886,7 @@ def test_conversation_uses_model_discovered_local_sources(
         "untrusted_evidence"
     ]
     assert evidence["conversation_remote_csv_enabled"] is False
-    assert "converse-school-data-sync@1.4.0" in provider.requests[0].messages[0].content
+    assert "converse-school-data-sync@1.5.0" in provider.requests[0].messages[0].content
 
     created = agent_client.post(
         f"/api/agent/conversations/{conversation.json()['id']}/tasks",

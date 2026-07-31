@@ -191,6 +191,17 @@ class AgentTaskService:
                 manifest=api_manifest,
                 target_configuration_id=intent.target.configuration_id,
             )
+        elif (
+            intent.source.kind in {"csv", "local", "remote_csv"}
+            and intent.target.kind == "database"
+        ):
+            assert intent.target.configuration_id is not None
+            await self._bind_csv_database_pair(
+                task,
+                intent=intent,
+                remote_source=remote_source,
+                target_configuration_id=intent.target.configuration_id,
+            )
         run = await AgentSupervisorService(
             self.session,
             operator=self.operator,
@@ -284,6 +295,13 @@ class AgentTaskService:
         if source_kind == "api" and target_kind == "database":
             self._validate_api_database_runtime(intent)
             return
+        if source_kind in {"csv", "local", "remote_csv"} and target_kind == "database":
+            if source_kind == "remote_csv" and conversation_id is None:
+                raise AgentConnectorCapabilityFailure(
+                    "Remote CSV sources require a conversation"
+                )
+            self._validate_csv_database_runtime(intent)
+            return
         agent_observability.observe(
             "connector_failed",
             connector_kind=f"{source_kind}+{target_kind}",
@@ -293,6 +311,29 @@ class AgentTaskService:
         raise AgentConnectorCapabilityFailure(
             "Agent task requires a supported authoritative and target connector pair"
         )
+
+    def _validate_csv_database_runtime(self, intent: AgentTaskIntent) -> None:
+        if (
+            self.settings is None
+            or not self.settings.agent_graph_enabled
+            or not self.settings.source_ingestion_v3_enabled
+            or not self.settings.agent_graph_sql_execution_enabled
+        ):
+            raise AgentConnectorCapabilityFailure(
+                "CSV authority to database target graph ingestion is disabled"
+            )
+        target_id = intent.target.configuration_id
+        target = self.settings.database_connector_configurations.get(
+            target_id or ""
+        )
+        if target is None:
+            raise AgentConnectorCapabilityFailure(
+                "SQL target connector is not configured by the server"
+            )
+        if target.source_role != "target" or target.dialect != "mysql":
+            raise AgentConnectorCapabilityFailure(
+                "CSV task target must be a writable MySQL connector"
+            )
 
     def _validate_api_database_runtime(self, intent: AgentTaskIntent) -> None:
         if (
@@ -616,6 +657,149 @@ class AgentTaskService:
                     credential_reference=target.credential_reference,
                     mapping_checkpoint_key="graph-database-field-mapping-v3:target",
                     normalization_checkpoint_key="graph-source-normalization-v3:target",
+                ),
+            )
+        )
+        await self.session.flush()
+
+    async def _bind_csv_database_pair(
+        self,
+        task: ReconciliationTask,
+        *,
+        intent: AgentTaskIntent,
+        remote_source: RemoteSourceRecord | None,
+        target_configuration_id: str,
+    ) -> None:
+        if self.settings is None:
+            raise ValueError("CSV to database task requires server connector settings")
+        files = FileRepository(self.session)
+        source_snapshot: Snapshot | None = None
+        source_reference: str
+        source_public_configuration: dict[str, object]
+        if intent.source.kind == "csv":
+            assert intent.source.upload_id is not None
+            source = await files.get(intent.source.upload_id)
+            if source is None:
+                raise LookupError("Agent CSV upload not found")
+            if source.source_role != SourceRole.AUTHORITATIVE.value:
+                raise ValueError("Agent CSV upload role mismatch")
+            await files.bind_to_task(source.id, task.id)
+            source_snapshot = _agent_snapshot(
+                task.id,
+                source,
+                mapping_version="agent-csv-v3",
+            )
+            self.session.add(source_snapshot)
+            source_reference = str(source.id)
+            source_public_configuration = {
+                "kind": "csv",
+                "upload_id": str(source.id),
+            }
+        elif intent.source.kind == "local":
+            if intent.source.source_ref is None:
+                raise ValueError("Local CSV authority reference is missing")
+            material = LocalSourceService(self.settings).describe(
+                intent.source.source_ref
+            )
+            source = await files.create(
+                source_role=SourceRole.AUTHORITATIVE,
+                original_name=material.path.name,
+                storage_name=f"local-{uuid4().hex}",
+                storage_path=material.path,
+                sha256=material.sha256,
+                size_bytes=material.size_bytes,
+                detected_encoding="utf-8",
+                managed_storage=False,
+            )
+            await self.session.flush()
+            await files.bind_to_task(source.id, task.id)
+            source_snapshot = _agent_snapshot(
+                task.id,
+                source,
+                mapping_version="agent-csv-v3",
+            )
+            self.session.add(source_snapshot)
+            source_reference = intent.source.source_ref
+            source_public_configuration = {
+                "kind": "local",
+                "source_ref": intent.source.source_ref,
+            }
+        else:
+            if remote_source is None:
+                raise LookupError("Conversation remote source not found")
+            await RemoteSourceRepository(self.session).bind_to_task(
+                remote_source,
+                task_id=task.id,
+            )
+            source_reference = str(remote_source.id)
+            source_public_configuration = {
+                "kind": "remote_csv",
+                "remote_source_id": str(remote_source.id),
+            }
+
+        target = self.settings.database_connector_configurations[
+            target_configuration_id
+        ]
+        target_public_configuration = target.model_dump(mode="json")
+        target_fingerprint = _hash(target_public_configuration)
+        target_file = SourceFile(
+            id=uuid4(),
+            task_id=task.id,
+            source_role=SourceRole.TARGET.value,
+            original_name=target_configuration_id,
+            storage_name=f"database-{uuid4().hex}",
+            storage_path=f"database://{target_configuration_id}",
+            managed_storage=False,
+            sha256=target_fingerprint,
+            size_bytes=1,
+            detected_encoding=None,
+        )
+        self.session.add(target_file)
+        await self.session.flush()
+        target_snapshot = _agent_snapshot(
+            task.id,
+            target_file,
+            mapping_version="agent-sql-v3",
+        )
+        self.session.add(target_snapshot)
+        await self.session.flush()
+        self.session.add_all(
+            (
+                AgentSourceBindingRecord(
+                    tenant_id=task.tenant_id,
+                    task_id=task.id,
+                    role=SourceRole.AUTHORITATIVE.value,
+                    connector_kind="csv",
+                    configuration_id=source_reference,
+                    snapshot_id=(
+                        source_snapshot.id if source_snapshot is not None else None
+                    ),
+                    configuration_fingerprint=_hash(
+                        source_public_configuration
+                    ),
+                    frozen_public_configuration=source_public_configuration,
+                    credential_reference="none://csv-authority",
+                    mapping_checkpoint_key=(
+                        "graph-csv-field-mapping-v3:authoritative"
+                    ),
+                    normalization_checkpoint_key=(
+                        "graph-source-normalization-v3:authoritative"
+                    ),
+                ),
+                AgentSourceBindingRecord(
+                    tenant_id=task.tenant_id,
+                    task_id=task.id,
+                    role=SourceRole.TARGET.value,
+                    connector_kind="database",
+                    configuration_id=target_configuration_id,
+                    snapshot_id=target_snapshot.id,
+                    configuration_fingerprint=target_fingerprint,
+                    frozen_public_configuration=target_public_configuration,
+                    credential_reference=target.credential_reference,
+                    mapping_checkpoint_key="graph-database-field-mapping-v3:target",
+                    normalization_checkpoint_key=(
+                        "graph-source-normalization-v3:target"
+                    ),
                 ),
             )
         )
