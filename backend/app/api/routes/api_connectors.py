@@ -29,6 +29,7 @@ from app.schemas.api_connectors import (
     ApiConnectionCreate,
     ApiConnectionRead,
     ApiConnectionRotateSecret,
+    ApiConnectionTestRequest,
     ApiProviderRead,
     ExternalIdentityBindingConfirm,
     ExternalIdentityBindingRead,
@@ -197,12 +198,29 @@ async def test_api_connection(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
     operator: Annotated[OperatorContext, Depends(get_operator_context)],
+    payload: ApiConnectionTestRequest | None = None,
 ) -> ApiConnectionRead:
+    conversation_id = payload.conversation_id if payload is not None else None
+    if conversation_id is not None:
+        conversation = await session.scalar(
+            select(AgentConversationRecord.id).where(
+                AgentConversationRecord.id == conversation_id,
+                AgentConversationRecord.tenant_id == operator.tenant_id,
+                AgentConversationRecord.created_by == operator.operator_id,
+                AgentConversationRecord.status == "active",
+            )
+        )
+        if conversation is None:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                detail="Active conversation not found",
+            )
     try:
         item = await _service(request, session).test(
             tenant_id=operator.tenant_id,
             operator_id=operator.operator_id,
             connection_id=connection_id,
+            conversation_id=conversation_id,
         )
     except ApiConnectionNotFoundError as error:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error

@@ -121,6 +121,19 @@ def upgrade() -> None:
             ["consumed_task_id"],
             unique=False,
         )
+        batch_op.create_index(
+            "uq_api_connections_unbound_dingtalk_conversation",
+            ["tenant_id", "conversation_id", "provider_id"],
+            unique=True,
+            postgresql_where=sa.text(
+                "provider_id = 'dingtalk' AND scope = 'task_ephemeral' "
+                "AND task_id IS NULL AND credentials_revoked_at IS NULL"
+            ),
+            sqlite_where=sa.text(
+                "provider_id = 'dingtalk' AND scope = 'task_ephemeral' "
+                "AND task_id IS NULL AND credentials_revoked_at IS NULL"
+            ),
+        )
         batch_op.create_check_constraint(
             "ck_api_connection_scope",
             "scope IN ('persistent', 'task_ephemeral')",
@@ -155,6 +168,9 @@ def downgrade() -> None:
         )
         batch_op.drop_constraint("ck_api_connection_scope", type_="check")
         batch_op.drop_index("ix_api_connections_consumed_task_id")
+        batch_op.drop_index(
+            "uq_api_connections_unbound_dingtalk_conversation"
+        )
         batch_op.drop_index("ix_api_connections_task_id")
         batch_op.drop_index("ix_api_connections_conversation_id")
         batch_op.drop_index("ix_api_connections_scope")

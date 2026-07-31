@@ -1,5 +1,6 @@
 import json
 from collections.abc import AsyncIterator, Mapping
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
@@ -287,6 +288,62 @@ def test_ephemeral_connection_rotation_requires_its_conversation(
     )
 
     assert rotated.status_code == 409
+
+
+def test_ephemeral_connection_test_requires_its_active_conversation_and_ttl(
+    connector_client: tuple[TestClient, FakeDingTalkAdapter],
+) -> None:
+    client, _adapter = connector_client
+    conversation = client.post("/api/agent/conversations").json()
+    configuration_session = client.post(
+        "/api/connectors/configuration-sessions",
+        json={
+            "provider_id": "dingtalk",
+            "conversation_id": conversation["id"],
+        },
+    ).json()
+    created = client.post(
+        "/api/connectors/connections",
+        json={
+            "configuration_session_id": configuration_session["id"],
+            "provider_id": "dingtalk",
+            "display_name": "需要对话校验的连接",
+            "public_configuration": {
+                "person_entity_kind": "teacher",
+                "root_department_id": 1,
+            },
+            "secret": {"app_key": "app", "app_secret": "secret"},
+        },
+    ).json()
+
+    without_conversation = client.post(
+        f"/api/connectors/connections/{created['id']}/test",
+        json={},
+    )
+    assert without_conversation.status_code == 409
+
+    valid = client.post(
+        f"/api/connectors/connections/{created['id']}/test",
+        json={"conversation_id": conversation["id"]},
+    )
+    assert valid.status_code == 200, valid.text
+
+    async def expire_connection():
+        async with client.app.state.database.session_factory() as session:
+            async with session.begin():
+                record = await session.get(
+                    ApiConnectionRecord,
+                    UUID(created["id"]),
+                )
+                assert record is not None
+                record.created_at = datetime.now(UTC) - timedelta(hours=25)
+
+    client.portal.call(expire_connection)
+    expired = client.post(
+        f"/api/connectors/connections/{created['id']}/test",
+        json={"conversation_id": conversation["id"]},
+    )
+    assert expired.status_code == 409
 
 
 def test_conversation_reset_revokes_an_unbound_ephemeral_connection(

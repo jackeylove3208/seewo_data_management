@@ -319,6 +319,39 @@ async def revoke_expired_ephemeral_connections(
     return revoked
 
 
+async def revoke_all_expired_ephemeral_connections(
+    session: AsyncSession,
+    *,
+    expires_before: datetime,
+) -> int:
+    candidates = tuple(
+        (
+            connection_id,
+            tenant_id,
+        )
+        for connection_id, tenant_id in await session.execute(
+            select(ApiConnectionRecord.id, ApiConnectionRecord.tenant_id).where(
+                ApiConnectionRecord.provider_id == "dingtalk",
+                ApiConnectionRecord.scope == "task_ephemeral",
+                ApiConnectionRecord.task_id.is_(None),
+                ApiConnectionRecord.credentials_revoked_at.is_(None),
+                ApiConnectionRecord.created_at < expires_before,
+            )
+        )
+    )
+    revoked = 0
+    for connection_id, tenant_id in candidates:
+        if await revoke_ephemeral_connection(
+            session,
+            tenant_id=tenant_id,
+            connection_id=connection_id,
+            reason="configuration_expired",
+            require_unbound=True,
+        ):
+            revoked += 1
+    return revoked
+
+
 def _build_fernet(value: bytes | str | SecretStr) -> Fernet:
     raw_value = value.get_secret_value() if isinstance(value, SecretStr) else value
     encoded = raw_value.encode() if isinstance(raw_value, str) else raw_value

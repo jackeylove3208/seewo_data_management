@@ -477,6 +477,50 @@ async def test_conversation_api_task_atomically_binds_its_ephemeral_connection(
             assert replayed_task.id == task.id
 
 
+async def test_conversation_api_task_rejects_expired_dingtalk_credentials(
+    database,
+) -> None:
+    key = Fernet.generate_key()
+    settings = _settings(key)
+    dingtalk_manifest = MANIFEST.model_copy(update={"provider_id": "dingtalk"})
+    adapter = AdapterMustNotRun()
+    adapter.manifest = dingtalk_manifest
+    registry = ProviderRegistry()
+    registry.register(dingtalk_manifest, adapter)
+    async with database.session_factory() as session:
+        async with session.begin():
+            conversation = await AgentRuntimeRepository(session).create_conversation(
+                tenant_id="school-1",
+                created_by="operator-1",
+            )
+            connection = await _seed_connection(
+                session,
+                fernet_key=key,
+                scope="task_ephemeral",
+                conversation_id=conversation.id,
+                manifest=dingtalk_manifest,
+            )
+            connection.created_at = datetime.now(UTC) - timedelta(hours=25)
+
+            with pytest.raises(
+                AgentConnectorCapabilityFailure,
+                match="expired",
+            ):
+                await AgentTaskService(
+                    session,
+                    operator=OperatorContext(
+                        operator_id="operator-1",
+                        tenant_id="school-1",
+                    ),
+                    settings=settings,
+                    provider_registry=registry,
+                ).create(
+                    _intent(connection.id),
+                    idempotency_key="expired-dingtalk-conversation-task",
+                    conversation_id=conversation.id,
+                )
+
+
 async def test_api_task_rejects_cross_tenant_connection_before_creating_task(
     database,
 ) -> None:

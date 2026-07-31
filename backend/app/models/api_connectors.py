@@ -86,6 +86,21 @@ class ApiConnectionRecord(Base, TimestampMixin):
             "display_name",
             unique=True,
         ),
+        Index(
+            "uq_api_connections_unbound_dingtalk_conversation",
+            "tenant_id",
+            "conversation_id",
+            "provider_id",
+            unique=True,
+            postgresql_where=text(
+                "provider_id = 'dingtalk' AND scope = 'task_ephemeral' "
+                "AND task_id IS NULL AND credentials_revoked_at IS NULL"
+            ),
+            sqlite_where=text(
+                "provider_id = 'dingtalk' AND scope = 'task_ephemeral' "
+                "AND task_id IS NULL AND credentials_revoked_at IS NULL"
+            ),
+        ),
         CheckConstraint(
             "state IN ('pending', 'active', 'invalid', 'disabled')",
             name="ck_api_connection_state",

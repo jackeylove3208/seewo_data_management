@@ -52,6 +52,12 @@ class ApiConnectionRotateSecret(BaseModel):
     conversation_id: UUID | None = None
 
 
+class ApiConnectionTestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    conversation_id: UUID | None = None
+
+
 class ApiConnectionRead(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

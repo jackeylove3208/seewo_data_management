@@ -145,6 +145,9 @@ describe("Agent API", () => {
       },
       secret: { app_key: "ding-app", app_secret: "ding-secret" },
     });
+    expect(JSON.parse(String((calls[2]?.[1] as RequestInit).body))).toEqual({
+      conversation_id: "conversation-1",
+    });
     expect(result?.state).toBe("active");
   });
 

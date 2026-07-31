@@ -15,6 +15,7 @@ from app.agent_runtime.worker import AgentWorker
 from app.ai.graph_supervisor import GraphSupervisorAgent
 from app.ai.providers.llm import HttpLLMProvider
 from app.ai.worker import WorkerRunner, run_worker_loop
+from app.api_connectors.maintenance import ApiConnectorCredentialMaintenanceWorker
 from app.api_connectors.materializer import ApiAuthorityMaterializer
 from app.api_connectors.registry import build_default_provider_runtime
 from app.connectors.database_runtime import ConfiguredDatabaseConnectorRuntime
@@ -45,6 +46,7 @@ async def run() -> None:
     )
     api_clients: tuple[httpx.AsyncClient, ...] = ()
     api_materializer: ApiAuthorityMaterializer | None = None
+    credential_maintenance_worker: ApiConnectorCredentialMaintenanceWorker | None = None
     if settings.new_agent_api_connector_enabled:
         assert settings.api_connector_secret_key is not None
         provider_registry, api_clients = build_default_provider_runtime(
@@ -55,6 +57,9 @@ async def run() -> None:
             settings,
             registry=provider_registry,
             fernet_key=settings.api_connector_secret_key,
+        )
+        credential_maintenance_worker = ApiConnectorCredentialMaintenanceWorker(
+            database.session_factory
         )
     factory = CsvAnalysisHandlerFactory(
         database.session_factory,
@@ -69,6 +74,8 @@ async def run() -> None:
         handlers=factory.handlers(),
     )
     workers: list[WorkerRunner] = [fixed_worker]
+    if credential_maintenance_worker is not None:
+        workers.append(credential_maintenance_worker)
     if settings.agent_graph_enabled:
         graph_worker_id = f"agent-graph-worker-{uuid4()}"
         workers.append(

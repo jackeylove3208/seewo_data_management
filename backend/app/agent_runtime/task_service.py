@@ -12,7 +12,10 @@ from app.agent_runtime.observability import agent_observability
 from app.agent_runtime.repository import AgentRuntimeRepository, SchoolLockConflict
 from app.agent_runtime.service import AgentSupervisorService
 from app.api_connectors.contracts import ProviderManifest
-from app.api_connectors.policy import uses_task_scoped_conversation_credentials
+from app.api_connectors.policy import (
+    task_ephemeral_credentials_expired,
+    uses_task_scoped_conversation_credentials,
+)
 from app.api_connectors.registry import ProviderRegistry
 from app.core.config import Settings
 from app.core.security import OperatorContext
@@ -362,6 +365,13 @@ class AgentTaskService:
         if connection.credentials_revoked_at is not None:
             raise AgentConnectorCapabilityFailure(
                 "API connection credentials are revoked"
+            )
+        if (
+            uses_task_scoped_conversation_credentials(connection.provider_id)
+            and task_ephemeral_credentials_expired(connection.created_at)
+        ):
+            raise AgentConnectorCapabilityFailure(
+                "API connection configuration has expired"
             )
         if connection.state != "active":
             raise AgentConnectorCapabilityFailure("API connection is not active")

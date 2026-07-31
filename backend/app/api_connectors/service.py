@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from pydantic import SecretStr
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api_connectors.contracts import (
@@ -10,12 +11,14 @@ from app.api_connectors.contracts import (
     ProviderManifest,
     SafeApiConnection,
 )
+from app.api_connectors.policy import task_ephemeral_credentials_expired
 from app.api_connectors.registry import ProviderRegistry
 from app.api_connectors.repository import ApiConnectionRepository
 from app.api_connectors.secrets import (
     EncryptedDatabaseSecretStore,
     revoke_conversation_ephemeral_connections,
 )
+from app.models.agent_runtime import AgentConversationRecord
 from app.models.api_connectors import ApiConnectionRecord
 
 
@@ -81,6 +84,20 @@ class ApiConnectionService:
         if scope == "task_ephemeral":
             _validate_dingtalk_task_configuration(provider_id, public_configuration)
             assert conversation_id is not None
+            owned_conversation_id = await self._repository.session.scalar(
+                select(AgentConversationRecord.id)
+                .where(
+                    AgentConversationRecord.id == conversation_id,
+                    AgentConversationRecord.tenant_id == tenant_id,
+                    AgentConversationRecord.created_by == operator_id,
+                    AgentConversationRecord.status == "active",
+                )
+                .with_for_update()
+            )
+            if owned_conversation_id is None:
+                raise ApiConnectionValidationError(
+                    "active conversation is unavailable"
+                )
             await revoke_conversation_ephemeral_connections(
                 self._repository.session,
                 tenant_id=tenant_id,
@@ -130,14 +147,17 @@ class ApiConnectionService:
         tenant_id: str,
         operator_id: str,
         connection_id: UUID,
+        conversation_id: UUID | None = None,
     ) -> SafeApiConnection:
         record = await self._owned_for_update(connection_id, tenant_id)
         if record.state == "disabled":
             raise ApiConnectionConflictError("connection is disabled")
         if record.scope == "task_ephemeral" and (
             record.created_by != operator_id
+            or record.conversation_id != conversation_id
             or record.task_id is not None
             or record.credentials_revoked_at is not None
+            or task_ephemeral_credentials_expired(record.created_at)
         ):
             raise ApiConnectionConflictError(
                 "task-ephemeral connection cannot be tested"
@@ -188,6 +208,7 @@ class ApiConnectionService:
                 or record.conversation_id != conversation_id
                 or record.task_id is not None
                 or record.credentials_revoked_at is not None
+                or task_ephemeral_credentials_expired(record.created_at)
             ):
                 raise ApiConnectionConflictError(
                     "task-ephemeral connection cannot be rotated"

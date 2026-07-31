@@ -456,7 +456,9 @@ async function configureApiConnection(
     {
       method: "POST",
       headers: jsonHeaders,
-      body: JSON.stringify({}),
+      body: JSON.stringify({
+        conversation_id: configuration.conversation_id,
+      }),
     },
   );
   return {
