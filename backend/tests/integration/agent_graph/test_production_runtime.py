@@ -2331,6 +2331,41 @@ async def test_sql_v3_invokes_schema_skill_once_freezes_roles_and_binds_mapping(
 
 
 @pytest.mark.asyncio
+async def test_sql_v3_database_validation_mark_is_persisted_without_stopping(
+    database,
+) -> None:
+    connectors = _sql_v3_test_connectors(
+        authority_extra_columns={"mobile": None},
+    )
+    context = await _sql_ingestion_v3_context(database, connectors)
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=DatabaseMappingProvider(
+            schema_version="fixed-six-field-sql-mapping-v3"
+        ),
+        tokenization_secret="test-tokenization-secret",
+        database_connectors=StaticDatabaseConnectorRuntime(connectors),
+    )
+
+    await executor(context, _database_v3_mapping_action())
+    await executor(context, _database_v3_normalization_action())
+
+    async with database.session_factory() as session:
+        mark = await session.scalar(
+            select(AgentInputMarkRecord)
+            .join(
+                AgentInputRecord,
+                AgentInputRecord.id == AgentInputMarkRecord.input_record_id,
+            )
+            .where(AgentInputRecord.run_id == context.run_id)
+        )
+
+    assert mark is not None
+    assert mark.reason_code == "authority_required_fields_missing"
+    assert mark.affected_fields == ["phone"]
+
+
+@pytest.mark.asyncio
 async def test_sql_v3_mixed_mapping_sends_only_llm_target_and_merges_authority(
     database,
 ) -> None:

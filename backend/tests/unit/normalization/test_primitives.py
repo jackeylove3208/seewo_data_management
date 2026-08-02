@@ -29,6 +29,7 @@ def test_identifiers_are_normalized_without_fuzzy_changes() -> None:
 
 def test_phone_normalization_accepts_landline_numbers() -> None:
     assert normalize_phone("010-1234-5678") == "01012345678"
+    assert normalize_phone("8612345678901") == "8612345678901"
 
 
 def test_malformed_contact_identifiers_are_not_matchable() -> None:
