@@ -15,7 +15,7 @@ python3.12 -m venv .venv
 docker compose -f ../infra/docker-compose.yml up -d
 .venv/bin/alembic upgrade head
 .venv/bin/uvicorn app.main:app --reload
-.venv/bin/python -m app.agent_runtime
+.venv/bin/python -m app.ai.worker
 .venv/bin/pytest
 .venv/bin/ruff check .
 .venv/bin/mypy app
@@ -31,7 +31,7 @@ cd ..
 openspec validate --all --strict --no-interactive
 ```
 
-The API is served at `http://127.0.0.1:8000`; interactive OpenAPI documentation is at `/docs`. Run the API and `app.agent_runtime` in separate terminals so durable AI jobs continue when the browser disconnects.
+The API is served at `http://127.0.0.1:8000`; interactive OpenAPI documentation is at `/docs`. Run the API and `app.ai.worker` in separate terminals so durable AI jobs continue when the browser disconnects.
 
 ## Delivery quality gates
 

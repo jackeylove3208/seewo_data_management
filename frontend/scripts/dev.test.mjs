@@ -32,7 +32,7 @@ const testPlan = {
   },
   worker: {
     command: "/tmp/python",
-    args: ["-m", "app.agent_runtime"],
+    args: ["-m", "app.ai.worker"],
     environment: { RECONCILIATION_DATABASE_URL: "sqlite+aiosqlite:///./storage/test.db" },
   },
   frontend: {
@@ -78,7 +78,7 @@ describe("local development command", () => {
     });
     expect(plan.worker).toEqual({
       command: plan.backend.command,
-      args: ["-m", "app.agent_runtime"],
+      args: ["-m", "app.ai.worker"],
       environment: plan.backend.environment,
     });
     expect(plan.migration).toEqual({
@@ -123,7 +123,7 @@ describe("local development command", () => {
     expect(spawned.map(({ args }) => args)).toEqual([
       ["-m", "alembic", "upgrade", "head"],
       ["-m", "uvicorn"],
-      ["-m", "app.agent_runtime"],
+      ["-m", "app.ai.worker"],
       ["run", "dev:web"],
     ]);
     expect(spawned[0].options.env.RECONCILIATION_DATABASE_URL).toBe(
