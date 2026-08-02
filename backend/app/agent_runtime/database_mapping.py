@@ -357,7 +357,13 @@ def _v2_database_configuration_fingerprints(
         "configuration_id": connector_id,
         "configuration": configuration.model_dump(mode="json"),
     }
-    return frozenset({_fact_hash(legacy), _fact_hash(complete)})
+    prefixed = {_fact_hash(legacy), _fact_hash(complete)}
+    return frozenset(
+        {
+            *prefixed,
+            *(fingerprint.removeprefix("sha256:") for fingerprint in prefixed),
+        }
+    )
 
 
 def _fact_hash(value: object) -> str:

@@ -724,6 +724,49 @@ async def test_v2_frozen_mapping_drives_database_execution(database) -> None:
 
 
 @pytest.mark.asyncio
+async def test_v2_frozen_mapping_accepts_task_service_configuration_fingerprint(
+    database,
+) -> None:
+    connector, configuration = _llm_mapped_connector()
+    async with database.session_factory() as session:
+        async with session.begin():
+            task, run, snapshot, expected_mapping = (
+                await _add_v2_database_mapping_facts(
+                    session,
+                    connector=connector,
+                    configuration=configuration,
+                )
+            )
+            task_service_fingerprint = _configuration_fingerprint(
+                {
+                    "configuration_id": "seewo-data-mysql",
+                    "configuration": configuration.model_dump(mode="json"),
+                }
+            )
+            source = await session.get(SourceFile, snapshot.source_file_id)
+            assert source is not None
+            source.sha256 = task_service_fingerprint
+
+        async with session.begin():
+            connector_id, bound, bound_configuration = (
+                await connector_with_frozen_database_mapping(
+                    session,
+                    task_id=task.id,
+                    run_id=run.id,
+                    role="target",
+                    connectors=StaticResolver(
+                        connector,
+                        connector_id="seewo-data-mysql",
+                    ),
+                )
+            )
+
+    assert connector_id == "seewo-data-mysql"
+    assert bound_configuration.field_columns == expected_mapping
+    assert await bound.version() == await connector.version()
+
+
+@pytest.mark.asyncio
 async def test_v2_frozen_mapping_rejects_connector_configuration_drift(
     database,
 ) -> None:
