@@ -36,10 +36,6 @@ class TargetConnector(SourceConnector, Protocol):
     async def verify(self, expected: list[dict[str, Any]]) -> list[bool]: ...
 
 
-class ConnectorNotConfigured(RuntimeError):
-    pass
-
-
 class ConnectorMutationNotImplemented(RuntimeError):
     pass
 

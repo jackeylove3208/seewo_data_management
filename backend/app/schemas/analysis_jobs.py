@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class AnalysisJobStatus(StrEnum):
@@ -22,20 +22,6 @@ class AnalysisWorkItemStatus(StrEnum):
     FAILED = "failed"
     SUPERSEDED = "superseded"
     CANCELED = "canceled"
-
-
-class AnalysisJobCreateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    idempotency_key: str = Field(min_length=1, max_length=128)
-
-    @field_validator("idempotency_key")
-    @classmethod
-    def normalize_idempotency_key(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("idempotency key cannot be blank")
-        return normalized
 
 
 class AnalysisJobProgress(BaseModel):

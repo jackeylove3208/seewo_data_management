@@ -210,13 +210,3 @@ for immutable_model in (
 ):
     event.listen(immutable_model, "before_update", _reject_execution_mutation)
     event.listen(immutable_model, "before_delete", _reject_execution_mutation)
-
-
-# Short aliases keep the domain names from the execution contract available while
-# the Record suffix remains consistent with the repository's existing model style.
-GovernancePlan = GovernancePlanRecord
-ExecutionBatch = ExecutionBatchRecord
-ExecutionOperation = ExecutionOperationRecord
-OperationAttempt = OperationAttemptRecord
-TargetVersion = TargetVersionRecord
-ExecutionAuditEvent = ExecutionAuditEventRecord
