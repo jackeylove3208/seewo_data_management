@@ -1274,9 +1274,17 @@ class ProductionGraphActionExecutor:
         mapping_schema_version: str,
         enforce_configured_roles: frozenset[str],
     ) -> tuple[DatabaseSchemaMappingOutput, int, bool, bool]:
-        deterministic = all(
-            set(mapping) == _fixed_contract_fields()
-            for mapping in materials.configured_mappings.values()
+        is_v3_mapping = mapping_schema_version == "fixed-six-field-sql-mapping-v3"
+        llm_roles = frozenset(
+            role for role, mode in materials.mapping_modes.items() if mode == "llm"
+        )
+        deterministic = (
+            not llm_roles
+            if is_v3_mapping
+            else all(
+                set(mapping) == _fixed_contract_fields()
+                for mapping in materials.configured_mappings.values()
+            )
         )
         if deterministic:
             output = _database_mapping_output_from_config(
@@ -1334,6 +1342,40 @@ class ProductionGraphActionExecutor:
             action=action,
             prepare_sensitive_tokens=False,
         )
+        model_profiles = (
+            tuple(
+                profile
+                for profile in materials.profiles
+                if profile.source_role in llm_roles
+            )
+            if is_v3_mapping
+            else materials.profiles
+        )
+        configured_output = _database_mapping_output_from_config(
+            configured_mappings=materials.configured_mappings,
+            field_refs=materials.field_refs,
+            schema_version=mapping_schema_version,
+        )
+
+        def validate_model_output(candidate: object) -> DatabaseSchemaMappingOutput:
+            output = (
+                _merge_database_mapping_roles(
+                    candidate,
+                    configured_output=configured_output,
+                    llm_roles=llm_roles,
+                )
+                if is_v3_mapping
+                else candidate
+            )
+            return _validate_database_mapping_output(
+                output,
+                field_refs=materials.field_refs,
+                configured_mappings=materials.configured_mappings,
+                enforce_configured_roles=enforce_configured_roles,
+                forbidden_source_refs=materials.forbidden_source_refs,
+                expected_schema_version=mapping_schema_version,
+            )
+
         result = await GraphIngestionAnalysisExecutors(runner).map_database_schema(
             GraphSkillInvocation(
                 task_id=context.task_id,
@@ -1351,17 +1393,10 @@ class ProductionGraphActionExecutor:
                     phase=AgentPhase.INGEST_AND_NORMALIZE,
                     evidence_refs=action.required_evidence,
                     mapping_schema_version=mapping_schema_version,
-                    sources=materials.profiles,
+                    sources=model_profiles,
                 ).model_dump(mode="json"),
             ),
-            result_validator=lambda candidate: _validate_database_mapping_output(
-                candidate,
-                field_refs=materials.field_refs,
-                configured_mappings=materials.configured_mappings,
-                enforce_configured_roles=enforce_configured_roles,
-                forbidden_source_refs=materials.forbidden_source_refs,
-                expected_schema_version=mapping_schema_version,
-            ),
+            result_validator=validate_model_output,
         )
         validated_output = result.output
         if not isinstance(validated_output, DatabaseSchemaMappingOutput):
@@ -4260,6 +4295,46 @@ def _database_mapping_output_from_config(
         authoritative_mappings=by_role["authoritative"],
         target_mappings=by_role["target"],
         unresolved_required_fields=(),
+    )
+
+
+def _merge_database_mapping_roles(
+    output: object,
+    *,
+    configured_output: DatabaseSchemaMappingOutput,
+    llm_roles: frozenset[str],
+) -> DatabaseSchemaMappingOutput:
+    if not isinstance(output, DatabaseSchemaMappingOutput):
+        raise ValueError("database mapping Skill returned another schema")
+    model_mappings = {
+        "authoritative": output.authoritative_mappings,
+        "target": output.target_mappings,
+    }
+    configured_mappings = {
+        "authoritative": configured_output.authoritative_mappings,
+        "target": configured_output.target_mappings,
+    }
+    for role in ("authoritative", "target"):
+        if role not in llm_roles and model_mappings[role]:
+            raise ValueError(f"{role} database mapping was not requested from the model")
+    if any(
+        unresolved.split(".", maxsplit=1)[0] not in llm_roles
+        for unresolved in output.unresolved_required_fields
+    ):
+        raise ValueError("database mapping marked a configured role unresolved")
+    return DatabaseSchemaMappingOutput(
+        schema_version=output.schema_version,
+        authoritative_mappings=(
+            model_mappings["authoritative"]
+            if "authoritative" in llm_roles
+            else configured_mappings["authoritative"]
+        ),
+        target_mappings=(
+            model_mappings["target"]
+            if "target" in llm_roles
+            else configured_mappings["target"]
+        ),
+        unresolved_required_fields=output.unresolved_required_fields,
     )
 
 
