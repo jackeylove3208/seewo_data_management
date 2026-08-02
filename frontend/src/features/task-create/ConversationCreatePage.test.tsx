@@ -320,6 +320,33 @@ describe("backend Agent conversation", () => {
       .not.toBeInTheDocument();
   });
 
+  it("scrolls the conversation to the end after the user sends a message", async () => {
+    const sendMessage = vi.fn().mockReturnValue(new Promise(() => undefined));
+    const user = userEvent.setup();
+    const { container } = render(
+      <ConversationCreatePage agentApi={api({ sendMessage })} />,
+    );
+
+    await waitForComposer();
+    const messageViewport = container.querySelector<HTMLElement>(".conversation-messages");
+    expect(messageViewport).not.toBeNull();
+    const scrollTo = vi.fn();
+    Object.defineProperties(messageViewport!, {
+      scrollHeight: { configurable: true, value: 720 },
+      scrollTo: { configurable: true, value: scrollTo },
+    });
+
+    await user.type(screen.getByLabelText("对账目标"), "同步全校教师");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({
+      behavior: "smooth",
+      top: 720,
+    }));
+    fireEvent.animationEnd(screen.getByRole("article", { name: "你的消息" }));
+    expect(scrollTo).toHaveBeenCalledTimes(1);
+  });
+
   it("types a new assistant reply before unlocking input and showing confirmation", async () => {
     let resolveReply!: (response: Awaited<ReturnType<AgentConversationApi["sendMessage"]>>) => void;
     const sendMessage = vi.fn().mockReturnValue(new Promise((resolve) => {
@@ -457,8 +484,8 @@ describe("backend Agent conversation", () => {
         capabilities: { "entity.teacher.read": true },
         visibility_summary: { visible: true, teacher_count: 5 },
       });
-    const backend = api({
-      currentConversation: vi.fn().mockResolvedValue({
+    const currentConversation = vi.fn()
+      .mockResolvedValueOnce({
         id: "conversation-api",
         status: "active",
         messages: [],
@@ -475,7 +502,35 @@ describe("backend Agent conversation", () => {
           visibility_summary: {},
         },
         task: null,
-      }),
+      })
+      .mockResolvedValueOnce({
+        id: "conversation-api",
+        status: "active",
+        messages: [],
+        intent: {
+          title: "钉钉学生同步",
+          entity_types: ["student"],
+          source: { kind: "api", configuration_id: "connection-1" },
+          target: { kind: "database", configuration_id: "seewo-data-mysql" },
+        },
+        start_confirmation: {
+          title: "钉钉学生同步",
+          summary: "钉钉连接测试通过，可以开始同步。",
+          entity_types: ["student"],
+        },
+        api_connection: {
+          provider_id: "dingtalk",
+          state: "active",
+          required_secret_fields: ["app_key", "app_secret"],
+          connection_id: "connection-1",
+          display_name: "学校钉钉",
+          capabilities: { "entity.student.read": true },
+          visibility_summary: { visible: true, student_count: 5 },
+        },
+        task: null,
+      });
+    const backend = api({
+      currentConversation,
       configureApiConnection,
     });
     const user = userEvent.setup();
@@ -520,6 +575,8 @@ describe("backend Agent conversation", () => {
     await user.click(within(card).getByRole("button", { name: "保存并测试连接" }));
 
     expect(await within(card).findByText("连接测试通过")).toBeInTheDocument();
+    expect(await screen.findByLabelText("开始确认")).toBeInTheDocument();
+    expect(currentConversation).toHaveBeenCalledTimes(2);
     expect(configureApiConnection).toHaveBeenLastCalledWith({
       conversation_id: "conversation-api",
       provider_id: "dingtalk",
@@ -539,6 +596,156 @@ describe("backend Agent conversation", () => {
     });
     expect(screen.queryByText("ding-app")).not.toBeInTheDocument();
     expect(screen.queryByText("ding-secret")).not.toBeInTheDocument();
+  });
+
+  it("does not restore stale connection confirmation after opening a new conversation", async () => {
+    let resolveRefresh!: (
+      current: Awaited<ReturnType<AgentConversationApi["currentConversation"]>>,
+    ) => void;
+    const currentConversation = vi.fn()
+      .mockResolvedValueOnce({
+        id: "conversation-old-api",
+        status: "active",
+        messages: [],
+        intent: { title: "钉钉教师同步", entity_types: ["teacher"] },
+        api_connection: {
+          provider_id: "dingtalk",
+          state: "configuration_required",
+          required_secret_fields: ["app_key", "app_secret"],
+          capabilities: {},
+          visibility_summary: {},
+        },
+        task: null,
+      })
+      .mockReturnValueOnce(new Promise((resolve) => {
+        resolveRefresh = resolve;
+      }));
+    const configureApiConnection = vi.fn().mockResolvedValue({
+      provider_id: "dingtalk",
+      state: "active",
+      required_secret_fields: ["app_key", "app_secret"],
+      connection_id: "connection-old",
+      display_name: "旧钉钉连接",
+      capabilities: { "entity.teacher.read": true },
+      visibility_summary: { visible: true, teacher_count: 5 },
+    });
+    const resetConversation = vi.fn().mockResolvedValue({
+      id: "conversation-new",
+      status: "active",
+    });
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={api({
+      currentConversation,
+      configureApiConnection,
+      resetConversation,
+    })} />);
+
+    const card = await screen.findByLabelText("API 连接配置");
+    await user.selectOptions(within(card).getByLabelText("人员类型"), "teacher");
+    await user.type(within(card).getByLabelText("根部门 ID"), "1");
+    await user.type(within(card).getByLabelText("AppKey"), "app-key");
+    await user.type(within(card).getByLabelText("AppSecret"), "app-secret");
+    await user.click(within(card).getByRole("button", { name: "保存并测试连接" }));
+    expect(await within(card).findByText("连接测试通过")).toBeInTheDocument();
+    await waitFor(() => expect(currentConversation).toHaveBeenCalledTimes(2));
+
+    await user.click(screen.getByRole("button", { name: "开启新对话" }));
+    await user.click(screen.getByRole("button", { name: "永久删除并开启" }));
+    await waitFor(() => expect(resetConversation).toHaveBeenCalled());
+    await act(async () => {
+      resolveRefresh({
+        id: "conversation-old-api",
+        status: "active",
+        messages: [],
+        intent: {
+          title: "旧钉钉教师同步",
+          entity_types: ["teacher"],
+          source: { kind: "api", configuration_id: "connection-old" },
+          target: { kind: "database", configuration_id: "seewo-data-mysql" },
+        },
+        start_confirmation: {
+          title: "旧钉钉教师同步",
+          summary: "这是旧会话的确认。",
+          entity_types: ["teacher"],
+        },
+        task: null,
+      });
+    });
+
+    expect(screen.queryByLabelText("开始确认")).not.toBeInTheDocument();
+    expect(screen.queryByText("旧钉钉教师同步")).not.toBeInTheDocument();
+  });
+
+  it("keeps a valid connection refresh when opening a new conversation fails", async () => {
+    let resolveRefresh!: (
+      current: Awaited<ReturnType<AgentConversationApi["currentConversation"]>>,
+    ) => void;
+    const currentConversation = vi.fn()
+      .mockResolvedValueOnce({
+        id: "conversation-retained-api",
+        status: "active",
+        messages: [],
+        intent: { title: "钉钉教师同步", entity_types: ["teacher"] },
+        api_connection: {
+          provider_id: "dingtalk",
+          state: "configuration_required",
+          required_secret_fields: ["app_key", "app_secret"],
+          capabilities: {},
+          visibility_summary: {},
+        },
+        task: null,
+      })
+      .mockReturnValueOnce(new Promise((resolve) => {
+        resolveRefresh = resolve;
+      }));
+    const configureApiConnection = vi.fn().mockResolvedValue({
+      provider_id: "dingtalk",
+      state: "active",
+      required_secret_fields: ["app_key", "app_secret"],
+      connection_id: "connection-retained",
+      display_name: "保留的钉钉连接",
+      capabilities: { "entity.teacher.read": true },
+      visibility_summary: { visible: true, teacher_count: 5 },
+    });
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={api({
+      currentConversation,
+      configureApiConnection,
+      resetConversation: vi.fn().mockRejectedValue(new Error("重置失败")),
+    })} />);
+
+    const card = await screen.findByLabelText("API 连接配置");
+    await user.selectOptions(within(card).getByLabelText("人员类型"), "teacher");
+    await user.type(within(card).getByLabelText("根部门 ID"), "1");
+    await user.type(within(card).getByLabelText("AppKey"), "app-key");
+    await user.type(within(card).getByLabelText("AppSecret"), "app-secret");
+    await user.click(within(card).getByRole("button", { name: "保存并测试连接" }));
+    expect(await within(card).findByText("连接测试通过")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "开启新对话" }));
+    await user.click(screen.getByRole("button", { name: "永久删除并开启" }));
+    expect(await screen.findByText("重置失败")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveRefresh({
+        id: "conversation-retained-api",
+        status: "active",
+        messages: [],
+        intent: {
+          title: "保留的钉钉教师同步",
+          entity_types: ["teacher"],
+          source: { kind: "api", configuration_id: "connection-retained" },
+          target: { kind: "database", configuration_id: "seewo-data-mysql" },
+        },
+        start_confirmation: {
+          title: "保留的钉钉教师同步",
+          summary: "旧会话仍然有效。",
+          entity_types: ["teacher"],
+        },
+        task: null,
+      });
+    });
+
+    expect(screen.getByLabelText("开始确认")).toBeInTheDocument();
   });
 
   it("shows backend confirmation and locks ordinary input after task start", async () => {
@@ -1557,6 +1764,15 @@ describe("backend Agent conversation", () => {
         messages: [
           { id: "message-old", role: "assistant", kind: "normal", text: "上一次任务已经完成。", created_at: "" },
         ],
+        api_connection: {
+          provider_id: "dingtalk",
+          state: "active",
+          required_secret_fields: ["app_key", "app_secret"],
+          connection_id: "connection-completed",
+          display_name: "上一次钉钉连接",
+          capabilities: { "entity.teacher.read": true },
+          visibility_summary: { visible: true, teacher_count: 5 },
+        },
         task: {
           id: "task-completed",
           workflow_version: "agent-graph-v1",
@@ -1572,6 +1788,7 @@ describe("backend Agent conversation", () => {
     render(<ConversationCreatePage agentApi={backend} />);
 
     expect(await screen.findByText("上一次任务已经完成。")).toBeInTheDocument();
+    expect(screen.queryByLabelText("API 连接配置")).not.toBeInTheDocument();
     expect(screen.getByLabelText("对账目标")).toBeEnabled();
     await user.type(screen.getByLabelText("对账目标"), "再同步一次教师数据");
     await user.click(screen.getByRole("button", { name: "发送" }));
@@ -2049,5 +2266,46 @@ describe("backend Agent conversation", () => {
     expect(screen.getByRole("button", { name: "开启新对话" })).toHaveClass(
       "is-emphasized",
     );
+  });
+
+  it("does not reveal a completed task connection while the next message fails", async () => {
+    let rejectMessage!: (reason: Error) => void;
+    const sendMessage = vi.fn().mockReturnValue(new Promise((_resolve, reject) => {
+      rejectMessage = reject;
+    }));
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={api({
+      currentConversation: vi.fn().mockResolvedValue({
+        id: "conversation-completed-api",
+        status: "active",
+        messages: [],
+        api_connection: {
+          provider_id: "dingtalk",
+          state: "active",
+          required_secret_fields: ["app_key", "app_secret"],
+          connection_id: "connection-completed",
+          display_name: "已完成任务的钉钉连接",
+          capabilities: { "entity.teacher.read": true },
+          visibility_summary: { visible: true, teacher_count: 5 },
+        },
+        task: {
+          id: "task-completed-api",
+          workflow_version: "agent-graph-v1",
+          phase: "terminal",
+          status: "completed",
+        },
+      }),
+      sendMessage,
+    })} />);
+
+    await waitForComposer();
+    expect(screen.queryByLabelText("API 连接配置")).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText("对账目标"), "开始下一次同步");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    expect(screen.queryByLabelText("API 连接配置")).not.toBeInTheDocument();
+    await act(async () => rejectMessage(new Error("下一次需求处理失败")));
+
+    expect(await screen.findByText("下一次需求处理失败")).toBeInTheDocument();
+    expect(screen.queryByLabelText("API 连接配置")).not.toBeInTheDocument();
   });
 });

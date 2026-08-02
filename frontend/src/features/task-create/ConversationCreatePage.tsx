@@ -5,7 +5,7 @@ import {
   MessageSquarePlus,
   UserRound,
 } from "lucide-react";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 
 import {
   agentApi as defaultAgentApi,
@@ -134,6 +134,9 @@ export function ConversationCreatePage({
   const [messages, setMessages] = useState<ConversationMessage[]>(initialMessages);
   const [input, setInput] = useState("");
   const inputComposingRef = useRef(false);
+  const messageViewportRef = useRef<HTMLDivElement>(null);
+  const scrollAfterUserSubmissionRef = useRef(false);
+  const apiConnectionRefreshGenerationRef = useRef(0);
   const [state, setState] = useState<ConversationState>("idle");
   const [conversationId, setConversationId] = useState<string>();
   const [confirmation, setConfirmation] = useState<AgentStartConfirmation>();
@@ -164,6 +167,17 @@ export function ConversationCreatePage({
   const [targetBaselineDrift, setTargetBaselineDrift] = useState(false);
 
   const backendApi = agentApi ?? defaultAgentApi;
+
+  useLayoutEffect(() => {
+    const viewport = messageViewportRef.current;
+    if (!scrollAfterUserSubmissionRef.current) return;
+    scrollAfterUserSubmissionRef.current = false;
+    if (!viewport || typeof viewport.scrollTo !== "function") return;
+    viewport.scrollTo({
+      behavior: prefersReducedMotion() ? "auto" : "smooth",
+      top: viewport.scrollHeight,
+    });
+  }, [messages]);
 
   useEffect(() => {
     let cancelled = false;
@@ -354,6 +368,7 @@ export function ConversationCreatePage({
     setState("collecting");
     const submittedMessageId = messageId();
     const requiresSafeEcho = /https?:\/\//i.test(message);
+    scrollAfterUserSubmissionRef.current = true;
     setMessages((current) => [...current, {
       id: submittedMessageId,
       role: "user",
@@ -392,6 +407,7 @@ export function ConversationCreatePage({
       }
       if (task && terminalTaskStatuses.has(task.status)) {
         setTask(undefined);
+        setApiConnection(undefined);
       }
       setConfirmation(undefined);
       const response = await backendApi.sendMessage(
@@ -441,12 +457,39 @@ export function ConversationCreatePage({
     }
   }
 
+  async function refreshAfterApiConnection(
+    configured: AgentApiConnectionCard,
+  ) {
+    const refreshGeneration = ++apiConnectionRefreshGenerationRef.current;
+    setApiConnection(configured);
+    if (configured.state !== "active" || !conversationId) return;
+    try {
+      const current = await backendApi.currentConversation();
+      if (
+        refreshGeneration !== apiConnectionRefreshGenerationRef.current
+        || !current
+        || current.id !== conversationId
+      ) return;
+      setAgentIntent(current.intent ?? undefined);
+      setConfirmation(current.start_confirmation ?? undefined);
+      if (current.start_confirmation) setState("draft-ready");
+    } catch (error) {
+      if (refreshGeneration !== apiConnectionRefreshGenerationRef.current) return;
+      setConnectionError(
+        error instanceof Error
+          ? error.message
+          : "连接测试成功，但同步确认状态刷新失败，请重试。",
+      );
+    }
+  }
+
   async function confirmNewConversation() {
     if (taskActive || newConversationLoading) return;
     setNewConversationLoading(true);
     setNewConversationError(undefined);
     try {
       const conversation = await backendApi.resetConversation(sessionKey());
+      apiConnectionRefreshGenerationRef.current += 1;
       setConversationId(conversation.id);
       setMessages(initialMessages);
       setInput("");
@@ -765,7 +808,11 @@ export function ConversationCreatePage({
       )}
       <div className="conversation-workspace has-task-status">
         <section className="conversation-surface" aria-label="新建对话">
-        <div className="conversation-messages" aria-live="polite">
+        <div
+          className="conversation-messages"
+          aria-live="polite"
+          ref={messageViewportRef}
+        >
           {messages.map((message) => (
             <article
               className={`conversation-message ${message.role} ${message.kind ?? ""}${message.presentation === "enter" ? " is-entering" : ""}`}
@@ -803,12 +850,12 @@ export function ConversationCreatePage({
               </div>
             </article>
           ))}
-          {apiConnection && conversationId && !taskActive && (
+          {apiConnection && conversationId && !task && (
             <ConversationApiConnectionCard
               connection={apiConnection}
               conversationId={conversationId}
               configure={backendApi.configureApiConnection}
-              onChange={setApiConnection}
+              onChange={(configured) => void refreshAfterApiConnection(configured)}
             />
           )}
           {confirmation && !taskActive && state !== "collecting" && (
