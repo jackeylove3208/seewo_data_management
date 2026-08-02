@@ -579,6 +579,84 @@ describe("Agent synchronization report", () => {
     client.clear();
   });
 
+  it("uses a neutral entity and conservative impact for same-field overlap", async () => {
+    vi.spyOn(agentApi, "report").mockResolvedValue({
+      id: "report-same-field-overlap",
+      task_id: "task-report-1",
+      kind: "sync",
+      terminal_state: "completed",
+      rollback_eligible: false,
+      deletion_eligible: false,
+      created_at: "2026-08-02T02:00:00Z",
+      content: { narrative: {} },
+      facts: {
+        findings: [],
+        excluded_findings: ["student", "teacher"].map((entityKind) => ({
+          reason: "authority_field_unavailable",
+          affected_fields: ["email"],
+          inclusion_state: "included",
+          safe_evidence: { entity_kind: entityKind },
+        })),
+        input_diagnostics: {
+          reason_counts: { authority_field_unavailable: 1 },
+          overlapped_reason_counts: { authority_field_unavailable: 1 },
+          unavailable_field_counts: { email: 1 },
+        },
+        mutations: [],
+        mutation_summary: { succeeded: 0, failed: 0 },
+      },
+    });
+
+    const { client } = renderPage();
+
+    const warning = (await screen.findByText("允许同步")).closest("li");
+    expect(warning).toHaveTextContent("权威记录数据中有 1 条记录缺少邮箱。");
+    expect(warning).toHaveTextContent(
+      "影响：邮箱不可用仅作为数据质量提醒；允许同步的记录仍保留在匹配与同步范围内；其他记录按其更高优先级异常状态处理。",
+    );
+    expect(warning).not.toHaveTextContent("教师");
+    expect(warning).not.toHaveTextContent("teacher");
+    expect(warning).not.toHaveTextContent("学生");
+    client.clear();
+  });
+
+  it("localizes unambiguous department and teacher entities", async () => {
+    vi.spyOn(agentApi, "report").mockResolvedValue({
+      id: "report-localized-entities",
+      task_id: "task-report-1",
+      kind: "sync",
+      terminal_state: "completed",
+      rollback_eligible: false,
+      deletion_eligible: false,
+      created_at: "2026-08-02T02:00:00Z",
+      content: { narrative: {} },
+      facts: {
+        findings: [],
+        excluded_findings: ["department", "teacher"].map((entityKind) => ({
+          reason: "authority_field_unavailable",
+          affected_fields: ["email"],
+          inclusion_state: "included",
+          safe_evidence: { entity_kind: entityKind },
+        })),
+        input_diagnostics: {
+          reason_counts: { authority_field_unavailable: 2 },
+          unavailable_field_counts: { email: 2 },
+        },
+        mutations: [],
+        mutation_summary: { succeeded: 0, failed: 0 },
+      },
+    });
+
+    const { client } = renderPage();
+
+    const warning = (await screen.findByText("允许同步")).closest("li");
+    expect(warning).toHaveTextContent("教师");
+    expect(warning).toHaveTextContent("部门");
+    expect(warning).not.toHaveTextContent("teacher");
+    expect(warning).not.toHaveTextContent("department");
+    client.clear();
+  });
+
   it("localizes every supported unavailable authority field", async () => {
     const fields = ["category", "name", "number", "class_name", "phone", "email"];
     vi.spyOn(agentApi, "report").mockResolvedValue({

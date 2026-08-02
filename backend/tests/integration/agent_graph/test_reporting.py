@@ -352,6 +352,68 @@ def test_included_quality_warning_uses_exclusive_count_and_fields() -> None:
     assert "教师" not in str(warning)
 
 
+def test_included_quality_warning_uses_neutral_entity_for_same_field_overlap() -> None:
+    analyses = _included_quality_warning_analyses(
+        {
+            "excluded_findings": [
+                {
+                    "reason": "authority_field_unavailable",
+                    "affected_fields": ["email"],
+                    "inclusion_state": "included",
+                    "safe_evidence": {"entity_kind": "student"},
+                },
+                {
+                    "reason": "authority_field_unavailable",
+                    "affected_fields": ["email"],
+                    "inclusion_state": "included",
+                    "safe_evidence": {"entity_kind": "teacher"},
+                },
+            ],
+            "input_diagnostics": {
+                "reason_counts": {"authority_field_unavailable": 1},
+                "overlapped_reason_counts": {"authority_field_unavailable": 1},
+                "unavailable_field_counts": {"email": 1},
+            },
+        }
+    )
+
+    warning = analyses["authority_field_unavailable"]
+    assert warning["analysis_zh"] == "权威记录数据中有 1 条记录缺少邮箱。"
+    assert warning["impact_zh"] == (
+        "邮箱不可用仅作为数据质量提醒；允许同步的记录仍保留在匹配与同步范围内；"
+        "其他记录按其更高优先级异常状态处理。"
+    )
+    assert "教师" not in str(warning)
+    assert "teacher" not in str(warning)
+    assert "学生" not in str(warning)
+
+
+def test_included_quality_warning_localizes_unambiguous_department_and_teacher() -> None:
+    analyses = _included_quality_warning_analyses(
+        {
+            "excluded_findings": [
+                {
+                    "reason": "authority_field_unavailable",
+                    "affected_fields": ["email"],
+                    "inclusion_state": "included",
+                    "safe_evidence": {"entity_kind": entity_kind},
+                }
+                for entity_kind in ("department", "teacher")
+            ],
+            "input_diagnostics": {
+                "reason_counts": {"authority_field_unavailable": 2},
+                "unavailable_field_counts": {"email": 2},
+            },
+        }
+    )
+
+    warning = str(analyses["authority_field_unavailable"])
+    assert "教师" in warning
+    assert "部门" in warning
+    assert "teacher" not in warning
+    assert "department" not in warning
+
+
 def test_included_quality_warning_localizes_all_supported_fields() -> None:
     analyses = _included_quality_warning_analyses(
         {

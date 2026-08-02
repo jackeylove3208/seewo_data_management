@@ -77,6 +77,7 @@ function includedQualityWarningAnalyses(facts: ReportItem) {
   let warningCount: number;
   let affectedFields: string[];
   let entityFindings: ReportItem[];
+  let hasAmbiguousEntityAttribution: boolean;
   if (hasInputDiagnostics) {
     const reasonCount = record(inputDiagnostics.reason_counts).authority_field_unavailable;
     if (typeof reasonCount !== "number" || reasonCount <= 0) {
@@ -87,19 +88,30 @@ function includedQualityWarningAnalyses(facts: ReportItem) {
       .filter(([, value]) => typeof value === "number" && value > 0)
       .map(([field]) => field);
     const affectedFieldSet = new Set(affectedFields);
-    entityFindings = includedFindings.filter(
+    const entityCandidates = includedFindings.filter(
       (item) => strings(item.affected_fields).some((field) => affectedFieldSet.has(field)),
     );
+    hasAmbiguousEntityAttribution = !entityCandidates.length
+      || entityCandidates.length > reasonCount
+      || entityCandidates.some(
+        (item) => !text(record(item.safe_evidence).entity_kind, ""),
+      );
+    entityFindings = hasAmbiguousEntityAttribution ? [] : entityCandidates;
   } else {
     warningCount = includedFindings.length;
     affectedFields = includedFindings.flatMap((item) => strings(item.affected_fields));
     entityFindings = includedFindings;
+    hasAmbiguousEntityAttribution = false;
   }
 
   const entityKinds = entityFindings.map(
     (item) => text(record(item.safe_evidence).entity_kind, ""),
   ).filter(Boolean);
-  const entityZh = localizedLabels(entityKinds, { student: "学生" }, "记录");
+  const entityZh = localizedLabels(
+    entityKinds,
+    { department: "部门", student: "学生", teacher: "教师" },
+    "记录",
+  );
   const fieldZh = localizedLabels(
     affectedFields,
     {
@@ -115,9 +127,11 @@ function includedQualityWarningAnalyses(facts: ReportItem) {
   const hasNonIncludedFindings = fieldUnavailableFindings.some(
     (item) => ["excluded", "anomaly"].includes(text(item.inclusion_state, "")),
   );
-  const impactZh = hasNonIncludedFindings
-    ? `${fieldZh}不可用仅作为数据质量提醒；允许同步的记录仍保留在匹配与同步范围内；其他记录按排除或异常状态处理。`
-    : `${fieldZh}不可用仅作为数据质量提醒；这些${entityZh}仍保留在匹配与同步范围内，允许同步。`;
+  const impactZh = hasAmbiguousEntityAttribution
+    ? `${fieldZh}不可用仅作为数据质量提醒；允许同步的记录仍保留在匹配与同步范围内；其他记录按其更高优先级异常状态处理。`
+    : hasNonIncludedFindings
+      ? `${fieldZh}不可用仅作为数据质量提醒；允许同步的记录仍保留在匹配与同步范围内；其他记录按排除或异常状态处理。`
+      : `${fieldZh}不可用仅作为数据质量提醒；这些${entityZh}仍保留在匹配与同步范围内，允许同步。`;
 
   return [{
     reason_code: "authority_field_unavailable",

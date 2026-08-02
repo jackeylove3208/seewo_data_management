@@ -230,13 +230,25 @@ def _included_quality_warning_analyses(
             if isinstance(unavailable_field_counts, Mapping)
             else set()
         )
-        entity_findings = [
+        entity_candidates = [
             item
             for item in included_findings
             if affected_fields.intersection(
                 str(field) for field in item.get("affected_fields", ())
             )
         ]
+        has_ambiguous_entity_attribution = (
+            not entity_candidates
+            or len(entity_candidates) > reason_count
+            or any(
+                not isinstance(evidence := item.get("safe_evidence"), Mapping)
+                or not evidence.get("entity_kind")
+                for item in entity_candidates
+            )
+        )
+        entity_findings = (
+            [] if has_ambiguous_entity_attribution else entity_candidates
+        )
     else:
         count_zh = len(included_findings)
         affected_fields = {
@@ -245,6 +257,7 @@ def _included_quality_warning_analyses(
             for field in item.get("affected_fields", ())
         }
         entity_findings = included_findings
+        has_ambiguous_entity_attribution = False
 
     entity_kinds = {
         str(evidence["entity_kind"])
@@ -252,7 +265,11 @@ def _included_quality_warning_analyses(
         if isinstance(evidence := item.get("safe_evidence"), Mapping)
         and evidence.get("entity_kind")
     }
-    entity_zh = _localized_labels(entity_kinds, {"student": "学生"}, "记录")
+    entity_zh = _localized_labels(
+        entity_kinds,
+        {"department": "部门", "student": "学生", "teacher": "教师"},
+        "记录",
+    )
     field_zh = _localized_labels(
         affected_fields,
         {
@@ -269,15 +286,23 @@ def _included_quality_warning_analyses(
         item.get("inclusion_state") in {"excluded", "anomaly"}
         for item in field_unavailable_findings
     )
-    impact_zh = (
-        f"{field_zh}不可用仅作为数据质量提醒；允许同步的记录仍保留在匹配与同步范围内；"
-        "其他记录按排除或异常状态处理。"
-        if has_non_included_findings
-        else (
+    if has_ambiguous_entity_attribution:
+        impact_zh = (
+            f"{field_zh}不可用仅作为数据质量提醒；"
+            "允许同步的记录仍保留在匹配与同步范围内；"
+            "其他记录按其更高优先级异常状态处理。"
+        )
+    elif has_non_included_findings:
+        impact_zh = (
+            f"{field_zh}不可用仅作为数据质量提醒；"
+            "允许同步的记录仍保留在匹配与同步范围内；"
+            "其他记录按排除或异常状态处理。"
+        )
+    else:
+        impact_zh = (
             f"{field_zh}不可用仅作为数据质量提醒；这些{entity_zh}"
             "仍保留在匹配与同步范围内，允许同步。"
         )
-    )
     return {
         "authority_field_unavailable": {
             "reason_code": "authority_field_unavailable",
