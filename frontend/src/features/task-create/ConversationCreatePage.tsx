@@ -850,7 +850,11 @@ export function ConversationCreatePage({
               </div>
             </article>
           ))}
-          {apiConnection && conversationId && !task && (
+          {apiConnection
+            && apiConnection.state !== "active"
+            && conversationId
+            && !task
+            && (
             <ConversationApiConnectionCard
               connection={apiConnection}
               conversationId={conversationId}

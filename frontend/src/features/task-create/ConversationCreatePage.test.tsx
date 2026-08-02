@@ -574,7 +574,9 @@ describe("backend Agent conversation", () => {
     await user.type(within(card).getByLabelText("AppSecret"), "ding-secret-fixed");
     await user.click(within(card).getByRole("button", { name: "保存并测试连接" }));
 
-    expect(await within(card).findByText("连接测试通过")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByLabelText("API 连接配置")).not.toBeInTheDocument();
+    });
     expect(await screen.findByLabelText("开始确认")).toBeInTheDocument();
     expect(currentConversation).toHaveBeenCalledTimes(2);
     expect(configureApiConnection).toHaveBeenLastCalledWith({
@@ -596,6 +598,76 @@ describe("backend Agent conversation", () => {
     });
     expect(screen.queryByText("ding-app")).not.toBeInTheDocument();
     expect(screen.queryByText("ding-secret")).not.toBeInTheDocument();
+  });
+
+  it("does not restore an active DingTalk connection card during hydration", async () => {
+    render(<ConversationCreatePage agentApi={api({
+      currentConversation: vi.fn().mockResolvedValue({
+        id: "conversation-active-api",
+        status: "active",
+        messages: [],
+        intent: {
+          title: "钉钉教师同步",
+          entity_types: ["teacher"],
+          source: { kind: "api", configuration_id: "connection-active" },
+        },
+        api_connection: {
+          provider_id: "dingtalk",
+          state: "active",
+          required_secret_fields: ["app_key", "app_secret"],
+          connection_id: "connection-active",
+          display_name: "当前钉钉连接",
+          capabilities: { "entity.teacher.read": true },
+          visibility_summary: { visible: true, teacher_count: 5 },
+        },
+        task: null,
+      }),
+    })} />);
+
+    await waitForComposer();
+    expect(screen.queryByLabelText("API 连接配置")).not.toBeInTheDocument();
+  });
+
+  it("shows a fresh DingTalk connection card for a later synchronization request", async () => {
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={api({
+      currentConversation: vi.fn().mockResolvedValue({
+        id: "conversation-next-api",
+        status: "active",
+        messages: [],
+        api_connection: {
+          provider_id: "dingtalk",
+          state: "active",
+          required_secret_fields: ["app_key", "app_secret"],
+          connection_id: "connection-previous",
+          display_name: "上一次钉钉连接",
+          capabilities: { "entity.teacher.read": true },
+          visibility_summary: { visible: true, teacher_count: 5 },
+        },
+        task: null,
+      }),
+      sendMessage: vi.fn().mockResolvedValue({
+        accepted_message: "再次同步钉钉学生数据",
+        message: "请填写本次钉钉连接信息。",
+        intent: { title: "钉钉学生同步", entity_types: ["student"] },
+        api_connection: {
+          provider_id: "dingtalk",
+          state: "configuration_required",
+          required_secret_fields: ["app_key", "app_secret"],
+          display_name: "新的钉钉临时连接",
+          capabilities: {},
+          visibility_summary: {},
+        },
+      }),
+    })} />);
+
+    await waitForComposer();
+    expect(screen.queryByLabelText("API 连接配置")).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText("对账目标"), "再次同步钉钉学生数据");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(await screen.findByLabelText("API 连接配置")).toBeInTheDocument();
+    expect(screen.getByLabelText("连接名称")).toHaveValue("新的钉钉临时连接");
   });
 
   it("does not restore stale connection confirmation after opening a new conversation", async () => {
@@ -646,7 +718,9 @@ describe("backend Agent conversation", () => {
     await user.type(within(card).getByLabelText("AppKey"), "app-key");
     await user.type(within(card).getByLabelText("AppSecret"), "app-secret");
     await user.click(within(card).getByRole("button", { name: "保存并测试连接" }));
-    expect(await within(card).findByText("连接测试通过")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByLabelText("API 连接配置")).not.toBeInTheDocument();
+    });
     await waitFor(() => expect(currentConversation).toHaveBeenCalledTimes(2));
 
     await user.click(screen.getByRole("button", { name: "开启新对话" }));
@@ -720,7 +794,9 @@ describe("backend Agent conversation", () => {
     await user.type(within(card).getByLabelText("AppKey"), "app-key");
     await user.type(within(card).getByLabelText("AppSecret"), "app-secret");
     await user.click(within(card).getByRole("button", { name: "保存并测试连接" }));
-    expect(await within(card).findByText("连接测试通过")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByLabelText("API 连接配置")).not.toBeInTheDocument();
+    });
     await user.click(screen.getByRole("button", { name: "开启新对话" }));
     await user.click(screen.getByRole("button", { name: "永久删除并开启" }));
     expect(await screen.findByText("重置失败")).toBeInTheDocument();
