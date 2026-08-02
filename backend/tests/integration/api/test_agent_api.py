@@ -1818,6 +1818,44 @@ def test_conversation_rejects_a_second_message_while_model_work_is_in_flight(
     )
 
 
+def test_current_conversation_ignores_first_message_claim_while_model_is_in_flight(
+    agent_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "in-flight-current-conversation-sources"
+    for relative in ("third-party/roster.csv", "seewo/roster.csv"):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "类别,姓名,编号,班级,电话,邮箱\n学生,张三,S001,一班,13800000001,a@example.test\n",
+            encoding="utf-8",
+        )
+    agent_client.app.state.settings.agent_local_read_roots = (root.resolve(),)
+    agent_client.app.state.settings.agent_local_write_roots = ((root / "seewo").resolve(),)
+    blocking_provider = BlockingConversationProvider()
+    agent_client.app.state.conversation_provider = blocking_provider
+    conversation = agent_client.post("/api/agent/conversations").json()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        message_future = executor.submit(
+            agent_client.post,
+            f"/api/agent/conversations/{conversation['id']}/messages",
+            json={"message": "同步本地学生数据"},
+        )
+        assert blocking_provider.entered.wait(timeout=2)
+        read_client = TestClient(agent_client.app, raise_server_exceptions=False)
+        try:
+            current = read_client.get("/api/agent/conversations/current")
+        finally:
+            read_client.close()
+            blocking_provider.release.set()
+        message_response = message_future.result(timeout=5)
+
+    assert current.status_code == 200, current.text
+    assert current.json()["intent"] is None
+    assert message_response.status_code == 200, message_response.text
+
+
 def test_conversation_recovers_an_abandoned_message_claim(
     agent_client: TestClient,
 ) -> None:

@@ -439,15 +439,20 @@ async def get_current_agent_conversation(
         .order_by(AgentRunRecord.created_at.desc(), AgentRunRecord.id.desc())
         .limit(1)
     )
+    intent_context = {
+        key: value
+        for key, value in conversation.context.items()
+        if key != _CONVERSATION_MESSAGE_TOKEN_KEY
+    }
     intent = (
         _intent_view(
-            conversation.context,
+            intent_context,
             remote_origins={
                 str(remote_source.id): remote_source.display_origin
                 for remote_source in remote_sources
             },
         )
-        if conversation.context
+        if intent_context
         else None
     )
     confirmation = None
