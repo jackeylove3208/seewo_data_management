@@ -766,8 +766,10 @@ describe("Agent synchronization report", () => {
           },
           {
             reason: "authority_field_unavailable",
+            affected_fields: ["class_name"],
             inclusion_state: "excluded",
             disposition: "source_field_unavailable",
+            safe_evidence: { entity_kind: "teacher" },
           },
         ],
         input_diagnostics: {
@@ -782,11 +784,14 @@ describe("Agent synchronization report", () => {
     const { client, container } = renderPage();
 
     expect(await screen.findByText("允许同步")).toBeInTheDocument();
-    const warning = screen.getByText("权威学生数据缺少班级信息").closest("li");
+    const warning = screen.getByText("权威记录数据缺少班级信息").closest("li");
+    expect(warning).toHaveTextContent("权威记录数据中有 2 条记录缺少班级信息。");
     expect(warning).toHaveTextContent(
       "影响：班级信息不可用仅作为数据质量提醒；允许同步的记录仍保留在匹配与同步范围内；其他记录按排除或异常状态处理。",
     );
-    expect(warning).not.toHaveTextContent("这些学生均允许同步");
+    expect(warning).not.toHaveTextContent("学生");
+    expect(warning).not.toHaveTextContent("教师");
+    expect(warning).not.toHaveTextContent("teacher");
     expect(container.querySelectorAll(".agent-report-exclusions > li")).toHaveLength(1);
     expect(
       within(container.querySelector(".agent-report-exclusions > li") as HTMLElement)

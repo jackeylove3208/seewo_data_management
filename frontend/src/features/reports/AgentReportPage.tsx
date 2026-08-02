@@ -69,6 +69,9 @@ function includedQualityWarningAnalyses(facts: ReportItem) {
     return [];
   }
 
+  const hasNonIncludedFindings = fieldUnavailableFindings.some(
+    (item) => ["excluded", "anomaly"].includes(text(item.inclusion_state, "")),
+  );
   const inputDiagnosticsValue = facts.input_diagnostics;
   const hasInputDiagnostics = inputDiagnosticsValue !== null
     && typeof inputDiagnosticsValue === "object"
@@ -91,8 +94,8 @@ function includedQualityWarningAnalyses(facts: ReportItem) {
     const entityCandidates = includedFindings.filter(
       (item) => strings(item.affected_fields).some((field) => affectedFieldSet.has(field)),
     );
-    hasAmbiguousEntityAttribution = !entityCandidates.length
-      || entityCandidates.length > reasonCount
+    hasAmbiguousEntityAttribution = entityCandidates.length !== reasonCount
+      || hasNonIncludedFindings
       || entityCandidates.some(
         (item) => !text(record(item.safe_evidence).entity_kind, ""),
       );
@@ -124,13 +127,10 @@ function includedQualityWarningAnalyses(facts: ReportItem) {
     },
     "字段信息",
   );
-  const hasNonIncludedFindings = fieldUnavailableFindings.some(
-    (item) => ["excluded", "anomaly"].includes(text(item.inclusion_state, "")),
-  );
-  const impactZh = hasAmbiguousEntityAttribution
-    ? `${fieldZh}不可用仅作为数据质量提醒；允许同步的记录仍保留在匹配与同步范围内；其他记录按其更高优先级异常状态处理。`
-    : hasNonIncludedFindings
-      ? `${fieldZh}不可用仅作为数据质量提醒；允许同步的记录仍保留在匹配与同步范围内；其他记录按排除或异常状态处理。`
+  const impactZh = hasNonIncludedFindings
+    ? `${fieldZh}不可用仅作为数据质量提醒；允许同步的记录仍保留在匹配与同步范围内；其他记录按排除或异常状态处理。`
+    : hasAmbiguousEntityAttribution
+      ? `${fieldZh}不可用仅作为数据质量提醒；允许同步的记录仍保留在匹配与同步范围内；其他记录按其更高优先级异常状态处理。`
       : `${fieldZh}不可用仅作为数据质量提醒；这些${entityZh}仍保留在匹配与同步范围内，允许同步。`;
 
   return [{

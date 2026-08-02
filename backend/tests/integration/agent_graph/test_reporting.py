@@ -211,11 +211,12 @@ async def test_graph_report_uses_model_narrative_but_server_facts(session) -> No
     assert analyses == [
         {
             "reason_code": "authority_field_unavailable",
-            "title_zh": "权威学生数据缺少班级信息",
-            "analysis_zh": "权威学生数据中有 7 条记录缺少班级信息。",
+            "title_zh": "权威记录数据缺少班级信息",
+            "analysis_zh": "权威记录数据中有 7 条记录缺少班级信息。",
             "impact_zh": (
-                "班级信息不可用仅作为数据质量提醒；这些学生"
-                "仍保留在匹配与同步范围内，允许同步。"
+                "班级信息不可用仅作为数据质量提醒；"
+                "允许同步的记录仍保留在匹配与同步范围内；"
+                "其他记录按其更高优先级异常状态处理。"
             ),
             "suggestion_zh": "建议补充班级信息以提升数据质量；已完成的同步无需重试。",
         }
@@ -273,7 +274,7 @@ def test_included_quality_warning_describes_mixed_inclusion_states_safely() -> N
                     "reason": "authority_field_unavailable",
                     "affected_fields": ["class_name"],
                     "inclusion_state": "excluded",
-                    "safe_evidence": {"entity_kind": "student"},
+                    "safe_evidence": {"entity_kind": "teacher"},
                 },
             ],
             "input_diagnostics": {
@@ -283,12 +284,16 @@ def test_included_quality_warning_describes_mixed_inclusion_states_safely() -> N
         }
     )
 
-    impact = analyses["authority_field_unavailable"]["impact_zh"]
-    assert impact == (
+    warning = analyses["authority_field_unavailable"]
+    assert warning["title_zh"] == "权威记录数据缺少班级信息"
+    assert warning["analysis_zh"] == "权威记录数据中有 2 条记录缺少班级信息。"
+    assert warning["impact_zh"] == (
         "班级信息不可用仅作为数据质量提醒；允许同步的记录仍保留在匹配与同步范围内；"
         "其他记录按排除或异常状态处理。"
     )
-    assert "这些学生均允许同步" not in impact
+    assert "学生" not in str(warning)
+    assert "教师" not in str(warning)
+    assert "teacher" not in str(warning)
 
 
 def test_included_quality_warning_ignores_pure_overlapped_reason() -> None:

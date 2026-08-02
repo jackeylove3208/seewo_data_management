@@ -178,3 +178,81 @@ exit 0; no output
   and diagnostics-absent historical fallback tests remain green.
 - No ingestion eligibility, API contract, historical persistence, or deduplication behavior
   changed.
+
+## Follow-up: exact candidate attribution
+
+The remaining review finding showed that fewer included entity candidates than the positive
+exclusive reason count is also ambiguous. A student included mark plus a teacher excluded mark
+could previously produce “2 条学生”. In the diagnostics path, entity labels are now used only
+when the candidate count exactly equals the positive reason count, every candidate has entity
+evidence, and the same reason has no excluded or anomalous finding. Any mismatch or non-included
+finding uses the neutral “记录” label and a conservative mixed impact. The diagnostics-absent
+historical fallback remains unchanged.
+
+### Exact-attribution RED evidence
+
+Backend, from `backend/`:
+
+```text
+/Users/lbs/PycharmProjects/PythonProject/backend/.venv/bin/pytest tests/integration/agent_graph/test_reporting.py -q
+..F..... [100%]
+1 failed, 7 passed in 0.43s
+```
+
+Frontend, from `frontend/`:
+
+```text
+npm test -- --run src/features/reports/AgentReportPage.test.tsx
+Test Files  1 failed (1)
+Tests  1 failed | 15 passed (16)
+```
+
+Both failures showed the included student candidate being used for a two-record student/teacher
+mixed set instead of the required neutral entity.
+
+### Exact-attribution GREEN evidence
+
+Backend, from `backend/`:
+
+```text
+/Users/lbs/PycharmProjects/PythonProject/backend/.venv/bin/pytest tests/integration/agent_graph/test_reporting.py tests/unit/agent_runtime/test_csv_governance_handlers.py -q
+13 passed in 0.45s
+
+/Users/lbs/PycharmProjects/PythonProject/backend/.venv/bin/ruff check app/agent_graph/report_executors.py tests/integration/agent_graph/test_reporting.py
+All checks passed!
+
+/Users/lbs/PycharmProjects/PythonProject/backend/.venv/bin/mypy app
+Success: no issues found in 255 source files
+```
+
+Frontend, from `frontend/`:
+
+```text
+npm test -- --run src/features/reports/AgentReportPage.test.tsx
+Test Files  1 passed (1)
+Tests  16 passed (16)
+
+npm run lint
+exit 0
+
+npm run typecheck
+exit 0
+
+npm run build
+3155 modules transformed; built in 2.50s; exit 0
+```
+
+Repository root:
+
+```text
+git diff --check
+exit 0; no output
+```
+
+### Exact-attribution self-review
+
+- Mixed included-student/excluded-teacher facts render “权威记录数据中有 2 条记录缺少班级信息”,
+  preserve the field/count, and omit both student and teacher entity aggregation.
+- Exact-count unambiguous student/department/teacher cases remain precise and localized.
+- Pure overlap suppression, same-field over-count fallback, and diagnostics-absent historical
+  fallback remain green.

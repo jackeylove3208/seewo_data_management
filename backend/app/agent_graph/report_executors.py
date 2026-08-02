@@ -209,6 +209,10 @@ def _included_quality_warning_analyses(
     if not included_findings:
         return {}
 
+    has_non_included_findings = any(
+        item.get("inclusion_state") in {"excluded", "anomaly"}
+        for item in field_unavailable_findings
+    )
     input_diagnostics = facts.get("input_diagnostics")
     if isinstance(input_diagnostics, Mapping):
         reason_counts = input_diagnostics.get("reason_counts")
@@ -238,8 +242,8 @@ def _included_quality_warning_analyses(
             )
         ]
         has_ambiguous_entity_attribution = (
-            not entity_candidates
-            or len(entity_candidates) > reason_count
+            len(entity_candidates) != reason_count
+            or has_non_included_findings
             or any(
                 not isinstance(evidence := item.get("safe_evidence"), Mapping)
                 or not evidence.get("entity_kind")
@@ -282,21 +286,17 @@ def _included_quality_warning_analyses(
         },
         "字段信息",
     )
-    has_non_included_findings = any(
-        item.get("inclusion_state") in {"excluded", "anomaly"}
-        for item in field_unavailable_findings
-    )
-    if has_ambiguous_entity_attribution:
-        impact_zh = (
-            f"{field_zh}不可用仅作为数据质量提醒；"
-            "允许同步的记录仍保留在匹配与同步范围内；"
-            "其他记录按其更高优先级异常状态处理。"
-        )
-    elif has_non_included_findings:
+    if has_non_included_findings:
         impact_zh = (
             f"{field_zh}不可用仅作为数据质量提醒；"
             "允许同步的记录仍保留在匹配与同步范围内；"
             "其他记录按排除或异常状态处理。"
+        )
+    elif has_ambiguous_entity_attribution:
+        impact_zh = (
+            f"{field_zh}不可用仅作为数据质量提醒；"
+            "允许同步的记录仍保留在匹配与同步范围内；"
+            "其他记录按其更高优先级异常状态处理。"
         )
     else:
         impact_zh = (
