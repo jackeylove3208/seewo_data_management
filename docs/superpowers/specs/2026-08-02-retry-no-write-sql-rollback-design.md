@@ -25,6 +25,14 @@ whole-record safety boundary while recognizing the established entity contract.
 The comparison is applied both while planning rollback impact and immediately before each write.
 Historical frozen mutation facts are not rewritten.
 
+### Connector-qualified identifiers
+
+Historical create facts may lack `target_source_identifier` and instead retain the generated row
+identifier in `after.source_id`. When that fallback value is a locator for the current database
+connector, rollback strips the `database:{connector_id}:` prefix before reading or deleting the
+row. A bare identifier remains supported. Empty locators and locators belonging to another
+connector fail closed so rollback cannot target an unintended row or data source.
+
 ### Immutable retry attempts
 
 Rollback reports, checkpoints, runs, and tasks remain immutable. When rollback preview finds a
@@ -60,6 +68,8 @@ outcomes is not automatically retryable.
 
 - A historical department delete without `class_name` is safe to restore when the row remains absent.
 - A student delete without `class_name` remains a complete-record conflict.
+- A historical create with only a connector-qualified `after.source_id` deletes the original row
+  by its unqualified primary key; empty and foreign connector locators fail closed.
 - A terminal all-no-write conflict attempt creates one successor preview.
 - Repeated preview calls return the same successor attempt.
 - A prior attempt containing any successful write is not automatically retried.

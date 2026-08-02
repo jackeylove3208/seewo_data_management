@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
 
 from app.agent_reporting.service import AgentReportingService
 from app.agent_runtime.csv_governance_handlers import build_agent_report_facts
@@ -316,6 +317,184 @@ async def test_rollback_is_a_new_task_and_is_blocked_by_another_active_school_lo
     assert completed.state == "completed"
     assert completed.requires_confirmation is False
     assert completed.message_zh == "该任务已完成回滚。"
+
+
+@pytest.mark.asyncio
+async def test_all_no_write_conflicts_create_one_new_rollback_attempt(session) -> None:
+    target = {"kind": "database", "configuration_id": "seewo-data-mysql"}
+    original = _task(target=target)
+    session.add(original)
+    await session.flush()
+    service = AgentReportingService(session)
+    await service.generate(
+        task_id=original.id,
+        tenant_id=original.tenant_id,
+        kind="sync",
+        terminal_state="completed",
+        facts={"mutations": [_verified_mutation("sync-delete")]},
+    )
+    target_version_id = uuid4()
+    first = await service.create_rollback_task(
+        source_task_id=original.id,
+        tenant_id=original.tenant_id,
+        requested_by="operator-1",
+        target_version_id=target_version_id,
+    )
+    first_run = await AgentRuntimeRepository(session).get_run_for_task(first.task_id)
+    assert first_run is not None
+    first_run.phase = "terminal"
+    first_run.status = "completed"
+    await service.generate(
+        task_id=first.task_id,
+        tenant_id=original.tenant_id,
+        kind="rollback",
+        terminal_state="completed_with_conflicts",
+        facts={
+            "mutations": [
+                {
+                    "id": "rollback-delete",
+                    "status": "conflict_skipped",
+                    "verification": {"valid": False, "no_write": True},
+                }
+            ]
+        },
+    )
+
+    retry = await service.create_rollback_task(
+        source_task_id=original.id,
+        tenant_id=original.tenant_id,
+        requested_by="operator-1",
+        target_version_id=target_version_id,
+    )
+    replay = await service.create_rollback_task(
+        source_task_id=original.id,
+        tenant_id=original.tenant_id,
+        requested_by="operator-1",
+        target_version_id=target_version_id,
+    )
+    retry_task = await session.get(ReconciliationTask, retry.task_id)
+
+    assert retry.task_id != first.task_id
+    assert retry.state == "awaiting_confirmation"
+    assert retry.requires_confirmation is True
+    assert replay.task_id == retry.task_id
+    assert retry_task is not None
+    assert retry_task.agent_intent["rollback_attempt"] == 2
+    assert retry_task.agent_intent["retry_of_task_id"] == str(first.task_id)
+
+
+@pytest.mark.asyncio
+async def test_mixed_write_conflicts_do_not_create_a_rollback_retry(session) -> None:
+    target = {"kind": "database", "configuration_id": "seewo-data-mysql"}
+    original = _task(target=target)
+    session.add(original)
+    await session.flush()
+    service = AgentReportingService(session)
+    await service.generate(
+        task_id=original.id,
+        tenant_id=original.tenant_id,
+        kind="sync",
+        terminal_state="completed",
+        facts={"mutations": [_verified_mutation("sync-delete")]},
+    )
+    target_version_id = uuid4()
+    first = await service.create_rollback_task(
+        source_task_id=original.id,
+        tenant_id=original.tenant_id,
+        requested_by="operator-1",
+        target_version_id=target_version_id,
+    )
+    first_run = await AgentRuntimeRepository(session).get_run_for_task(first.task_id)
+    assert first_run is not None
+    first_run.phase = "terminal"
+    first_run.status = "completed"
+    await service.generate(
+        task_id=first.task_id,
+        tenant_id=original.tenant_id,
+        kind="rollback",
+        terminal_state="completed_with_conflicts",
+        facts={
+            "mutations": [
+                _verified_mutation("rollback-write"),
+                {
+                    "id": "rollback-conflict",
+                    "status": "conflict_skipped",
+                    "verification": {"valid": False, "no_write": True},
+                },
+            ]
+        },
+    )
+
+    ended = await service.create_rollback_task(
+        source_task_id=original.id,
+        tenant_id=original.tenant_id,
+        requested_by="operator-1",
+        target_version_id=target_version_id,
+    )
+
+    assert ended.task_id == first.task_id
+    assert ended.state == "completed"
+    rollback_tasks = tuple(
+        await session.scalars(
+            select(ReconciliationTask).where(
+                ReconciliationTask.parent_task_id == original.id,
+                ReconciliationTask.task_kind == "rollback",
+            )
+        )
+    )
+    assert len(rollback_tasks) == 1
+
+
+@pytest.mark.asyncio
+async def test_no_write_csv_conflicts_do_not_use_sql_rollback_retry(session) -> None:
+    target = {"kind": "csv", "upload_id": str(uuid4())}
+    original = _task(target=target)
+    session.add(original)
+    await session.flush()
+    service = AgentReportingService(session)
+    await service.generate(
+        task_id=original.id,
+        tenant_id=original.tenant_id,
+        kind="sync",
+        terminal_state="completed",
+        facts={"mutations": [_verified_mutation("sync-delete")]},
+    )
+    target_version_id = uuid4()
+    first = await service.create_rollback_task(
+        source_task_id=original.id,
+        tenant_id=original.tenant_id,
+        requested_by="operator-1",
+        target_version_id=target_version_id,
+    )
+    first_run = await AgentRuntimeRepository(session).get_run_for_task(first.task_id)
+    assert first_run is not None
+    first_run.phase = "terminal"
+    first_run.status = "completed"
+    await service.generate(
+        task_id=first.task_id,
+        tenant_id=original.tenant_id,
+        kind="rollback",
+        terminal_state="completed_with_conflicts",
+        facts={
+            "mutations": [
+                {
+                    "id": "rollback-delete",
+                    "status": "conflict_skipped",
+                    "verification": {"valid": False, "no_write": True},
+                }
+            ]
+        },
+    )
+
+    ended = await service.create_rollback_task(
+        source_task_id=original.id,
+        tenant_id=original.tenant_id,
+        requested_by="operator-1",
+        target_version_id=target_version_id,
+    )
+
+    assert ended.task_id == first.task_id
+    assert ended.state == "completed"
 
 
 @pytest.mark.asyncio

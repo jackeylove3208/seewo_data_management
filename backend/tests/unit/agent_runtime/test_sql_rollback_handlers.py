@@ -10,7 +10,10 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.agent_runtime.csv_rollback_handlers import _rollback_operation
 from app.agent_runtime.errors import ExternalWriteRecoveryRequired
 from app.agent_runtime.repository import AgentRuntimeRepository
-from app.agent_runtime.sql_rollback_handlers import SqlRollbackExecutionHandler
+from app.agent_runtime.sql_rollback_handlers import (
+    SqlRollbackExecutionHandler,
+    _rollback_identifier,
+)
 from app.agent_runtime.worker import AgentWorkContext
 from app.connectors.configured import (
     ConfiguredApiConnector,
@@ -89,7 +92,23 @@ class _ConcurrentReadConnector(ConfiguredApiConnector):
         return await self._connector.verify(expected)
 
 
-def _connector(*, record_id: str = "student-1") -> ConfiguredApiConnector:
+def _connector(
+    *,
+    record_id: str = "student-1",
+    include_remark: bool = True,
+) -> ConfiguredApiConnector:
+    allowed_columns = (
+        "id",
+        "row_version",
+        "category",
+        "name",
+        "number",
+        "class_name",
+        "phone",
+        "email",
+    )
+    if include_remark:
+        allowed_columns = (*allowed_columns, "remark")
     configuration = DatabaseConnectorConfiguration(
         credential_reference="secret://connectors/seewo-mysql",
         dialect="mysql",
@@ -104,17 +123,7 @@ def _connector(*, record_id: str = "student-1") -> ConfiguredApiConnector:
             "phone": "phone",
             "email": "email",
         },
-        allowed_columns=(
-            "id",
-            "row_version",
-            "category",
-            "name",
-            "number",
-            "class_name",
-            "phone",
-            "email",
-            "remark",
-        ),
+        allowed_columns=allowed_columns,
         source_role="target",
         capabilities=ConnectorCapabilities(
             read=True,
@@ -138,7 +147,7 @@ def _connector(*, record_id: str = "student-1") -> ConfiguredApiConnector:
                     "class_name": "一班",
                     "phone": "B",
                     "email": "student@example.test",
-                    "remark": "",
+                    **({"remark": ""} if include_remark else {}),
                 }
             ]
         ),
@@ -207,6 +216,42 @@ def _create_rollback_facts():
         }
     )
     return mutation, parent, task, context
+
+
+async def _deleted_record_rollback_facts(*, entity_kind: str):
+    connector = _connector(record_id=f"{entity_kind}-1", include_remark=False)
+    output = await connector.apply(
+        [
+            {
+                "operation": "delete",
+                "id": f"{entity_kind}-1",
+                "before": {},
+                "after": {},
+            }
+        ],
+        idempotency_key=f"delete-{entity_kind}-fixture",
+        expected_version="v1",
+    )
+    mutation, parent, task, context = _rollback_facts()
+    mutation.update(
+        {
+            "operation": "delete",
+            "entity_kind": entity_kind,
+            "target_source_identifier": (
+                f"database:seewo-mysql:{entity_kind}-1"
+            ),
+            "before": {
+                "category": entity_kind,
+                "name": f"测试{entity_kind}",
+                "number": f"{entity_kind}-001",
+                "phone": None,
+                "email": None,
+            },
+            "after": None,
+        }
+    )
+    parent.file_sha256 = sha256(output.value.encode()).hexdigest()
+    return connector, mutation, parent, task, context
 
 
 def _install_runtime_fakes(monkeypatch, parent):
@@ -297,6 +342,54 @@ async def test_sql_rollback_uses_related_fields_after_unrelated_version_change(
         key.startswith("agent-sql-rollback-operation:")
         for key in checkpoints
     )
+
+
+@pytest.mark.asyncio
+async def test_sql_rollback_restores_historical_department_delete_without_class_name(
+    monkeypatch,
+) -> None:
+    connector, mutation, parent, task, context = (
+        await _deleted_record_rollback_facts(entity_kind="department")
+    )
+    _checkpoints, created_versions = _install_runtime_fakes(monkeypatch, parent)
+    handler = SqlRollbackExecutionHandler(_Resolver(connector))
+    session = _Session(task, parent)
+
+    await handler.plan(session, context)  # type: ignore[arg-type]
+    planned = task.agent_intent["restore_comparisons"][0]
+    operation = _rollback_operation(
+        mutation,
+        target_version=f"sha256:{parent.file_sha256}",
+    )
+    fact = await handler.execute_operation(
+        session,  # type: ignore[arg-type]
+        context,
+        operation.id,
+    )
+
+    assert planned["disposition"] == "safe_to_restore"
+    assert planned["reason_code"] == "deleted_record_still_absent"
+    assert fact["status"] == "succeeded"
+    assert await connector.read_record("department-1") is not None
+    assert created_versions
+
+
+@pytest.mark.asyncio
+async def test_sql_rollback_keeps_student_class_name_fact_required(
+    monkeypatch,
+) -> None:
+    connector, _mutation, parent, task, context = (
+        await _deleted_record_rollback_facts(entity_kind="student")
+    )
+    _checkpoints, _created_versions = _install_runtime_fakes(monkeypatch, parent)
+    handler = SqlRollbackExecutionHandler(_Resolver(connector))
+    session = _Session(task, parent)
+
+    await handler.plan(session, context)  # type: ignore[arg-type]
+
+    planned = task.agent_intent["restore_comparisons"][0]
+    assert planned["disposition"] == "conflict"
+    assert planned["reason_code"] == "complete_record_fact_missing"
 
 
 @pytest.mark.asyncio
@@ -425,6 +518,75 @@ async def test_sql_rollback_deletes_create_using_persisted_generated_locator(
     assert fact["status"] == "succeeded"
     assert fact["target_source_identifier"] == "database:seewo-mysql:41"
     assert await connector.read_record("41") is None
+
+
+@pytest.mark.asyncio
+async def test_sql_rollback_deletes_create_using_source_id_locator_fallback(
+    monkeypatch,
+) -> None:
+    connector = _connector(record_id="41")
+    mutation, parent, task, context = _create_rollback_facts()
+    mutation["target_source_identifier"] = None
+    mutation["after"]["source_id"] = "database:seewo-mysql:41"
+    _checkpoints, _created_versions = _install_runtime_fakes(monkeypatch, parent)
+    handler = SqlRollbackExecutionHandler(_Resolver(connector))
+    session = _Session(task, parent)
+
+    await handler.plan(session, context)  # type: ignore[arg-type]
+    operation = _rollback_operation(
+        mutation,
+        target_version=f"sha256:{parent.file_sha256}",
+    )
+    fact = await handler.execute_operation(
+        session,  # type: ignore[arg-type]
+        context,
+        operation.id,
+    )
+
+    assert fact["status"] == "succeeded"
+    assert fact["target_source_identifier"] == "database:seewo-mysql:41"
+    assert await connector.read_record("41") is None
+
+
+@pytest.mark.parametrize(
+    ("source_id", "expected"),
+    [
+        ("41", "41"),
+        (" database:seewo-mysql:41 ", "41"),
+    ],
+)
+def test_sql_rollback_create_source_id_fallback_accepts_local_identifiers(
+    source_id: str,
+    expected: str,
+) -> None:
+    assert (
+        _rollback_identifier(
+            connector_id="seewo-mysql",
+            operation="create",
+            locator=None,
+            after={"source_id": source_id},
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "source_id",
+    [
+        "database:other-mysql:41",
+        "database:seewo-mysql:",
+    ],
+)
+def test_sql_rollback_create_source_id_fallback_rejects_unsafe_locators(
+    source_id: str,
+) -> None:
+    with pytest.raises(ValueError):
+        _rollback_identifier(
+            connector_id="seewo-mysql",
+            operation="create",
+            locator=None,
+            after={"source_id": source_id},
+        )
 
 
 @pytest.mark.asyncio

@@ -166,13 +166,33 @@ class AgentReportingService:
             report.facts,
         ):
             raise ValueError("rollback is not eligible from verified execution facts")
-        idempotency_key = f"rollback:{source_task_id}:{target_version_id}"
-        existing_task = await self.session.scalar(
-            select(ReconciliationTask).where(
-                ReconciliationTask.idempotency_key == idempotency_key,
-                ReconciliationTask.tenant_id == tenant_id,
+        existing_tasks = tuple(
+            await self.session.scalars(
+                select(ReconciliationTask)
+                .where(
+                    ReconciliationTask.parent_task_id == source_task_id,
+                    ReconciliationTask.task_kind == "rollback",
+                    ReconciliationTask.tenant_id == tenant_id,
+                )
+                .order_by(
+                    ReconciliationTask.created_at.desc(),
+                    ReconciliationTask.id.desc(),
+                )
             )
         )
+        existing_task = next(
+            (
+                task
+                for task in existing_tasks
+                if _rollback_task_matches(
+                    task,
+                    target_version_id=target_version_id,
+                )
+            ),
+            None,
+        )
+        rollback_attempt = 1
+        retry_of_task_id: UUID | None = None
         if existing_task is not None:
             existing_generation = require_rollback_cycle_generation(existing_task)
             await cycles.ensure_available(
@@ -184,16 +204,50 @@ class AgentReportingService:
             )
             if existing_run is None:
                 raise LookupError("rollback Agent run not found")
-            state, message_zh, requires_confirmation = _rollback_preview_state(existing_run)
-            return RollbackTaskPreview(
-                task_id=existing_task.id,
-                task_kind=existing_task.task_kind,
-                report_id=None,
+            existing_report = await self.session.scalar(
+                select(AgentReportRecord).where(
+                    AgentReportRecord.task_id == existing_task.id,
+                    AgentReportRecord.tenant_id == tenant_id,
+                )
+            )
+            if not (
+                _task_uses_database_target(source)
+                and existing_run.phase == "terminal"
+                and existing_run.status == "completed"
+                and _rollback_report_is_retryable(existing_report)
+            ):
+                return _rollback_task_preview(
+                    existing_task,
+                    existing_run,
+                    target_version_id=target_version_id,
+                )
+            rollback_attempt = _rollback_attempt(existing_task) + 1
+            retry_of_task_id = existing_task.id
+
+        idempotency_key = (
+            f"rollback:{source_task_id}:{target_version_id}"
+            if rollback_attempt == 1
+            else (
+                f"rollback:{source_task_id}:{target_version_id}:"
+                f"attempt:{rollback_attempt}"
+            )
+        )
+        duplicate = await self.session.scalar(
+            select(ReconciliationTask).where(
+                ReconciliationTask.idempotency_key == idempotency_key,
+                ReconciliationTask.tenant_id == tenant_id,
+            )
+        )
+        if duplicate is not None:
+            duplicate_run = await AgentRuntimeRepository(self.session).get_run_for_task(
+                duplicate.id
+            )
+            if duplicate_run is None:
+                raise LookupError("rollback Agent run not found")
+            return _rollback_task_preview(
+                duplicate,
+                duplicate_run,
                 target_version_id=target_version_id,
-                operations=tuple((existing_task.agent_intent or {}).get("operations", [])),
-                state=state,
-                message_zh=message_zh,
-                requires_confirmation=requires_confirmation,
             )
         active = await self.session.scalar(
             select(SchoolTaskLockRecord).where(
@@ -239,10 +293,21 @@ class AgentReportingService:
                 "source_mode": rollback_source_mode,
                 "target": rollback_target,
                 "rollback_cycle_generation": rollback_cycle_generation,
+                "rollback_attempt": rollback_attempt,
+                "retry_of_task_id": (
+                    str(retry_of_task_id) if retry_of_task_id is not None else None
+                ),
             },
             idempotency_key=idempotency_key,
             request_hash=_hash(
-                {"source_task_id": str(source_task_id), "target_version_id": str(target_version_id)}
+                {
+                    "source_task_id": str(source_task_id),
+                    "target_version_id": str(target_version_id),
+                    "rollback_attempt": rollback_attempt,
+                    "retry_of_task_id": (
+                        str(retry_of_task_id) if retry_of_task_id is not None else None
+                    ),
+                }
             ),
         )
         self.session.add(task)
@@ -283,6 +348,10 @@ class AgentReportingService:
                 "source_task_id": str(source_task_id),
                 "target_version_id": str(target_version_id),
                 "verified_mutation_ids": [str(mutation["id"]) for mutation in evidence],
+                "rollback_attempt": rollback_attempt,
+                "retry_of_task_id": (
+                    str(retry_of_task_id) if retry_of_task_id is not None else None
+                ),
             },
         )
         operations = tuple(
@@ -301,6 +370,10 @@ class AgentReportingService:
             "source_mode": rollback_source_mode,
             "target": rollback_target,
             "rollback_cycle_generation": rollback_cycle_generation,
+            "rollback_attempt": rollback_attempt,
+            "retry_of_task_id": (
+                str(retry_of_task_id) if retry_of_task_id is not None else None
+            ),
         }
         return RollbackTaskPreview(
             task_id=task.id,
@@ -312,6 +385,61 @@ class AgentReportingService:
             message_zh="请确认是否创建独立回滚任务。",
             requires_confirmation=True,
         )
+
+
+def _rollback_task_matches(
+    task: ReconciliationTask,
+    *,
+    target_version_id: UUID,
+) -> bool:
+    intent = task.agent_intent if isinstance(task.agent_intent, dict) else {}
+    return intent.get("target_version_id") == str(target_version_id)
+
+
+def _rollback_attempt(task: ReconciliationTask) -> int:
+    intent = task.agent_intent if isinstance(task.agent_intent, dict) else {}
+    value = intent.get("rollback_attempt", 1)
+    return value if isinstance(value, int) and value >= 1 else 1
+
+
+def _task_uses_database_target(task: ReconciliationTask) -> bool:
+    intent = task.agent_intent if isinstance(task.agent_intent, dict) else {}
+    target = intent.get("target")
+    return isinstance(target, dict) and target.get("kind") == "database"
+
+
+def _rollback_report_is_retryable(report: AgentReportRecord | None) -> bool:
+    if report is None or report.terminal_state != "completed_with_conflicts":
+        return False
+    mutations = report.facts.get("mutations")
+    return isinstance(mutations, list) and bool(mutations) and all(
+        isinstance(mutation, dict)
+        and mutation.get("status") == "conflict_skipped"
+        and isinstance(mutation.get("verification"), dict)
+        and mutation["verification"].get("no_write") is True
+        for mutation in mutations
+    )
+
+
+def _rollback_task_preview(
+    task: ReconciliationTask,
+    run: AgentRunRecord,
+    *,
+    target_version_id: UUID,
+) -> RollbackTaskPreview:
+    state, message_zh, requires_confirmation = _rollback_preview_state(run)
+    intent = task.agent_intent if isinstance(task.agent_intent, dict) else {}
+    operations = intent.get("operations")
+    return RollbackTaskPreview(
+        task_id=task.id,
+        task_kind=task.task_kind,
+        report_id=None,
+        target_version_id=target_version_id,
+        operations=tuple(operations) if isinstance(operations, list) else (),
+        state=state,
+        message_zh=message_zh,
+        requires_confirmation=requires_confirmation,
+    )
 
 
 def _rollback_preview_state(run: AgentRunRecord) -> tuple[str, str, bool]:
