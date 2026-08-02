@@ -1275,18 +1275,11 @@ class ProductionGraphActionExecutor:
         mapping_schema_version: str,
         enforce_configured_roles: frozenset[str],
     ) -> tuple[DatabaseSchemaMappingOutput, int, bool, bool]:
-        is_v3_mapping = mapping_schema_version == "fixed-six-field-sql-mapping-v3"
-        llm_roles = frozenset(
-            role for role, mode in materials.mapping_modes.items() if mode == "llm"
+        llm_roles = _database_mapping_llm_roles(
+            materials,
+            mapping_schema_version=mapping_schema_version,
         )
-        deterministic = (
-            not llm_roles
-            if is_v3_mapping
-            else all(
-                set(mapping) == _fixed_contract_fields()
-                for mapping in materials.configured_mappings.values()
-            )
-        )
+        deterministic = not llm_roles
         if deterministic:
             output = _database_mapping_output_from_config(
                 configured_mappings=materials.configured_mappings,
@@ -1343,14 +1336,10 @@ class ProductionGraphActionExecutor:
             action=action,
             prepare_sensitive_tokens=False,
         )
-        model_profiles = (
-            tuple(
-                profile
-                for profile in materials.profiles
-                if profile.source_role in llm_roles
-            )
-            if is_v3_mapping
-            else materials.profiles
+        model_profiles = tuple(
+            profile
+            for profile in materials.profiles
+            if profile.source_role in llm_roles
         )
         configured_output = _database_mapping_output_from_config(
             configured_mappings=materials.configured_mappings,
@@ -1359,14 +1348,10 @@ class ProductionGraphActionExecutor:
         )
 
         def validate_model_output(candidate: object) -> DatabaseSchemaMappingOutput:
-            output = (
-                _merge_database_mapping_roles(
-                    candidate,
-                    configured_output=configured_output,
-                    llm_roles=llm_roles,
-                )
-                if is_v3_mapping
-                else candidate
+            output = _merge_database_mapping_roles(
+                candidate,
+                configured_output=configured_output,
+                llm_roles=llm_roles,
             )
             return _validate_database_mapping_output(
                 output,
@@ -1791,6 +1776,10 @@ class ProductionGraphActionExecutor:
         action: AllowedActionV1,
     ) -> GraphActionOutcome:
         materials = await self._database_mapping_materials(context)
+        llm_roles = _database_mapping_llm_roles(
+            materials,
+            mapping_schema_version="fixed-six-field-sql-mapping-v2",
+        )
         async with self._session_factory() as session:
             async with session.begin():
                 (
@@ -1804,7 +1793,9 @@ class ProductionGraphActionExecutor:
                     action=action,
                     materials=materials,
                     mapping_schema_version=("fixed-six-field-sql-mapping-v2"),
-                    enforce_configured_roles=frozenset({"target"}),
+                    enforce_configured_roles=(
+                        frozenset(materials.field_refs).difference(llm_roles)
+                    ),
                 )
                 payload = _database_mapping_checkpoint_payload(
                     output,
@@ -1871,11 +1862,18 @@ class ProductionGraphActionExecutor:
                 for field, column in frozen_mapping.items()
             ):
                 raise ValueError("database ingestion role mapping is invalid")
+            if set(frozen_mapping) != _fixed_contract_fields() or len(
+                set(frozen_mapping.values())
+            ) != len(frozen_mapping):
+                raise ValueError("database ingestion role mapping is invalid")
             snapshot, _source = await _source_snapshot(
                 session,
                 task_id=context.task_id,
                 role=role,
             )
+        connector = connector.with_frozen_mapping(
+            {str(key): str(value) for key, value in frozen_mapping.items()}
+        )
         source_version_before = (await connector.version()).value
         if source_version_before != expected_source_version:
             raise ConnectorConflictError(
@@ -4310,6 +4308,23 @@ class _DatabaseMappingContractViolation(ValueError):
     def __init__(self, code: str, *, path: str = "$") -> None:
         super().__init__("database mapping violated its fixed contract")
         self.repair_feedback = ({"path": path, "code": code},)
+
+
+def _database_mapping_llm_roles(
+    materials: _DatabaseMappingMaterials,
+    *,
+    mapping_schema_version: str,
+) -> frozenset[str]:
+    if mapping_schema_version == "fixed-six-field-sql-mapping-v3":
+        return frozenset(
+            role for role, mode in materials.mapping_modes.items() if mode == "llm"
+        )
+    fixed_fields = _fixed_contract_fields()
+    return frozenset(
+        role
+        for role, mapping in materials.configured_mappings.items()
+        if set(mapping) != fixed_fields
+    )
 
 
 def _merge_database_mapping_roles(

@@ -203,11 +203,6 @@ class DatabaseSchemaMappingInput(AgentSkillInput):
         if len(set(roles)) != len(roles):
             raise ValueError("database mapping source roles must be distinct")
         if (
-            self.mapping_schema_version == "fixed-six-field-sql-mapping-v2"
-            and set(roles) != {"authoritative", "target"}
-        ):
-            raise ValueError("v2 requires both database source roles")
-        if (
             len(self.model_dump_json().encode("utf-8"))
             > MAX_DATABASE_SCHEMA_MAPPING_INPUT_BYTES
         ):
