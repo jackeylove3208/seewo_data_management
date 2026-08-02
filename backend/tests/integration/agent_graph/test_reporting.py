@@ -7,6 +7,7 @@ from app.agent_graph.evidence import build_evidence_manifest
 from app.agent_graph.report_executors import (
     GraphReportExecutor,
     GraphReportFactTools,
+    _included_quality_warning_analyses,
 )
 from app.agent_graph.repository import AgentGraphRepository
 from app.agent_graph.tools import GraphPhaseToolGateway
@@ -141,15 +142,13 @@ async def test_graph_report_uses_model_narrative_but_server_facts(session) -> No
                     "input_exception_analyses": [
                         {
                             "reason_code": "authority_field_unavailable",
-                            "title_zh": "权威学生数据缺少班级信息",
-                            "analysis_zh": (
-                                "钉钉权威数据中有 7 条学生记录缺少班级信息。"
-                            ),
+                            "title_zh": "模型错误地声称学生被排除",
+                            "analysis_zh": "模型错误地声称学生无法参与匹配。",
                             "impact_zh": (
                                 "这些学生记录无法可靠匹配，已从治理范围排除。"
                             ),
                             "suggestion_zh": (
-                                "请补充班级信息后重新运行任务。"
+                                "请补充班级信息后强制重新运行任务。"
                             ),
                         }
                     ],
@@ -201,12 +200,20 @@ async def test_graph_report_uses_model_narrative_but_server_facts(session) -> No
     assert "13800138000" not in str(result.report.content)
     assert result.report.generated_by == "agent-graph-report-skill-v1"
     analyses = result.report.content["narrative"]["input_exception_analyses"]
-    assert analyses[0]["reason_code"] == "authority_field_unavailable"
-    assert "允许同步" in analyses[0]["impact_zh"]
-    assert "仍保留在匹配与同步范围内" in analyses[0]["impact_zh"]
-    assert "这些学生记录无法可靠匹配，已从治理范围排除。" not in str(
-        analyses[0]
-    )
+    assert analyses == [
+        {
+            "reason_code": "authority_field_unavailable",
+            "title_zh": "权威学生数据缺少班级信息",
+            "analysis_zh": "权威学生数据中有 7 条记录缺少班级信息。",
+            "impact_zh": (
+                "班级信息不可用仅作为数据质量提醒；这些学生"
+                "仍保留在匹配与同步范围内，允许同步。"
+            ),
+            "suggestion_zh": "建议补充班级信息以提升数据质量；已完成的同步无需重试。",
+        }
+    ]
+    assert "已从治理范围排除" not in str(analyses)
+    assert "强制重新运行任务" not in str(analyses)
     assert result.report.rollback_eligible is True
     invocation = await session.scalar(
         select(AgentSubAgentInvocationRecord).where(
@@ -216,3 +223,56 @@ async def test_graph_report_uses_model_narrative_but_server_facts(session) -> No
     )
     assert invocation is not None
     assert invocation.execution_mode == "skill_model"
+
+
+def test_included_quality_warning_uses_reason_count_not_missing_field_count() -> None:
+    analyses = _included_quality_warning_analyses(
+        {
+            "excluded_findings": [
+                {
+                    "reason": "authority_field_unavailable",
+                    "affected_fields": ["class_name", "email"],
+                    "inclusion_state": "included",
+                    "safe_evidence": {
+                        "entity_kind": "student",
+                        "missing_count": 2,
+                    },
+                }
+            ],
+            "input_diagnostics": {
+                "reason_counts": {"authority_field_unavailable": 1},
+            },
+        }
+    )
+
+    assert analyses["authority_field_unavailable"]["analysis_zh"] == (
+        "权威学生数据中有 1 条记录缺少班级信息、邮箱。"
+    )
+
+
+def test_included_quality_warning_describes_mixed_inclusion_states_safely() -> None:
+    analyses = _included_quality_warning_analyses(
+        {
+            "excluded_findings": [
+                {
+                    "reason": "authority_field_unavailable",
+                    "affected_fields": ["class_name"],
+                    "inclusion_state": "included",
+                    "safe_evidence": {"entity_kind": "student"},
+                },
+                {
+                    "reason": "authority_field_unavailable",
+                    "affected_fields": ["class_name"],
+                    "inclusion_state": "excluded",
+                    "safe_evidence": {"entity_kind": "student"},
+                },
+            ],
+            "input_diagnostics": {
+                "reason_counts": {"authority_field_unavailable": 2},
+            },
+        }
+    )
+
+    impact = analyses["authority_field_unavailable"]["impact_zh"]
+    assert "仍保留在匹配与同步范围内，允许同步" in impact
+    assert "其他记录按其排除或异常状态处理" in impact

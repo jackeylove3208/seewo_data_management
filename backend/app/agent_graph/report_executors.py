@@ -191,10 +191,7 @@ def _included_quality_warning_analyses(
         for item in field_unavailable_findings
         if item.get("inclusion_state") == "included"
     ]
-    if (
-        not included_findings
-        or len(included_findings) != len(field_unavailable_findings)
-    ):
+    if not included_findings:
         return {}
 
     entity_kinds = {
@@ -208,19 +205,29 @@ def _included_quality_warning_analyses(
         for item in included_findings
         for field in item.get("affected_fields", ())
     }
-    missing_count = sum(
-        _positive_int(item.get("safe_evidence", {}).get("missing_count"))
-        if isinstance(item.get("safe_evidence"), Mapping)
-        else 1
-        for item in included_findings
-    )
     entity_zh = _localized_labels(entity_kinds, {"student": "学生"}, "记录")
     field_zh = _localized_labels(
         affected_fields,
-        {"class_name": "班级信息"},
+        {"class_name": "班级信息", "email": "邮箱"},
         "字段信息",
     )
-    count_zh = max(missing_count, len(included_findings))
+    count_zh = _reason_count(
+        facts,
+        "authority_field_unavailable",
+        fallback=len(included_findings),
+    )
+    has_non_included_findings = len(included_findings) != len(
+        field_unavailable_findings
+    )
+    impact_zh = (
+        f"{field_zh}不可用仅作为数据质量提醒；允许同步的{entity_zh}"
+        "仍保留在匹配与同步范围内，允许同步，其他记录按其排除或异常状态处理。"
+        if has_non_included_findings
+        else (
+            f"{field_zh}不可用仅作为数据质量提醒；这些{entity_zh}"
+            "仍保留在匹配与同步范围内，允许同步。"
+        )
+    )
     return {
         "authority_field_unavailable": {
             "reason_code": "authority_field_unavailable",
@@ -228,10 +235,7 @@ def _included_quality_warning_analyses(
             "analysis_zh": (
                 f"权威{entity_zh}数据中有 {count_zh} 条记录缺少{field_zh}。"
             ),
-            "impact_zh": (
-                f"{field_zh}不可用仅作为数据质量提醒；这些{entity_zh}"
-                "仍保留在匹配与同步范围内，允许同步。"
-            ),
+            "impact_zh": impact_zh,
             "suggestion_zh": (
                 f"建议补充{field_zh}以提升数据质量；已完成的同步无需重试。"
             ),
@@ -247,8 +251,20 @@ def _localized_labels(
     return "、".join(sorted(labels.get(value, value) for value in values)) or fallback
 
 
-def _positive_int(value: object) -> int:
-    return value if isinstance(value, int) and value > 0 else 1
+def _reason_count(
+    facts: Mapping[str, Any],
+    reason: str,
+    *,
+    fallback: int,
+) -> int:
+    input_diagnostics = facts.get("input_diagnostics")
+    if not isinstance(input_diagnostics, Mapping):
+        return fallback
+    reason_counts = input_diagnostics.get("reason_counts")
+    if not isinstance(reason_counts, Mapping):
+        return fallback
+    count = reason_counts.get(reason)
+    return count if isinstance(count, int) and count >= 0 else fallback
 
 
 def _redact_phone_values(value: object, *, field: str | None = None) -> object:
