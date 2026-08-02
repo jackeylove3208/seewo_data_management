@@ -1,5 +1,7 @@
 """Model-backed supervisor for the user-facing synchronization conversation."""
 
+import re
+
 from typing import Any
 
 from pydantic import ValidationError
@@ -20,11 +22,14 @@ _ALL_ENTITY_TYPES = (
     AgentEntityType.TEACHER,
     AgentEntityType.STUDENT,
 )
-_FULL_SCOPE_TOKENS = ("全部", "全量", "所有")
-_SYNC_ACTION_TOKENS = ("同步", "对齐", "核对", "对账")
-_ENTITY_SCOPE_TOKENS = ("部门", "教师", "老师", "学生")
-_SCOPE_LIMIT_TOKENS = ("只", "仅", "不要", "不含", "排除", "除了", "除外")
-_STANDALONE_FULL_SCOPE_MESSAGES = {"全部", "全量", "所有", "全部都要", "全都要"}
+_EXPLICIT_ALL_ENTITY_SCOPE_PATTERN = re.compile(
+    r"^(?:(?:请|麻烦|我要|我想|帮我|给我)?(?:把|将)?(?:"
+    r"(?:同步|对齐|核对|对账)(?:全部|全量|所有)"
+    r"(?:数据|组织数据|学校数据|信息|资料)?|"
+    r"(?:全部|全量|所有)(?:数据|组织数据|学校数据|信息|资料)?"
+    r"(?:都)?(?:同步|对齐|核对|对账))"
+    r"(?:一下|了|吧)?|(?:全部|全量|所有|全部都要|全都要))$"
+)
 
 
 class ConversationModelResponseError(ValueError):
@@ -82,17 +87,10 @@ def _apply_explicit_all_entity_scope(
     context: ConversationAgentContext,
 ) -> ConversationAgentDecision:
     compact = "".join(context.message.split()).strip("，。！？!?；;")
-    eligible = decision.kind in {"intent_update", "start_confirmation"}
-    full_scope = any(token in compact for token in _FULL_SCOPE_TOKENS)
-    sync_context = (
-        any(token in compact for token in _SYNC_ACTION_TOKENS)
-        or compact in _STANDALONE_FULL_SCOPE_MESSAGES
-    )
-    constrained = any(
-        token in compact
-        for token in (*_ENTITY_SCOPE_TOKENS, *_SCOPE_LIMIT_TOKENS)
-    )
-    if not eligible or not full_scope or not sync_context or constrained:
+    if (
+        decision.kind not in {"intent_update", "start_confirmation"}
+        or _EXPLICIT_ALL_ENTITY_SCOPE_PATTERN.fullmatch(compact) is None
+    ):
         return decision
     return decision.model_copy(update={"entity_types": _ALL_ENTITY_TYPES})
 

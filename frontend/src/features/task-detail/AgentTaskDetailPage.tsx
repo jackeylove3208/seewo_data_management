@@ -439,10 +439,11 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
   async function requestTermination() {
     setTerminationLoading(true);
     setTerminateError(undefined);
-    setDismissedTerminationGateId(undefined);
     try {
       if (current.workflow_version === "agent-graph-v1") {
-        setTerminationGate(await agentApi.previewTermination(taskId));
+        const nextGate = await agentApi.previewTermination(taskId);
+        setTerminationGate(nextGate);
+        setDismissedTerminationGateId(undefined);
       } else {
         await agentApi.terminate(taskId);
         await task.refetch();
@@ -467,8 +468,13 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
           ? "操作人确认终止当前任务"
           : "操作人取消终止当前任务",
       );
+      setDismissedTerminationGateId(activeTerminationGate.id);
       setTerminationGate(undefined);
-      await Promise.all([task.refetch(), graph.refetch(), events.refetch()]);
+      await Promise.allSettled([
+        task.refetch(),
+        graph.refetch(),
+        events.refetch(),
+      ]);
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) {
         setDismissedTerminationGateId(activeTerminationGate.id);

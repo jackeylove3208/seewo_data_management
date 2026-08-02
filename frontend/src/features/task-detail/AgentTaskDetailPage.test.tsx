@@ -1191,6 +1191,97 @@ describe("controlled Agent graph task detail", () => {
     client.clear();
   });
 
+  it("keeps a successfully decided persisted gate closed when refresh fails", async () => {
+    const terminationGate: AgentGraphHumanGate = {
+      id: "termination-gate-approved",
+      kind: "termination_confirmation",
+      status: "pending",
+      item_count: 1,
+      actionable: true,
+    };
+    vi.mocked(agentApi.graph).mockResolvedValue({
+      task_id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      graph_version: "agent-sync-graph-v1",
+      graph_cursor: 8,
+      current_node: "wait_high_risk_approvals",
+      business_stage: "governance_execution",
+      current_action_zh: "正在等待操作人处理",
+      status: "waiting_human",
+      can_terminate: true,
+      termination_requested: false,
+      human_gates: [terminationGate],
+    });
+    vi.mocked(agentApi.decideGraphGate).mockResolvedValue({
+      gate_id: terminationGate.id,
+      status: "approved",
+      graph_cursor: 8,
+    });
+    const user = userEvent.setup();
+    const { client } = renderPage();
+
+    await screen.findByRole("dialog", { name: "确认终止当前任务？" });
+    vi.mocked(agentApi.events).mockRejectedValue(new Error("refresh failed"));
+    await user.click(screen.getByRole("button", { name: "确认终止" }));
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("dialog", { name: "确认终止当前任务？" }),
+      ).not.toBeInTheDocument();
+    });
+    expect(agentApi.decideGraphGate).toHaveBeenCalledTimes(1);
+    client.clear();
+  });
+
+  it("does not resurrect a dismissed stale gate when a new preview fails", async () => {
+    const terminationGate: AgentGraphHumanGate = {
+      id: "termination-gate-dismissed",
+      kind: "termination_confirmation",
+      status: "pending",
+      item_count: 1,
+      actionable: true,
+    };
+    vi.mocked(agentApi.graph).mockResolvedValue({
+      task_id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      graph_version: "agent-sync-graph-v1",
+      graph_cursor: 8,
+      current_node: "wait_high_risk_approvals",
+      business_stage: "governance_execution",
+      current_action_zh: "正在等待操作人处理",
+      status: "waiting_human",
+      can_terminate: true,
+      termination_requested: false,
+      human_gates: [terminationGate],
+    });
+    vi.mocked(agentApi.decideGraphGate).mockRejectedValue(
+      new ApiError("Gate is already decided", 409, "graph_gate_already_decided"),
+    );
+    vi.spyOn(agentApi, "previewTermination").mockRejectedValue(
+      new ApiError("无法创建新的终止确认", 409, "stale_graph_gate"),
+    );
+    const user = userEvent.setup();
+    const { client } = renderPage();
+
+    await screen.findByRole("dialog", { name: "确认终止当前任务？" });
+    await user.click(screen.getByRole("button", { name: "确认终止" }));
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("dialog", { name: "确认终止当前任务？" }),
+      ).not.toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "终止任务" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("无法创建新的终止确认")).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByRole("dialog", { name: "确认终止当前任务？" }),
+    ).not.toBeInTheDocument();
+    client.clear();
+  });
+
   it("explains that a terminated task is only generating its final report", async () => {
     vi.mocked(agentApi.task).mockResolvedValue({
       id: "task-graph-1",

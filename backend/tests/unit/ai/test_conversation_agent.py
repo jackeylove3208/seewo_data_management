@@ -96,7 +96,19 @@ async def test_supervisor_expands_explicit_full_scope_requests(message: str) -> 
     )
 
 
-@pytest.mark.parametrize("message", ["同步全部学生", "除了老师，其他全部同步"])
+@pytest.mark.parametrize(
+    "message",
+    [
+        "同步全部学生",
+        "同步所有教职工",
+        "同步所有员工",
+        "除了老师，其他全部同步",
+        "我不想同步全部",
+        "请别同步全部",
+        "撤销同步全部",
+        "可以同步全部吗",
+    ],
+)
 @pytest.mark.asyncio
 async def test_supervisor_preserves_constrained_entity_scope(message: str) -> None:
     provider = CapturingProvider(
