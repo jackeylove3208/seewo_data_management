@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from typing import Literal
 from uuid import UUID
 
 from sqlalchemy import select
@@ -41,7 +42,13 @@ from app.remote_sources.network import RemoteSourceFailure
 
 
 class AgentGraphLeaseLost(RuntimeError):
-    pass
+    def __init__(
+        self,
+        reason: Literal["run_claim_lost", "school_lock_lost"],
+        run_id: UUID,
+    ) -> None:
+        self.reason = reason
+        super().__init__(f"Agent graph lease lost ({reason}): {run_id}")
 
 
 @dataclass(frozen=True)
@@ -132,12 +139,14 @@ class AgentGraphWorker:
                 heartbeat_error = heartbeat_task.exception()
                 if heartbeat_error is not None:
                     raise heartbeat_error
-                if not heartbeat_task.result():
-                    raise AgentGraphLeaseLost(f"Agent graph lease lost: {context.run_id}")
+                loss_reason = heartbeat_task.result()
+                if loss_reason is not None:
+                    raise AgentGraphLeaseLost(loss_reason, context.run_id)
                 raise RuntimeError("Agent graph heartbeat stopped before work completion")
             heartbeat_stopped.set()
-            if not await heartbeat_task:
-                raise AgentGraphLeaseLost(f"Agent graph lease lost: {context.run_id}")
+            loss_reason = await heartbeat_task
+            if loss_reason is not None:
+                raise AgentGraphLeaseLost(loss_reason, context.run_id)
             return await processing_task
         except (GraphSubAgentFailure, GraphSupervisorFailure) as error:
             heartbeat_stopped.set()
@@ -423,14 +432,14 @@ class AgentGraphWorker:
         self,
         context: GraphWorkContext,
         stopped: asyncio.Event,
-    ) -> bool:
+    ) -> Literal["run_claim_lost", "school_lock_lost"] | None:
         while True:
             try:
                 await asyncio.wait_for(
                     stopped.wait(),
                     timeout=self._heartbeat_interval_seconds,
                 )
-                return True
+                return None
             except TimeoutError:
                 pass
             async with self._session_factory() as session:
@@ -442,12 +451,14 @@ class AgentGraphWorker:
                         lease_token=context.lease_token,
                         lease_seconds=self._lease_seconds,
                     )
-                    lock_is_owned = claim_is_owned and await runtime.heartbeat_school_lock(
+                    if not claim_is_owned:
+                        return "run_claim_lost"
+                    lock_is_owned = await runtime.heartbeat_school_lock(
                         tenant_id=context.tenant_id,
                         run_id=context.run_id,
                     )
-            if not claim_is_owned or not lock_is_owned:
-                return False
+            if not lock_is_owned:
+                return "school_lock_lost"
 
     async def _commit(
         self,
