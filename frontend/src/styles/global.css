@@ -3644,6 +3644,22 @@ body {
   background: #f5f8fc;
 }
 
+@keyframes conversation-message-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.conversation-message.user.is-entering {
+  animation: conversation-message-enter 180ms ease-out both;
+}
+
 .conversation-message.user .message-avatar {
   grid-column: 2;
   grid-row: 1;
@@ -4808,5 +4824,9 @@ body {
   .sync-method,
   .sync-attachment {
     transition: none;
+  }
+
+  .conversation-message.user.is-entering {
+    animation: none;
   }
 }

@@ -19,12 +19,14 @@ export interface TaskStatusStage {
 export function TaskStatusRail({
   stages,
   currentIndex,
+  idle = false,
   blocked = false,
   failed = false,
   terminationRequested = false,
 }: {
   stages: TaskStatusStage[];
   currentIndex: number;
+  idle?: boolean;
   blocked?: boolean;
   failed?: boolean;
   terminationRequested?: boolean;
@@ -43,7 +45,7 @@ export function TaskStatusRail({
 
   return (
     <aside
-      className={`task-status-rail${collapsed ? " is-collapsed" : ""}`}
+      className={`task-status-rail${collapsed ? " is-collapsed" : ""}${idle ? " is-idle" : ""}`}
       aria-label="任务处理状态"
     >
       <header className="task-status-rail-header">
@@ -102,6 +104,7 @@ export function TaskStatusRail({
           );
         })}
       </ol>
+      {idle && <p className="task-status-idle">等待创建任务</p>}
     </aside>
   );
 }

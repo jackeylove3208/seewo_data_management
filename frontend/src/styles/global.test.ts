@@ -189,4 +189,24 @@ describe("responsive analysis styles", () => {
       /\.conversation-composer textarea:focus\s*\{[^}]*box-shadow:\s*none/s,
     );
   });
+
+  it("styles idle task progress and subtle user-message motion", () => {
+    expect(appleCss).toMatch(
+      /\.task-status-rail\.is-idle\s+\.task-status-stage-list\s*\{[^}]*opacity:\s*0\.55/s,
+    );
+    expect(appleCss).toMatch(
+      /\.task-status-idle\s*\{[^}]*text-align:\s*center/s,
+    );
+    expect(globalCss).toMatch(/@keyframes\s+conversation-message-enter/);
+    expect(globalCss).toMatch(
+      /\.conversation-message\.user\.is-entering\s*\{[^}]*animation:\s*conversation-message-enter\s+180ms\s+ease-out\s+both/s,
+    );
+    const reducedMotionCss = extractCssBlocks(
+      globalCss,
+      "@media (prefers-reduced-motion: reduce)",
+    ).join("\n");
+    expect(reducedMotionCss).toMatch(
+      /\.conversation-message\.user\.is-entering\s*\{[^}]*animation:\s*none/s,
+    );
+  });
 });

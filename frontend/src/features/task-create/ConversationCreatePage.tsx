@@ -28,6 +28,8 @@ import { presentAgentEvent, presentAgentPhase } from "../agent-events/presentati
 import { ConversationApiConnectionCard } from "./ConversationApiConnectionCard";
 import { ConversationMediumRiskReviewCard } from "./ConversationMediumRiskReviewCard";
 import { ConversationRiskApprovalCard } from "./ConversationRiskApprovalCard";
+import { prefersReducedMotion } from "./motionPreferences";
+import { TypewriterText } from "./TypewriterText";
 
 type ConversationState = "idle" | "collecting" | "needs-input" | "draft-ready" | "submitting" | "failed" | "created";
 interface ConversationMessage {
@@ -35,6 +37,8 @@ interface ConversationMessage {
   role: "assistant" | "user";
   text: string;
   kind?: "normal" | "guardrail" | "error";
+  presentation?: "enter" | "typewriter";
+  completionState?: "draft-ready" | "needs-input";
 }
 
 const initialMessages: ConversationMessage[] = [{
@@ -129,6 +133,7 @@ export function ConversationCreatePage({
 }) {
   const [messages, setMessages] = useState<ConversationMessage[]>(initialMessages);
   const [input, setInput] = useState("");
+  const inputComposingRef = useRef(false);
   const [state, setState] = useState<ConversationState>("idle");
   const [conversationId, setConversationId] = useState<string>();
   const [confirmation, setConfirmation] = useState<AgentStartConfirmation>();
@@ -355,6 +360,7 @@ export function ConversationCreatePage({
       text: !taskActive && requiresSafeEcho
         ? "消息已提交，正在安全处理。"
         : message,
+      presentation: prefersReducedMotion() ? undefined : "enter",
     }]);
     try {
       if (
@@ -405,12 +411,13 @@ export function ConversationCreatePage({
           id: messageId(),
           role: "assistant",
           text: response.message,
+          presentation: "typewriter",
+          completionState: response.start_confirmation ? "draft-ready" : "needs-input",
         },
       ]);
       if (response.start_confirmation) {
         setConfirmation(response.start_confirmation);
       }
-      setState(response.start_confirmation ? "draft-ready" : "needs-input");
     } catch (error) {
       setContextLimitReached(
         error instanceof ApiError && error.code === "conversation_context_limit",
@@ -698,7 +705,6 @@ export function ConversationCreatePage({
 
   const isCollecting = state === "collecting";
   const taskActive = Boolean(task && !terminalTaskStatuses.has(task.status));
-  const showTaskStatusRail = taskActive;
   const composerLocked = Boolean(taskActive && !clarificationOpen);
   const taskBlocked = task?.status === "blocked_model_error";
   const taskFailed = task?.status === "failed";
@@ -757,19 +763,43 @@ export function ConversationCreatePage({
           )}
         />
       )}
-      <div className={`conversation-workspace${showTaskStatusRail ? " has-task-status" : ""}`}>
+      <div className="conversation-workspace has-task-status">
         <section className="conversation-surface" aria-label="新建对话">
         <div className="conversation-messages" aria-live="polite">
           {messages.map((message) => (
             <article
-              className={`conversation-message ${message.role} ${message.kind ?? ""}`}
+              className={`conversation-message ${message.role} ${message.kind ?? ""}${message.presentation === "enter" ? " is-entering" : ""}`}
               aria-label={message.role === "assistant" ? "同步助手消息" : "你的消息"}
+              aria-busy={message.presentation === "typewriter" ? true : undefined}
               key={message.id}
+              onAnimationEnd={(event) => {
+                if (
+                  message.presentation !== "enter"
+                  || event.target !== event.currentTarget
+                ) return;
+                setMessages((current) => current.map((item) => (
+                  item.id === message.id
+                    ? { ...item, presentation: undefined }
+                    : item
+                )));
+              }}
             >
               <span className="message-avatar">{message.role === "assistant" ? <Bot size={17} /> : <UserRound size={17} />}</span>
               <div>
                 <strong>{message.role === "assistant" ? "同步助手" : "你"}</strong>
-                <p>{message.text}</p>
+                {message.presentation === "typewriter" ? (
+                  <TypewriterText
+                    text={message.text}
+                    onComplete={() => {
+                      setMessages((current) => current.map((item) => (
+                        item.id === message.id
+                          ? { ...item, presentation: undefined, completionState: undefined }
+                          : item
+                      )));
+                      setState(message.completionState ?? "needs-input");
+                    }}
+                  />
+                ) : <p>{message.text}</p>}
               </div>
             </article>
           ))}
@@ -781,7 +811,7 @@ export function ConversationCreatePage({
               onChange={setApiConnection}
             />
           )}
-          {confirmation && !taskActive && (
+          {confirmation && !taskActive && state !== "collecting" && (
             <article className="conversation-card start-confirmation" aria-label="开始确认">
               <strong className="start-confirmation-title">开始同步前确认</strong>
               <dl className="start-confirmation-details">
@@ -961,7 +991,9 @@ export function ConversationCreatePage({
               {taskActive && <button type="button" disabled={terminationLoading} onClick={() => void terminateTask()}>终止任务</button>}
             </article>
           )}
-          {state === "collecting" && <div className="assistant-thinking"><Spin size="small" /> 正在理解同步需求</div>}
+          {state === "collecting" && !messages.some(
+            (message) => message.presentation === "typewriter",
+          ) && <div className="assistant-thinking"><Spin size="small" /> 正在理解同步需求</div>}
         </div>
 
         <form className="conversation-composer" onSubmit={(event) => void sendMessage(event)}>
@@ -978,20 +1010,35 @@ export function ConversationCreatePage({
             disabled={hydrating || isCollecting || composerLocked}
             value={input}
             onChange={(event) => setInput(event.target.value)}
+            onCompositionStart={() => {
+              inputComposingRef.current = true;
+            }}
+            onCompositionEnd={() => {
+              inputComposingRef.current = false;
+            }}
+            onKeyDown={(event) => {
+              if (
+                event.key !== "Enter"
+                || event.shiftKey
+                || inputComposingRef.current
+                || event.nativeEvent.isComposing
+              ) return;
+              event.preventDefault();
+              event.currentTarget.form?.requestSubmit();
+            }}
           />
           <button type="submit" aria-label="发送" title="发送" disabled={hydrating || !input.trim() || state === "collecting" || composerLocked}>
             <ArrowUp size={18} />
           </button>
         </form>
         </section>
-        {showTaskStatusRail && (
-          <TaskStatusRail
-            stages={agentTaskStages}
-            currentIndex={task ? taskStageIndex(task.phase) : -1}
-            blocked={taskBlocked || taskFailed}
-            terminationRequested={task?.status === "terminated"}
-          />
-        )}
+        <TaskStatusRail
+          stages={agentTaskStages}
+          currentIndex={task ? taskStageIndex(task.phase) : -1}
+          idle={!task}
+          blocked={taskBlocked || taskFailed}
+          terminationRequested={task?.status === "terminated"}
+        />
       </div>
       <Modal
         rootClassName="apple-agent-modal"

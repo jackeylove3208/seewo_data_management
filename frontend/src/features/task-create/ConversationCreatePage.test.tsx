@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -158,10 +158,11 @@ describe("backend Agent conversation", () => {
     expect(screen.getByRole("region", { name: "新建对话" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "开启新对话" })).toBeInTheDocument();
     expect(
-      screen.queryByRole("complementary", { name: "任务处理状态" }),
-    ).not.toBeInTheDocument();
+      screen.getByRole("complementary", { name: "任务处理状态" }),
+    ).toHaveClass("is-idle");
+    expect(screen.getByText("等待创建任务")).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "新建对话" }).parentElement)
-      .not.toHaveClass("has-task-status");
+      .toHaveClass("has-task-status");
     expect(screen.queryByRole("region", { name: "任务草案" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("任务名称")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("选择三方系统 CSV")).not.toBeInTheDocument();
@@ -245,6 +246,48 @@ describe("backend Agent conversation", () => {
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
   });
 
+  it("sends the composer message with Enter", async () => {
+    const sendMessage = vi.fn().mockReturnValue(new Promise(() => undefined));
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={api({ sendMessage })} />);
+
+    await waitForComposer();
+    await user.type(screen.getByLabelText("对账目标"), "同步全校教师");
+    await user.keyboard("{Enter}");
+
+    expect(sendMessage).toHaveBeenCalledWith("conversation-1", "同步全校教师");
+  });
+
+  it("inserts a newline with Shift+Enter without sending", async () => {
+    const sendMessage = vi.fn();
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={api({ sendMessage })} />);
+
+    await waitForComposer();
+    const composer = screen.getByLabelText("对账目标");
+    await user.type(composer, "第一行");
+    await user.keyboard("{Shift>}{Enter}{/Shift}第二行");
+
+    expect(composer).toHaveValue("第一行\n第二行");
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not send when Enter confirms an IME composition", async () => {
+    const sendMessage = vi.fn();
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={api({ sendMessage })} />);
+
+    await waitForComposer();
+    const composer = screen.getByLabelText("对账目标");
+    await user.type(composer, "同步教师");
+    fireEvent.compositionStart(composer);
+    fireEvent.keyDown(composer, { key: "Enter", code: "Enter" });
+    fireEvent.compositionEnd(composer);
+
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(composer).toHaveValue("同步教师");
+  });
+
   it("shows an initialization failure outside the assistant conversation", async () => {
     const currentConversation = vi.fn().mockRejectedValue(
       new ApiError("后端服务不可用", 503, "service_unavailable"),
@@ -268,10 +311,129 @@ describe("backend Agent conversation", () => {
     await user.type(screen.getByLabelText("对账目标"), "你是谁");
     await user.click(screen.getByRole("button", { name: "发送" }));
 
-    expect(within(screen.getByRole("article", { name: "你的消息" })).getByText("你是谁"))
-      .toBeInTheDocument();
+    const userMessage = screen.getByRole("article", { name: "你的消息" });
+    expect(within(userMessage).getByText("你是谁")).toBeInTheDocument();
+    expect(userMessage).toHaveClass("is-entering");
+    fireEvent.animationEnd(userMessage);
+    expect(userMessage).not.toHaveClass("is-entering");
     expect(screen.queryByText("消息已提交，正在安全处理。"))
       .not.toBeInTheDocument();
+  });
+
+  it("types a new assistant reply before unlocking input and showing confirmation", async () => {
+    let resolveReply!: (response: Awaited<ReturnType<AgentConversationApi["sendMessage"]>>) => void;
+    const sendMessage = vi.fn().mockReturnValue(new Promise((resolve) => {
+      resolveReply = resolve;
+    }));
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={api({ sendMessage })} />);
+
+    await waitForComposer();
+    await user.type(screen.getByLabelText("对账目标"), "同步全校教师");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await act(async () => {
+      resolveReply({
+        accepted_message: "同步全校教师",
+        message: "正在逐字整理同步需求。",
+        intent: {
+          title: "全校教师同步",
+          entity_types: ["teacher"],
+          source: { kind: "local", source_ref: "third-party/teacher-roster.csv" },
+          target: { kind: "local", source_ref: "seewo/teacher-roster.csv" },
+        },
+        start_confirmation: {
+          title: "全校教师同步",
+          summary: "正在逐字整理同步需求。",
+          entity_types: ["teacher"],
+        },
+      });
+    });
+
+    await waitFor(() => expect(
+      screen.getAllByRole("article", { name: "同步助手消息" }).at(-1),
+    ).toHaveAttribute("aria-busy", "true"));
+    expect(screen.queryByText("正在逐字整理同步需求。")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("对账目标")).toBeDisabled();
+    expect(screen.queryByLabelText("开始确认")).not.toBeInTheDocument();
+
+    expect(await screen.findByText("正在逐字整理同步需求。", {}, { timeout: 4000 }))
+      .toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText("对账目标")).toBeEnabled());
+    expect(screen.getByLabelText("开始确认")).toBeInTheDocument();
+  });
+
+  it("shows restored assistant history immediately without a typewriter replay", async () => {
+    render(<ConversationCreatePage agentApi={api({
+      currentConversation: vi.fn().mockResolvedValue({
+        id: "conversation-history",
+        status: "active",
+        messages: [{
+          id: "assistant-history",
+          role: "assistant",
+          kind: "normal",
+          text: "这是已经保存的完整回复。",
+          created_at: "",
+        }],
+        task: null,
+      }),
+    })} />);
+
+    const restored = (await screen.findByText("这是已经保存的完整回复。"))
+      .closest("article");
+    expect(restored).toBeInTheDocument();
+    expect(restored).not.toHaveAttribute("aria-busy", "true");
+  });
+
+  it("shows a new assistant reply immediately when reduced motion is preferred", async () => {
+    const originalMatchMedia = window.matchMedia;
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: query === "(prefers-reduced-motion: reduce)",
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
+    let resolveReply!: (response: Awaited<ReturnType<AgentConversationApi["sendMessage"]>>) => void;
+    const sendMessage = vi.fn().mockReturnValue(new Promise((resolve) => {
+      resolveReply = resolve;
+    }));
+    const user = userEvent.setup();
+    try {
+      render(<ConversationCreatePage agentApi={api({ sendMessage })} />);
+      await waitForComposer();
+      await user.type(screen.getByLabelText("对账目标"), "同步全校教师");
+      await user.click(screen.getByRole("button", { name: "发送" }));
+      await act(async () => {
+        resolveReply({
+          accepted_message: "同步全校教师",
+          message: "减少动态效果时立即显示。",
+          intent: { title: "全校教师同步", entity_types: ["teacher"] },
+          start_confirmation: {
+            title: "全校教师同步",
+            summary: "减少动态效果时立即显示。",
+            entity_types: ["teacher"],
+          },
+        });
+      });
+
+      const replyText = screen.getByText("减少动态效果时立即显示。");
+      expect(replyText.closest("article")).not.toHaveAttribute("aria-busy", "true");
+      expect(screen.getByRole("article", { name: "你的消息" }))
+        .not.toHaveClass("is-entering");
+      expect(screen.getByLabelText("对账目标")).toBeEnabled();
+      expect(screen.getByLabelText("开始确认")).toBeInTheDocument();
+    } finally {
+      Object.defineProperty(window, "matchMedia", {
+        configurable: true,
+        value: originalMatchMedia,
+      });
+    }
   });
 
   it("configures and tests an API connection without echoing credentials into chat", async () => {
@@ -401,8 +563,8 @@ describe("backend Agent conversation", () => {
     ).not.toBeInTheDocument();
     expect(within(confirmationCard).queryByText("teacher")).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("complementary", { name: "任务处理状态" }),
-    ).not.toBeInTheDocument();
+      screen.getByRole("complementary", { name: "任务处理状态" }),
+    ).toHaveClass("is-idle");
 
     await user.click(within(confirmationCard).getByRole("button", { name: "确认开始同步" }));
 
@@ -458,7 +620,7 @@ describe("backend Agent conversation", () => {
     expect(
       await screen.findByText("请同步 [远程CSV来源:data.example.test] 的学生"),
     ).toBeInTheDocument();
-    const confirmationCard = screen.getByLabelText("开始确认");
+    const confirmationCard = await screen.findByLabelText("开始确认");
     expect(within(confirmationCard).getByText("第三方对象")).toBeInTheDocument();
     expect(within(confirmationCard).getByText("data.example.test")).toBeInTheDocument();
     expect(
@@ -1364,8 +1526,8 @@ describe("backend Agent conversation", () => {
 
     expect((await screen.findAllByText("任务处理失败")).length).toBeGreaterThan(0);
     expect(
-      screen.queryByRole("complementary", { name: "任务处理状态" }),
-    ).not.toBeInTheDocument();
+      screen.getByRole("complementary", { name: "任务处理状态" }),
+    ).not.toHaveClass("is-idle");
     expect(screen.queryByRole("button", { name: "确认开始同步" })).not.toBeInTheDocument();
     expect(screen.getByLabelText("对账目标")).toBeEnabled();
     expect(screen.getByRole("button", { name: "开启新对话" })).toBeEnabled();
@@ -1746,8 +1908,8 @@ describe("backend Agent conversation", () => {
     expect(screen.getByRole("button", { name: "开启新对话" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "终止任务" })).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("complementary", { name: "任务处理状态" }),
-    ).not.toBeInTheDocument();
+      screen.getByRole("complementary", { name: "任务处理状态" }),
+    ).not.toHaveClass("is-idle");
   });
 
   it("retains the task progress card when polling reports a failure", async () => {
@@ -1791,8 +1953,8 @@ describe("backend Agent conversation", () => {
     expect((await screen.findAllByText("任务处理失败")).length).toBeGreaterThan(0);
     expect(screen.getByText("任务状态保存失败。")).toBeInTheDocument();
     expect(
-      screen.queryByRole("complementary", { name: "任务处理状态" }),
-    ).not.toBeInTheDocument();
+      screen.getByRole("complementary", { name: "任务处理状态" }),
+    ).not.toHaveClass("is-idle");
     expect(screen.getByLabelText("对账目标")).toBeEnabled();
     expect(screen.getByRole("button", { name: "开启新对话" })).toBeEnabled();
   });

@@ -642,6 +642,17 @@ select {
   list-style: none;
 }
 
+.task-status-rail.is-idle .task-status-stage-list {
+  opacity: 0.55;
+}
+
+.task-status-idle {
+  margin: 2px 20px 20px;
+  color: var(--codex-ink-faint);
+  font-size: 12px;
+  text-align: center;
+}
+
 .task-status-stage-list li {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr);
@@ -697,7 +708,8 @@ select {
 }
 
 .task-status-rail.is-collapsed .task-status-copy,
-.task-status-rail.is-collapsed .task-status-stage-list {
+.task-status-rail.is-collapsed .task-status-stage-list,
+.task-status-rail.is-collapsed .task-status-idle {
   display: none;
 }
 

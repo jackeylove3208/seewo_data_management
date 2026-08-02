@@ -64,4 +64,19 @@ describe("TaskStatusRail", () => {
     expect(screen.getByText("生成终止报告")).toBeInTheDocument();
     expect(screen.getByText("正在处理")).toBeInTheDocument();
   });
+
+  it("shows a muted waiting state before a task is created", () => {
+    render(<TaskStatusRail stages={stages} currentIndex={-1} idle />);
+
+    expect(screen.getByText("等待创建任务")).toBeInTheDocument();
+    expect(
+      screen.getByRole("complementary", { name: "任务处理状态" }),
+    ).toHaveClass("is-idle");
+    for (const label of ["数据接入", "Agent 分析与决策", "治理执行", "报告生成"]) {
+      expect(screen.getByText(label).closest("li")).toHaveAttribute(
+        "data-status",
+        "waiting",
+      );
+    }
+  });
 });
