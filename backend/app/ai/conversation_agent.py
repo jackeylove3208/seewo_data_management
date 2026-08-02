@@ -9,10 +9,22 @@ from app.ai.agent_prompting import build_agent_request
 from app.ai.conversation_context import ensure_conversation_request_fits
 from app.ai.providers.base import ModelProviderError
 from app.ai.skills.registry import SkillRegistry
+from app.schemas.agent_api import AgentEntityType
 from app.schemas.agent_conversation import (
     ConversationAgentContext,
     ConversationAgentDecision,
 )
+
+_ALL_ENTITY_TYPES = (
+    AgentEntityType.DEPARTMENT,
+    AgentEntityType.TEACHER,
+    AgentEntityType.STUDENT,
+)
+_FULL_SCOPE_TOKENS = ("全部", "全量", "所有")
+_SYNC_ACTION_TOKENS = ("同步", "对齐", "核对", "对账")
+_ENTITY_SCOPE_TOKENS = ("部门", "教师", "老师", "学生")
+_SCOPE_LIMIT_TOKENS = ("只", "仅", "不要", "不含", "排除", "除了", "除外")
+_STANDALONE_FULL_SCOPE_MESSAGES = {"全部", "全量", "所有", "全部都要", "全都要"}
 
 
 class ConversationModelResponseError(ValueError):
@@ -38,7 +50,7 @@ class ConversationSupervisorAgent:
         self._max_attempts = max_attempts
 
     async def reply(self, context: ConversationAgentContext) -> ConversationAgentDecision:
-        skill = self._skills.load("converse-school-data-sync", "1.5.0")
+        skill = self._skills.load("converse-school-data-sync", "1.6.0")
         request = build_agent_request(
             skill,
             context.model_dump(mode="json"),
@@ -54,6 +66,7 @@ class ConversationSupervisorAgent:
             try:
                 response = await self._provider.complete_json_once(request)
                 decision = _parse_decision(response.output)
+                decision = _apply_explicit_all_entity_scope(decision, context)
                 decision = _apply_default_target(decision, context)
                 return _validate_source_references(decision, context)
             except (ConversationModelResponseError, ModelProviderError) as error:
@@ -62,6 +75,26 @@ class ConversationSupervisorAgent:
                     raise
         assert last_error is not None
         raise last_error
+
+
+def _apply_explicit_all_entity_scope(
+    decision: ConversationAgentDecision,
+    context: ConversationAgentContext,
+) -> ConversationAgentDecision:
+    compact = "".join(context.message.split()).strip("，。！？!?；;")
+    eligible = decision.kind in {"intent_update", "start_confirmation"}
+    full_scope = any(token in compact for token in _FULL_SCOPE_TOKENS)
+    sync_context = (
+        any(token in compact for token in _SYNC_ACTION_TOKENS)
+        or compact in _STANDALONE_FULL_SCOPE_MESSAGES
+    )
+    constrained = any(
+        token in compact
+        for token in (*_ENTITY_SCOPE_TOKENS, *_SCOPE_LIMIT_TOKENS)
+    )
+    if not eligible or not full_scope or not sync_context or constrained:
+        return decision
+    return decision.model_copy(update={"entity_types": _ALL_ENTITY_TYPES})
 
 
 def _apply_default_target(
