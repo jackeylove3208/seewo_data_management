@@ -257,6 +257,90 @@ describe("Agent synchronization report", () => {
     client.clear();
   });
 
+  it("explains an early termination instead of claiming that analysis found no issues", async () => {
+    vi.spyOn(agentApi, "report").mockResolvedValue({
+      id: "report-terminated",
+      task_id: "task-report-1",
+      kind: "sync",
+      terminal_state: "terminated",
+      rollback_eligible: false,
+      deletion_eligible: true,
+      created_at: "2026-08-02T02:00:00Z",
+      content: {
+        narrative: {
+          title_zh: "任务终止报告",
+          summary_zh: "任务已按操作人要求终止；终止前尚未形成治理问题，也没有修改目标数据。",
+        },
+      },
+      facts: {
+        findings: [],
+        excluded_findings: [],
+        mutations: [],
+        mutation_summary: { succeeded: 0, failed: 0 },
+        termination_context: {
+          reason_code: "operator_requested",
+          reason_zh: "操作人主动终止任务",
+          current_node: "termination_report",
+          phase_zh: "报告生成",
+          recorded_finding_count: 0,
+          succeeded_mutation_count: 0,
+          verified_mutation_count: 0,
+          data_modified: false,
+        },
+      },
+    });
+
+    const { client } = renderPage();
+
+    expect(await screen.findByRole("heading", { name: "任务终止说明" }))
+      .toBeInTheDocument();
+    expect(screen.getByText("操作人主动终止任务")).toBeInTheDocument();
+    expect(screen.getByText("报告生成")).toBeInTheDocument();
+    expect(screen.getByText("任务在完成问题分析前已终止")).toBeInTheDocument();
+    expect(screen.queryByText("没有需要治理的问题")).not.toBeInTheDocument();
+    client.clear();
+  });
+
+  it("presents abnormal input as the reason governance analysis did not run", async () => {
+    vi.spyOn(agentApi, "report").mockResolvedValue({
+      id: "report-abnormal",
+      task_id: "task-report-1",
+      kind: "sync",
+      terminal_state: "abnormal_input",
+      rollback_eligible: false,
+      deletion_eligible: true,
+      created_at: "2026-08-02T02:00:00Z",
+      content: {
+        narrative: {
+          title_zh: "输入异常报告",
+          summary_zh: "输入数据未满足安全治理要求。",
+          input_exception_analyses: [{
+            reason_code: "authority_identity_absent",
+            title_zh: "权威数据缺少可用身份标识",
+            analysis_zh: "权威数据中有 1 条记录缺少可用身份标识。",
+            impact_zh: "该记录无法可靠匹配。",
+            suggestion_zh: "请补充身份标识后重试。",
+          }],
+        },
+      },
+      facts: {
+        findings: [],
+        excluded_findings: [],
+        input_diagnostics: { unique_marked_input_count: 1 },
+        mutations: [],
+        mutation_summary: { succeeded: 0, failed: 0 },
+      },
+    });
+
+    const { client } = renderPage();
+
+    expect(await screen.findByText("权威数据缺少可用身份标识"))
+      .toBeInTheDocument();
+    expect(screen.getByText("输入异常阻止了治理分析")).toBeInTheDocument();
+    expect(screen.queryByText("没有需要治理的问题")).not.toBeInTheDocument();
+    client.clear();
+  });
+
   it("shows a no-write rollback as already restored instead of skipped", async () => {
     vi.spyOn(agentApi, "report").mockResolvedValue({
       id: "report-rollback-restored",

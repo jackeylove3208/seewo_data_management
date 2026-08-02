@@ -43,6 +43,7 @@ from app.models.agent_analysis import (
     AgentClarificationRecord,
     AgentGovernancePlanRecord,
     AgentIdentityClaimRecord,
+    AgentInputMarkRecord,
     AgentInputRecord,
     AgentModelBatchItemRecord,
     AgentModelBatchRecord,
@@ -524,7 +525,110 @@ async def test_termination_report_uses_verified_facts_without_calling_model(
     assert report is not None
     assert report.terminal_state == "terminated"
     assert report.generated_by == "agent-graph-termination-fallback-v1"
+    assert report.facts["termination_context"] == {
+        "reason_code": "operator_requested",
+        "reason_zh": "操作人主动终止任务",
+        "current_node": "termination_report",
+        "phase_zh": "报告生成",
+        "recorded_finding_count": 0,
+        "succeeded_mutation_count": 0,
+        "verified_mutation_count": 0,
+        "data_modified": False,
+    }
+    assert "尚未形成治理问题" in report.content["narrative"]["summary_zh"]
     assert provider.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_abnormal_input_report_fallback_contains_deterministic_analysis(
+    database,
+    tmp_path: Path,
+) -> None:
+    context = replace(
+        await _preflight_context(database, tmp_path),
+        current_node="abnormal_input_report",
+    )
+    async with database.session_factory() as session:
+        async with session.begin():
+            snapshot = await session.scalar(
+                select(Snapshot).where(
+                    Snapshot.task_id == context.task_id,
+                    Snapshot.source_role == "authoritative",
+                )
+            )
+            assert snapshot is not None
+            input_record = AgentInputRecord(
+                run_id=context.run_id,
+                task_id=context.task_id,
+                snapshot_id=snapshot.id,
+                tenant_id=context.tenant_id,
+                source_role="authoritative",
+                stable_locator="authoritative:1",
+                stable_order=1,
+                entity_kind="student",
+                category="student",
+                name="测试学生",
+                number=None,
+                class_name="一班",
+                phone=None,
+                email=None,
+                raw_row_number=1,
+                input_hash="a" * 64,
+            )
+            session.add(input_record)
+            await session.flush()
+            session.add(
+                AgentInputMarkRecord(
+                    input_record_id=input_record.id,
+                    reason_code="authority_identity_absent",
+                    affected_fields=["number", "phone", "email"],
+                    inclusion_state="anomaly",
+                    report_disposition="mandatory_ai_anomaly",
+                    safe_evidence={"row": 1},
+                )
+            )
+
+    action = AllowedActionV1(
+        action_id="finish_abnormal_report",
+        kind="dispatch_sub_agent",
+        sub_agent="governance-reporting",
+        resource_ids=(),
+        required_evidence=(),
+        risk="low",
+        requires_human=False,
+        successor_node="terminal",
+    )
+
+    class UnavailableReportProvider:
+        async def complete_json_once(self, _request):
+            raise ModelProviderError("synthetic report outage")
+
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=UnavailableReportProvider(),
+        tokenization_secret="test-tokenization-secret",
+    )
+
+    await executor._generate_report(context, action)
+
+    async with database.session_factory() as session:
+        report = await session.scalar(
+            select(AgentReportRecord).where(
+                AgentReportRecord.task_id == context.task_id
+            )
+        )
+    assert report is not None
+    assert report.terminal_state == "abnormal_input"
+    assert report.generated_by == "agent-graph-report-fallback-v1"
+    assert report.content["narrative"]["input_exception_analyses"] == [
+        {
+            "reason_code": "authority_identity_absent",
+            "title_zh": "权威数据缺少可用身份标识",
+            "analysis_zh": "权威数据中有 1 条记录缺少编号、电话或邮箱等可用身份标识。",
+            "impact_zh": "这些记录无法可靠匹配，系统已阻止其进入自动治理。",
+            "suggestion_zh": "请补充稳定的编号、电话或邮箱后重新运行任务。",
+        }
+    ]
 
 
 @pytest.mark.asyncio

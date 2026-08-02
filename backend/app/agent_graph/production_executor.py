@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -2815,6 +2816,8 @@ class ProductionGraphActionExecutor:
                 )
                 fact_ref = f"report-facts:{context.run_id}:{context.graph_cursor}"
                 if terminal_state == "terminated":
+                    termination_context = _termination_report_context(context, facts)
+                    facts["termination_context"] = termination_context
                     await AgentReportingService(session).generate(
                         task_id=context.task_id,
                         tenant_id=context.tenant_id,
@@ -2823,8 +2826,8 @@ class ProductionGraphActionExecutor:
                         facts=facts,
                         narrative={
                             "title_zh": "任务终止报告",
-                            "summary_zh": (
-                                "任务已按操作人要求终止。本报告仅保留服务端已验证事实。"
+                            "summary_zh": _termination_report_summary(
+                                termination_context
                             ),
                             "fact_refs": [fact_ref],
                             "degraded": False,
@@ -2924,6 +2927,11 @@ class ProductionGraphActionExecutor:
                             ),
                             "fact_refs": [fact_ref],
                             "degraded": True,
+                            "input_exception_analyses": (
+                                _deterministic_input_exception_analyses(facts)
+                                if terminal_state == "abnormal_input"
+                                else []
+                            ),
                         },
                         generated_by="agent-graph-report-fallback-v1",
                     )
@@ -4495,6 +4503,102 @@ async def _work_rows(
     if set(by_id) != set(work_ids):
         raise LookupError("Agent graph work item evidence is incomplete")
     return tuple(by_id[work_id] for work_id in work_ids)
+
+
+def _termination_report_context(
+    context: GraphWorkContext,
+    facts: Mapping[str, object],
+) -> dict[str, object]:
+    findings = facts.get("findings")
+    mutations = facts.get("mutations")
+    finding_rows = findings if isinstance(findings, list) else []
+    mutation_rows = mutations if isinstance(mutations, list) else []
+    succeeded = [
+        item
+        for item in mutation_rows
+        if isinstance(item, Mapping) and item.get("status") == "succeeded"
+    ]
+    verified = [
+        item
+        for item in succeeded
+        if isinstance(item.get("verification"), Mapping)
+        and item["verification"].get("valid") is True
+    ]
+    return {
+        "reason_code": "operator_requested",
+        "reason_zh": "操作人主动终止任务",
+        "current_node": context.current_node,
+        "phase_zh": "报告生成",
+        "recorded_finding_count": len(finding_rows),
+        "succeeded_mutation_count": len(succeeded),
+        "verified_mutation_count": len(verified),
+        "data_modified": bool(succeeded),
+    }
+
+
+def _termination_report_summary(context: Mapping[str, object]) -> str:
+    def report_count(key: str) -> int:
+        value = context.get(key)
+        return value if isinstance(value, int) else 0
+
+    finding_count = report_count("recorded_finding_count")
+    succeeded_count = report_count("succeeded_mutation_count")
+    verified_count = report_count("verified_mutation_count")
+    if finding_count == 0 and succeeded_count == 0:
+        return (
+            "任务已按操作人要求终止；终止前尚未形成治理问题，"
+            "也没有修改目标数据。"
+        )
+    return (
+        f"任务已按操作人要求终止；终止前记录了 {finding_count} 项治理问题，"
+        f"完成 {succeeded_count} 项数据修改，其中 {verified_count} 项通过服务端验证。"
+    )
+
+
+def _deterministic_input_exception_analyses(
+    facts: Mapping[str, object],
+) -> list[dict[str, str]]:
+    diagnostics = facts.get("input_diagnostics")
+    reason_counts = (
+        diagnostics.get("reason_counts")
+        if isinstance(diagnostics, Mapping)
+        else None
+    )
+    if not isinstance(reason_counts, Mapping):
+        return []
+    analyses: list[dict[str, str]] = []
+    for reason_code, raw_count in sorted(reason_counts.items()):
+        if not isinstance(raw_count, int) or raw_count <= 0:
+            continue
+        code = str(reason_code)
+        if code == "authority_identity_absent":
+            analyses.append(
+                {
+                    "reason_code": code,
+                    "title_zh": "权威数据缺少可用身份标识",
+                    "analysis_zh": (
+                        f"权威数据中有 {raw_count} 条记录缺少编号、电话或邮箱等"
+                        "可用身份标识。"
+                    ),
+                    "impact_zh": (
+                        "这些记录无法可靠匹配，系统已阻止其进入自动治理。"
+                    ),
+                    "suggestion_zh": (
+                        "请补充稳定的编号、电话或邮箱后重新运行任务。"
+                    ),
+                }
+            )
+            continue
+        analyses.append(
+            {
+                "reason_code": code,
+                "title_zh": "输入数据不符合治理要求",
+                "analysis_zh": f"有 {raw_count} 条输入记录触发异常规则 {code}。",
+                "impact_zh": "这些记录未进入自动治理，以避免产生不可靠的数据修改。",
+                "suggestion_zh": "请根据异常规则修正源数据后重新运行任务。",
+            }
+        )
+    return analyses
 
 
 def _outcome(action: AllowedActionV1) -> GraphActionOutcome:

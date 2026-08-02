@@ -2110,6 +2110,34 @@ def test_failed_conversation_reply_is_persisted_as_recoverable_message(
     assert "稍后重试" in current.json()["messages"][-1]["text"]
 
 
+def test_conversation_model_history_excludes_assistant_error_messages(
+    agent_client: TestClient,
+) -> None:
+    agent_client.app.state.conversation_provider = InvalidConversationProvider()
+    conversation = agent_client.post("/api/agent/conversations").json()
+    failed = agent_client.post(
+        f"/api/agent/conversations/{conversation['id']}/messages",
+        json={"message": "第一次问题"},
+    )
+    assert failed.status_code == 502
+
+    provider = IncrementalConversationProvider()
+    agent_client.app.state.conversation_provider = provider
+    recovered = agent_client.post(
+        f"/api/agent/conversations/{conversation['id']}/messages",
+        json={"message": "第二次问题"},
+    )
+    assert recovered.status_code == 200, recovered.text
+
+    evidence = json.loads(provider.requests[0].messages[1].content)[
+        "untrusted_evidence"
+    ]
+    assert evidence["history"] == [
+        {"role": "user", "kind": "normal", "text": "第一次问题"},
+        {"role": "user", "kind": "normal", "text": "第二次问题"},
+    ]
+
+
 def test_conversation_model_receives_complete_persisted_history(
     agent_client: TestClient,
 ) -> None:

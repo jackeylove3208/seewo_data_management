@@ -147,6 +147,8 @@ export function ConversationCreatePage({
   const [terminationLoading, setTerminationLoading] = useState(false);
   const [terminationError, setTerminationError] = useState<string>();
   const [hydrating, setHydrating] = useState(true);
+  const [connectionError, setConnectionError] = useState<string>();
+  const [hydrationAttempt, setHydrationAttempt] = useState(0);
   const [newConversationOpen, setNewConversationOpen] = useState(false);
   const [newConversationLoading, setNewConversationLoading] = useState(false);
   const [newConversationError, setNewConversationError] = useState<string>();
@@ -158,6 +160,7 @@ export function ConversationCreatePage({
   useEffect(() => {
     let cancelled = false;
     setHydrating(true);
+    setConnectionError(undefined);
     void backendApi.currentConversation()
       .then(async (current) => {
         if (cancelled) return;
@@ -187,15 +190,14 @@ export function ConversationCreatePage({
         const conversation = await backendApi.createConversation();
         if (!cancelled) setConversationId(conversation.id);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (cancelled) return;
         setState("failed");
-        setMessages((current) => [...current, {
-          id: messageId(),
-          role: "assistant",
-          text: "对话服务暂时不可用，请稍后重试。",
-          kind: "error",
-        }]);
+        setConnectionError(
+          error instanceof Error
+            ? error.message
+            : "对话服务暂时不可用，请稍后重试。",
+        );
       })
       .finally(() => {
         if (!cancelled) setHydrating(false);
@@ -203,7 +205,7 @@ export function ConversationCreatePage({
     return () => {
       cancelled = true;
     };
-  }, [agentApi, backendApi]);
+  }, [agentApi, backendApi, hydrationAttempt]);
 
   useEffect(() => {
     if (!task || terminalTaskStatuses.has(task.status) || !backendApi.events) return;
@@ -343,10 +345,13 @@ export function ConversationCreatePage({
     setInput("");
     setState("collecting");
     const submittedMessageId = messageId();
+    const requiresSafeEcho = /https?:\/\//i.test(message);
     setMessages((current) => [...current, {
       id: submittedMessageId,
       role: "user",
-      text: taskActive ? message : "消息已提交，正在安全处理。",
+      text: !taskActive && requiresSafeEcho
+        ? "消息已提交，正在安全处理。"
+        : message,
     }]);
     try {
       if (
@@ -409,7 +414,7 @@ export function ConversationCreatePage({
       );
       setMessages((current) => [
         ...current.map((item) => (
-          item.id === submittedMessageId && !taskActive
+          item.id === submittedMessageId && !taskActive && requiresSafeEcho
             ? { ...item, text: "消息未被接受。" }
             : item
         )),
@@ -717,6 +722,22 @@ export function ConversationCreatePage({
           type="error"
           showIcon
           message={newConversationError}
+        />
+      )}
+      {connectionError && (
+        <Alert
+          className="conversation-reset-error"
+          type="error"
+          showIcon
+          message={connectionError}
+          action={(
+            <button
+              type="button"
+              onClick={() => setHydrationAttempt((current) => current + 1)}
+            >
+              重新连接
+            </button>
+          )}
         />
       )}
       <div className="conversation-workspace has-task-status">

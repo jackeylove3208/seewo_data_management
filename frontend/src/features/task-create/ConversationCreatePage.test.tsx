@@ -241,6 +241,35 @@ describe("backend Agent conversation", () => {
     expect(screen.getByRole("button", { name: "发送" })).toBeDisabled();
   });
 
+  it("shows an initialization failure outside the assistant conversation", async () => {
+    const currentConversation = vi.fn().mockRejectedValue(
+      new ApiError("后端服务不可用", 503, "service_unavailable"),
+    );
+    render(<ConversationCreatePage agentApi={api({ currentConversation })} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("后端服务不可用");
+    expect(screen.getByRole("button", { name: "重新连接" })).toBeInTheDocument();
+    expect(
+      screen.queryByText("对话服务暂时不可用，请稍后重试。"),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByRole("article", { name: "同步助手消息" })).toHaveLength(1);
+  });
+
+  it("echoes an ordinary question while the assistant reply is pending", async () => {
+    const sendMessage = vi.fn().mockReturnValue(new Promise(() => undefined));
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={api({ sendMessage })} />);
+
+    await waitForComposer();
+    await user.type(screen.getByLabelText("对账目标"), "你是谁");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(within(screen.getByRole("article", { name: "你的消息" })).getByText("你是谁"))
+      .toBeInTheDocument();
+    expect(screen.queryByText("消息已提交，正在安全处理。"))
+      .not.toBeInTheDocument();
+  });
+
   it("configures and tests an API connection without echoing credentials into chat", async () => {
     const configureApiConnection = vi.fn()
       .mockResolvedValueOnce({
@@ -1689,7 +1718,11 @@ describe("backend Agent conversation", () => {
   it("shows the backend conversation error and keeps input retryable", async () => {
     const backend = api({
       sendMessage: vi.fn().mockRejectedValue(
-        new Error("对话模型暂时无法生成有效回复，请稍后重试。"),
+        new ApiError(
+          "对话模型暂时无法生成有效回复，请稍后重试。",
+          502,
+          "conversation_model_error",
+        ),
       ),
     });
     const user = userEvent.setup();
@@ -1702,6 +1735,10 @@ describe("backend Agent conversation", () => {
     expect(
       await screen.findByText("对话模型暂时无法生成有效回复，请稍后重试。"),
     ).toBeInTheDocument();
+    expect(screen.getByRole("article", { name: "你的消息" }))
+      .toHaveTextContent("你是谁");
+    expect(screen.queryByText("消息未被接受。"))
+      .not.toBeInTheDocument();
     expect(screen.getByLabelText("对账目标")).toBeEnabled();
   });
 
