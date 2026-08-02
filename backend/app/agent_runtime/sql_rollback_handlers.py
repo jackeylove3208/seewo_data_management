@@ -85,7 +85,8 @@ class SqlRollbackExecutionHandler:
                     mutation,
                     current=current,
                     complete_record_fields=_database_complete_record_fields(
-                        configuration
+                        configuration,
+                        entity_kind=mutation.get("entity_kind"),
                     ),
                 )
             )
@@ -233,7 +234,8 @@ class SqlRollbackExecutionHandler:
                 record=current_record,
             ),
             complete_record_fields=_database_complete_record_fields(
-                configuration
+                configuration,
+                entity_kind=selected_mutation.get("entity_kind"),
             ),
         )
         if planned_comparison is None or parent is None:
@@ -489,6 +491,8 @@ def _database_comparison_record(
 
 def _database_complete_record_fields(
     configuration: DatabaseConnectorConfiguration,
+    *,
+    entity_kind: object,
 ) -> set[str]:
     mapped_columns = set(configuration.field_columns.values())
     custom_columns = set(configuration.allowed_columns) - {
@@ -496,7 +500,10 @@ def _database_complete_record_fields(
         configuration.version_column,
         *mapped_columns,
     }
-    return set(configuration.field_columns) | custom_columns
+    fields = set(configuration.field_columns) | custom_columns
+    if entity_kind in {"department", "teacher"}:
+        fields.discard("class_name")
+    return fields
 
 
 def _rollback_identifier(
@@ -521,7 +528,15 @@ def _rollback_identifier(
         candidate = values.get("source_id") or values.get("number")
         if candidate is None or not str(candidate).strip():
             raise ValueError("SQL rollback create lacks a stable identifier")
-        return str(candidate).strip()
+        identifier = str(candidate).strip()
+        if identifier.startswith(prefix):
+            identifier = identifier[len(prefix) :].strip()
+            if identifier:
+                return identifier
+            raise ValueError("SQL rollback create locator lacks an identifier")
+        if ":" in identifier:
+            raise ValueError("SQL rollback create locator belongs to another connector")
+        return identifier
     raise ValueError("SQL rollback mutation lacks a target locator")
 
 
