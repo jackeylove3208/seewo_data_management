@@ -186,7 +186,11 @@ export function AgentReportPage() {
     (item) => {
       const reason = text(item.reason, "");
       const inclusionState = text(item.inclusion_state, "");
-      if (inclusionState === "excluded" || inclusionState === "anomaly") {
+      if (
+        reason === "authority_field_unavailable"
+        && includedQualityWarningsByReason.has(reason)
+        && (inclusionState === "excluded" || inclusionState === "anomaly")
+      ) {
         return true;
       }
       return !exceptionReasonCodes.has(reason) && !overlappedReasonCodes.has(reason);

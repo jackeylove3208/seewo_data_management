@@ -575,4 +575,43 @@ describe("Agent synchronization report", () => {
     ).toBeInTheDocument();
     client.clear();
   });
+
+  it("does not duplicate other anomaly marks already covered by their narrative analysis", async () => {
+    vi.spyOn(agentApi, "report").mockResolvedValue({
+      id: "report-other-anomaly",
+      task_id: "task-report-1",
+      kind: "sync",
+      terminal_state: "completed",
+      rollback_eligible: false,
+      deletion_eligible: false,
+      created_at: "2026-08-02T02:00:00Z",
+      content: {
+        narrative: {
+          input_exception_analyses: [{
+            reason_code: "authority_identity_absent",
+            title_zh: "权威数据缺少身份标识",
+            analysis_zh: "一条权威记录无法可靠匹配。",
+            impact_zh: "该记录已从治理范围排除。",
+            suggestion_zh: "请补充身份标识后重试。",
+          }],
+        },
+      },
+      facts: {
+        findings: [],
+        excluded_findings: [{
+          reason: "authority_identity_absent",
+          inclusion_state: "anomaly",
+          disposition: "mandatory_ai_anomaly",
+        }],
+        mutations: [],
+        mutation_summary: { succeeded: 0, failed: 0 },
+      },
+    });
+
+    const { client, container } = renderPage();
+
+    expect(await screen.findByText("权威数据缺少身份标识")).toBeInTheDocument();
+    expect(container.querySelectorAll(".agent-report-exclusions > li")).toHaveLength(0);
+    client.clear();
+  });
 });
