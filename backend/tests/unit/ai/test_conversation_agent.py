@@ -8,6 +8,7 @@ from app.ai.conversation_agent import (
     ConversationSupervisorAgent,
 )
 from app.ai.providers.base import LLMRequest, LLMResponse
+from app.schemas.agent_api import AgentEntityType
 
 
 class CapturingProvider:
@@ -64,8 +65,80 @@ async def test_supervisor_uses_versioned_skill_and_returns_confirmation() -> Non
 
     assert decision.kind == "start_confirmation"
     assert decision.source_ref == "third-party/roster.csv"
-    assert "converse-school-data-sync@1.5.0" in provider.requests[0].messages[0].content
+    assert "converse-school-data-sync@1.6.0" in provider.requests[0].messages[0].content
     assert "不可信证据" in provider.requests[0].messages[0].content
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "同步全部",
+        "全部",
+        "请帮我同步全部",
+        "麻烦帮我同步全部",
+        "我想请你同步全部",
+        "同步一下全部",
+    ],
+)
+@pytest.mark.asyncio
+async def test_supervisor_expands_explicit_full_scope_requests(message: str) -> None:
+    provider = CapturingProvider(
+        {
+            "result": {
+                "kind": "start_confirmation",
+                "title": "全校数据同步",
+                "entity_types": ["student"],
+                "source_ref": "third-party/roster.csv",
+                "target_ref": "seewo/roster.csv",
+                "message_zh": "已确认同步范围。",
+            }
+        }
+    )
+
+    decision = await ConversationSupervisorAgent(provider).reply(
+        _context(message=message)
+    )
+
+    assert decision.entity_types == (
+        AgentEntityType.DEPARTMENT,
+        AgentEntityType.TEACHER,
+        AgentEntityType.STUDENT,
+    )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "同步全部学生",
+        "同步所有教职工",
+        "同步所有员工",
+        "除了老师，其他全部同步",
+        "我不想同步全部",
+        "请别同步全部",
+        "撤销同步全部",
+        "可以同步全部吗",
+    ],
+)
+@pytest.mark.asyncio
+async def test_supervisor_preserves_constrained_entity_scope(message: str) -> None:
+    provider = CapturingProvider(
+        {
+            "result": {
+                "kind": "start_confirmation",
+                "title": "受限范围同步",
+                "entity_types": ["student"],
+                "source_ref": "third-party/roster.csv",
+                "target_ref": "seewo/roster.csv",
+                "message_zh": "已确认受限同步范围。",
+            }
+        }
+    )
+
+    decision = await ConversationSupervisorAgent(provider).reply(
+        _context(message=message)
+    )
+
+    assert decision.entity_types == (AgentEntityType.STUDENT,)
 
 
 @pytest.mark.parametrize("enabled", [False, True])

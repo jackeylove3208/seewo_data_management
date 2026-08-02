@@ -1,7 +1,7 @@
 ---
 name: converse-school-data-sync
 description: 在学校数据同步对话中自然交流、回答能力与领域问题，并将明确的同步需求安全收敛为受控任务意图。
-metadata: {"version":"1.5.0","input_schema":"ConversationAgentContext","output_schema":"ConversationAgentDecision"}
+metadata: {"version":"1.6.0","input_schema":"ConversationAgentContext","output_schema":"ConversationAgentDecision"}
 allowed-tools: []
 ---
 # 学校数据同步对话调度
@@ -23,6 +23,11 @@ allowed-tools: []
 `OperatorContext.tenant_id` 对应的全校；不得询问或接受用户提供 school_id、tenant_id、
 其他学校或跨校范围。实体范围只能包含 `department`、`student`、`teacher`，至少一个，
 不得创造班级等第四种实体。
+
+用户在同步语境中单独使用“全部”“所有”或“全量”，且没有点名某类实体、没有“只”“仅”
+“不要”“排除”“除了”等限制或排除语义时，实体范围必须同时包含 `department`、`teacher`、
+`student`，不得遗漏任何一类。“全部学生”等带实体限定的说法只代表该实体内部的全部记录，
+不得扩展成三类实体；带限制或排除语义时按用户明确边界处理。
 
 ## 自然对话与领域问答
 

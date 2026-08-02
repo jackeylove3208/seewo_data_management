@@ -1,5 +1,6 @@
 """Model-backed supervisor for the user-facing synchronization conversation."""
 
+import re
 from typing import Any
 
 from pydantic import ValidationError
@@ -9,9 +10,25 @@ from app.ai.agent_prompting import build_agent_request, build_json_repair_reques
 from app.ai.conversation_context import ensure_conversation_request_fits
 from app.ai.providers.base import ModelProviderError
 from app.ai.skills.registry import SkillRegistry
+from app.schemas.agent_api import AgentEntityType
 from app.schemas.agent_conversation import (
     ConversationAgentContext,
     ConversationAgentDecision,
+)
+
+_ALL_ENTITY_TYPES = (
+    AgentEntityType.DEPARTMENT,
+    AgentEntityType.TEACHER,
+    AgentEntityType.STUDENT,
+)
+_EXPLICIT_ALL_ENTITY_SCOPE_PATTERN = re.compile(
+    r"^(?:(?:(?:请|麻烦)(?:帮我|给我)?|(?:我想|我要)(?:请你|请|让你)?|"
+    r"请你|麻烦你|帮我|给我)?(?:把|将)?(?:"
+    r"(?:同步|对齐|核对|对账)(?:一下)?(?:全部|全量|所有)"
+    r"(?:数据|组织数据|学校数据|信息|资料)?|"
+    r"(?:全部|全量|所有)(?:数据|组织数据|学校数据|信息|资料)?"
+    r"(?:都)?(?:同步|对齐|核对|对账))"
+    r"(?:一下|了|吧)?|(?:全部|全量|所有|全部都要|全都要))$"
 )
 
 
@@ -38,7 +55,7 @@ class ConversationSupervisorAgent:
         self._max_attempts = max_attempts
 
     async def reply(self, context: ConversationAgentContext) -> ConversationAgentDecision:
-        skill = self._skills.load("converse-school-data-sync", "1.5.0")
+        skill = self._skills.load("converse-school-data-sync", "1.6.0")
         request = build_agent_request(
             skill,
             context.model_dump(mode="json"),
@@ -54,6 +71,7 @@ class ConversationSupervisorAgent:
             try:
                 response = await self._provider.complete_json_once(request)
                 decision = _parse_decision(response.output)
+                decision = _apply_explicit_all_entity_scope(decision, context)
                 decision = _apply_default_target(decision, context)
                 return _validate_source_references(decision, context)
             except ConversationModelResponseError as error:
@@ -71,6 +89,19 @@ class ConversationSupervisorAgent:
                     raise
         assert last_error is not None
         raise last_error
+
+
+def _apply_explicit_all_entity_scope(
+    decision: ConversationAgentDecision,
+    context: ConversationAgentContext,
+) -> ConversationAgentDecision:
+    compact = "".join(context.message.split()).strip("，。！？!?；;")
+    if (
+        decision.kind not in {"intent_update", "start_confirmation"}
+        or _EXPLICIT_ALL_ENTITY_SCOPE_PATTERN.fullmatch(compact) is None
+    ):
+        return decision
+    return decision.model_copy(update={"entity_types": _ALL_ENTITY_TYPES})
 
 
 def _apply_default_target(
