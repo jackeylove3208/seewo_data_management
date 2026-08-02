@@ -29,7 +29,7 @@ const plan = {
   },
   worker: {
     command: backendPython,
-    args: ["-m", "app.ai.worker"],
+    args: ["-m", "app.agent_runtime"],
     environment: backendEnvironment,
   },
   frontend: {
