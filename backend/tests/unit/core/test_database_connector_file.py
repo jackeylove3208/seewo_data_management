@@ -9,7 +9,29 @@ CONFIG_FILE = Path(__file__).resolve().parents[3] / "config" / "database-connect
 def test_database_connector_yaml_preserves_seewo_and_adds_llm_data_target() -> None:
     connectors = load_database_connector_configurations(CONFIG_FILE)
 
-    assert {"authority-mysql", "seewo-mysql", "seewo-data-mysql"} <= set(connectors)
+    assert {
+        "authority-mysql",
+        "third-data-mysql",
+        "seewo-mysql",
+        "seewo-data-mysql",
+    } <= set(connectors)
+
+    third_data = connectors["third-data-mysql"]
+    assert third_data.credential_reference == "secret://connectors/authority-mysql"
+    assert third_data.database_name is None
+    assert third_data.schema_name == "third_data"
+    assert third_data.table_name == "third_data"
+    assert third_data.primary_key == "row_id"
+    assert third_data.version_column == "version"
+    assert third_data.source_role == "authoritative"
+    assert third_data.mapping.mode == "llm"
+    assert third_data.field_columns == {}
+    assert third_data.allowed_columns == ()
+    assert third_data.capabilities.read is True
+    assert third_data.capabilities.paginated is True
+    assert third_data.capabilities.create is False
+    assert third_data.capabilities.update is False
+    assert third_data.capabilities.delete is False
 
     seewo = connectors["seewo-mysql"]
     assert seewo.source_role == "target"
@@ -52,6 +74,7 @@ def test_database_connector_yaml_coexists_with_empty_legacy_environment_json() -
 
     assert set(settings.database_connector_configurations) == {
         "authority-mysql",
+        "third-data-mysql",
         "seewo-mysql",
         "seewo-data-mysql",
     }

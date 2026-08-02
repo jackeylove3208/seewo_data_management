@@ -27,6 +27,20 @@ connectors:
       read: true
       paginated: true
 
+  third-data-mysql:
+    credential_reference: secret://connectors/authority-mysql
+    dialect: mysql
+    schema_name: third_data
+    table_name: third_data
+    primary_key: row_id
+    version_column: version
+    source_role: authoritative
+    mapping:
+      mode: llm
+    capabilities:
+      read: true
+      paginated: true
+
   seewo-mysql:
     credential_reference: secret://connectors/seewo-mysql
     dialect: mysql
