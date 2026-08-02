@@ -597,6 +597,7 @@ async def send_agent_message(
             text=redact_conversation_links(message.text),
         )
         for message in messages
+        if not (message.role == "assistant" and message.kind == "error")
     )
     current_intent = {
         key: value

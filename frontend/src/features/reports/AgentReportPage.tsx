@@ -126,7 +126,11 @@ export function AgentReportPage() {
   const mutations = records(facts.mutations);
   const mutationSummary = record(facts.mutation_summary);
   const publication = record(facts.publication);
+  const terminationContext = record(facts.termination_context);
   const isRollback = report.data.kind === "rollback";
+  const isTerminated = report.data.terminal_state === "terminated";
+  const isAbnormalInput = report.data.terminal_state === "abnormal_input";
+  const isFailed = report.data.terminal_state === "failed";
   const reportTitle = text(
     narrative.title_zh,
     report.data.kind === "rollback" ? "回滚任务分析报告" : "数据同步分析报告",
@@ -145,6 +149,20 @@ export function AgentReportPage() {
   const failedMutationCount = count(mutationSummary.failed)
     + count(mutationSummary.verification_failed);
   const hasFailedMutations = failedMutationCount > 0;
+  const analysisEmptyDescription = isTerminated
+    ? "任务在完成问题分析前已终止"
+    : isAbnormalInput
+      ? "输入异常阻止了治理分析"
+      : isFailed
+        ? "任务失败前未形成可执行治理问题"
+        : "没有需要治理的问题";
+  const executionEmptyDescription = isTerminated
+    ? "任务终止前没有修改目标数据"
+    : isAbnormalInput
+      ? "输入异常阻止了治理执行"
+      : isFailed
+        ? "任务失败前没有完成目标数据修改"
+        : "本任务没有修改目标数据";
 
   return (
     <main className="page-shell apple-page agent-report-page">
@@ -191,6 +209,33 @@ export function AgentReportPage() {
           </>
         )}
       </section>
+
+      {isTerminated && (
+        <section className="agent-report-section">
+          <header>
+            <span className="agent-report-section-icon"><ShieldAlert size={20} /></span>
+            <div><p>TERMINATION</p><h2>任务终止说明</h2></div>
+          </header>
+          <dl className="start-confirmation-details">
+            <div>
+              <dt>终止原因</dt>
+              <dd>{text(terminationContext.reason_zh, "任务按操作人要求终止")}</dd>
+            </div>
+            <div>
+              <dt>终止阶段</dt>
+              <dd>{text(terminationContext.phase_zh, "报告生成")}</dd>
+            </div>
+            <div>
+              <dt>已记录问题</dt>
+              <dd>{count(terminationContext.recorded_finding_count)}</dd>
+            </div>
+            <div>
+              <dt>已验证修改</dt>
+              <dd>{count(terminationContext.verified_mutation_count)}</dd>
+            </div>
+          </dl>
+        </section>
+      )}
 
       {publicationStatus !== "not_applicable" && (
         <section className="agent-report-publication">
@@ -257,7 +302,7 @@ export function AgentReportPage() {
               );
             })}
           </ol>
-        ) : <Empty description="没有需要治理的问题" />}
+        ) : <Empty description={analysisEmptyDescription} />}
       </section>
 
       {(exceptionAnalyses.length > 0 || remainingExclusions.length > 0) && (
@@ -316,7 +361,7 @@ export function AgentReportPage() {
               </li>
             ))}
           </ul>
-        ) : <Empty description="本任务没有修改目标数据" />}
+        ) : <Empty description={executionEmptyDescription} />}
       </section>
     </main>
   );

@@ -596,7 +596,7 @@ async def test_supervisor_defaults_local_csv_authority_to_seewo_data_mysql() -> 
 
 
 @pytest.mark.asyncio
-async def test_supervisor_retries_invalid_model_output_within_one_reply() -> None:
+async def test_supervisor_retries_invalid_model_output_with_validation_feedback() -> None:
     provider = SequencedProvider(
         [
             {"result": {"kind": "start_confirmation"}},
@@ -615,6 +615,10 @@ async def test_supervisor_retries_invalid_model_output_within_one_reply() -> Non
 
     assert decision.kind == "clarification"
     assert len(provider.requests) == 2
+    assert provider.requests[1] != provider.requests[0]
+    repair_feedback = json.loads(provider.requests[1].messages[-1].content)
+    assert "上一份 JSON 未通过服务端合同" in repair_feedback["instruction"]
+    assert repair_feedback["validation_errors"]
 
 
 @pytest.mark.asyncio

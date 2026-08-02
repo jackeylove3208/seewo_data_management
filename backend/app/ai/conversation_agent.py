@@ -5,7 +5,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.ai.agent_analysis_service import SingleAttemptModelProvider
-from app.ai.agent_prompting import build_agent_request
+from app.ai.agent_prompting import build_agent_request, build_json_repair_request
 from app.ai.conversation_context import ensure_conversation_request_fits
 from app.ai.providers.base import ModelProviderError
 from app.ai.skills.registry import SkillRegistry
@@ -56,7 +56,16 @@ class ConversationSupervisorAgent:
                 decision = _parse_decision(response.output)
                 decision = _apply_default_target(decision, context)
                 return _validate_source_references(decision, context)
-            except (ConversationModelResponseError, ModelProviderError) as error:
+            except ConversationModelResponseError as error:
+                last_error = error
+                if attempt == self._max_attempts:
+                    raise
+                request = build_json_repair_request(
+                    request,
+                    response.output,
+                    error,
+                )
+            except ModelProviderError as error:
                 last_error = error
                 if attempt == self._max_attempts:
                     raise
