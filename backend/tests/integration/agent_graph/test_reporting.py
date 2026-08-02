@@ -137,8 +137,8 @@ async def test_graph_report_uses_model_narrative_but_server_facts(session) -> No
             {
                 "result": {
                     "schema_version": "agent-contract-v1",
-                    "title_zh": "学校数据同步完成报告",
-                    "summary_zh": "本次同步已完成，治理操作已经服务端验证。",
+                    "title_zh": "模型错误标题：缺字段学生已排除",
+                    "summary_zh": "请补充班级信息后重新运行，现有任务未完成。",
                     "input_exception_analyses": [
                         {
                             "reason_code": "authority_field_unavailable",
@@ -199,6 +199,14 @@ async def test_graph_report_uses_model_narrative_but_server_facts(session) -> No
     assert result.report.facts["student_phone"] == "13800138000"
     assert "13800138000" not in str(result.report.content)
     assert result.report.generated_by == "agent-graph-report-skill-v1"
+    narrative = result.report.content["narrative"]
+    assert narrative["title_zh"] == "数据同步任务报告"
+    assert narrative["summary_zh"] == (
+        "来源字段缺失已记录为质量提醒；允许同步的记录仍参与匹配与同步，"
+        "具体执行结果见下方服务端事实。"
+    )
+    assert "缺字段学生已排除" not in str(narrative)
+    assert "请补充班级信息后重新运行" not in str(narrative)
     analyses = result.report.content["narrative"]["input_exception_analyses"]
     assert analyses == [
         {
@@ -241,6 +249,7 @@ def test_included_quality_warning_uses_reason_count_not_missing_field_count() ->
             ],
             "input_diagnostics": {
                 "reason_counts": {"authority_field_unavailable": 1},
+                "unavailable_field_counts": {"class_name": 1, "email": 1},
             },
         }
     )
@@ -269,10 +278,114 @@ def test_included_quality_warning_describes_mixed_inclusion_states_safely() -> N
             ],
             "input_diagnostics": {
                 "reason_counts": {"authority_field_unavailable": 2},
+                "unavailable_field_counts": {"class_name": 2},
             },
         }
     )
 
     impact = analyses["authority_field_unavailable"]["impact_zh"]
-    assert "仍保留在匹配与同步范围内，允许同步" in impact
-    assert "其他记录按其排除或异常状态处理" in impact
+    assert impact == (
+        "班级信息不可用仅作为数据质量提醒；允许同步的记录仍保留在匹配与同步范围内；"
+        "其他记录按排除或异常状态处理。"
+    )
+    assert "这些学生均允许同步" not in impact
+
+
+def test_included_quality_warning_ignores_pure_overlapped_reason() -> None:
+    analyses = _included_quality_warning_analyses(
+        {
+            "excluded_findings": [
+                {
+                    "reason": "authority_field_unavailable",
+                    "affected_fields": ["email"],
+                    "inclusion_state": "included",
+                    "safe_evidence": {"entity_kind": "student"},
+                }
+            ],
+            "input_diagnostics": {
+                "reason_counts": {"authority_identity_absent": 1},
+                "overlapped_reason_counts": {"authority_field_unavailable": 1},
+                "unavailable_field_counts": {},
+            },
+        }
+    )
+
+    assert analyses == {}
+
+
+def test_included_quality_warning_uses_exclusive_count_and_fields() -> None:
+    analyses = _included_quality_warning_analyses(
+        {
+            "excluded_findings": [
+                *[
+                    {
+                        "reason": "authority_field_unavailable",
+                        "affected_fields": ["class_name"],
+                        "inclusion_state": "included",
+                        "safe_evidence": {"entity_kind": "student"},
+                    }
+                    for _ in range(3)
+                ],
+                *[
+                    {
+                        "reason": "authority_field_unavailable",
+                        "affected_fields": [field],
+                        "inclusion_state": "included",
+                        "safe_evidence": {"entity_kind": "teacher"},
+                    }
+                    for field in ("email", "number", "phone", "email")
+                ],
+            ],
+            "input_diagnostics": {
+                "reason_counts": {"authority_field_unavailable": 3},
+                "overlapped_reason_counts": {"authority_field_unavailable": 4},
+                "unavailable_field_counts": {"class_name": 3},
+            },
+        }
+    )
+
+    warning = analyses["authority_field_unavailable"]
+    assert warning["analysis_zh"] == "权威学生数据中有 3 条记录缺少班级信息。"
+    assert "邮箱" not in str(warning)
+    assert "编号" not in str(warning)
+    assert "手机号" not in str(warning)
+    assert "教师" not in str(warning)
+
+
+def test_included_quality_warning_localizes_all_supported_fields() -> None:
+    analyses = _included_quality_warning_analyses(
+        {
+            "excluded_findings": [
+                {
+                    "reason": "authority_field_unavailable",
+                    "affected_fields": [
+                        "category",
+                        "name",
+                        "number",
+                        "class_name",
+                        "phone",
+                        "email",
+                    ],
+                    "inclusion_state": "included",
+                    "safe_evidence": {"entity_kind": "student"},
+                }
+            ],
+            "input_diagnostics": {
+                "reason_counts": {"authority_field_unavailable": 1},
+                "unavailable_field_counts": {
+                    "category": 1,
+                    "name": 1,
+                    "number": 1,
+                    "class_name": 1,
+                    "phone": 1,
+                    "email": 1,
+                },
+            },
+        }
+    )
+
+    warning = str(analyses["authority_field_unavailable"])
+    for label in ("类别", "名称", "编号", "班级信息", "手机号", "邮箱"):
+        assert label in warning
+    for raw_field in ("category", "name", "number", "class_name", "phone", "email"):
+        assert raw_field not in warning

@@ -59,41 +59,78 @@ function localizedLabels(
 }
 
 function includedQualityWarningAnalyses(facts: ReportItem) {
-  const includedFindings = records(facts.excluded_findings ?? facts.invalid_rows).filter(
-    (item) => text(item.reason, "") === "authority_field_unavailable"
-      && text(item.inclusion_state, "") === "included",
+  const fieldUnavailableFindings = records(facts.excluded_findings ?? facts.invalid_rows).filter(
+    (item) => text(item.reason, "") === "authority_field_unavailable",
+  );
+  const includedFindings = fieldUnavailableFindings.filter(
+    (item) => text(item.inclusion_state, "") === "included",
   );
   if (!includedFindings.length) {
     return [];
   }
 
-  const entityKinds = includedFindings.map(
+  const inputDiagnosticsValue = facts.input_diagnostics;
+  const hasInputDiagnostics = inputDiagnosticsValue !== null
+    && typeof inputDiagnosticsValue === "object"
+    && !Array.isArray(inputDiagnosticsValue);
+  const inputDiagnostics = record(inputDiagnosticsValue);
+  let warningCount: number;
+  let affectedFields: string[];
+  let entityFindings: ReportItem[];
+  if (hasInputDiagnostics) {
+    const reasonCount = record(inputDiagnostics.reason_counts).authority_field_unavailable;
+    if (typeof reasonCount !== "number" || reasonCount <= 0) {
+      return [];
+    }
+    warningCount = reasonCount;
+    affectedFields = Object.entries(record(inputDiagnostics.unavailable_field_counts))
+      .filter(([, value]) => typeof value === "number" && value > 0)
+      .map(([field]) => field);
+    const affectedFieldSet = new Set(affectedFields);
+    entityFindings = includedFindings.filter(
+      (item) => strings(item.affected_fields).some((field) => affectedFieldSet.has(field)),
+    );
+  } else {
+    warningCount = includedFindings.length;
+    affectedFields = includedFindings.flatMap((item) => strings(item.affected_fields));
+    entityFindings = includedFindings;
+  }
+
+  const entityKinds = entityFindings.map(
     (item) => text(record(item.safe_evidence).entity_kind, ""),
   ).filter(Boolean);
-  const affectedFields = includedFindings.flatMap(
-    (item) => strings(item.affected_fields),
-  );
-  const inputDiagnostics = record(facts.input_diagnostics);
-  const reasonCounts = record(inputDiagnostics.reason_counts);
-  const reasonCount = reasonCounts.authority_field_unavailable;
-  const includedCount = typeof reasonCount === "number" && reasonCount >= 0
-    ? reasonCount
-    : includedFindings.length;
   const entityZh = localizedLabels(entityKinds, { student: "学生" }, "记录");
   const fieldZh = localizedLabels(
     affectedFields,
-    { class_name: "班级信息", email: "邮箱" },
+    {
+      category: "类别",
+      name: "名称",
+      number: "编号",
+      class_name: "班级信息",
+      phone: "手机号",
+      email: "邮箱",
+    },
     "字段信息",
   );
+  const hasNonIncludedFindings = fieldUnavailableFindings.some(
+    (item) => ["excluded", "anomaly"].includes(text(item.inclusion_state, "")),
+  );
+  const impactZh = hasNonIncludedFindings
+    ? `${fieldZh}不可用仅作为数据质量提醒；允许同步的记录仍保留在匹配与同步范围内；其他记录按排除或异常状态处理。`
+    : `${fieldZh}不可用仅作为数据质量提醒；这些${entityZh}仍保留在匹配与同步范围内，允许同步。`;
 
   return [{
     reason_code: "authority_field_unavailable",
     title_zh: `权威${entityZh}数据缺少${fieldZh}`,
-    analysis_zh: `权威${entityZh}数据中有 ${includedCount} 条记录缺少${fieldZh}。`,
-    impact_zh: `${fieldZh}不可用仅作为数据质量提醒；这些${entityZh}仍保留在匹配与同步范围内，允许同步。`,
+    analysis_zh: `权威${entityZh}数据中有 ${warningCount} 条记录缺少${fieldZh}。`,
+    impact_zh: impactZh,
     suggestion_zh: `建议补充${fieldZh}以提升数据质量；已完成的同步无需重试。`,
   }];
 }
+
+const includedWarningTitleZh = "数据同步任务报告";
+const includedWarningSummaryZh =
+  "来源字段缺失已记录为质量提醒；允许同步的记录仍参与匹配与同步，具体执行结果见下方服务端事实。";
 
 const terminalLabels: Record<string, string> = {
   completed: "同步完成",
@@ -207,20 +244,24 @@ export function AgentReportPage() {
   const isTerminated = report.data.terminal_state === "terminated";
   const isAbnormalInput = report.data.terminal_state === "abnormal_input";
   const isFailed = report.data.terminal_state === "failed";
-  const reportTitle = text(
-    narrative.title_zh,
-    report.data.kind === "rollback" ? "回滚任务分析报告" : "数据同步分析报告",
-  );
-  const reportSummary = text(
-    narrative.summary_zh ?? narrative.summary,
-    isRollback
-      ? report.data.terminal_state === "completed_with_conflicts"
-        ? "部分数据的当前值与可安全回滚的值不一致，系统已跳过这些冲突项。"
-        : "目标数据已经完成回滚；已处于原状态的记录不会重复写入。"
-      : governanceFindings.length
-      ? `Agent 共发现 ${governanceFindings.length} 项需要处理的问题，并依据审核结果完成治理。`
-      : "Agent 已完成本次数据核验，没有发现需要治理的问题。",
-  );
+  const reportTitle = includedQualityWarnings.length
+    ? includedWarningTitleZh
+    : text(
+      narrative.title_zh,
+      report.data.kind === "rollback" ? "回滚任务分析报告" : "数据同步分析报告",
+    );
+  const reportSummary = includedQualityWarnings.length
+    ? includedWarningSummaryZh
+    : text(
+      narrative.summary_zh ?? narrative.summary,
+      isRollback
+        ? report.data.terminal_state === "completed_with_conflicts"
+          ? "部分数据的当前值与可安全回滚的值不一致，系统已跳过这些冲突项。"
+          : "目标数据已经完成回滚；已处于原状态的记录不会重复写入。"
+        : governanceFindings.length
+        ? `Agent 共发现 ${governanceFindings.length} 项需要处理的问题，并依据审核结果完成治理。`
+        : "Agent 已完成本次数据核验，没有发现需要治理的问题。",
+    );
   const publicationStatus = text(publication.status, "not_applicable");
   const failedMutationCount = count(mutationSummary.failed)
     + count(mutationSummary.verification_failed);

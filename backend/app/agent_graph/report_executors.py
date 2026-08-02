@@ -14,6 +14,12 @@ from app.ai.graph_subagents import GraphSkillInvocation, GraphSkillModelRunner
 from app.ai.skills.contracts import AgentGovernanceReport
 from app.models.reporting import AgentReportRecord
 
+_INCLUDED_WARNING_TITLE_ZH = "数据同步任务报告"
+_INCLUDED_WARNING_SUMMARY_ZH = (
+    "来源字段缺失已记录为质量提醒；允许同步的记录仍参与匹配与同步，"
+    "具体执行结果见下方服务端事实。"
+)
+
 
 @dataclass(frozen=True)
 class GraphReportResult:
@@ -155,6 +161,7 @@ class GraphReportExecutor:
         if not isinstance(output, AgentGovernanceReport):
             raise RuntimeError("validated report output changed type")
         included_quality_warnings = _included_quality_warning_analyses(facts)
+        has_included_quality_warning = bool(included_quality_warnings)
         report = await AgentReportingService(self._session).generate(
             task_id=invocation.task_id,
             tenant_id=tenant_id,
@@ -162,8 +169,16 @@ class GraphReportExecutor:
             terminal_state=terminal_state,
             facts=facts,
             narrative={
-                "title_zh": output.title_zh,
-                "summary_zh": output.summary_zh,
+                "title_zh": (
+                    _INCLUDED_WARNING_TITLE_ZH
+                    if has_included_quality_warning
+                    else output.title_zh
+                ),
+                "summary_zh": (
+                    _INCLUDED_WARNING_SUMMARY_ZH
+                    if has_included_quality_warning
+                    else output.summary_zh
+                ),
                 "input_exception_analyses": [
                     included_quality_warnings.get(
                         item.reason_code, item.model_dump(mode="json")
@@ -194,34 +209,69 @@ def _included_quality_warning_analyses(
     if not included_findings:
         return {}
 
+    input_diagnostics = facts.get("input_diagnostics")
+    if isinstance(input_diagnostics, Mapping):
+        reason_counts = input_diagnostics.get("reason_counts")
+        reason_count = (
+            reason_counts.get("authority_field_unavailable")
+            if isinstance(reason_counts, Mapping)
+            else None
+        )
+        if not isinstance(reason_count, int) or reason_count <= 0:
+            return {}
+        count_zh = reason_count
+        unavailable_field_counts = input_diagnostics.get("unavailable_field_counts")
+        affected_fields = (
+            {
+                str(field)
+                for field, value in unavailable_field_counts.items()
+                if isinstance(value, int) and value > 0
+            }
+            if isinstance(unavailable_field_counts, Mapping)
+            else set()
+        )
+        entity_findings = [
+            item
+            for item in included_findings
+            if affected_fields.intersection(
+                str(field) for field in item.get("affected_fields", ())
+            )
+        ]
+    else:
+        count_zh = len(included_findings)
+        affected_fields = {
+            str(field)
+            for item in included_findings
+            for field in item.get("affected_fields", ())
+        }
+        entity_findings = included_findings
+
     entity_kinds = {
         str(evidence["entity_kind"])
-        for item in included_findings
+        for item in entity_findings
         if isinstance(evidence := item.get("safe_evidence"), Mapping)
         and evidence.get("entity_kind")
-    }
-    affected_fields = {
-        str(field)
-        for item in included_findings
-        for field in item.get("affected_fields", ())
     }
     entity_zh = _localized_labels(entity_kinds, {"student": "学生"}, "记录")
     field_zh = _localized_labels(
         affected_fields,
-        {"class_name": "班级信息", "email": "邮箱"},
+        {
+            "category": "类别",
+            "name": "名称",
+            "number": "编号",
+            "class_name": "班级信息",
+            "phone": "手机号",
+            "email": "邮箱",
+        },
         "字段信息",
     )
-    count_zh = _reason_count(
-        facts,
-        "authority_field_unavailable",
-        fallback=len(included_findings),
-    )
-    has_non_included_findings = len(included_findings) != len(
-        field_unavailable_findings
+    has_non_included_findings = any(
+        item.get("inclusion_state") in {"excluded", "anomaly"}
+        for item in field_unavailable_findings
     )
     impact_zh = (
-        f"{field_zh}不可用仅作为数据质量提醒；允许同步的{entity_zh}"
-        "仍保留在匹配与同步范围内，允许同步，其他记录按其排除或异常状态处理。"
+        f"{field_zh}不可用仅作为数据质量提醒；允许同步的记录仍保留在匹配与同步范围内；"
+        "其他记录按排除或异常状态处理。"
         if has_non_included_findings
         else (
             f"{field_zh}不可用仅作为数据质量提醒；这些{entity_zh}"
@@ -249,22 +299,6 @@ def _localized_labels(
     fallback: str,
 ) -> str:
     return "、".join(sorted(labels.get(value, value) for value in values)) or fallback
-
-
-def _reason_count(
-    facts: Mapping[str, Any],
-    reason: str,
-    *,
-    fallback: int,
-) -> int:
-    input_diagnostics = facts.get("input_diagnostics")
-    if not isinstance(input_diagnostics, Mapping):
-        return fallback
-    reason_counts = input_diagnostics.get("reason_counts")
-    if not isinstance(reason_counts, Mapping):
-        return fallback
-    count = reason_counts.get(reason)
-    return count if isinstance(count, int) and count >= 0 else fallback
 
 
 def _redact_phone_values(value: object, *, field: str | None = None) -> object:
