@@ -4298,6 +4298,12 @@ def _database_mapping_output_from_config(
     )
 
 
+class _DatabaseMappingContractViolation(ValueError):
+    def __init__(self, code: str, *, path: str = "$") -> None:
+        super().__init__("database mapping violated its fixed contract")
+        self.repair_feedback = ({"path": path, "code": code},)
+
+
 def _merge_database_mapping_roles(
     output: object,
     *,
@@ -4305,7 +4311,7 @@ def _merge_database_mapping_roles(
     llm_roles: frozenset[str],
 ) -> DatabaseSchemaMappingOutput:
     if not isinstance(output, DatabaseSchemaMappingOutput):
-        raise ValueError("database mapping Skill returned another schema")
+        raise _DatabaseMappingContractViolation("output_schema_invalid")
     model_mappings = {
         "authoritative": output.authoritative_mappings,
         "target": output.target_mappings,
@@ -4316,12 +4322,18 @@ def _merge_database_mapping_roles(
     }
     for role in ("authoritative", "target"):
         if role not in llm_roles and model_mappings[role]:
-            raise ValueError(f"{role} database mapping was not requested from the model")
+            raise _DatabaseMappingContractViolation(
+                "role_not_requested",
+                path=f"{role}_mappings",
+            )
     if any(
         unresolved.split(".", maxsplit=1)[0] not in llm_roles
         for unresolved in output.unresolved_required_fields
     ):
-        raise ValueError("database mapping marked a configured role unresolved")
+        raise _DatabaseMappingContractViolation(
+            "role_not_requested",
+            path="unresolved_required_fields",
+        )
     return DatabaseSchemaMappingOutput(
         schema_version=output.schema_version,
         authoritative_mappings=(
@@ -4348,9 +4360,12 @@ def _validate_database_mapping_output(
     expected_schema_version: str,
 ) -> DatabaseSchemaMappingOutput:
     if not isinstance(output, DatabaseSchemaMappingOutput):
-        raise ValueError("database mapping Skill returned another schema")
+        raise _DatabaseMappingContractViolation("output_schema_invalid")
     if output.schema_version != expected_schema_version:
-        raise ValueError("database mapping returned another contract version")
+        raise _DatabaseMappingContractViolation(
+            "contract_version_mismatch",
+            path="schema_version",
+        )
     active_roles = tuple(
         role for role in ("authoritative", "target") if role in field_refs
     )
@@ -4361,7 +4376,10 @@ def _validate_database_mapping_output(
         for field in _fixed_contract_fields()
     }
     if not unresolved <= allowed_unresolved:
-        raise ValueError("database mapping returned an unknown unresolved field")
+        raise _DatabaseMappingContractViolation(
+            "unresolved_field_unknown",
+            path="unresolved_required_fields",
+        )
 
     compiled: dict[str, dict[str, str]] = {}
     mappings_by_role = {
@@ -4372,34 +4390,50 @@ def _validate_database_mapping_output(
         mappings = mappings_by_role[role]
         if role not in active_roles:
             if mappings:
-                raise ValueError(
-                    f"{role} database mapping was returned without a source profile"
+                raise _DatabaseMappingContractViolation(
+                    "role_not_requested",
+                    path=f"{role}_mappings",
                 )
             continue
         contract_fields = [mapping.contract_field for mapping in mappings]
         source_refs = [mapping.source_field_ref for mapping in mappings]
         if len(set(contract_fields)) != len(contract_fields):
-            raise ValueError(f"{role} database mapping repeats a contract field")
+            raise _DatabaseMappingContractViolation(
+                "contract_field_duplicated",
+                path=f"{role}_mappings",
+            )
         if len(set(source_refs)) != len(source_refs):
-            raise ValueError(f"{role} database mapping repeats a source field")
+            raise _DatabaseMappingContractViolation(
+                "source_field_duplicated",
+                path=f"{role}_mappings",
+            )
         compiled[role] = {}
         for mapping in mappings:
+            mapping_path = f"{role}_mappings.{mapping.contract_field}"
             if mapping.source_field_ref not in field_refs[role]:
-                raise ValueError(
-                    f"{role} database mapping references an unknown source field"
+                raise _DatabaseMappingContractViolation(
+                    "source_field_unknown",
+                    path=mapping_path,
                 )
             if mapping.source_field_ref in forbidden_source_refs[role]:
-                raise ValueError(
-                    f"{role} database mapping uses a key or version column"
+                raise _DatabaseMappingContractViolation(
+                    "primary_or_version_field_forbidden",
+                    path=mapping_path,
                 )
             if mapping.normalizer_id != _normalizer_for_contract_field(
                 mapping.contract_field
             ):
-                raise ValueError(f"{role} database mapping uses an invalid normalizer")
+                raise _DatabaseMappingContractViolation(
+                    "normalizer_invalid",
+                    path=mapping_path,
+                )
             if mapping.entity_kinds != _entity_kinds_for_contract_field(
                 mapping.contract_field
             ):
-                raise ValueError(f"{role} database mapping uses invalid entity kinds")
+                raise _DatabaseMappingContractViolation(
+                    "entity_kinds_invalid",
+                    path=mapping_path,
+                )
             compiled[role][mapping.contract_field] = field_refs[role][
                 mapping.source_field_ref
             ]
@@ -4410,17 +4444,22 @@ def _validate_database_mapping_output(
             if item.startswith(f"{role}.")
         }
         if mapped_fields & unresolved_fields:
-            raise ValueError(f"{role} database mapping marks mapped fields unresolved")
+            raise _DatabaseMappingContractViolation(
+                "mapped_and_unresolved_conflict",
+                path=f"{role}_mappings",
+            )
         if mapped_fields | unresolved_fields != _fixed_contract_fields():
-            raise ValueError(
-                f"{role} database mapping omitted fields without marking unresolved"
+            raise _DatabaseMappingContractViolation(
+                "fixed_field_coverage_incomplete",
+                path=f"{role}_mappings",
             )
         if (
             role in enforce_configured_roles
             and compiled[role] != configured_mappings[role]
         ):
-            raise ValueError(
-                f"{role} database mapping differs from the server allow-list"
+            raise _DatabaseMappingContractViolation(
+                "explicit_mapping_mismatch",
+                path=f"{role}_mappings",
             )
     return output
 
