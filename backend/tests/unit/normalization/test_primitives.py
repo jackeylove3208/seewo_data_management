@@ -27,8 +27,14 @@ def test_identifiers_are_normalized_without_fuzzy_changes() -> None:
     assert normalize_email(" Teacher@Example.COM ") == "teacher@example.com"
 
 
+def test_phone_normalization_accepts_landline_numbers() -> None:
+    assert normalize_phone("010-1234-5678") == "01012345678"
+    assert normalize_phone("8612345678901") == "8612345678901"
+
+
 def test_malformed_contact_identifiers_are_not_matchable() -> None:
     assert normalize_phone("123") is None
+    assert normalize_phone("1234567890123456") is None
     assert normalize_phone("not-a-phone") is None
     assert normalize_email("foo") is None
     assert normalize_email("teacher@example") is None

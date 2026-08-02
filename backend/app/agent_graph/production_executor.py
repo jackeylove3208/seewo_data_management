@@ -1709,7 +1709,7 @@ class ProductionGraphActionExecutor:
             async with session.begin():
                 repository = AgentAnalysisRepository(session)
                 persisted = await repository.persist_inputs(outcome.records)
-                marks = _bind_input_marks(outcome.marks, persisted)
+                marks = _bind_database_input_marks(outcome.marks, persisted)
                 await repository.persist_marks(marks)
                 if binding.role == "target":
                     executions = ExecutionRepository(session)
@@ -1899,7 +1899,7 @@ class ProductionGraphActionExecutor:
             async with session.begin():
                 repository = AgentAnalysisRepository(session)
                 persisted = await repository.persist_inputs(outcome.records)
-                marks = _bind_input_marks(outcome.marks, persisted)
+                marks = _bind_database_input_marks(outcome.marks, persisted)
                 await repository.persist_marks(marks)
                 if role == "target":
                     executions = ExecutionRepository(session)
@@ -4000,6 +4000,17 @@ def _bind_api_input_marks(
         marks,
         {record.stable_order: record.id for record in persisted},
         error_message="API ingestion mark does not correspond to a persisted input",
+    )
+
+
+def _bind_database_input_marks(
+    marks: tuple[AgentInputMark, ...],
+    persisted: tuple[AgentInputRecord, ...],
+) -> tuple[AgentInputMark, ...]:
+    return _bind_marks(
+        marks,
+        {record.stable_order: record.id for record in persisted},
+        error_message="database ingestion mark does not correspond to a persisted input",
     )
 
 
