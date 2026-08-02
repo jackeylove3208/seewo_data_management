@@ -279,6 +279,124 @@ async def _add_v3_database_mapping_facts(
     return task, run, mapping
 
 
+async def _add_v2_database_mapping_facts(
+    session,
+    *,
+    connector: ConfiguredApiConnector,
+    configuration: DatabaseConnectorConfiguration,
+) -> tuple[ReconciliationTask, AgentRunRecord, Snapshot, dict[str, str]]:
+    task = ReconciliationTask(
+        tenant_id="school-v2",
+        scope_id="all",
+        snapshot_mode="full",
+        entity_types=["department"],
+        status="running",
+        stage="governance",
+        workflow_version="agent-graph-v1",
+        agent_intent={
+            "source": {
+                "kind": "database",
+                "configuration_id": "authority-postgres",
+            },
+            "target": {
+                "kind": "database",
+                "configuration_id": "seewo-data-mysql",
+            },
+        },
+        idempotency_key=str(uuid4()),
+        request_hash=uuid4().hex * 2,
+    )
+    session.add(task)
+    await session.flush()
+    configuration_fingerprint = "sha256:" + _configuration_fingerprint(
+        {
+            "configuration_id": "seewo-data-mysql",
+            "dialect": configuration.dialect,
+            "table_name": configuration.table_name,
+            "primary_key": configuration.primary_key,
+            "version_column": configuration.version_column,
+            "field_columns": configuration.field_columns,
+            "allowed_columns": configuration.allowed_columns,
+            "source_role": configuration.source_role,
+        }
+    )
+    source = SourceFile(
+        task_id=task.id,
+        source_role="target",
+        original_name="seewo-data-mysql",
+        storage_name=f"database-{uuid4().hex}",
+        storage_path="database://seewo-data-mysql",
+        managed_storage=False,
+        sha256=configuration_fingerprint,
+        size_bytes=1,
+    )
+    session.add(source)
+    await session.flush()
+    snapshot = Snapshot(
+        id=uuid4(),
+        task_id=task.id,
+        source_file_id=source.id,
+        source_role="target",
+        schema_version="agent-contract-v1",
+        mapping_version="agent-sql-v2",
+        file_hash=source.sha256,
+        content_hash=uuid4().hex * 2,
+        state="published",
+        summary={},
+    )
+    session.add(snapshot)
+    run = AgentRunRecord(
+        task_id=task.id,
+        tenant_id=task.tenant_id,
+        kind="sync",
+        workflow_version="agent-graph-v1",
+        ingestion_contract_version="source-ingestion-v2",
+        phase="execute_and_verify",
+        status="running",
+    )
+    session.add(run)
+    await session.flush()
+    mapping = {
+        "category": "person_type",
+        "name": "display_name",
+        "number": "school_number",
+        "class_name": "group_name",
+        "phone": "mobile",
+        "email": "mailbox",
+    }
+    schema = await connector.discover_schema()
+    schema_fingerprint = "sha256:" + _configuration_fingerprint(
+        {
+            "schema": schema.model_dump(mode="json"),
+            "table": configuration.table_name,
+            "primary_key": configuration.primary_key,
+            "version_column": configuration.version_column,
+        }
+    )
+    session.add(
+        AgentCheckpointRecord(
+            run_id=run.id,
+            tenant_id=task.tenant_id,
+            phase="ingest_and_normalize",
+            checkpoint_key="graph-database-field-mapping-v2",
+            input_hash=uuid4().hex * 2,
+            status="completed",
+            payload={
+                "schema_version": "fixed-six-field-sql-mapping-v2",
+                "resolved": True,
+                "mappings": {"target": mapping},
+                "schema_fingerprints": {"target": schema_fingerprint},
+                "source_versions": {"target": "v1"},
+                "unresolved_required_fields": [],
+                "model_calls": 1,
+                "cache_hit": False,
+            },
+        )
+    )
+    await session.flush()
+    return task, run, snapshot, mapping
+
+
 def _llm_mapped_connector() -> tuple[
     ConfiguredApiConnector,
     DatabaseConnectorConfiguration,
@@ -389,6 +507,257 @@ async def test_v3_frozen_mapping_drives_database_execution_and_rollback(
         assert await bound.verify(
             [{"id": "1", "after": {"phone": "13800000000"}}]
         ) == [True]
+
+
+@pytest.mark.asyncio
+async def test_v2_frozen_mapping_drives_database_execution(database) -> None:
+    connector, configuration = _llm_mapped_connector()
+    async with database.session_factory() as session:
+        async with session.begin():
+            task, run, snapshot, expected_mapping = (
+                await _add_v2_database_mapping_facts(
+                    session,
+                    connector=connector,
+                    configuration=configuration,
+                )
+            )
+            initial_version = TargetVersionRecord(
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                source_snapshot_id=snapshot.id,
+                file_sha256=SqlGovernanceExecutionHandler.hash_version("v1"),
+                content_hash=uuid4().hex * 2,
+                storage_path=f"database://seewo-data-mysql/version/{uuid4().hex}",
+            )
+            session.add(initial_version)
+            plan = AgentGovernancePlanRecord(
+                run_id=run.id,
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                source_snapshot_id=snapshot.id,
+                target_snapshot_id=snapshot.id,
+                target_version=f"sha256:{initial_version.file_sha256}",
+                finding_ids=[],
+                operations=[],
+                content_hash=uuid4().hex * 2,
+                status="compiled",
+                compiled_by="test",
+            )
+            session.add(plan)
+            await session.flush()
+            subject = AgentInputRecord(
+                run_id=run.id,
+                task_id=task.id,
+                snapshot_id=snapshot.id,
+                tenant_id=task.tenant_id,
+                source_role="target",
+                stable_locator="database:seewo-data-mysql:1",
+                stable_order=1,
+                entity_kind="department",
+                category="department",
+                name="教务处",
+                number="D001",
+                class_name=None,
+                phone="13800000000",
+                email="office@example.test",
+                raw_row_number=None,
+                input_hash=uuid4().hex * 2,
+            )
+            session.add(subject)
+            await session.flush()
+            work = AgentWorkItemRecord(
+                run_id=run.id,
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                source_snapshot_id=snapshot.id,
+                target_snapshot_id=snapshot.id,
+                subject_input_id=subject.id,
+                entity_kind="department",
+                kind="field_difference",
+                state="analyzed",
+                idempotency_hash=uuid4().hex * 2,
+                evidence_hash=uuid4().hex * 2,
+            )
+            batch = AgentModelBatchRecord(
+                run_id=run.id,
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                entity_kind="department",
+                input_hash=uuid4().hex * 2,
+                item_count=1,
+                status="completed",
+            )
+            session.add_all((work, batch))
+            await session.flush()
+            finding = AgentFindingRecord(
+                run_id=run.id,
+                task_id=task.id,
+                work_item_id=work.id,
+                batch_id=batch.id,
+                kind="field_difference",
+                category_zh="手机号不一致",
+                analysis_zh="部门手机号与权威数据不一致。",
+                evidence_refs=["test"],
+                content_hash=uuid4().hex * 2,
+            )
+            session.add(finding)
+            await session.flush()
+            operation = AgentGovernanceOperationRecord(
+                plan_id=plan.id,
+                run_id=run.id,
+                task_id=task.id,
+                finding_id=finding.id,
+                operation_type="update",
+                entity_kind="department",
+                target_source_identifier="database:seewo-data-mysql:1",
+                before={"phone": "13800000000"},
+                after={"phone": "13800000001"},
+                dependencies=[],
+                risk="high",
+                status="pending",
+                attempt_count=0,
+            )
+            session.add(operation)
+            await session.flush()
+            context = AgentWorkContext(
+                worker_id="sql-v2-worker",
+                run_id=run.id,
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                phase="execute_and_verify",
+                attempt_count=1,
+                lease_token=uuid4(),
+            )
+
+        async with session.begin():
+            result = await SqlGovernanceExecutionHandler(
+                StaticResolver(connector, connector_id="seewo-data-mysql")
+            ).execute_operation(
+                session,
+                context,
+                operation_id=operation.id,
+            )
+
+        assert result.status == "succeeded"
+        assert result.actual_after == {"phone": "13800000001"}
+        readable = connector.with_frozen_mapping(expected_mapping)
+        assert (await readable.read_record("1"))["mobile"] == "13800000001"
+
+        output_version_id = UUID(str(result.verification["output_target_version_id"]))
+        async with session.begin():
+            rollback_task = ReconciliationTask(
+                tenant_id=task.tenant_id,
+                scope_id="all",
+                snapshot_mode="full",
+                entity_types=["department"],
+                status="running",
+                stage="rollback",
+                workflow_version="agent-graph-v1",
+                task_kind="rollback",
+                parent_task_id=task.id,
+                agent_intent={
+                    "source_task_id": str(task.id),
+                    "target_version_id": str(output_version_id),
+                    "source_mode": "database",
+                    "target": {
+                        "kind": "database",
+                        "configuration_id": "seewo-data-mysql",
+                    },
+                    "operations": [
+                        {
+                            "id": str(operation.id),
+                            "operation": "update",
+                            "entity_kind": "department",
+                            "target_source_identifier": (
+                                "database:seewo-data-mysql:1"
+                            ),
+                            "before": {"phone": "13800000000"},
+                            "after": {"phone": "13800000001"},
+                            "verification": {"valid": True},
+                        }
+                    ],
+                },
+                idempotency_key=str(uuid4()),
+                request_hash=uuid4().hex * 2,
+            )
+            session.add(rollback_task)
+            await session.flush()
+            rollback_run = AgentRunRecord(
+                task_id=rollback_task.id,
+                tenant_id=rollback_task.tenant_id,
+                kind="rollback",
+                workflow_version="agent-graph-v1",
+                ingestion_contract_version="source-ingestion-v2",
+                phase="execute_restore",
+                status="running",
+            )
+            session.add(rollback_run)
+            await session.flush()
+            rollback_context = AgentWorkContext(
+                worker_id="sql-v2-rollback-worker",
+                run_id=rollback_run.id,
+                task_id=rollback_task.id,
+                tenant_id=rollback_task.tenant_id,
+                phase="execute_restore",
+                attempt_count=1,
+                lease_token=uuid4(),
+            )
+            rollback_operation = _rollback_operation(
+                rollback_task.agent_intent["operations"][0],
+                target_version="ignored",
+            )
+
+        rollback_handler = SqlRollbackExecutionHandler(
+            StaticResolver(connector, connector_id="seewo-data-mysql")
+        )
+        async with session.begin():
+            await rollback_handler.plan(session, rollback_context)
+            rollback_fact = await rollback_handler.execute_operation(
+                session,
+                rollback_context,
+                rollback_operation.id,
+            )
+
+        assert rollback_fact["status"] == "succeeded"
+        assert rollback_fact["verification"]["valid"] is True
+        assert (await readable.read_record("1"))["mobile"] == "13800000000"
+
+
+@pytest.mark.asyncio
+async def test_v2_frozen_mapping_rejects_connector_configuration_drift(
+    database,
+) -> None:
+    connector, configuration = _llm_mapped_connector()
+    async with database.session_factory() as session:
+        async with session.begin():
+            task, run, _snapshot, _mapping = await _add_v2_database_mapping_facts(
+                session,
+                connector=connector,
+                configuration=configuration,
+            )
+
+        changed_configuration = configuration.model_copy(
+            update={"allowed_columns": ("invented_column",)}
+        )
+        changed_connector = ConfiguredApiConnector(
+            configuration=changed_configuration,
+            store=connector._store,
+        )
+        async with session.begin():
+            with pytest.raises(
+                ValueError,
+                match="configuration changed after task creation",
+            ):
+                await connector_with_frozen_database_mapping(
+                    session,
+                    task_id=task.id,
+                    run_id=run.id,
+                    role="target",
+                    connectors=StaticResolver(
+                        changed_connector,
+                        connector_id="seewo-data-mysql",
+                    ),
+                )
 
 
 @pytest.mark.asyncio
