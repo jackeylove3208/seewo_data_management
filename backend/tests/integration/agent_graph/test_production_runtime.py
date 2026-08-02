@@ -1748,12 +1748,31 @@ async def test_sql_v2_department_mapping_sends_only_llm_target_and_merges_author
         replace(context, current_node="normalize_input_batches"),
         action,
     )
+    await executor(
+        replace(context, current_node="normalize_input_batches"),
+        AllowedActionV1(
+            action_id="normalize_target_full",
+            graph_action_kind="normalize_next_batch",
+            kind="run_deterministic",
+            resource_ids=("source:target:full",),
+            required_evidence=("normalized:target:full",),
+            risk="low",
+            requires_human=False,
+            successor_node="normalize_input_batches",
+        ),
+    )
 
     async with database.session_factory() as session:
-        checkpoint = await AgentRuntimeRepository(session).get_checkpoint(
+        runtime = AgentRuntimeRepository(session)
+        checkpoint = await runtime.get_checkpoint(
             context.run_id,
             phase=AgentPhase.INGEST_AND_NORMALIZE,
             checkpoint_key="graph-database-field-mapping-v2",
+        )
+        normalization = await runtime.get_checkpoint(
+            context.run_id,
+            phase=AgentPhase.INGEST_AND_NORMALIZE,
+            checkpoint_key="graph-source-normalization:target",
         )
 
     prompt = "\n".join(message.content for message in provider.requests[0].messages)
@@ -1763,6 +1782,84 @@ async def test_sql_v2_department_mapping_sends_only_llm_target_and_merges_author
     assert checkpoint is not None
     assert checkpoint.payload["mappings"]["authoritative"]["number"] == "number"
     assert checkpoint.payload["mappings"]["target"]["number"] == "number"
+    assert normalization is not None
+
+
+@pytest.mark.asyncio
+async def test_sql_v2_llm_pair_freezes_both_mappings_before_normalization(
+    database,
+) -> None:
+    context = await _sql_ingestion_v2_context(database)
+    resolver = StaticDatabaseConnectorRuntime(
+        {
+            "authority-postgres": _sql_test_connector(
+                connector_id="authority-postgres",
+                role="authoritative",
+                authority_mapping_required=True,
+                mapping_mode="llm",
+            ),
+            "seewo-mysql": _sql_test_connector(
+                connector_id="seewo-mysql",
+                role="target",
+                mapping_mode="llm",
+            ),
+        }
+    )
+    provider = DatabaseMappingProvider()
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=provider,
+        tokenization_secret="test-tokenization-secret",
+        database_connectors=resolver,
+    )
+    normalized_context = replace(context, current_node="normalize_input_batches")
+    await executor(
+        normalized_context,
+        AllowedActionV1(
+            action_id="resolve_database_fixed_field_mapping",
+            graph_action_kind="normalize_next_batch",
+            kind="dispatch_sub_agent",
+            sub_agent="database-schema-mapping",
+            resource_ids=("source-pair:current",),
+            required_evidence=("mapping:fixed-six-field-v2",),
+            risk="low",
+            requires_human=False,
+            successor_node="normalize_input_batches",
+        ),
+    )
+    for role in ("authoritative", "target"):
+        await executor(
+            normalized_context,
+            AllowedActionV1(
+                action_id=f"normalize_{role}_full",
+                graph_action_kind="normalize_next_batch",
+                kind="run_deterministic",
+                resource_ids=(f"source:{role}:full",),
+                required_evidence=(f"normalized:{role}:full",),
+                risk="low",
+                requires_human=False,
+                successor_node="normalize_input_batches",
+            ),
+        )
+
+    async with database.session_factory() as session:
+        runtime = AgentRuntimeRepository(session)
+        normalizations = tuple(
+            [
+                await runtime.get_checkpoint(
+                    context.run_id,
+                    phase=AgentPhase.INGEST_AND_NORMALIZE,
+                    checkpoint_key=f"graph-source-normalization:{role}",
+                )
+                for role in ("authoritative", "target")
+            ]
+        )
+
+    prompt = "\n".join(message.content for message in provider.requests[0].messages)
+    assert len(provider.requests) == 1
+    assert "database-column:authoritative:" in prompt
+    assert "database-column:target:" in prompt
+    assert all(checkpoint is not None for checkpoint in normalizations)
 
 
 @pytest.mark.asyncio

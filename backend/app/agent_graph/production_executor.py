@@ -1862,11 +1862,18 @@ class ProductionGraphActionExecutor:
                 for field, column in frozen_mapping.items()
             ):
                 raise ValueError("database ingestion role mapping is invalid")
+            if set(frozen_mapping) != _fixed_contract_fields() or len(
+                set(frozen_mapping.values())
+            ) != len(frozen_mapping):
+                raise ValueError("database ingestion role mapping is invalid")
             snapshot, _source = await _source_snapshot(
                 session,
                 task_id=context.task_id,
                 role=role,
             )
+        connector = connector.with_frozen_mapping(
+            {str(key): str(value) for key, value in frozen_mapping.items()}
+        )
         source_version_before = (await connector.version()).value
         if source_version_before != expected_source_version:
             raise ConnectorConflictError(
