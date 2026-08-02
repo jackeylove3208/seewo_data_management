@@ -69,7 +69,17 @@ async def test_supervisor_uses_versioned_skill_and_returns_confirmation() -> Non
     assert "不可信证据" in provider.requests[0].messages[0].content
 
 
-@pytest.mark.parametrize("message", ["同步全部", "全部"])
+@pytest.mark.parametrize(
+    "message",
+    [
+        "同步全部",
+        "全部",
+        "请帮我同步全部",
+        "麻烦帮我同步全部",
+        "我想请你同步全部",
+        "同步一下全部",
+    ],
+)
 @pytest.mark.asyncio
 async def test_supervisor_expands_explicit_full_scope_requests(message: str) -> None:
     provider = CapturingProvider(

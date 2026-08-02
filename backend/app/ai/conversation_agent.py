@@ -1,7 +1,6 @@
 """Model-backed supervisor for the user-facing synchronization conversation."""
 
 import re
-
 from typing import Any
 
 from pydantic import ValidationError
@@ -23,8 +22,9 @@ _ALL_ENTITY_TYPES = (
     AgentEntityType.STUDENT,
 )
 _EXPLICIT_ALL_ENTITY_SCOPE_PATTERN = re.compile(
-    r"^(?:(?:请|麻烦|我要|我想|帮我|给我)?(?:把|将)?(?:"
-    r"(?:同步|对齐|核对|对账)(?:全部|全量|所有)"
+    r"^(?:(?:(?:请|麻烦)(?:帮我|给我)?|(?:我想|我要)(?:请你|请|让你)?|"
+    r"请你|麻烦你|帮我|给我)?(?:把|将)?(?:"
+    r"(?:同步|对齐|核对|对账)(?:一下)?(?:全部|全量|所有)"
     r"(?:数据|组织数据|学校数据|信息|资料)?|"
     r"(?:全部|全量|所有)(?:数据|组织数据|学校数据|信息|资料)?"
     r"(?:都)?(?:同步|对齐|核对|对账))"
