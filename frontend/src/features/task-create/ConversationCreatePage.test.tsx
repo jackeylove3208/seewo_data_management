@@ -1582,6 +1582,110 @@ describe("backend Agent conversation", () => {
     expect(terminate).not.toHaveBeenCalled();
   });
 
+  it("dismisses and refreshes a stale graph termination confirmation", async () => {
+    const previewTermination = vi.fn().mockResolvedValue({
+      id: "termination-gate-stale",
+      kind: "termination_confirmation",
+      status: "pending",
+      item_count: 1,
+    });
+    const decideGraphGate = vi.fn().mockRejectedValue(
+      new ApiError(
+        "Gate is already decided",
+        409,
+        "graph_gate_already_decided",
+      ),
+    );
+    const task = vi.fn().mockResolvedValue({
+      id: "task-graph-stale",
+      workflow_version: "agent-graph-v1",
+      phase: "analyze_batches",
+      status: "running",
+    });
+    const graph = vi.fn().mockResolvedValue({
+      task_id: "task-graph-stale",
+      workflow_version: "agent-graph-v1",
+      graph_version: "agent-sync-graph-v1",
+      graph_cursor: 4,
+      current_node: "analyze_batches",
+      business_stage: "agent_analysis",
+      current_action_zh: "正在分析数据",
+      status: "running",
+      can_terminate: true,
+      termination_requested: false,
+      human_gates: [],
+    });
+    const backend = api({
+      startTask: vi.fn().mockResolvedValue({
+        id: "task-graph-stale",
+        workflow_version: "agent-graph-v1",
+        phase: "ingest_and_normalize",
+        status: "running",
+      }),
+      previewTermination,
+      decideGraphGate,
+      task,
+      graph,
+    } as Partial<AgentConversationApi>);
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    await waitForComposer();
+    await user.type(screen.getByLabelText("对账目标"), "同步全校教师");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await user.click(await screen.findByRole("button", { name: "确认开始同步" }));
+    await user.click(await screen.findByRole("button", { name: "终止任务" }));
+    await screen.findByRole("dialog", { name: "确认终止当前任务？" });
+    task.mockClear();
+    graph.mockClear();
+
+    await user.click(screen.getByRole("button", { name: "确认终止" }));
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("dialog", { name: "确认终止当前任务？" }),
+      ).not.toBeInTheDocument();
+    });
+    expect(screen.getByText("Gate is already decided")).toBeInTheDocument();
+    expect(task).toHaveBeenCalledWith("task-graph-stale");
+    expect(graph).toHaveBeenCalledWith("task-graph-stale");
+  });
+
+  it("keeps the termination confirmation retryable after a non-conflict error", async () => {
+    const backend = api({
+      startTask: vi.fn().mockResolvedValue({
+        id: "task-graph-error",
+        workflow_version: "agent-graph-v1",
+        phase: "ingest_and_normalize",
+        status: "running",
+      }),
+      previewTermination: vi.fn().mockResolvedValue({
+        id: "termination-gate-error",
+        kind: "termination_confirmation",
+        status: "pending",
+        item_count: 1,
+      }),
+      decideGraphGate: vi.fn().mockRejectedValue(
+        new ApiError("后端处理请求失败", 500),
+      ),
+    } as Partial<AgentConversationApi>);
+    const user = userEvent.setup();
+    render(<ConversationCreatePage agentApi={backend} />);
+
+    await waitForComposer();
+    await user.type(screen.getByLabelText("对账目标"), "同步全校教师");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await user.click(await screen.findByRole("button", { name: "确认开始同步" }));
+    await user.click(await screen.findByRole("button", { name: "终止任务" }));
+    await screen.findByRole("dialog", { name: "确认终止当前任务？" });
+    await user.click(screen.getByRole("button", { name: "确认终止" }));
+
+    expect(
+      await screen.findByRole("dialog", { name: "确认终止当前任务？" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("后端处理请求失败")).toBeInTheDocument();
+  });
+
   it("unlocks a new conversation after polling a terminated task", async () => {
     const task = vi.fn().mockResolvedValue({
       id: "task-terminated",

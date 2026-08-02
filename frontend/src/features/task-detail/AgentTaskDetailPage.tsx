@@ -14,6 +14,7 @@ import {
   type AgentRollbackPreview,
   type AgentTask,
 } from "../../api/agent";
+import { ApiError } from "../../api/client";
 import { BackButton } from "../../components/BackButton";
 import { IdentityConflictClarificationCard } from "../../components/IdentityConflictClarificationCard";
 import { TaskStatusRail } from "../../components/TaskStatusRail";
@@ -302,6 +303,7 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
   const [terminateError, setTerminateError] = useState<string>();
   const [terminationLoading, setTerminationLoading] = useState(false);
   const [terminationGate, setTerminationGate] = useState<AgentGraphHumanGate>();
+  const [dismissedTerminationGateId, setDismissedTerminationGateId] = useState<string>();
   const [rollbackLoading, setRollbackLoading] = useState(false);
   const [rollbackPreview, setRollbackPreview] = useState<AgentRollbackPreview>();
   const [gateLoading, setGateLoading] = useState<string>();
@@ -366,7 +368,10 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
       : graphStageIndex[graph.data.business_stage]
     : phaseIndex(current.phase, activePhases);
   const persistedTerminationGate = graph.data?.human_gates.find(
-    (gate) => gate.status === "pending" && gate.kind === "termination_confirmation",
+    (gate) =>
+      gate.status === "pending"
+      && gate.kind === "termination_confirmation"
+      && gate.id !== dismissedTerminationGateId,
   );
   const activeTerminationGate = terminationGate ?? persistedTerminationGate;
   const visibleGates = graph.data?.human_gates.filter(
@@ -434,6 +439,7 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
   async function requestTermination() {
     setTerminationLoading(true);
     setTerminateError(undefined);
+    setDismissedTerminationGateId(undefined);
     try {
       if (current.workflow_version === "agent-graph-v1") {
         setTerminationGate(await agentApi.previewTermination(taskId));
@@ -464,6 +470,15 @@ export function AgentTaskDetailPage({ taskId, initialTask }: { taskId: string; i
       setTerminationGate(undefined);
       await Promise.all([task.refetch(), graph.refetch(), events.refetch()]);
     } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        setDismissedTerminationGateId(activeTerminationGate.id);
+        setTerminationGate(undefined);
+        await Promise.allSettled([
+          task.refetch(),
+          graph.refetch(),
+          events.refetch(),
+        ]);
+      }
       setTerminateError(error instanceof Error ? error.message : "终止确认未完成");
     } finally {
       setTerminationLoading(false);

@@ -564,6 +564,19 @@ export function ConversationCreatePage({
         setTask((current) => current ? { ...current, status: "terminating" } : current);
       }
     } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        setTerminationGate(undefined);
+        const [taskResult, graphResult] = await Promise.allSettled([
+          backendApi.task?.(task.id) ?? Promise.resolve(undefined),
+          backendApi.graph?.(task.id) ?? Promise.resolve(undefined),
+        ]);
+        if (taskResult.status === "fulfilled" && taskResult.value) {
+          setTask(taskResult.value);
+        }
+        if (graphResult.status === "fulfilled" && graphResult.value) {
+          setGraphCursor(graphResult.value.graph_cursor);
+        }
+      }
       setTerminationError(error instanceof Error ? error.message : "终止确认未完成");
     } finally {
       setTerminationLoading(false);

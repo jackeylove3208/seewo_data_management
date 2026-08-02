@@ -5,6 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { agentApi, type AgentGraphHumanGate } from "../../api/agent";
+import { ApiError } from "../../api/client";
 import { AgentTaskDetailPage } from "./AgentTaskDetailPage";
 
 function renderPage() {
@@ -1135,6 +1136,58 @@ describe("controlled Agent graph task detail", () => {
       "approve",
       "操作人确认终止当前任务",
     );
+    client.clear();
+  });
+
+  it("dismisses a stale persisted termination gate and refreshes task state", async () => {
+    const terminationGate: AgentGraphHumanGate = {
+      id: "termination-gate-stale",
+      kind: "termination_confirmation",
+      status: "pending",
+      item_count: 1,
+      actionable: true,
+    };
+    const task = vi.mocked(agentApi.task);
+    const graph = vi.mocked(agentApi.graph);
+    const events = vi.mocked(agentApi.events);
+    graph.mockResolvedValue({
+      task_id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      graph_version: "agent-sync-graph-v1",
+      graph_cursor: 8,
+      current_node: "wait_high_risk_approvals",
+      business_stage: "governance_execution",
+      current_action_zh: "正在等待操作人处理",
+      status: "waiting_human",
+      can_terminate: true,
+      termination_requested: false,
+      human_gates: [terminationGate],
+    });
+    vi.mocked(agentApi.decideGraphGate).mockRejectedValue(
+      new ApiError(
+        "Gate is already decided",
+        409,
+        "graph_gate_already_decided",
+      ),
+    );
+    const user = userEvent.setup();
+    const { client } = renderPage();
+
+    await screen.findByRole("dialog", { name: "确认终止当前任务？" });
+    task.mockClear();
+    graph.mockClear();
+    events.mockClear();
+    await user.click(screen.getByRole("button", { name: "确认终止" }));
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("dialog", { name: "确认终止当前任务？" }),
+      ).not.toBeInTheDocument();
+    });
+    expect(screen.getByText("Gate is already decided")).toBeInTheDocument();
+    expect(task).toHaveBeenCalled();
+    expect(graph).toHaveBeenCalled();
+    expect(events).toHaveBeenCalled();
     client.clear();
   });
 
