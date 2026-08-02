@@ -206,6 +206,89 @@ def test_conversation_configuration_creates_a_task_ephemeral_connection(
     assert current.json()["intent"]["entity_types"] == ["student"]
 
 
+def test_successful_conversation_connection_test_exposes_start_confirmation(
+    connector_client: tuple[TestClient, FakeDingTalkAdapter],
+) -> None:
+    client, adapter = connector_client
+    conversation = client.post("/api/agent/conversations").json()
+    configuration_session = client.post(
+        "/api/connectors/configuration-sessions",
+        json={
+            "provider_id": "dingtalk",
+            "conversation_id": conversation["id"],
+        },
+    ).json()
+    created = client.post(
+        "/api/connectors/connections",
+        json={
+            "configuration_session_id": configuration_session["id"],
+            "provider_id": "dingtalk",
+            "display_name": "钉钉学生连接",
+            "public_configuration": {
+                "person_entity_kind": "student",
+                "root_department_id": 42,
+            },
+            "secret": {"app_key": "app", "app_secret": "secret"},
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    adapter.result = ConnectionTestResult(
+        eligible=False,
+        capabilities={},
+        visibility_summary={"visible": False, "student_count": 0},
+        safe_error_code="connector_visibility_empty",
+    )
+    failed_test = client.post(
+        f"/api/connectors/connections/{created.json()['id']}/test",
+        json={"conversation_id": conversation["id"]},
+    )
+    assert failed_test.status_code == 200, failed_test.text
+    assert failed_test.json()["state"] == "invalid"
+    assert client.get("/api/agent/conversations/current").json()[
+        "start_confirmation"
+    ] is None
+
+    rotated = client.post(
+        f"/api/connectors/connections/{created.json()['id']}/rotate-secret",
+        json={
+            "conversation_id": conversation["id"],
+            "public_configuration": {
+                "person_entity_kind": "teacher",
+                "root_department_id": 42,
+            },
+            "secret": {"app_key": "app-2", "app_secret": "secret-2"},
+        },
+    )
+    assert rotated.status_code == 200, rotated.text
+    adapter.result = ConnectionTestResult(
+        eligible=True,
+        capabilities={
+            "organization.read": True,
+            "entity.teacher.read": True,
+        },
+        visibility_summary={
+            "visible": True,
+            "record_count": 5,
+            "teacher_count": 5,
+        },
+    )
+    tested = client.post(
+        f"/api/connectors/connections/{created.json()['id']}/test",
+        json={"conversation_id": conversation["id"]},
+    )
+    assert tested.status_code == 200, tested.text
+    assert tested.json()["state"] == "active"
+
+    current = client.get("/api/agent/conversations/current")
+    assert current.status_code == 200, current.text
+    assert current.json()["start_confirmation"] == {
+        "title": "钉钉教师同步",
+        "summary": "钉钉教师同步",
+        "entity_types": ["teacher"],
+    }
+
+
 def test_conversation_configuration_preserves_an_existing_explicit_target(
     connector_client: tuple[TestClient, FakeDingTalkAdapter],
 ) -> None:

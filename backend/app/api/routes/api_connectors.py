@@ -239,14 +239,17 @@ async def test_api_connection(
     payload: ApiConnectionTestRequest | None = None,
 ) -> ApiConnectionRead:
     conversation_id = payload.conversation_id if payload is not None else None
+    conversation: AgentConversationRecord | None = None
     if conversation_id is not None:
         conversation = await session.scalar(
-            select(AgentConversationRecord.id).where(
+            select(AgentConversationRecord)
+            .where(
                 AgentConversationRecord.id == conversation_id,
                 AgentConversationRecord.tenant_id == operator.tenant_id,
                 AgentConversationRecord.created_by == operator.operator_id,
                 AgentConversationRecord.status == "active",
             )
+            .with_for_update()
         )
         if conversation is None:
             raise HTTPException(
@@ -264,6 +267,55 @@ async def test_api_connection(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(error)) from error
     except ApiConnectionConflictError as error:
         raise HTTPException(status.HTTP_409_CONFLICT, detail=str(error)) from error
+    if conversation is not None:
+        source = conversation.context.get("source")
+        source_matches = (
+            isinstance(source, dict)
+            and source.get("kind") == "api"
+            and source.get("configuration_id") == str(connection_id)
+        )
+        configured_entity = item.public_configuration.get("person_entity_kind")
+        entity_kind = (
+            configured_entity
+            if isinstance(configured_entity, str)
+            and configured_entity in ("student", "teacher")
+            else None
+        )
+        visible_count = (
+            item.visibility_summary.get(f"{entity_kind}_count")
+            if entity_kind is not None
+            else None
+        )
+        can_confirm = (
+            item.state == "active"
+            and source_matches
+            and entity_kind is not None
+            and item.capabilities.get(f"entity.{entity_kind}.read") is True
+            and item.visibility_summary.get("visible") is True
+            and isinstance(visible_count, int)
+            and not isinstance(visible_count, bool)
+            and visible_count > 0
+            and conversation.context.get("target") is not None
+        )
+        if source_matches:
+            previous_entity_types = conversation.context.get("entity_types")
+            entity_changed = previous_entity_types != [entity_kind]
+            provider_label = "钉钉" if item.provider_id == "dingtalk" else item.display_name
+            entity_label = "学生" if entity_kind == "student" else "教师"
+            conversation.context = {
+                **conversation.context,
+                **(
+                    {
+                        "title": f"{provider_label}{entity_label}同步",
+                        "entity_types": [entity_kind],
+                    }
+                    if entity_kind is not None and entity_changed
+                    else {}
+                ),
+                "decision_kind": (
+                    "start_confirmation" if can_confirm else "api_configuration"
+                ),
+            }
     return ApiConnectionRead.model_validate(item, from_attributes=True)
 
 
