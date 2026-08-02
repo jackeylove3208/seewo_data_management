@@ -20,6 +20,13 @@ function records(value: unknown): ReportItem[] {
     : [];
 }
 
+function strings(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string | number => typeof item === "string" || typeof item === "number")
+      .map(String)
+    : [];
+}
+
 function uniqueRecordsById(items: ReportItem[]) {
   const seen = new Set<string>();
   return items.filter((item) => {
@@ -39,6 +46,53 @@ function text(value: unknown, fallback = "—") {
 function count(value: unknown) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function localizedLabels(
+  values: string[],
+  labels: Record<string, string>,
+  fallback: string,
+) {
+  return [...new Set(values.map((value) => labels[value] ?? value))]
+    .sort()
+    .join("、") || fallback;
+}
+
+function includedQualityWarningAnalyses(facts: ReportItem) {
+  const includedFindings = records(facts.excluded_findings ?? facts.invalid_rows).filter(
+    (item) => text(item.reason, "") === "authority_field_unavailable"
+      && text(item.inclusion_state, "") === "included",
+  );
+  if (!includedFindings.length) {
+    return [];
+  }
+
+  const entityKinds = includedFindings.map(
+    (item) => text(record(item.safe_evidence).entity_kind, ""),
+  ).filter(Boolean);
+  const affectedFields = includedFindings.flatMap(
+    (item) => strings(item.affected_fields),
+  );
+  const inputDiagnostics = record(facts.input_diagnostics);
+  const reasonCounts = record(inputDiagnostics.reason_counts);
+  const reasonCount = reasonCounts.authority_field_unavailable;
+  const includedCount = typeof reasonCount === "number" && reasonCount >= 0
+    ? reasonCount
+    : includedFindings.length;
+  const entityZh = localizedLabels(entityKinds, { student: "学生" }, "记录");
+  const fieldZh = localizedLabels(
+    affectedFields,
+    { class_name: "班级信息", email: "邮箱" },
+    "字段信息",
+  );
+
+  return [{
+    reason_code: "authority_field_unavailable",
+    title_zh: `权威${entityZh}数据缺少${fieldZh}`,
+    analysis_zh: `权威${entityZh}数据中有 ${includedCount} 条记录缺少${fieldZh}。`,
+    impact_zh: `${fieldZh}不可用仅作为数据质量提醒；这些${entityZh}仍保留在匹配与同步范围内，允许同步。`,
+    suggestion_zh: `建议补充${fieldZh}以提升数据质量；已完成的同步无需重试。`,
+  }];
 }
 
 const terminalLabels: Record<string, string> = {
@@ -102,7 +156,21 @@ export function AgentReportPage() {
 
   const facts = report.data.facts;
   const narrative = record(report.data.content.narrative);
-  const exceptionAnalyses = records(narrative.input_exception_analyses);
+  const narrativeExceptionAnalyses = records(narrative.input_exception_analyses);
+  const includedQualityWarnings = includedQualityWarningAnalyses(facts);
+  const includedQualityWarningsByReason = new Map(
+    includedQualityWarnings.map((item) => [text(item.reason_code, ""), item]),
+  );
+  const exceptionAnalyses = [
+    ...narrativeExceptionAnalyses.map(
+      (item) => includedQualityWarningsByReason.get(text(item.reason_code, "")) ?? item,
+    ),
+    ...includedQualityWarnings.filter(
+      (item) => !narrativeExceptionAnalyses.some(
+        (narrativeItem) => text(narrativeItem.reason_code, "") === text(item.reason_code, ""),
+      ),
+    ),
+  ];
   const findings = uniqueRecordsById(records(facts.findings));
   const governanceFindings = findings.filter(
     (item) => text(item.kind, "") !== "authority_invalid",
@@ -117,6 +185,10 @@ export function AgentReportPage() {
   const remainingExclusions = excluded.filter(
     (item) => {
       const reason = text(item.reason, "");
+      const inclusionState = text(item.inclusion_state, "");
+      if (inclusionState === "excluded" || inclusionState === "anomaly") {
+        return true;
+      }
       return !exceptionReasonCodes.has(reason) && !overlappedReasonCodes.has(reason);
     },
   );
@@ -309,7 +381,10 @@ export function AgentReportPage() {
         <section className="agent-report-section">
           <header>
             <span className="agent-report-section-icon"><ShieldAlert size={20} /></span>
-            <div><p>EXCEPTIONS</p><h2>输入异常与排除项</h2></div>
+            <div>
+              <p>EXCEPTIONS</p>
+              <h2>{includedQualityWarnings.length ? "数据质量提醒与排除项" : "输入异常与排除项"}</h2>
+            </div>
           </header>
           {exceptionAnalyses.length > 0 && (
             <ol className="agent-report-exception-analyses">
@@ -318,7 +393,12 @@ export function AgentReportPage() {
                   className="agent-report-exception-analysis"
                   key={text(item.reason_code, `exception-analysis-${index}`)}
                 >
-                  <h3>{text(item.title_zh, "输入异常分析")}</h3>
+                  <h3>
+                    {text(item.title_zh, "输入异常分析")}
+                    {includedQualityWarningsByReason.has(text(item.reason_code, "")) && (
+                      <Tag color="blue">允许同步</Tag>
+                    )}
+                  </h3>
                   <p>{text(item.analysis_zh)}</p>
                   <p><strong>影响：</strong>{text(item.impact_zh)}</p>
                   <p><strong>建议：</strong>{text(item.suggestion_zh)}</p>

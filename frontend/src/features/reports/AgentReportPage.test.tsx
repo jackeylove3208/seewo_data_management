@@ -419,4 +419,160 @@ describe("Agent synchronization report", () => {
     expect(screen.queryByText("回滚完成")).not.toBeInTheDocument();
     client.clear();
   });
+
+  it("corrects a stale included quality warning from frozen facts", async () => {
+    vi.spyOn(agentApi, "report").mockResolvedValue({
+      id: "report-historical-included-warning",
+      task_id: "task-report-1",
+      kind: "sync",
+      terminal_state: "completed",
+      rollback_eligible: false,
+      deletion_eligible: false,
+      created_at: "2026-08-02T02:00:00Z",
+      content: {
+        narrative: {
+          input_exception_analyses: [{
+            reason_code: "authority_field_unavailable",
+            title_zh: "模型错误地声称学生被排除",
+            analysis_zh: "3 名学生无法参与匹配。",
+            impact_zh: "这些学生已从治理范围排除。",
+            suggestion_zh: "请重新同步。",
+          }],
+        },
+      },
+      facts: {
+        findings: [],
+        excluded_findings: [
+          {
+            reason: "authority_field_unavailable",
+            affected_fields: ["class_name"],
+            inclusion_state: "included",
+            safe_evidence: { entity_kind: "student" },
+          },
+          {
+            reason: "authority_field_unavailable",
+            affected_fields: ["class_name"],
+            inclusion_state: "included",
+            safe_evidence: { entity_kind: "student" },
+          },
+          {
+            reason: "authority_field_unavailable",
+            affected_fields: ["class_name"],
+            inclusion_state: "included",
+            safe_evidence: { entity_kind: "student" },
+          },
+        ],
+        input_diagnostics: {
+          reason_counts: { authority_field_unavailable: 3 },
+        },
+        mutations: [],
+        mutation_summary: { succeeded: 0, failed: 0 },
+      },
+    });
+
+    const { client } = renderPage();
+
+    expect(await screen.findByRole("heading", { name: "数据质量提醒与排除项" }))
+      .toBeInTheDocument();
+    expect(screen.getByText("权威学生数据缺少班级信息")).toBeInTheDocument();
+    expect(screen.getByText("权威学生数据中有 3 条记录缺少班级信息。"))
+      .toBeInTheDocument();
+    expect(screen.getByText("允许同步")).toBeInTheDocument();
+    expect(screen.queryByText("模型错误地声称学生被排除")).not.toBeInTheDocument();
+    expect(screen.queryByText("这些学生已从治理范围排除。")).not.toBeInTheDocument();
+    expect(screen.queryByText("请重新同步。")).not.toBeInTheDocument();
+    client.clear();
+  });
+
+  it("counts included quality warnings from marks when diagnostics are absent", async () => {
+    vi.spyOn(agentApi, "report").mockResolvedValue({
+      id: "report-historical-included-warning-without-diagnostics",
+      task_id: "task-report-1",
+      kind: "sync",
+      terminal_state: "completed",
+      rollback_eligible: false,
+      deletion_eligible: false,
+      created_at: "2026-08-02T02:00:00Z",
+      content: { narrative: {} },
+      facts: {
+        findings: [],
+        excluded_findings: [
+          {
+            reason: "authority_field_unavailable",
+            affected_fields: ["email"],
+            inclusion_state: "included",
+            safe_evidence: { entity_kind: "student" },
+          },
+          {
+            reason: "authority_field_unavailable",
+            affected_fields: ["email"],
+            inclusion_state: "included",
+            safe_evidence: { entity_kind: "student" },
+          },
+        ],
+        mutations: [],
+        mutation_summary: { succeeded: 0, failed: 0 },
+      },
+    });
+
+    const { client } = renderPage();
+
+    expect(await screen.findByText("权威学生数据中有 2 条记录缺少邮箱。"))
+      .toBeInTheDocument();
+    client.clear();
+  });
+
+  it("keeps actual excluded findings separate from included quality warnings", async () => {
+    vi.spyOn(agentApi, "report").mockResolvedValue({
+      id: "report-mixed-inclusion-states",
+      task_id: "task-report-1",
+      kind: "sync",
+      terminal_state: "completed",
+      rollback_eligible: false,
+      deletion_eligible: false,
+      created_at: "2026-08-02T02:00:00Z",
+      content: {
+        narrative: {
+          input_exception_analyses: [{
+            reason_code: "authority_field_unavailable",
+            title_zh: "学生被排除",
+            analysis_zh: "模型将所有学生都标为排除。",
+            impact_zh: "已排除。",
+            suggestion_zh: "请重新同步。",
+          }],
+        },
+      },
+      facts: {
+        findings: [],
+        excluded_findings: [
+          {
+            reason: "authority_field_unavailable",
+            affected_fields: ["class_name"],
+            inclusion_state: "included",
+            safe_evidence: { entity_kind: "student" },
+          },
+          {
+            reason: "authority_field_unavailable",
+            inclusion_state: "excluded",
+            disposition: "source_field_unavailable",
+          },
+        ],
+        input_diagnostics: {
+          reason_counts: { authority_field_unavailable: 2 },
+        },
+        mutations: [],
+        mutation_summary: { succeeded: 0, failed: 0 },
+      },
+    });
+
+    const { client, container } = renderPage();
+
+    expect(await screen.findByText("允许同步")).toBeInTheDocument();
+    expect(container.querySelectorAll(".agent-report-exclusions > li")).toHaveLength(1);
+    expect(
+      within(container.querySelector(".agent-report-exclusions > li") as HTMLElement)
+        .getByText("authority_field_unavailable"),
+    ).toBeInTheDocument();
+    client.clear();
+  });
 });
