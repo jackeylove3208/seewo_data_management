@@ -583,8 +583,14 @@ def _safe_repair_feedback(value: object) -> tuple[dict[str, str], ...]:
         if not isinstance(item, dict):
             return ()
         path = item.get("path")
+        error_code = item.get("code")
         error_type = item.get("type")
-        if not isinstance(path, str) or not isinstance(error_type, str):
+        if not isinstance(path, str):
             return ()
-        feedback.append({"path": path, "type": error_type})
+        if isinstance(error_code, str):
+            feedback.append({"path": path, "code": error_code})
+        elif isinstance(error_type, str):
+            feedback.append({"path": path, "type": error_type})
+        else:
+            return ()
     return tuple(feedback)

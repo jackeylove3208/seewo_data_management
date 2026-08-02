@@ -113,6 +113,34 @@ class InvalidThenCrashProvider:
         raise SimulatedProcessCrash()
 
 
+class ValidThenCrashProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete_json_once(self, _request: LLMRequest) -> LLMResponse:
+        self.calls += 1
+        if self.calls == 1:
+            return LLMResponse(
+                output={
+                    "result": {
+                        "schema_version": "agent-contract-v1",
+                        "recognized": True,
+                        "detected_fields": ["category"],
+                        "entity_kinds": ["student"],
+                        "safe_problem_codes": [],
+                    }
+                },
+                provider="scripted",
+                model="scripted-long-context",
+                request_id="request-before-code-feedback-crash",
+            )
+        raise SimulatedProcessCrash()
+
+
+class CodeFeedbackViolation(ValueError):
+    repair_feedback = ({"path": "target_mappings.number", "code": "test_code"},)
+
+
 async def _graph_invocation_fixture(session, *, node: str, action_id: str):
     task = ReconciliationTask(
         tenant_id="school-real-subagent",
@@ -884,6 +912,75 @@ async def test_repair_feedback_survives_worker_interruption_between_attempts(
     assert attempts[1].model_provenance["repair_feedback"][0]["path"] == (
         "detected_fields"
     )
+
+
+@pytest.mark.asyncio
+async def test_code_feedback_survives_worker_interruption_between_attempts(
+    session,
+) -> None:
+    task, run, state, manifest = await _graph_invocation_fixture(
+        session,
+        node="inspect_sources",
+        action_id="inspect_authority:page-1",
+    )
+    operator = OperatorContext(
+        operator_id="demo-operator",
+        tenant_id=task.tenant_id,
+    )
+    request = GraphSkillInvocation(
+        task_id=task.id,
+        run_id=run.id,
+        graph_run_id=state.id,
+        graph_node=state.current_node,
+        graph_cursor=state.cursor,
+        action_id="inspect_authority:page-1",
+        evidence_manifest_id=manifest.id,
+        skill_name="inspect-external-data-source",
+        skill_version="1.0.0",
+        input_payload={
+            "task_id": str(task.id),
+            "run_id": str(run.id),
+            "phase": "ingest_and_normalize",
+            "evidence_refs": ["source:authoritative:inspection"],
+            "connector_kind": "csv",
+            "connector_ref": "source:authoritative:page:1",
+        },
+    )
+
+    def reject_with_code(_output: BaseModel) -> BaseModel:
+        raise CodeFeedbackViolation("safe domain failure")
+
+    with pytest.raises(SimulatedProcessCrash):
+        await GraphSkillModelRunner(
+            session,
+            provider=ValidThenCrashProvider(),
+            tool_gateway=GraphPhaseToolGateway(session, operator=operator, tools={}),
+            operator=operator,
+        ).run(request, result_validator=reject_with_code)
+
+    recovery_provider = ScriptedProvider(
+        [
+            {
+                "result": {
+                    "schema_version": "agent-contract-v1",
+                    "recognized": True,
+                    "detected_fields": ["category"],
+                    "entity_kinds": ["student"],
+                    "safe_problem_codes": [],
+                }
+            }
+        ]
+    )
+    await GraphSkillModelRunner(
+        session,
+        provider=recovery_provider,
+        tool_gateway=GraphPhaseToolGateway(session, operator=operator, tools={}),
+        operator=operator,
+    ).run(request)
+
+    repair_message = recovery_provider.requests[0].messages[-1].content
+    assert '"code": "test_code"' in repair_message
+    assert '"path": "target_mappings.number"' in repair_message
 
 
 @pytest.mark.asyncio

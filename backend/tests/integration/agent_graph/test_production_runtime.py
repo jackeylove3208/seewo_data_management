@@ -385,6 +385,24 @@ class DatabaseMappingProvider:
         )
 
 
+class RepairingDatabaseMappingProvider:
+    def __init__(self) -> None:
+        self.requests = []
+        self._attempt = 0
+
+    async def complete_json_once(self, request):
+        self.requests.append(request)
+        self._attempt += 1
+        provider = DatabaseMappingProvider(
+            schema_version="fixed-six-field-sql-mapping-v3",
+            mapping_overrides=(
+                {"target": {"number": "id"}} if self._attempt == 1 else None
+            ),
+            active_roles=("target",),
+        )
+        return await provider.complete_json_once(request)
+
+
 async def _preflight_context(database, tmp_path: Path) -> GraphWorkContext:
     async with database.session_factory() as session:
         async with session.begin():
@@ -2089,6 +2107,146 @@ async def test_sql_v3_invokes_schema_skill_once_freezes_roles_and_binds_mapping(
 
 
 @pytest.mark.asyncio
+async def test_sql_v3_mixed_mapping_sends_only_llm_target_and_merges_authority(
+    database,
+) -> None:
+    connectors = {
+        "authority-postgres": _sql_test_connector(
+            connector_id="authority-postgres",
+            role="authoritative",
+            mapping_mode="explicit",
+        ),
+        "seewo-mysql": _sql_test_connector(
+            connector_id="seewo-mysql",
+            role="target",
+            mapping_mode="llm",
+        ),
+    }
+    context = await _sql_ingestion_v3_context(database, connectors)
+    provider = DatabaseMappingProvider(
+        schema_version="fixed-six-field-sql-mapping-v3",
+        active_roles=("target",),
+    )
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=provider,
+        tokenization_secret="test-tokenization-secret",
+        database_connectors=StaticDatabaseConnectorRuntime(connectors),
+    )
+
+    await executor(context, _database_v3_mapping_action())
+
+    async with database.session_factory() as session:
+        runtime = AgentRuntimeRepository(session)
+        authority = await runtime.get_checkpoint(
+            context.run_id,
+            phase=AgentPhase.INGEST_AND_NORMALIZE,
+            checkpoint_key="graph-database-field-mapping-v3:authoritative",
+        )
+        target = await runtime.get_checkpoint(
+            context.run_id,
+            phase=AgentPhase.INGEST_AND_NORMALIZE,
+            checkpoint_key="graph-database-field-mapping-v3:target",
+        )
+
+    prompt = "\n".join(message.content for message in provider.requests[0].messages)
+    assert len(provider.requests) == 1
+    assert "database-column:authoritative:" not in prompt
+    assert "database-column:target:" in prompt
+    assert authority is not None
+    assert authority.payload["mapping"]["number"] == "number"
+    assert target is not None
+    assert target.payload["mapping"]["number"] == "number"
+
+
+@pytest.mark.asyncio
+async def test_sql_v3_mixed_mapping_sends_only_llm_authority_and_merges_target(
+    database,
+) -> None:
+    connectors = {
+        "authority-postgres": _sql_test_connector(
+            connector_id="authority-postgres",
+            role="authoritative",
+            authority_mapping_required=True,
+            mapping_mode="llm",
+        ),
+        "seewo-mysql": _sql_test_connector(
+            connector_id="seewo-mysql",
+            role="target",
+            mapping_mode="explicit",
+        ),
+    }
+    context = await _sql_ingestion_v3_context(database, connectors)
+    provider = DatabaseMappingProvider(
+        schema_version="fixed-six-field-sql-mapping-v3",
+        active_roles=("authoritative",),
+    )
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=provider,
+        tokenization_secret="test-tokenization-secret",
+        database_connectors=StaticDatabaseConnectorRuntime(connectors),
+    )
+
+    await executor(context, _database_v3_mapping_action())
+
+    async with database.session_factory() as session:
+        runtime = AgentRuntimeRepository(session)
+        authority = await runtime.get_checkpoint(
+            context.run_id,
+            phase=AgentPhase.INGEST_AND_NORMALIZE,
+            checkpoint_key="graph-database-field-mapping-v3:authoritative",
+        )
+        target = await runtime.get_checkpoint(
+            context.run_id,
+            phase=AgentPhase.INGEST_AND_NORMALIZE,
+            checkpoint_key="graph-database-field-mapping-v3:target",
+        )
+
+    prompt = "\n".join(message.content for message in provider.requests[0].messages)
+    assert len(provider.requests) == 1
+    assert "database-column:authoritative:" in prompt
+    assert "database-column:target:" not in prompt
+    assert authority is not None
+    assert authority.payload["mapping"]["number"] == "person_code"
+    assert target is not None
+    assert target.payload["mapping"]["number"] == "number"
+
+
+@pytest.mark.asyncio
+async def test_sql_v3_mapping_repair_code_identifies_forbidden_target_field(
+    database,
+) -> None:
+    connectors = {
+        "authority-postgres": _sql_test_connector(
+            connector_id="authority-postgres",
+            role="authoritative",
+            mapping_mode="explicit",
+        ),
+        "seewo-mysql": _sql_test_connector(
+            connector_id="seewo-mysql",
+            role="target",
+            mapping_mode="llm",
+        ),
+    }
+    context = await _sql_ingestion_v3_context(database, connectors)
+    provider = RepairingDatabaseMappingProvider()
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=provider,
+        tokenization_secret="test-tokenization-secret",
+        database_connectors=StaticDatabaseConnectorRuntime(connectors),
+    )
+
+    await executor(context, _database_v3_mapping_action())
+
+    repair_message = provider.requests[1].messages[-1].content
+    assert '"code": "primary_or_version_field_forbidden"' in repair_message
+    assert '"path": "target_mappings.number"' in repair_message
+    assert "database-column:target:" not in repair_message
+
+
+@pytest.mark.asyncio
 async def test_sql_v3_routes_mappable_inspection_through_skill_to_normalization(
     database,
 ) -> None:
@@ -2426,8 +2584,15 @@ async def test_sql_v3_validates_explicit_mapping_before_freezing_checkpoints(
         database_connectors=StaticDatabaseConnectorRuntime(connectors),
     )
 
-    with pytest.raises(ValueError, match="key or version column"):
+    with pytest.raises(ValueError) as captured:
         await executor(context, _database_v3_mapping_action())
+
+    assert captured.value.repair_feedback == (
+        {
+            "path": "authoritative_mappings.number",
+            "code": "primary_or_version_field_forbidden",
+        },
+    )
 
     async with database.session_factory() as session:
         checkpoint = await AgentRuntimeRepository(session).get_checkpoint(

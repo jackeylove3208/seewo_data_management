@@ -197,8 +197,13 @@ async def test_expired_run_lease_can_be_reclaimed_without_losing_attempt_history
             lease_token=first_lease_token,
             lease_seconds=60,
         )
-        is False
+        is True
     )
+    assert claimed.lease_expires_at is not None
+    assert claimed.lease_expires_at > datetime.now(UTC)
+
+    claimed.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    await session.flush()
     reclaimed = await repository.claim_next_run(
         worker_id="worker-2",
         lease_seconds=60,

@@ -1172,6 +1172,65 @@ async def test_graph_worker_cancels_executor_when_lease_is_lost(database) -> Non
             assert run is not None
             run.lease_owner = "replacement-worker"
 
-    with pytest.raises(AgentGraphLeaseLost):
+    with pytest.raises(AgentGraphLeaseLost) as caught:
         await asyncio.wait_for(worker_task, timeout=1)
+    assert caught.value.reason == "run_claim_lost"
+    assert executor_cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_graph_worker_reports_school_lock_loss(database) -> None:
+    _task_id, run_id = await _start_graph_run(database)
+    candidate = _candidate(
+        "inspect_authority:page-1",
+        graph_action_kind="inspect_authority",
+        resource_id="authority:page-1",
+        evidence="authority-inspection-v1",
+        successor="inspect_sources",
+    )
+
+    async def plan(_context: GraphWorkContext) -> GraphCandidatePlan:
+        return GraphCandidatePlan(
+            candidate_evaluations=(candidate,),
+            single_action_reason_code=SingleActionReasonCode.ONLY_GUARD_SATISFIED,
+        )
+
+    executor_started = asyncio.Event()
+    executor_cancelled = asyncio.Event()
+
+    async def execute(
+        _context: GraphWorkContext,
+        _action: AllowedActionV1,
+    ) -> GraphActionOutcome:
+        executor_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            executor_cancelled.set()
+
+    worker = AgentGraphWorker(
+        database.session_factory,
+        worker_id="graph-worker-school-lock-fencing",
+        lease_seconds=1,
+        heartbeat_interval_seconds=0.01,
+        supervisor=Supervisor("inspect_authority:page-1"),
+        candidate_provider=plan,
+        executor=execute,
+    )
+    worker_task = asyncio.create_task(worker.run_once())
+    await executor_started.wait()
+    async with database.session_factory() as session:
+        async with session.begin():
+            lock = await session.scalar(
+                select(SchoolTaskLockRecord).where(
+                    SchoolTaskLockRecord.owner_run_id == run_id,
+                    SchoolTaskLockRecord.active.is_(True),
+                )
+            )
+            assert lock is not None
+            lock.active = False
+
+    with pytest.raises(AgentGraphLeaseLost) as caught:
+        await asyncio.wait_for(worker_task, timeout=1)
+    assert caught.value.reason == "school_lock_lost"
     assert executor_cancelled.is_set()

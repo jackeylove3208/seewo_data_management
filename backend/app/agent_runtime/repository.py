@@ -406,9 +406,12 @@ class AgentRuntimeRepository:
     ) -> bool:
         run = await self.get_run(run_id, for_update=True)
         now = datetime.now(UTC)
-        if not run_claim_is_active(run, worker_id=worker_id, lease_token=lease_token, now=now):
+        if (
+            run is None
+            or run.lease_owner != worker_id
+            or run.lease_token != lease_token
+        ):
             return False
-        assert run is not None
         run.heartbeat_at = now
         run.lease_expires_at = now + timedelta(seconds=lease_seconds)
         run.updated_at = now
