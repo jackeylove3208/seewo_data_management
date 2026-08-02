@@ -39,26 +39,6 @@ class FrozenDatabaseMapping:
     schema_fingerprint: str
 
 
-async def load_frozen_database_mapping(
-    session: AsyncSession,
-    task_id: UUID,
-    run_id: UUID,
-    role: DatabaseRole,
-) -> dict[str, str]:
-    """Return the validated mapping frozen by source ingestion."""
-
-    return dict(
-        (
-            await load_frozen_database_mapping_context(
-                session,
-                task_id=task_id,
-                run_id=run_id,
-                role=role,
-            )
-        ).mapping
-    )
-
-
 async def load_frozen_database_mapping_context(
     session: AsyncSession,
     *,

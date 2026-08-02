@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make every development launcher run the current Agent worker and remove code proven to have no production consumer.
+**Goal:** Remove code proven to have no production consumer while preserving existing worker startup behavior.
 
-**Architecture:** Keep `app.agent_runtime` as the single development worker entry while retaining `app.ai.worker` as its shared legacy worker-loop dependency. Delete only symbols excluded from the API, worker, Alembic, and frontend entry graphs; adapt tests to active production interfaces before removing redundant wrappers.
+**Architecture:** Preserve the separate `app.ai.worker` legacy-analysis and `app.agent_runtime` Agent entry points because they have different configuration and queue responsibilities. Delete only symbols excluded from the API, worker, Alembic, and frontend entry graphs; adapt tests to active production interfaces before removing redundant wrappers.
 
 **Tech Stack:** Python 3.12, FastAPI, SQLAlchemy, pytest, Ruff, mypy, Node.js, TypeScript, Vitest, ESLint, Vite.
 
@@ -13,55 +13,49 @@
 - Preserve all HTTP request and response contracts.
 - Do not change database models, migrations, workflow versions, or reconciliation behavior.
 - Retain `AgentRetryableTargetError` and `RetryableConnectorError` as extension contracts.
-- Do not remove `app.ai.worker`; `app.agent_runtime` imports `WorkerRunner` and `run_worker_loop` from it.
+- Do not remove or redirect `app.ai.worker`; `npm run dev` depends on its default-compatible startup and legacy analysis queue consumer.
 - Make no unrelated formatting, naming, or helper consolidation changes.
 
 ---
 
-### Task 1: Align the development worker entry
+### Task 1: Verify and preserve development worker compatibility
 
 **Files:**
-- Modify: `frontend/scripts/dev.test.mjs`
-- Modify: `frontend/scripts/dev.mjs`
-- Modify: `AGENTS.md`
+- Verify: `frontend/scripts/dev.test.mjs`
+- Verify: `frontend/scripts/dev.mjs`
+- Verify: `AGENTS.md`
 
 **Interfaces:**
-- Consumes: the executable module `app.agent_runtime`.
-- Produces: a development plan whose worker argv ends with `("-m", "app.agent_runtime")`.
+- Consumes: the default-compatible executable module `app.ai.worker`.
+- Produces: an unchanged development plan whose worker argv ends with `("-m", "app.ai.worker")`.
 
-- [ ] **Step 1: Change the launcher contract test to the current worker entry**
+- [ ] **Step 1: Confirm the launcher contract uses the compatible worker**
 
-Update every worker assertion and expected argv in `frontend/scripts/dev.test.mjs` from:
+Keep every worker assertion and expected argv in `frontend/scripts/dev.test.mjs` as:
 
 ```javascript
 ["-m", "app.ai.worker"]
 ```
 
-to:
-
-```javascript
-["-m", "app.agent_runtime"]
-```
-
-- [ ] **Step 2: Run the launcher test and verify RED**
+- [ ] **Step 2: Run the launcher compatibility test**
 
 Run: `cd frontend && npm test -- --run scripts/dev.test.mjs`
 
-Expected: FAIL because `frontend/scripts/dev.mjs` still returns `app.ai.worker`.
+Expected: PASS with `frontend/scripts/dev.mjs` returning `app.ai.worker`.
 
-- [ ] **Step 3: Update the launcher and repository instructions**
+- [ ] **Step 3: Verify the two worker entry points remain distinct**
 
-Change the worker plan in `frontend/scripts/dev.mjs` to:
+Confirm the frontend development plan remains:
 
 ```javascript
 worker: {
   command: backendPython,
-  args: ["-m", "app.agent_runtime"],
+  args: ["-m", "app.ai.worker"],
   environment: backendEnvironment,
 },
 ```
 
-Replace both `app.ai.worker` development commands in `AGENTS.md` with `app.agent_runtime`.
+Confirm `AGENTS.md` uses `app.ai.worker`, while `dev.py` uses `app.agent_runtime` with explicit Agent rollout overrides.
 
 - [ ] **Step 4: Run the focused launcher test and checks**
 
@@ -76,11 +70,10 @@ npm run typecheck
 
 Expected: launcher tests, ESLint, and TypeScript checks pass.
 
-- [ ] **Step 5: Commit the worker correction**
+- [ ] **Step 5: Record that no launcher change is part of this cleanup**
 
 ```bash
-git add AGENTS.md frontend/scripts/dev.mjs frontend/scripts/dev.test.mjs
-git commit -m "fix: start current agent worker in development"
+git diff --exit-code -- AGENTS.md frontend/scripts/dev.mjs frontend/scripts/dev.test.mjs
 ```
 
 ### Task 2: Remove obsolete gateway and unused declarations
@@ -265,13 +258,14 @@ Expected: all frontend tests and checks pass.
 - [ ] **Step 3: Run final structural checks**
 
 ```bash
-rg -n 'app\.ai\.worker' AGENTS.md frontend/scripts README.md backend/README.md
-rg -n 'AgentPhaseToolGateway|ConnectorNotConfigured|AnalysisJobCreateRequest|CARDINALITY_STATUSES|STABLE_KEYS|load_frozen_database_mapping\b|identity_postings\b' backend/app backend/tests
+rg -n 'app\.ai\.worker' AGENTS.md frontend/scripts/dev.mjs frontend/scripts/dev.test.mjs
+rg -n 'app\.agent_runtime' dev.py README.md backend/README.md
+rg -n 'AgentPhaseToolGateway|ConnectorNotConfigured|AnalysisJobCreateRequest|CARDINALITY_STATUSES|STABLE_KEYS' backend/app backend/tests
 git diff --check
 git status --short
 ```
 
-Expected: no stale launcher references in `AGENTS.md` or `frontend/scripts`; no removed-symbol references; no whitespace errors; only intended files differ from the design/plan base.
+Expected: each launcher references its intentional worker family; no removed-symbol references; no whitespace errors; only intended files differ from the design/plan base.
 
 - [ ] **Step 4: Review the final diff**
 

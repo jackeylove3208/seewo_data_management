@@ -20,14 +20,6 @@ from app.schemas.rematching import (
 
 KeyPolicy = tuple[tuple[str, ...], ...]
 
-STABLE_KEYS: dict[EntityType, KeyPolicy] = {
-    EntityType.ORGANIZATION_UNIT: (("code",),),
-    EntityType.CLASS: (("school_year", "grade", "class_number", "parent_mapping_id"),),
-    EntityType.TEACHER: (("employee_number",), ("phone",), ("email",)),
-    EntityType.STUDENT: (("student_number",),),
-    EntityType.MEMBERSHIP: (("member_mapping_id", "container_mapping_id", "role"),),
-}
-
 DEFAULT_KEY_POLICIES: dict[EntityType, VersionedKeyPolicy] = {
     EntityType.ORGANIZATION_UNIT: VersionedKeyPolicy(
         version="organization-unit-keys-v2",

@@ -30,7 +30,6 @@ from app.repositories.agent_analysis import AgentAnalysisRepository
 from app.repositories.agent_external_identity import AgentExternalIdentityRepository
 from app.repositories.agent_governance import AgentGovernanceRepository
 from app.schemas.agent_ingestion import (
-    AgentContractRecord,
     AgentEntityKind,
     AgentInputMark,
 )
@@ -44,19 +43,6 @@ class AgentIdentityRecord(Protocol):
     name: str | None
     class_name: str | None
     entity_kind: str | AgentEntityKind
-
-
-def identity_postings(record: AgentContractRecord) -> tuple[tuple[str, str], ...]:
-    """Return only normalized identity candidates; never use ordinary fields."""
-    return tuple(
-        (kind, value)
-        for kind, value in (
-            ("number", record.number),
-            ("phone", record.phone),
-            ("email", record.email),
-        )
-        if value is not None
-    )
 
 
 def ordinary_field_differences(

@@ -9,12 +9,6 @@ from app.schemas.matching import (
     MatchStatus,
 )
 
-CARDINALITY_STATUSES = {
-    MatchStatus.ACCEPTED,
-    MatchStatus.MANUAL_REVIEW,
-    MatchStatus.CONFLICT,
-}
-
 
 class ConflictResolver:
     def resolve(self, decisions: Sequence[MatchDecision]) -> list[MatchDecision]:

@@ -5,7 +5,6 @@ import pytest
 from pydantic import ValidationError
 
 from app.schemas.analysis_jobs import (
-    AnalysisJobCreateRequest,
     AnalysisJobProgress,
     AnalysisJobStatus,
     AnalysisWorkItemStatus,
@@ -45,11 +44,6 @@ def test_analysis_job_progress_rejects_completed_count_drift() -> None:
             failed=1,
             updated_at=datetime.now(UTC),
         )
-
-
-def test_job_creation_requires_a_bounded_idempotency_key() -> None:
-    with pytest.raises(ValidationError):
-        AnalysisJobCreateRequest(idempotency_key=" ")
 
 
 def test_work_item_status_has_recoverable_and_terminal_values() -> None:
