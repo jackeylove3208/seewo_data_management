@@ -531,13 +531,7 @@ class AgentTaskService:
             fingerprint = _hash(
                 {
                     "configuration_id": configuration_id,
-                    "dialect": configuration.dialect,
-                    "table_name": configuration.table_name,
-                    "primary_key": configuration.primary_key,
-                    "version_column": configuration.version_column,
-                    "field_columns": configuration.field_columns,
-                    "allowed_columns": configuration.allowed_columns,
-                    "source_role": configuration.source_role,
+                    "configuration": configuration.model_dump(mode="json"),
                 }
             )
             source = SourceFile(
