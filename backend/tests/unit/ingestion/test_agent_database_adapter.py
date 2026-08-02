@@ -111,6 +111,7 @@ async def test_database_adapter_marks_authority_row_missing_required_field() -> 
     assert len(outcome.records) == 1
     assert outcome.marks[0].reason_code == "authority_required_fields_missing"
     assert outcome.marks[0].affected_fields == ("phone",)
+    assert outcome.marks[0].safe_evidence["row_number"] == 1
 
 
 @pytest.mark.asyncio

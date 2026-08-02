@@ -1704,6 +1704,67 @@ async def test_sql_v2_inspection_mapping_and_extraction_are_deterministic(
 
 
 @pytest.mark.asyncio
+async def test_sql_v2_database_validation_mark_is_persisted_without_stopping(
+    database,
+) -> None:
+    context = await _sql_ingestion_v2_context(database)
+    resolver = StaticDatabaseConnectorRuntime(
+        {
+            "authority-postgres": _sql_test_connector(
+                connector_id="authority-postgres",
+                role="authoritative",
+                extra_columns={"phone": None},
+            ),
+            "seewo-mysql": _sql_test_connector(
+                connector_id="seewo-mysql",
+                role="target",
+            ),
+        }
+    )
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=ModelMustNotRun(),
+        tokenization_secret="test-tokenization-secret",
+        database_connectors=resolver,
+    )
+    normalized_context = replace(context, current_node="normalize_input_batches")
+    await executor(
+        normalized_context,
+        AllowedActionV1(
+            action_id="resolve_database_fixed_field_mapping",
+            graph_action_kind="normalize_next_batch",
+            kind="run_deterministic",
+            resource_ids=("source-pair:current",),
+            required_evidence=("mapping:fixed-six-field-v2",),
+            risk="low",
+            requires_human=False,
+            successor_node="normalize_input_batches",
+        ),
+    )
+
+    await executor(
+        normalized_context,
+        AllowedActionV1(
+            action_id="normalize_authoritative_full",
+            graph_action_kind="normalize_next_batch",
+            kind="run_deterministic",
+            resource_ids=("source:authoritative:full",),
+            required_evidence=("normalized:authoritative:full",),
+            risk="low",
+            requires_human=False,
+            successor_node="normalize_input_batches",
+        ),
+    )
+
+    async with database.session_factory() as session:
+        mark = await session.scalar(select(AgentInputMarkRecord))
+
+    assert mark is not None
+    assert mark.reason_code == "authority_required_fields_missing"
+    assert mark.affected_fields == ["phone"]
+
+
+@pytest.mark.asyncio
 async def test_sql_v2_department_mapping_sends_only_llm_target_and_merges_authority(
     database,
 ) -> None:

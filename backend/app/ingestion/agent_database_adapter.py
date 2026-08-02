@@ -79,5 +79,14 @@ class AgentDatabaseIngestionAdapter:
                 records.append(projected)
                 mark = self._mapper.validation_mark(projected)
                 if mark is not None:
-                    marks.append(mark)
+                    marks.append(
+                        mark.model_copy(
+                            update={
+                                "safe_evidence": {
+                                    **mark.safe_evidence,
+                                    "row_number": stable_order,
+                                }
+                            }
+                        )
+                    )
         return AgentIngestionOutcome(records=tuple(records), marks=tuple(marks))
