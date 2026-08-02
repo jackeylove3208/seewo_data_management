@@ -154,6 +154,7 @@ class GraphReportExecutor:
         output = result.output
         if not isinstance(output, AgentGovernanceReport):
             raise RuntimeError("validated report output changed type")
+        included_quality_warnings = _included_quality_warning_analyses(facts)
         report = await AgentReportingService(self._session).generate(
             task_id=invocation.task_id,
             tenant_id=tenant_id,
@@ -164,7 +165,9 @@ class GraphReportExecutor:
                 "title_zh": output.title_zh,
                 "summary_zh": output.summary_zh,
                 "input_exception_analyses": [
-                    item.model_dump(mode="json")
+                    included_quality_warnings.get(
+                        item.reason_code, item.model_dump(mode="json")
+                    )
                     for item in output.input_exception_analyses
                 ],
                 "fact_refs": list(output.fact_refs),
@@ -172,6 +175,80 @@ class GraphReportExecutor:
             generated_by="agent-graph-report-skill-v1",
         )
         return GraphReportResult(report=report, invocation_id=result.invocation_id)
+
+
+def _included_quality_warning_analyses(
+    facts: Mapping[str, Any],
+) -> dict[str, dict[str, str]]:
+    field_unavailable_findings = [
+        item
+        for item in facts.get("excluded_findings", ())
+        if isinstance(item, Mapping)
+        and item.get("reason") == "authority_field_unavailable"
+    ]
+    included_findings = [
+        item
+        for item in field_unavailable_findings
+        if item.get("inclusion_state") == "included"
+    ]
+    if (
+        not included_findings
+        or len(included_findings) != len(field_unavailable_findings)
+    ):
+        return {}
+
+    entity_kinds = {
+        str(evidence["entity_kind"])
+        for item in included_findings
+        if isinstance(evidence := item.get("safe_evidence"), Mapping)
+        and evidence.get("entity_kind")
+    }
+    affected_fields = {
+        str(field)
+        for item in included_findings
+        for field in item.get("affected_fields", ())
+    }
+    missing_count = sum(
+        _positive_int(item.get("safe_evidence", {}).get("missing_count"))
+        if isinstance(item.get("safe_evidence"), Mapping)
+        else 1
+        for item in included_findings
+    )
+    entity_zh = _localized_labels(entity_kinds, {"student": "学生"}, "记录")
+    field_zh = _localized_labels(
+        affected_fields,
+        {"class_name": "班级信息"},
+        "字段信息",
+    )
+    count_zh = max(missing_count, len(included_findings))
+    return {
+        "authority_field_unavailable": {
+            "reason_code": "authority_field_unavailable",
+            "title_zh": f"权威{entity_zh}数据缺少{field_zh}",
+            "analysis_zh": (
+                f"权威{entity_zh}数据中有 {count_zh} 条记录缺少{field_zh}。"
+            ),
+            "impact_zh": (
+                f"{field_zh}不可用仅作为数据质量提醒；这些{entity_zh}"
+                "仍保留在匹配与同步范围内，允许同步。"
+            ),
+            "suggestion_zh": (
+                f"建议补充{field_zh}以提升数据质量；已完成的同步无需重试。"
+            ),
+        }
+    }
+
+
+def _localized_labels(
+    values: set[str],
+    labels: Mapping[str, str],
+    fallback: str,
+) -> str:
+    return "、".join(sorted(labels.get(value, value) for value in values)) or fallback
+
+
+def _positive_int(value: object) -> int:
+    return value if isinstance(value, int) and value > 0 else 1
 
 
 def _redact_phone_values(value: object, *, field: str | None = None) -> object:

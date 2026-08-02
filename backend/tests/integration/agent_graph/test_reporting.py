@@ -94,26 +94,14 @@ async def test_graph_report_uses_model_narrative_but_server_facts(session) -> No
                     "missing_fields": "class_name",
                 },
             },
-            {
-                "source_role": "authoritative",
-                "reason": "authority_identity_absent",
-                "affected_fields": ["number"],
-                "inclusion_state": "anomaly",
-                "disposition": "mandatory_ai_anomaly",
-                "safe_evidence": {
-                    "entity_kind": "department",
-                    "missing_count": 4,
-                    "missing_fields": "number",
-                },
-            },
         ],
         "input_diagnostics": {
-            "marked_input_counts": {"authoritative": 4, "target": 0},
-            "unique_marked_input_count": 4,
-            "reason_counts": {"authority_identity_absent": 4},
-            "overlapped_reason_counts": {"authority_field_unavailable": 4},
-            "unavailable_field_counts": {},
-            "identity_absent_count": 4,
+            "marked_input_counts": {"authoritative": 7, "target": 0},
+            "unique_marked_input_count": 7,
+            "reason_counts": {"authority_field_unavailable": 7},
+            "overlapped_reason_counts": {},
+            "unavailable_field_counts": {"class_name": 7},
+            "identity_absent_count": 0,
         },
         "mutations": [
             {
@@ -152,16 +140,16 @@ async def test_graph_report_uses_model_narrative_but_server_facts(session) -> No
                     "summary_zh": "本次同步已完成，治理操作已经服务端验证。",
                     "input_exception_analyses": [
                         {
-                            "reason_code": "authority_identity_absent",
-                            "title_zh": "权威部门数据缺少身份标识",
+                            "reason_code": "authority_field_unavailable",
+                            "title_zh": "权威学生数据缺少班级信息",
                             "analysis_zh": (
-                                "钉钉权威数据中有 4 条部门记录缺少身份标识。"
+                                "钉钉权威数据中有 7 条学生记录缺少班级信息。"
                             ),
                             "impact_zh": (
-                                "这些部门记录无法可靠匹配，已从治理范围排除。"
+                                "这些学生记录无法可靠匹配，已从治理范围排除。"
                             ),
                             "suggestion_zh": (
-                                "请补充可用于匹配的部门编号后重新运行任务。"
+                                "请补充班级信息后重新运行任务。"
                             ),
                         }
                     ],
@@ -213,15 +201,12 @@ async def test_graph_report_uses_model_narrative_but_server_facts(session) -> No
     assert "13800138000" not in str(result.report.content)
     assert result.report.generated_by == "agent-graph-report-skill-v1"
     analyses = result.report.content["narrative"]["input_exception_analyses"]
-    assert analyses == [
-        {
-            "reason_code": "authority_identity_absent",
-            "title_zh": "权威部门数据缺少身份标识",
-            "analysis_zh": "钉钉权威数据中有 4 条部门记录缺少身份标识。",
-            "impact_zh": "这些部门记录无法可靠匹配，已从治理范围排除。",
-            "suggestion_zh": "请补充可用于匹配的部门编号后重新运行任务。",
-        }
-    ]
+    assert analyses[0]["reason_code"] == "authority_field_unavailable"
+    assert "允许同步" in analyses[0]["impact_zh"]
+    assert "仍保留在匹配与同步范围内" in analyses[0]["impact_zh"]
+    assert "这些学生记录无法可靠匹配，已从治理范围排除。" not in str(
+        analyses[0]
+    )
     assert result.report.rollback_eligible is True
     invocation = await session.scalar(
         select(AgentSubAgentInvocationRecord).where(
