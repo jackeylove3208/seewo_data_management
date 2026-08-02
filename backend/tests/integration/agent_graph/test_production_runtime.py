@@ -876,14 +876,18 @@ async def _ingestion_v2_context(
             )
 
 
-async def _sql_ingestion_v2_context(database) -> GraphWorkContext:
+async def _sql_ingestion_v2_context(
+    database,
+    *,
+    entity_types: tuple[str, ...] = ("student",),
+) -> GraphWorkContext:
     async with database.session_factory() as session:
         async with session.begin():
             task = ReconciliationTask(
                 tenant_id="school-sql-ingestion-v2",
                 scope_id="all",
                 snapshot_mode="full",
-                entity_types=["student"],
+                entity_types=list(entity_types),
                 status="running",
                 stage="ingestion",
                 workflow_version="agent-graph-v1",
@@ -1700,6 +1704,68 @@ async def test_sql_v2_inspection_mapping_and_extraction_are_deterministic(
 
 
 @pytest.mark.asyncio
+async def test_sql_v2_department_mapping_sends_only_llm_target_and_merges_authority(
+    database,
+) -> None:
+    context = await _sql_ingestion_v2_context(
+        database,
+        entity_types=("department",),
+    )
+    resolver = StaticDatabaseConnectorRuntime(
+        {
+            "authority-postgres": _sql_test_connector(
+                connector_id="authority-postgres",
+                role="authoritative",
+                mapping_mode="explicit",
+            ),
+            "seewo-mysql": _sql_test_connector(
+                connector_id="seewo-mysql",
+                role="target",
+                mapping_mode="llm",
+            ),
+        }
+    )
+    provider = DatabaseMappingProvider(active_roles=("target",))
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=provider,
+        tokenization_secret="test-tokenization-secret",
+        database_connectors=resolver,
+    )
+    action = AllowedActionV1(
+        action_id="resolve_database_fixed_field_mapping",
+        graph_action_kind="normalize_next_batch",
+        kind="dispatch_sub_agent",
+        sub_agent="database-schema-mapping",
+        resource_ids=("source-pair:current",),
+        required_evidence=("mapping:fixed-six-field-v2",),
+        risk="low",
+        requires_human=False,
+        successor_node="normalize_input_batches",
+    )
+
+    await executor(
+        replace(context, current_node="normalize_input_batches"),
+        action,
+    )
+
+    async with database.session_factory() as session:
+        checkpoint = await AgentRuntimeRepository(session).get_checkpoint(
+            context.run_id,
+            phase=AgentPhase.INGEST_AND_NORMALIZE,
+            checkpoint_key="graph-database-field-mapping-v2",
+        )
+
+    prompt = "\n".join(message.content for message in provider.requests[0].messages)
+    assert len(provider.requests) == 1
+    assert "database-column:authoritative:" not in prompt
+    assert "database-column:target:" in prompt
+    assert checkpoint is not None
+    assert checkpoint.payload["mappings"]["authoritative"]["number"] == "number"
+    assert checkpoint.payload["mappings"]["target"]["number"] == "number"
+
+
+@pytest.mark.asyncio
 async def test_sql_v2_target_normalization_stores_raw_target_version_hash(
     database,
 ) -> None:
@@ -1919,7 +1985,7 @@ async def test_sql_v2_calls_schema_skill_once_for_unmapped_postgresql_authority(
             ),
         }
     )
-    provider = DatabaseMappingProvider()
+    provider = DatabaseMappingProvider(active_roles=("authoritative",))
     executor = ProductionGraphActionExecutor(
         database.session_factory,
         provider=provider,
@@ -2013,7 +2079,7 @@ async def test_sql_v2_reuses_validated_schema_mapping_for_same_connector_fingerp
             ),
         }
     )
-    provider = DatabaseMappingProvider()
+    provider = DatabaseMappingProvider(active_roles=("authoritative",))
     executor = ProductionGraphActionExecutor(
         database.session_factory,
         provider=provider,

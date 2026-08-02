@@ -393,7 +393,7 @@ def test_database_schema_mapping_input_rejects_unbounded_evidence() -> None:
         )
 
 
-def test_database_schema_mapping_v2_still_requires_both_database_roles() -> None:
+def test_database_schema_mapping_v2_accepts_only_the_requested_llm_role() -> None:
     profile = DatabaseSourceSchemaProfile(
         source_role="target",
         connector_id="seewo-data-mysql",
@@ -415,14 +415,15 @@ def test_database_schema_mapping_v2_still_requires_both_database_roles() -> None
         ),
     )
 
-    with pytest.raises(ValueError, match="v2 requires both database source roles"):
-        DatabaseSchemaMappingInput(
-            task_id="00000000-0000-0000-0000-000000000001",
-            run_id="00000000-0000-0000-0000-000000000002",
-            phase="ingest_and_normalize",
-            evidence_refs=("mapping:fixed-six-field-v2",),
-            sources=(profile,),
-        )
+    mapping_input = DatabaseSchemaMappingInput(
+        task_id="00000000-0000-0000-0000-000000000001",
+        run_id="00000000-0000-0000-0000-000000000002",
+        phase="ingest_and_normalize",
+        evidence_refs=("mapping:fixed-six-field-v2",),
+        sources=(profile,),
+    )
+
+    assert tuple(source.source_role for source in mapping_input.sources) == ("target",)
 
 
 def test_conversation_skill_advertises_direct_remote_csv_ingestion() -> None:
