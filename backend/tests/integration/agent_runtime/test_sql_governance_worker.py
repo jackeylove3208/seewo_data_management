@@ -7,7 +7,7 @@ import pytest
 from app.agent_runtime.csv_rollback_handlers import _rollback_operation
 from app.agent_runtime.database_mapping import (
     connector_with_frozen_database_mapping,
-    load_frozen_database_mapping,
+    load_frozen_database_mapping_context,
 )
 from app.agent_runtime.errors import ExternalWriteRecoveryRequired
 from app.agent_runtime.sql_governance_handlers import SqlGovernanceExecutionHandler
@@ -337,12 +337,13 @@ async def test_v3_frozen_mapping_drives_database_execution_and_rollback(
             )
 
         async with session.begin():
-            assert await load_frozen_database_mapping(
+            mapping_context = await load_frozen_database_mapping_context(
                 session,
-                task.id,
-                run.id,
-                "target",
-            ) == expected_mapping
+                task_id=task.id,
+                run_id=run.id,
+                role="target",
+            )
+            assert mapping_context.mapping == expected_mapping
             _, bound, bound_configuration = (
                 await connector_with_frozen_database_mapping(
                     session,

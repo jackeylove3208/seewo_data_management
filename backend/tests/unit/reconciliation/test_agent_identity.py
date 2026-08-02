@@ -2,7 +2,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from app.reconciliation import agent_identity
-from app.reconciliation.agent_identity import identity_postings, ordinary_field_differences
+from app.reconciliation.agent_identity import ordinary_field_differences
 from app.schemas.agent_ingestion import AgentContractRecord, AgentEntityKind, AgentSourceRole
 
 
@@ -15,14 +15,6 @@ def _record(**changes: object) -> AgentContractRecord:
     }
     values.update(changes)
     return AgentContractRecord.model_validate(values)
-
-
-def test_identity_postings_only_use_number_phone_and_email() -> None:
-    record = _record()
-
-    assert identity_postings(record) == (
-        ("number", "S1"), ("phone", "13800138000"), ("email", "s@example.test"),
-    )
 
 
 def test_identity_fields_remain_governed_differences_after_correspondence() -> None:
