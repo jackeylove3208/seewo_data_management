@@ -72,6 +72,9 @@ function confirmationSourceLabel(intent?: AgentIntent) {
 
 function confirmationEntities(entityTypes: AgentEntityType[]) {
   const selected = new Set(entityTypes);
+  if (confirmationEntityOrder.every((entityType) => selected.has(entityType))) {
+    return "全部（部门、教师、学生）";
+  }
   return confirmationEntityOrder
     .filter((entityType) => selected.has(entityType))
     .map((entityType) => confirmationEntityLabel[entityType])
@@ -677,6 +680,7 @@ export function ConversationCreatePage({
 
   const isCollecting = state === "collecting";
   const taskActive = Boolean(task && !terminalTaskStatuses.has(task.status));
+  const showTaskStatusRail = taskActive;
   const composerLocked = Boolean(taskActive && !clarificationOpen);
   const taskBlocked = task?.status === "blocked_model_error";
   const taskFailed = task?.status === "failed";
@@ -719,7 +723,7 @@ export function ConversationCreatePage({
           message={newConversationError}
         />
       )}
-      <div className="conversation-workspace has-task-status">
+      <div className={`conversation-workspace${showTaskStatusRail ? " has-task-status" : ""}`}>
         <section className="conversation-surface" aria-label="新建对话">
         <div className="conversation-messages" aria-live="polite">
           {messages.map((message) => (
@@ -946,12 +950,14 @@ export function ConversationCreatePage({
           </button>
         </form>
         </section>
-        <TaskStatusRail
-          stages={agentTaskStages}
-          currentIndex={task ? taskStageIndex(task.phase) : -1}
-          blocked={taskBlocked || taskFailed}
-          terminationRequested={task?.status === "terminated"}
-        />
+        {showTaskStatusRail && (
+          <TaskStatusRail
+            stages={agentTaskStages}
+            currentIndex={task ? taskStageIndex(task.phase) : -1}
+            blocked={taskBlocked || taskFailed}
+            terminationRequested={task?.status === "terminated"}
+          />
+        )}
       </div>
       <Modal
         rootClassName="apple-agent-modal"
