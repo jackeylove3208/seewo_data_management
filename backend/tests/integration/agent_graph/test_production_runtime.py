@@ -1,4 +1,5 @@
 import hashlib
+import re
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -41,6 +42,7 @@ from app.connectors.configured import (
 from app.core.config import Settings
 from app.models.agent_analysis import (
     AgentClarificationRecord,
+    AgentFindingRecord,
     AgentGovernancePlanRecord,
     AgentIdentityClaimRecord,
     AgentInputMarkRecord,
@@ -83,6 +85,35 @@ class ModelMustNotRun:
     async def complete_json_once(self, _request):
         self.calls += 1
         raise AssertionError("deterministic preflight called a model")
+
+
+class TemplateAnalysisProvider:
+    def __init__(self) -> None:
+        self.requests = []
+
+    async def complete_json_once(self, request):
+        self.requests.append(request)
+        prompt = "\n".join(message.content for message in request.messages)
+        matched = re.search(r'"profile_hash"\s*:\s*"(sha256:[0-9a-f]{64})"', prompt)
+        if matched is None:
+            raise AssertionError("analysis template profile hash is missing")
+        return LLMResponse(
+            output={
+                "result": {
+                    "schema_version": "agent-contract-v1",
+                    "profile_hash": matched.group(1),
+                    "category_zh": "目标端多余学生",
+                    "analysis_zh": "目标端存在记录，但第三方权威端不存在对应记录。",
+                    "proposed_operation": "delete",
+                    "solution_zh": "按高风险审批流程删除目标端多余记录。",
+                    "risk": "high",
+                }
+            },
+            provider="scripted",
+            model="template-model",
+            request_id=f"template-{len(self.requests)}",
+            usage=ModelUsage(input_tokens=20, output_tokens=20),
+        )
 
 
 class StaticDatabaseConnectorRuntime:
@@ -4146,6 +4177,170 @@ async def test_repair_analysis_action_dispatches_the_real_analysis_executor(
 
     assert executor.analysis_dispatched is True
     assert outcome.action_id == action.action_id
+
+
+@pytest.mark.asyncio
+async def test_homogeneous_analysis_batches_reuse_one_run_scoped_template(
+    database,
+) -> None:
+    provider = TemplateAnalysisProvider()
+    worker_id = "analysis-template-worker"
+    async with database.session_factory() as session:
+        async with session.begin():
+            task = ReconciliationTask(
+                tenant_id="school-analysis-template",
+                scope_id="all",
+                snapshot_mode="full",
+                entity_types=["student"],
+                status="running",
+                stage="analysis",
+                workflow_version="agent-graph-v1",
+                idempotency_key=str(uuid4()),
+                request_hash=uuid4().hex * 2,
+            )
+            session.add(task)
+            await session.flush()
+            snapshots: dict[str, Snapshot] = {}
+            for role in ("authoritative", "target"):
+                source = SourceFile(
+                    task_id=task.id,
+                    source_role=role,
+                    original_name=f"{role}.csv",
+                    storage_name=f"{uuid4()}.csv",
+                    storage_path=f"/synthetic/{uuid4()}.csv",
+                    sha256=uuid4().hex * 2,
+                    size_bytes=1,
+                    detected_encoding="utf-8",
+                )
+                session.add(source)
+                await session.flush()
+                snapshot = Snapshot(
+                    id=uuid4(),
+                    task_id=task.id,
+                    source_file_id=source.id,
+                    source_role=role,
+                    schema_version="agent-contract-v1",
+                    mapping_version="agent-contract-v1",
+                    file_hash=source.sha256,
+                    content_hash=uuid4().hex * 2,
+                    state="published",
+                    summary={},
+                )
+                session.add(snapshot)
+                snapshots[role] = snapshot
+            run = await AgentRuntimeRepository(session).create_run(
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                conversation_id=None,
+                kind=AgentRunKind.SYNC,
+                workflow_version="agent-graph-v1",
+            )
+            run.status = "running"
+            run.phase = AgentPhase.ANALYZE_BATCHES.value
+            run.lease_owner = worker_id
+            run.lease_token = uuid4()
+            run.lease_expires_at = datetime.now(UTC) + timedelta(minutes=5)
+            graph = await AgentGraphRepository(session).create_run_state(
+                run_id=run.id,
+                graph_version="agent-sync-graph-v1",
+                initial_node="analyze_actionable_batches",
+            )
+            repository = AgentAnalysisRepository(session)
+            target_records = await repository.persist_inputs(
+                tuple(
+                    AgentContractRecord(
+                        task_id=task.id,
+                        run_id=run.id,
+                        snapshot_id=snapshots["target"].id,
+                        tenant_id=task.tenant_id,
+                        source_role=AgentSourceRole.TARGET,
+                        stable_locator=f"csv:{row_number}",
+                        stable_order=row_number,
+                        entity_kind=AgentEntityKind.STUDENT,
+                        category="学生",
+                        name=f"测试学生{row_number}",
+                        number=f"S-{row_number:03d}",
+                        phone=None,
+                        email=None,
+                        class_name="一班",
+                    )
+                    for row_number in (2, 3)
+                )
+            )
+            batches = []
+            work_items = []
+            for index, target in enumerate(target_records, start=1):
+                work_item = await repository.persist_work_item(
+                    run_id=run.id,
+                    task_id=task.id,
+                    tenant_id=task.tenant_id,
+                    source_snapshot_id=snapshots["authoritative"].id,
+                    target_snapshot_id=snapshots["target"].id,
+                    subject_input_id=target.id,
+                    entity_kind="student",
+                    kind="target_extra",
+                    idempotency_hash=f"{index}" * 64,
+                    evidence_hash=f"{index + 2}" * 64,
+                )
+                work_items.append(work_item)
+                batches.append(
+                    await repository.create_or_get_batch(
+                        run_id=run.id,
+                        task_id=task.id,
+                        tenant_id=task.tenant_id,
+                        entity_kind="student",
+                        input_hash=f"{index + 4}" * 64,
+                        work_item_ids=(work_item.id,),
+                    )
+                )
+            assert run.lease_token is not None
+            context = GraphWorkContext(
+                worker_id=worker_id,
+                run_id=run.id,
+                task_id=task.id,
+                tenant_id=task.tenant_id,
+                graph_run_id=graph.id,
+                graph_version=graph.graph_version,
+                current_node=graph.current_node,
+                graph_cursor=graph.cursor,
+                attempt_count=run.attempt_count,
+                lease_token=run.lease_token,
+            )
+
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=provider,
+        tokenization_secret="test-tokenization-secret",
+    )
+    for batch, work_item in zip(batches, work_items, strict=True):
+        await executor(
+            context,
+            AllowedActionV1(
+                action_id=f"analyze_batch_{str(batch.id)[:8]}",
+                graph_action_kind="analyze_next_batch",
+                kind="dispatch_sub_agent",
+                sub_agent="reconciliation-analysis",
+                resource_ids=(f"work-item:{work_item.id}",),
+                required_evidence=(f"paired-record:{work_item.id}",),
+                risk="low",
+                requires_human=False,
+                successor_node="analyze_actionable_batches",
+            ),
+        )
+
+    async with database.session_factory() as session:
+        findings = tuple(
+            await session.scalars(
+                select(AgentFindingRecord)
+                .where(AgentFindingRecord.run_id == context.run_id)
+                .order_by(AgentFindingRecord.work_item_id)
+            )
+        )
+    assert len(provider.requests) == 1
+    assert len(findings) == 2
+    assert {tuple(finding.evidence_refs) for finding in findings} == {
+        (f"paired-record:{work_item.id}",) for work_item in work_items
+    }
 
 
 @pytest.mark.asyncio

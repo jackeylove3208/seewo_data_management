@@ -100,6 +100,14 @@ NEW_AGENT_SKILLS = {
         "正确数据",
         "五十",
     ),
+    "derive-reconciliation-analysis-template": (
+        "target_extra",
+        "target_missing",
+        "代表样本",
+        "通用模板",
+        "不得输出人员身份值",
+        "服务端风险策略",
+    ),
     "generate-governance-solutions": (
         "一至三条",
         "恰好一条",
@@ -218,6 +226,18 @@ def test_agent_governance_report_skill_has_standard_discovery_metadata() -> None
         assert required_line in frontmatter
     assert "metadata:" not in frontmatter
     assert "allowed-tools:" not in frontmatter
+
+
+def test_analysis_template_skill_has_no_tools_and_strict_contracts() -> None:
+    skill = SkillRegistry().load(
+        "derive-reconciliation-analysis-template",
+        "1.0.0",
+    )
+
+    assert skill.phase == "analyze_batches"
+    assert skill.allowed_tools == ()
+    assert skill.input_schema == "AnalysisTemplateInput"
+    assert skill.output_schema == "AnalysisTemplateOutput"
 
 
 def test_agent_governance_report_uses_mutually_exclusive_exception_totals() -> None:

@@ -42,6 +42,27 @@ def test_partitioning_never_mixes_entity_types() -> None:
     ]
 
 
+def test_partitioning_never_mixes_distinct_analysis_profiles() -> None:
+    target_extra = uuid4()
+    target_missing = uuid4()
+
+    batches = partition_analysis_batches(
+        (
+            (AgentEntityKind.STUDENT, target_extra),
+            (AgentEntityKind.STUDENT, target_missing),
+        ),
+        group_keys={
+            target_extra: "target_extra",
+            target_missing: "target_missing",
+        },
+    )
+
+    assert [batch.work_item_ids for batch in batches] == [
+        (target_extra,),
+        (target_missing,),
+    ]
+
+
 def test_partitioning_rejects_a_limit_above_ten() -> None:
     with pytest.raises(ValueError, match="between 1 and 10"):
         partition_analysis_batches((), max_items=11)

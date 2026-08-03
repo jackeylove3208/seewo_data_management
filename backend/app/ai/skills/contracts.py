@@ -231,6 +231,33 @@ class ReconcileEntityBatchInput(AgentSkillInput):
     work_items: tuple[IdentityWorkItem, ...] = Field(max_length=50)
 
 
+class AnalysisTemplateProfile(StrictContract):
+    entity_kind: EntityKind
+    disposition: Literal["target_extra", "target_missing"]
+    allowed_operations: tuple[OperationKind, ...] = Field(min_length=1)
+    authority_record_present: bool
+    target_record_present: bool
+    record_fields: tuple[FixedContractField, ...]
+    identity_state: Literal["no_candidate", "unclaimed_authority"]
+    risk_policy_version: Literal["agent-risk-v1"]
+    template_policy_version: Literal["analysis-template-v1"]
+
+
+class AnalysisTemplateInput(AgentSkillInput):
+    profile_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    profile: AnalysisTemplateProfile
+    representative: IdentityWorkItem
+
+
+class AnalysisTemplateOutput(AgentSkillOutput):
+    profile_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    category_zh: str = Field(min_length=1)
+    analysis_zh: str = Field(min_length=1)
+    proposed_operation: OperationKind
+    solution_zh: str = Field(min_length=1)
+    risk: RiskLevel
+
+
 class AgentFinding(StrictContract):
     finding_id: UUID
     work_item_id: UUID
@@ -362,6 +389,7 @@ AGENT_SKILL_SCHEMAS: dict[str, type[BaseModel]] = {
         CsvSchemaMappingInput,
         DatabaseSchemaMappingInput,
         ReconcileEntityBatchInput,
+        AnalysisTemplateInput,
         GovernanceSolutionBatchInput,
         ApprovalAggregationInput,
         ConflictInstructionInput,
@@ -375,6 +403,7 @@ AGENT_SKILL_SCHEMAS: dict[str, type[BaseModel]] = {
         NormalizedOrganizationBatch,
         CsvSchemaMappingOutput,
         DatabaseSchemaMappingOutput,
+        AnalysisTemplateOutput,
         AgentFindingBatch,
         GovernanceSolutionBatch,
         ApprovalGroupDraft,

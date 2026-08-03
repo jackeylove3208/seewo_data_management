@@ -1,5 +1,7 @@
 """Typed model executors for graph ingestion and reconciliation actions."""
 
+import hashlib
+import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from uuid import UUID
@@ -17,10 +19,18 @@ from app.ai.graph_subagents import (
 from app.ai.skills.contracts import (
     AgentFinding,
     AgentFindingBatch,
+    AnalysisTemplateOutput,
+    AnalysisTemplateProfile,
     GovernanceSolution,
     GovernanceSolutionBatch,
+    IdentityWorkItem,
     NormalizedOrganizationBatch,
     SourceInspectionResult,
+)
+from app.governance.agent_governance import (
+    AgentFindingInput,
+    AgentOperation,
+    AgentRiskPolicy,
 )
 from app.ingestion.agent_contract import AgentContractMapper
 from app.repositories.agent_analysis import AgentAnalysisRepository
@@ -52,6 +62,226 @@ class GraphAnalysisActionResult:
     payloads: tuple[AgentFindingPayload, ...]
     reconciliation_invocation_id: UUID
     solution_invocation_id: UUID
+
+
+@dataclass(frozen=True)
+class GraphAnalysisTemplateResult:
+    action_result: GraphAnalysisActionResult
+    template: AnalysisTemplateOutput
+
+
+@dataclass(frozen=True)
+class AnalysisTemplateContext:
+    profile: AnalysisTemplateProfile
+    profile_hash: str
+    work_items: tuple[IdentityWorkItem, ...]
+
+
+class AnalysisTemplateValidationError(ValueError):
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.repair_feedback = ({"path": "$", "code": code},)
+
+
+def build_analysis_template_context(
+    work_items: Sequence[IdentityWorkItem],
+) -> AnalysisTemplateContext | None:
+    if not work_items:
+        return None
+    profiles = tuple(_analysis_template_profile(item) for item in work_items)
+    if any(profile is None for profile in profiles):
+        return None
+    profile = profiles[0]
+    if profile is None or any(candidate != profile for candidate in profiles[1:]):
+        return None
+    profile_payload = profile.model_dump(mode="json")
+    encoded = json.dumps(
+        profile_payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return AnalysisTemplateContext(
+        profile=profile,
+        profile_hash=f"sha256:{hashlib.sha256(encoded).hexdigest()}",
+        work_items=tuple(work_items),
+    )
+
+
+def instantiate_analysis_template(
+    context: AnalysisTemplateContext,
+    template: AnalysisTemplateOutput,
+    *,
+    allowed_evidence_refs: frozenset[str],
+) -> tuple[AgentFindingPayload, ...]:
+    if template.profile_hash != context.profile_hash:
+        raise AnalysisTemplateValidationError("analysis_template_profile_hash_mismatch")
+    if not operation_is_allowed(
+        context.profile.disposition,
+        template.proposed_operation,
+    ):
+        raise AnalysisTemplateValidationError("analysis_template_operation_invalid")
+    _reject_representative_values(context.work_items[0], template)
+    expected_risk = _template_risk(
+        profile=context.profile,
+        operation=template.proposed_operation,
+    )
+    if template.risk != expected_risk:
+        raise AnalysisTemplateValidationError("analysis_template_risk_invalid")
+
+    payloads: list[AgentFindingPayload] = []
+    for item in context.work_items:
+        evidence_refs = item.paired_evidence.evidence_refs
+        if not evidence_refs or not set(evidence_refs).issubset(
+            allowed_evidence_refs
+        ):
+            raise AnalysisTemplateValidationError(
+                "analysis_template_evidence_outside_manifest"
+            )
+        payloads.append(
+            AgentFindingPayload(
+                work_item_id=item.work_item_id,
+                kind=context.profile.disposition,
+                category_zh=template.category_zh,
+                analysis_zh=template.analysis_zh,
+                evidence_refs=evidence_refs,
+                solutions=(
+                    AgentSolutionPayload(
+                        operation=template.proposed_operation,
+                        risk=expected_risk,
+                        solution_zh=template.solution_zh,
+                        recommended=True,
+                        dependency_finding_ids=(),
+                    ),
+                ),
+            )
+        )
+    return tuple(payloads)
+
+
+def _analysis_template_profile(
+    item: IdentityWorkItem,
+) -> AnalysisTemplateProfile | None:
+    evidence = item.paired_evidence
+    if (
+        evidence.work_item_id != str(item.work_item_id)
+        or evidence.entity_kind != item.entity_kind
+        or evidence.persisted_kind not in {"target_extra", "target_missing"}
+        or evidence.field_differences
+        or evidence.candidate_conflicts
+        or evidence.authority_claim is not None
+        or evidence.evidence_ref not in item.candidate_evidence_refs
+    ):
+        return None
+
+    if evidence.persisted_kind == "target_extra":
+        if (
+            evidence.target_record is None
+            or evidence.authority_record is not None
+            or evidence.identity_key_hits
+            or evidence.allowed_candidates
+            or evidence.allowed_operations != ("delete",)
+        ):
+            return None
+        record = evidence.target_record
+        identity_state = "no_candidate"
+    else:
+        if (
+            evidence.authority_record is None
+            or evidence.target_record is not None
+            or set(evidence.allowed_operations) != {"create", "retain"}
+        ):
+            return None
+        authority_ref = evidence.authority_record.get("input_ref")
+        if not isinstance(authority_ref, str) or any(
+            candidate != authority_ref for candidate in evidence.allowed_candidates
+        ):
+            return None
+        if any(
+            hit.authority_ref != authority_ref for hit in evidence.identity_key_hits
+        ):
+            return None
+        record = evidence.authority_record
+        identity_state = "unclaimed_authority"
+
+    record_fields = tuple(
+        field
+        for field in ("category", "name", "number", "class_name", "phone", "email")
+        if ("phone_token" if field == "phone" else field) in record
+    )
+    return AnalysisTemplateProfile(
+        entity_kind=item.entity_kind,
+        disposition=evidence.persisted_kind,
+        allowed_operations=evidence.allowed_operations,
+        authority_record_present=evidence.authority_record is not None,
+        target_record_present=evidence.target_record is not None,
+        record_fields=record_fields,
+        identity_state=identity_state,
+        risk_policy_version=AgentRiskPolicy.version,
+        template_policy_version="analysis-template-v1",
+    )
+
+
+def _template_risk(
+    *,
+    profile: AnalysisTemplateProfile,
+    operation: str,
+) -> str:
+    decision = AgentRiskPolicy().assess(
+        AgentFindingInput(
+            finding_id=UUID(int=0),
+            work_item_id=UUID(int=0),
+            entity_kind=profile.entity_kind,
+            kind=profile.disposition,
+            operation=AgentOperation(operation),
+            changed_fields=frozenset(),
+            before={} if profile.target_record_present else None,
+            after={} if profile.authority_record_present else None,
+            target_source_identifier=None,
+            dependencies=frozenset(),
+            analysis_terminal=True,
+            target_version="analysis-template-v1",
+        )
+    )
+    return decision.risk
+
+
+def _reject_representative_values(
+    representative: IdentityWorkItem,
+    template: AnalysisTemplateOutput,
+) -> None:
+    output_text = "\n".join(
+        (template.category_zh, template.analysis_zh, template.solution_zh)
+    )
+    sensitive_values = {
+        str(representative.work_item_id),
+        representative.target_locator,
+        *representative.candidate_evidence_refs,
+        *representative.paired_evidence.evidence_refs,
+        *representative.paired_evidence.allowed_candidates,
+    }
+    for record in (
+        representative.paired_evidence.authority_record,
+        representative.paired_evidence.target_record,
+    ):
+        if record is None:
+            continue
+        for field in (
+            "input_ref",
+            "locator",
+            "name",
+            "number",
+            "class_name",
+            "phone_token",
+            "email",
+        ):
+            value = record.get(field)
+            if isinstance(value, str) and value:
+                sensitive_values.add(value)
+    if any(value in output_text for value in sensitive_values if value):
+        raise AnalysisTemplateValidationError(
+            "analysis_template_contains_representative_value"
+        )
 
 
 class GraphIngestionAnalysisExecutors:
@@ -180,6 +410,55 @@ class GraphIngestionAnalysisExecutors:
             ),
             reconciliation_invocation_id=reconciliation.invocation_id,
             solution_invocation_id=reconciliation.invocation_id,
+        )
+
+    async def derive_actionable_template(
+        self,
+        invocation: GraphSkillInvocation,
+        *,
+        template_context: AnalysisTemplateContext,
+        allowed_evidence_refs: frozenset[str],
+    ) -> GraphAnalysisTemplateResult:
+        if invocation.graph_node != "analyze_actionable_batches":
+            raise ValueError(
+                "analysis template requires analyze_actionable_batches graph node"
+            )
+
+        def validate_template(output: BaseModel) -> BaseModel:
+            if not isinstance(output, AnalysisTemplateOutput):
+                raise AnalysisTemplateValidationError(
+                    "analysis_template_schema_invalid"
+                )
+            instantiate_analysis_template(
+                template_context,
+                output,
+                allowed_evidence_refs=allowed_evidence_refs,
+            )
+            return output
+
+        result = await self._runner.run(
+            invocation.model_copy(
+                update={
+                    "skill_name": "derive-reconciliation-analysis-template",
+                    "skill_version": "1.0.0",
+                }
+            ),
+            result_validator=validate_template,
+        )
+        template = result.output
+        if not isinstance(template, AnalysisTemplateOutput):
+            raise RuntimeError("validated analysis template changed type")
+        return GraphAnalysisTemplateResult(
+            action_result=GraphAnalysisActionResult(
+                payloads=instantiate_analysis_template(
+                    template_context,
+                    template,
+                    allowed_evidence_refs=allowed_evidence_refs,
+                ),
+                reconciliation_invocation_id=result.invocation_id,
+                solution_invocation_id=result.invocation_id,
+            ),
+            template=template,
         )
 
 

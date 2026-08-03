@@ -11,8 +11,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent_graph.analysis_executors import (
+    GraphAnalysisActionResult,
     GraphAnalysisResultWriter,
     GraphIngestionAnalysisExecutors,
+    build_analysis_template_context,
+    instantiate_analysis_template,
 )
 from app.agent_graph.analysis_tools import GraphAnalysisEvidenceTools
 from app.agent_graph.contracts import AllowedActionV1
@@ -65,6 +68,8 @@ from app.ai.graph_subagents import (
     GraphSubAgentFailure,
 )
 from app.ai.skills.contracts import (
+    AnalysisTemplateInput,
+    AnalysisTemplateOutput,
     CsvColumnProfile,
     CsvFieldMapping,
     CsvSchemaMappingInput,
@@ -2279,21 +2284,25 @@ class ProductionGraphActionExecutor:
                     )
                     for work, _record in work_rows
                 }
+                identity_work_items = tuple(
+                    IdentityWorkItem(
+                        work_item_id=work.id,
+                        entity_kind=record.entity_kind,
+                        target_locator=record.stable_locator,
+                        candidate_evidence_refs=(f"paired-record:{work.id}",),
+                        paired_evidence=paired_evidence[work.id],
+                    )
+                    for work, record in work_rows
+                )
+                template_context = build_analysis_template_context(
+                    identity_work_items
+                )
                 input_payload = ReconcileEntityBatchInput(
                     task_id=context.task_id,
                     run_id=context.run_id,
                     phase=AgentPhase.ANALYZE_BATCHES,
                     evidence_refs=action.required_evidence,
-                    work_items=tuple(
-                        IdentityWorkItem(
-                            work_item_id=work.id,
-                            entity_kind=record.entity_kind,
-                            target_locator=record.stable_locator,
-                            candidate_evidence_refs=(f"paired-record:{work.id}",),
-                            paired_evidence=paired_evidence[work.id],
-                        )
-                        for work, record in work_rows
-                    ),
+                    work_items=identity_work_items,
                 ).model_dump(mode="json")
 
         result = None
@@ -2310,24 +2319,116 @@ class ProductionGraphActionExecutor:
                     "analysis evidence manifest replay changed identity"
                 )
             try:
-                result = await GraphIngestionAnalysisExecutors(
-                    runner
-                ).analyze_actionable_batch(
-                    GraphSkillInvocation(
-                        task_id=context.task_id,
-                        run_id=context.run_id,
-                        graph_run_id=context.graph_run_id,
-                        graph_node=context.current_node,
-                        graph_cursor=context.graph_cursor,
-                        action_id=action.action_id,
-                        evidence_manifest_id=manifest_id,
-                        skill_name="reconcile-entity-batch",
-                        skill_version="1.0.0",
-                        input_payload=input_payload,
-                    ),
-                    expected_work_item_kinds=expected_kinds,
-                    allowed_evidence_refs=frozenset(action.required_evidence),
+                executors = GraphIngestionAnalysisExecutors(runner)
+                invocation = GraphSkillInvocation(
+                    task_id=context.task_id,
+                    run_id=context.run_id,
+                    graph_run_id=context.graph_run_id,
+                    graph_node=context.current_node,
+                    graph_cursor=context.graph_cursor,
+                    action_id=action.action_id,
+                    evidence_manifest_id=manifest_id,
+                    skill_name="reconcile-entity-batch",
+                    skill_version="1.0.0",
+                    input_payload=input_payload,
                 )
+                if template_context is None:
+                    result = await executors.analyze_actionable_batch(
+                        invocation,
+                        expected_work_item_kinds=expected_kinds,
+                        allowed_evidence_refs=frozenset(action.required_evidence),
+                    )
+                else:
+                    runtime_repository = AgentRuntimeRepository(model_session)
+                    checkpoint_key = (
+                        "agent-analysis-template-v1:"
+                        f"{template_context.profile_hash.removeprefix('sha256:')}"
+                    )
+                    checkpoint = await runtime_repository.get_checkpoint(
+                        context.run_id,
+                        phase=AgentPhase.ANALYZE_BATCHES,
+                        checkpoint_key=checkpoint_key,
+                    )
+                    if checkpoint is not None:
+                        template = AnalysisTemplateOutput.model_validate(
+                            checkpoint.payload["template"]
+                        )
+                        invocation_id = UUID(
+                            str(checkpoint.payload["model_invocation_id"])
+                        )
+                        result = GraphAnalysisActionResult(
+                            payloads=instantiate_analysis_template(
+                                template_context,
+                                template,
+                                allowed_evidence_refs=frozenset(
+                                    action.required_evidence
+                                ),
+                            ),
+                            reconciliation_invocation_id=invocation_id,
+                            solution_invocation_id=invocation_id,
+                        )
+                        await runtime_repository.append_event(
+                            context.run_id,
+                            "analysis.template.reused",
+                            {
+                                "profile_hash": template_context.profile_hash,
+                                "batch_id": str(batch_id),
+                                "item_count": len(template_context.work_items),
+                            },
+                        )
+                        await model_session.commit()
+                    else:
+                        template_result = await executors.derive_actionable_template(
+                            invocation.model_copy(
+                                update={
+                                    "input_payload": AnalysisTemplateInput(
+                                        task_id=context.task_id,
+                                        run_id=context.run_id,
+                                        phase=AgentPhase.ANALYZE_BATCHES,
+                                        evidence_refs=action.required_evidence,
+                                        profile_hash=template_context.profile_hash,
+                                        profile=template_context.profile,
+                                        representative=template_context.work_items[0],
+                                    ).model_dump(mode="json")
+                                }
+                            ),
+                            template_context=template_context,
+                            allowed_evidence_refs=frozenset(
+                                action.required_evidence
+                            ),
+                        )
+                        result = template_result.action_result
+                        await runtime_repository.save_checkpoint(
+                            context.run_id,
+                            phase=AgentPhase.ANALYZE_BATCHES,
+                            checkpoint_key=checkpoint_key,
+                            input_hash=template_context.profile_hash,
+                            payload={
+                                "schema_version": (
+                                    "analysis-template-checkpoint-v1"
+                                ),
+                                "profile_hash": template_context.profile_hash,
+                                "profile": template_context.profile.model_dump(
+                                    mode="json"
+                                ),
+                                "template": template_result.template.model_dump(
+                                    mode="json"
+                                ),
+                                "model_invocation_id": str(
+                                    result.reconciliation_invocation_id
+                                ),
+                            },
+                        )
+                        await runtime_repository.append_event(
+                            context.run_id,
+                            "analysis.template.created",
+                            {
+                                "profile_hash": template_context.profile_hash,
+                                "batch_id": str(batch_id),
+                                "item_count": len(template_context.work_items),
+                            },
+                        )
+                        await model_session.commit()
             except GraphSubAgentFailure as error:
                 model_failure = error
             del tools

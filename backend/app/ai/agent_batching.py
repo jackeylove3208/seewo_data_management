@@ -3,7 +3,7 @@
 import hashlib
 import json
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -25,6 +25,7 @@ MAX_MODEL_ANALYSIS_BATCH_SIZE = 10
 @dataclass(frozen=True)
 class AgentAnalysisBatchManifest:
     entity_kind: AgentEntityKind
+    analysis_profile_key: str
     work_item_ids: tuple[UUID, ...]
 
 
@@ -32,22 +33,31 @@ def partition_analysis_batches(
     items: Iterable[tuple[AgentEntityKind, UUID]],
     *,
     max_items: int = MAX_MODEL_ANALYSIS_BATCH_SIZE,
+    group_keys: Mapping[UUID, str] | None = None,
 ) -> tuple[AgentAnalysisBatchManifest, ...]:
     if not 1 <= max_items <= MAX_MODEL_ANALYSIS_BATCH_SIZE:
         raise ValueError("new Agent model batch size must be between 1 and 10")
-    by_kind: dict[AgentEntityKind, list[UUID]] = defaultdict(list)
+    by_kind: dict[tuple[AgentEntityKind, str], list[UUID]] = defaultdict(list)
     for entity_kind, work_item_id in items:
-        by_kind[entity_kind].append(work_item_id)
+        profile_key = group_keys.get(work_item_id, "default") if group_keys else "default"
+        by_kind[(entity_kind, profile_key)].append(work_item_id)
     manifests: list[AgentAnalysisBatchManifest] = []
     for entity_kind in AgentEntityKind:
-        work_item_ids = by_kind[entity_kind]
-        for start in range(0, len(work_item_ids), max_items):
-            manifests.append(
-                AgentAnalysisBatchManifest(
-                    entity_kind=entity_kind,
-                    work_item_ids=tuple(work_item_ids[start : start + max_items]),
+        profile_keys = sorted(
+            profile_key
+            for candidate_kind, profile_key in by_kind
+            if candidate_kind is entity_kind
+        )
+        for profile_key in profile_keys:
+            work_item_ids = by_kind[(entity_kind, profile_key)]
+            for start in range(0, len(work_item_ids), max_items):
+                manifests.append(
+                    AgentAnalysisBatchManifest(
+                        entity_kind=entity_kind,
+                        analysis_profile_key=profile_key,
+                        work_item_ids=tuple(work_item_ids[start : start + max_items]),
+                    )
                 )
-            )
     return tuple(manifests)
 
 
@@ -132,6 +142,7 @@ class AgentBatchPlanner:
                 for item in unbatched_work_items
             ),
             max_items=self._max_items,
+            group_keys={item.id: item.kind for item in unbatched_work_items},
         )
         saved = [
             batch
@@ -144,6 +155,7 @@ class AgentBatchPlanner:
                 json.dumps(
                     {
                         "entity_kind": manifest.entity_kind.value,
+                        "analysis_profile_key": manifest.analysis_profile_key,
                         "work_item_ids": [str(item_id) for item_id in manifest.work_item_ids],
                     },
                     separators=(",", ":"),
