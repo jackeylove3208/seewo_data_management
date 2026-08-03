@@ -405,8 +405,8 @@ class AgentAnalysisRepository:
         input_hash: str,
         work_item_ids: tuple[UUID, ...],
     ) -> AgentModelBatchRecord:
-        if not 1 <= len(work_item_ids) <= 50 or len(set(work_item_ids)) != len(work_item_ids):
-            raise ValueError("model batches require 1..50 distinct work items")
+        if not 1 <= len(work_item_ids) <= 10 or len(set(work_item_ids)) != len(work_item_ids):
+            raise ValueError("model batches require 1..10 distinct work items")
         run = await self.session.get(AgentRunRecord, run_id)
         if run is None or run.task_id != task_id or run.tenant_id != tenant_id:
             raise ReplayConflict("model batch context does not match its Agent run")
@@ -466,6 +466,48 @@ class AgentAnalysisRepository:
         await self.session.flush()
         return batch
 
+    async def supersede_oversized_batches(
+        self,
+        *,
+        run_id: UUID,
+        max_items: int,
+    ) -> tuple[AgentModelBatchRecord, ...]:
+        """Retire replay-safe legacy batches before creating smaller replacements."""
+        run = await self.session.get(AgentRunRecord, run_id)
+        if run is None:
+            raise LookupError(f"agent run not found: {run_id}")
+        batches = tuple(
+            await self.session.scalars(
+                select(AgentModelBatchRecord)
+                .where(
+                    AgentModelBatchRecord.run_id == run_id,
+                    AgentModelBatchRecord.item_count > max_items,
+                    AgentModelBatchRecord.status.in_(("pending", "claimed")),
+                )
+                .with_for_update()
+            )
+        )
+        now = datetime.now(UTC)
+        superseded: list[AgentModelBatchRecord] = []
+        for batch in batches:
+            claim_is_stale = (
+                batch.status == "claimed"
+                and (
+                    batch.lease_expires_at is None
+                    or _as_utc(batch.lease_expires_at) <= now
+                    or batch.lease_owner != run.lease_owner
+                )
+            )
+            if batch.status != "pending" and not claim_is_stale:
+                continue
+            batch.status = "superseded"
+            batch.lease_owner = None
+            batch.lease_token = None
+            batch.lease_expires_at = None
+            superseded.append(batch)
+        await self.session.flush()
+        return tuple(superseded)
+
     async def claim_batch(
         self,
         batch_id: UUID,
@@ -480,7 +522,7 @@ class AgentAnalysisRepository:
             .where(AgentModelBatchRecord.id == batch_id)
             .with_for_update(skip_locked=True)
         )
-        if batch is None or batch.status == "completed":
+        if batch is None or batch.status in {"completed", "superseded"}:
             return None
         run = await self.session.get(AgentRunRecord, batch.run_id)
         if not self._analysis_run_is_active(

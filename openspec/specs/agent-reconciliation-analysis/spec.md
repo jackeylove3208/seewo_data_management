@@ -40,12 +40,16 @@ For every Seewo row, the system SHALL query authoritative student, teacher, and 
 - **WHEN** a valid authoritative record has no resolved Seewo correspondence after all target rows are processed
 - **THEN** the system creates a target-missing work item eligible for a create-oriented solution
 
-### Requirement: Analyze immutable batches containing at most fifty work items
-The analysis sub-agent SHALL receive no more than 50 distinct persisted work items per DeepSeek call and SHALL validate exact response membership, uniqueness, candidate references, fields, and output schema before committing outcomes. This AI batch limit SHALL NOT limit the complete authoritative PostgreSQL index searched for each target row.
+### Requirement: Analyze immutable batches containing at most ten work items
+The analysis sub-agent SHALL receive no more than 10 distinct persisted work items per DeepSeek call and SHALL validate exact response membership, uniqueness, candidate references, fields, and output schema before committing outcomes. This AI batch limit SHALL NOT limit the complete authoritative PostgreSQL index searched for each target row.
 
-#### Scenario: Fifty-one items need analysis
-- **WHEN** one entity group contains 51 terminally constructed work items
-- **THEN** the backend creates at least two independently retryable batches and never sends 51 items in one request
+#### Scenario: Forty-three items need analysis
+- **WHEN** one entity group contains 43 terminally constructed work items
+- **THEN** the backend creates five independently retryable batches containing 10, 10, 10, 10, and 3 items
+
+#### Scenario: A pending oversized batch predates the limit
+- **WHEN** an unfinished task already has a pending batch containing more than 10 work items
+- **THEN** the backend retains that batch as a superseded audit record and creates deterministic replacement batches before either runtime sends another model request
 
 #### Scenario: Response omits an item
 - **WHEN** model output lacks one requested work-item ID or duplicates another

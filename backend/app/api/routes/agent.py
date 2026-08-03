@@ -2024,7 +2024,10 @@ async def _graph_progress_counts(
                 await session.scalar(
                     select(func.count())
                     .select_from(AgentModelBatchRecord)
-                    .where(AgentModelBatchRecord.run_id == run_id)
+                    .where(
+                        AgentModelBatchRecord.run_id == run_id,
+                        AgentModelBatchRecord.status != "superseded",
+                    )
                 )
             )
             or 0

@@ -46,6 +46,7 @@ class CsvAnalysisHandlerFactory:
         self._provider = provider or HttpLLMProvider(settings=get_settings())
         self._lease_seconds = lease_seconds
         settings = settings or get_settings()
+        self._analysis_batch_size = settings.analysis_batch_size
         self._analysis_only = (
             settings.new_agent_analysis_only if analysis_only is None else analysis_only
         )
@@ -119,7 +120,10 @@ class CsvAnalysisHandlerFactory:
         async with self._session_factory() as session:
             async with session.begin():
                 await AgentIdentityIndexBuilder(session).build(run_id=context.run_id)
-                await AgentBatchPlanner(session).create_for_run(run_id=context.run_id)
+                await AgentBatchPlanner(
+                    session,
+                    max_items=self._analysis_batch_size,
+                ).create_for_run(run_id=context.run_id)
                 await AgentRuntimeRepository(session).append_event(
                     context.run_id, "agent_identity_work_persisted", {}
                 )
@@ -127,12 +131,18 @@ class CsvAnalysisHandlerFactory:
 
     async def analyze_batches(self, context: AgentWorkContext) -> AgentWorkResult:
         async with self._session_factory() as session:
+            async with session.begin():
+                await AgentBatchPlanner(
+                    session,
+                    max_items=self._analysis_batch_size,
+                ).create_for_run(run_id=context.run_id)
+        async with self._session_factory() as session:
             batches = tuple(
                 await session.scalars(
                     select(AgentModelBatchRecord)
                     .where(
                         AgentModelBatchRecord.run_id == context.run_id,
-                        AgentModelBatchRecord.status != "completed",
+                        AgentModelBatchRecord.status.not_in(("completed", "superseded")),
                     )
                     .order_by(AgentModelBatchRecord.created_at, AgentModelBatchRecord.id)
                 )

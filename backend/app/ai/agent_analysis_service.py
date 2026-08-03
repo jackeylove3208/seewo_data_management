@@ -9,6 +9,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.ai.agent_analysis import validate_agent_model_output
+from app.ai.agent_batching import MAX_MODEL_ANALYSIS_BATCH_SIZE
 from app.ai.agent_phone_privacy import StudentPhoneTokenizationContext
 from app.ai.agent_prompting import render_agent_system_prompt
 from app.ai.providers.base import LLMRequest, LLMResponse, Message
@@ -54,8 +55,8 @@ class AgentAnalysisService:
         task_id: UUID,
         work_items: tuple[AgentAnalysisWorkItem, ...],
     ) -> tuple[AgentFindingPayload, ...]:
-        if not 1 <= len(work_items) <= 50:
-            raise ValueError("Agent model calls require 1..50 work items")
+        if not 1 <= len(work_items) <= MAX_MODEL_ANALYSIS_BATCH_SIZE:
+            raise ValueError("Agent model calls require 1..10 work items")
         tokenizer = StudentPhoneTokenizationContext(
             secret=self._tokenization_secret, tenant_id=tenant_id, task_id=task_id
         )

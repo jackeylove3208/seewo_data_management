@@ -580,9 +580,9 @@ def test_sql_graph_allows_authority_mapping_to_be_resolved_but_requires_target_m
         )
 
 
-def test_agent_batch_size_cannot_exceed_connector_contract_limit() -> None:
-    with pytest.raises(ValueError, match="less than or equal to 50"):
-        Settings(analysis_batch_size=51, _env_file=None)
+def test_agent_batch_size_cannot_exceed_model_analysis_limit() -> None:
+    with pytest.raises(ValueError, match="less than or equal to 10"):
+        Settings(analysis_batch_size=11, _env_file=None)
 
 
 def test_agent_model_timeout_allows_structured_analysis_to_finish() -> None:

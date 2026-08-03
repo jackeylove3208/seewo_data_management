@@ -17,6 +17,31 @@ class CapturingProvider:
 
 
 @pytest.mark.asyncio
+async def test_model_call_rejects_more_than_ten_work_items() -> None:
+    provider = CapturingProvider({})
+    service = AgentAnalysisService(provider, tokenization_secret="s" * 16)
+    work_items = tuple(
+        AgentAnalysisWorkItem(
+            work_item_id=uuid4(),
+            kind="target_missing",
+            entity_kind="student",
+            locator=f"csv:{index}",
+            fields={},
+        )
+        for index in range(11)
+    )
+
+    with pytest.raises(ValueError, match="1..10"):
+        await service.analyze(
+            tenant_id="school-1",
+            task_id=uuid4(),
+            work_items=work_items,
+        )
+
+    assert provider.requests == []
+
+
+@pytest.mark.asyncio
 async def test_model_input_tokenizes_student_phone_and_validates_response_membership() -> None:
     work_item_id = uuid4()
     provider = CapturingProvider(
