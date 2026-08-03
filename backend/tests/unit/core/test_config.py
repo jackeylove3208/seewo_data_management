@@ -583,7 +583,7 @@ def test_sql_graph_allows_authority_mapping_to_be_resolved_but_requires_target_m
 def test_agent_batch_size_cannot_exceed_model_analysis_limit() -> None:
     settings = Settings(_env_file=None)
 
-    assert settings.analysis_batch_size == 5
+    assert settings.analysis_batch_size == 10
     assert settings.llm_max_output_tokens == 8_192
     assert Settings(analysis_batch_size=10, _env_file=None).analysis_batch_size == 10
 

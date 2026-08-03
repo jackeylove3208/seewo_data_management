@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     conversation_context_reserved_output_tokens: PositiveInt = 2_048
     tokenization_secret: SecretStr | None = None
     proposal_preview_secret: SecretStr | None = None
-    analysis_batch_size: PositiveInt = Field(default=5, le=10)
+    analysis_batch_size: PositiveInt = Field(default=10, le=10)
     analysis_worker_lease_seconds: PositiveInt = 150
     analysis_worker_concurrency: PositiveInt = 4
     analysis_worker_poll_seconds: PositiveFloat = 0.5
