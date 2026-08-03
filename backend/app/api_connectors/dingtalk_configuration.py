@@ -6,7 +6,11 @@ from app.schemas.agent_ingestion import AgentEntityKind
 DingTalkSyncScope = Literal["department", "people", "all"]
 
 SERVER_CONFIGURATION_KEYS = frozenset(
-    {"department_entity_kinds", "organization_classification"}
+    {
+        "department_entity_kinds",
+        "person_membership_entity_kinds",
+        "organization_classification",
+    }
 )
 _CLIENT_FORBIDDEN_KEYS = SERVER_CONFIGURATION_KEYS | frozenset(
     {"person_entity_kind", "class_name_field"}

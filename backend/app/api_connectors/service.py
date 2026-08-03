@@ -269,6 +269,9 @@ class ApiConnectionService:
         record.public_configuration = {
             **record.public_configuration,
             "department_entity_kinds": result.department_entity_kinds,
+            "person_membership_entity_kinds": (
+                result.person_membership_entity_kinds
+            ),
             "organization_classification": {
                 "mode": "organization_unit_llm",
                 "skill_version": result.skill_version,

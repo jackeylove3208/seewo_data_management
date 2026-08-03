@@ -56,6 +56,7 @@ class FakeDingTalkAdapter:
         self.configurations_seen: list[dict[str, object]] = []
         self.inspection_calls = 0
         self.inspection_safe_error_code: str | None = None
+        self.unresolved_inspection = False
         self.result = ConnectionTestResult(
             eligible=True,
             capabilities={"organization.read": True},
@@ -83,30 +84,40 @@ class FakeDingTalkAdapter:
         self.inspection_calls += 1
         if self.inspection_safe_error_code is not None:
             raise ApiProviderError(self.inspection_safe_error_code)
-        return OrganizationInspection(
-            departments=(
-                OrganizationUnitNode(
-                    department_id="1",
-                    name="示例学校",
-                    parent_id=None,
-                    path=("示例学校",),
-                ),
-                OrganizationUnitNode(
-                    department_id="10",
-                    name="教职工",
-                    parent_id="1",
-                    path=("示例学校", "教职工"),
-                ),
-                OrganizationUnitNode(
-                    department_id="20",
-                    name="学生",
-                    parent_id="1",
-                    path=("示例学校", "学生"),
-                ),
+        departments = (
+            OrganizationUnitNode(
+                department_id="1",
+                name="示例学校",
+                parent_id=None,
+                path=("示例学校",),
             ),
-            personnel_department_ids=frozenset({"10", "20"}),
-            personnel_memberships=(("10",), ("20",)),
-            visible_person_count=2,
+            OrganizationUnitNode(
+                department_id="10",
+                name="教职工",
+                parent_id="1",
+                path=("示例学校", "教职工"),
+            ),
+            OrganizationUnitNode(
+                department_id="20",
+                name="学生",
+                parent_id="1",
+                path=("示例学校", "学生"),
+            ),
+            OrganizationUnitNode(
+                department_id="30",
+                name="综合中心",
+                parent_id="1",
+                path=("示例学校", "综合中心"),
+            ),
+        )
+        memberships = (("30",),) if self.unresolved_inspection else (("10",), ("20",))
+        return OrganizationInspection(
+            departments=departments,
+            personnel_department_ids=frozenset(
+                department_id for group in memberships for department_id in group
+            ),
+            personnel_memberships=memberships,
+            visible_person_count=len(memberships),
             tree_fingerprint="a" * 64,
         )
 
@@ -134,9 +145,7 @@ class FakeClassificationProvider:
             output={
                 "result": {
                     "classifications": [
-                        {"department_id": "1", "entity_kind": "unknown"},
-                        {"department_id": "10", "entity_kind": "teacher"},
-                        {"department_id": "20", "entity_kind": "student"},
+                        {"membership_key": "30", "entity_kind": "teacher"},
                     ]
                 }
             },
@@ -407,10 +416,15 @@ def test_people_connection_test_persists_and_redacts_server_classification(
     assert tested.status_code == 200, tested.text
     assert tested.json()["state"] == "active"
     assert "department_entity_kinds" not in tested.json()["public_configuration"]
+    assert "person_membership_entity_kinds" not in tested.json()["public_configuration"]
     assert "organization_classification" not in tested.json()["public_configuration"]
     assert adapter.inspection_calls == 1
-    assert len(client.app.state.conversation_provider.requests) == 1
+    assert client.app.state.conversation_provider.requests == []
     assert adapter.configurations_seen[-1]["department_entity_kinds"] == {
+        "10": "teacher",
+        "20": "student",
+    }
+    assert adapter.configurations_seen[-1]["person_membership_entity_kinds"] == {
         "10": "teacher",
         "20": "student",
     }
@@ -425,9 +439,13 @@ def test_people_connection_test_persists_and_redacts_server_classification(
         "10": "teacher",
         "20": "student",
     }
+    assert record.public_configuration["person_membership_entity_kinds"] == {
+        "10": "teacher",
+        "20": "student",
+    }
     audit = record.public_configuration["organization_classification"]
     assert isinstance(audit, dict)
-    assert audit["skill_version"] == "1.0.0"
+    assert audit["skill_version"] == "2.0.0"
     assert audit["tree_fingerprint"] == "a" * 64
 
 
@@ -465,6 +483,7 @@ def test_people_connection_test_closes_model_and_inspection_failures_safely(
     )
     assert created.status_code == 201, created.text
     if failure_source == "model":
+        adapter.unresolved_inspection = True
         client.app.state.conversation_provider.error = ModelProviderError(
             "raw model failure"
         )

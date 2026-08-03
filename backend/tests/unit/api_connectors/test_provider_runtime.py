@@ -101,6 +101,21 @@ def test_new_people_scope_uses_map_and_supports_both_person_kinds() -> None:
     )
 
 
+def test_membership_decision_overrides_neutral_or_conflicting_departments() -> None:
+    configuration = {
+        "sync_scope": "people",
+        "person_classification_mode": "organization_unit_llm",
+        "department_entity_kinds": {"10": "teacher", "20": "student"},
+        "person_membership_entity_kinds": {
+            "1|20": "student",
+            "10|20": "student",
+        },
+    }
+
+    assert person_kind(configuration, ("20", "1")) is AgentEntityKind.STUDENT
+    assert person_kind(configuration, ("20", "10")) is AgentEntityKind.STUDENT
+
+
 def test_department_scope_rejects_person_selection() -> None:
     configuration = {"sync_scope": "department"}
 

@@ -17,6 +17,7 @@ from app.api_connectors.dingtalk_configuration import (
     ApiConnectionValidationError,
     entity_kinds_for_scope,
 )
+from app.api_connectors.organization_unit_classifier import canonical_membership_key
 from app.schemas.agent_ingestion import AgentEntityKind
 
 
@@ -123,6 +124,18 @@ def person_kind(
     public_configuration: Mapping[str, object],
     department_ids: tuple[str, ...],
 ) -> AgentEntityKind:
+    membership_rules = public_configuration.get("person_membership_entity_kinds", {})
+    if not isinstance(membership_rules, dict):
+        raise ApiProviderError("connector_configuration_invalid")
+    membership_kind = membership_rules.get(canonical_membership_key(department_ids))
+    if membership_kind is not None:
+        try:
+            resolved = AgentEntityKind(str(membership_kind))
+        except ValueError as error:
+            raise ApiProviderError("connector_configuration_invalid") from error
+        if resolved is AgentEntityKind.DEPARTMENT:
+            raise ApiProviderError("connector_configuration_invalid")
+        return resolved
     configured_rules = public_configuration.get("department_entity_kinds", {})
     if not isinstance(configured_rules, dict):
         raise ApiProviderError("connector_configuration_invalid")

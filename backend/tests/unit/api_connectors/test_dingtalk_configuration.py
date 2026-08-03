@@ -81,6 +81,7 @@ def test_rejects_classification_mode_for_department_scope() -> None:
         "person_entity_kind",
         "class_name_field",
         "department_entity_kinds",
+        "person_membership_entity_kinds",
         "organization_classification",
     ],
 )
@@ -112,6 +113,7 @@ def test_redacts_server_owned_classification_fields() -> None:
         "root_department_id": 1,
         "person_classification_mode": "organization_unit_llm",
         "department_entity_kinds": {"10": "teacher"},
+        "person_membership_entity_kinds": {"1|10": "teacher"},
         "organization_classification": {"tree_fingerprint": "abc"},
     }
 
