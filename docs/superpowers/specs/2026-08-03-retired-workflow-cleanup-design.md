@@ -16,6 +16,26 @@ archived read-only summaries. They cannot be advanced, retried, terminated, appr
 used to create a rollback task. This cleanup does not delete historical rows or rewrite their
 workflow versions.
 
+## Version taxonomy
+
+The `v1` suffix in `agent-graph-v1` does not mean that the task uses only first-generation
+implementations. `workflow_version` is the persisted top-level routing family. A current
+`agent-graph-v1` run can select newer nested contracts independently:
+
+- `graph_version`: `agent-sync-graph-v1`, `agent-sync-graph-v2`, or
+  `agent-rollback-graph-v1`;
+- `ingestion_contract_version`: `source-ingestion-v2` or `source-ingestion-v3` for current
+  deterministic ingestion, with older persisted contract values retained for resumability;
+- `execution_contract_version`: `deterministic-execution-v2` for current deterministic
+  execution, with older persisted contract values retained for resumability;
+- versioned mapping, adapter, projection, Skill, evidence, checkpoint, and report contracts used
+  beneath those graph runs.
+
+All nested versions reachable from an `agent-graph-v1` task are current Graph code and are outside
+the deletion scope. A `v1`, `v2`, or `v3` suffix is never evidence that a definition is obsolete.
+Only the top-level retired workflow families `legacy-v1` and `new-agent-v1`, plus code proven to be
+exclusive to their creation or execution, are cleanup candidates.
+
 ## Reachability rule
 
 A production definition or file may be deleted only when it is unreachable from every retained
@@ -32,6 +52,8 @@ root after retired entry points are removed. The retained roots are:
 Text search alone is insufficient proof of dead code. Deletion requires checking imports, dynamic
 entry points, package data, configuration, tests, and the relevant Git history. Code reused by the
 Graph executor remains even when its filename or original purpose predates the Graph runtime.
+The audit must also trace nested graph, ingestion, execution, mapping, adapter, projection, Skill,
+evidence, and checkpoint versions before classifying a branch as retired.
 
 ## Backend changes
 
@@ -106,6 +128,9 @@ external environment dependency.
 
 - No change to Graph decisions, prompts, evidence contracts, risk policy, approvals, connectors,
   mutations, verification, reporting facts, or rollback semantics.
+- No removal of `agent-sync-graph-v1`, `agent-sync-graph-v2`, `agent-rollback-graph-v1`,
+  `source-ingestion-v2`, `source-ingestion-v3`, `deterministic-execution-v2`, or any nested
+  contract used or resumed by `agent-graph-v1`.
 - No deletion or rewriting of historical task data.
 - No Alembic history squashing.
 - No cosmetic refactor of retained Graph code.
