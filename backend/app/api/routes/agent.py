@@ -821,6 +821,14 @@ async def send_agent_message(
         for key, value in conversation.context.items()
         if key != _CONVERSATION_MESSAGE_TOKEN_KEY
     }
+    previous_source = previous_intent.get("source")
+    if (
+        previous_intent.get("decision_kind") == "task_started"
+        and isinstance(previous_source, dict)
+        and previous_source.get("kind") == "api"
+    ):
+        previous_intent.pop("source", None)
+        previous_intent.pop("api_provider_id", None)
     api_connection = api_catalog.card(
         provider_id=decision.api_provider_id,
         connection_id=decision.source_api_connection_id,
