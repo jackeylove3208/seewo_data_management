@@ -11,6 +11,11 @@ from app.api_connectors.contracts import (
     ProviderManifest,
     SafeApiConnection,
 )
+from app.api_connectors.dingtalk_configuration import (
+    ApiConnectionValidationError,
+    redact_server_configuration,
+    validate_new_task_configuration,
+)
 from app.api_connectors.policy import task_ephemeral_credentials_expired
 from app.api_connectors.registry import ProviderRegistry
 from app.api_connectors.repository import ApiConnectionRepository
@@ -21,12 +26,15 @@ from app.api_connectors.secrets import (
 from app.models.agent_runtime import AgentConversationRecord
 from app.models.api_connectors import ApiConnectionRecord
 
+__all__ = [
+    "ApiConnectionConflictError",
+    "ApiConnectionNotFoundError",
+    "ApiConnectionService",
+    "ApiConnectionValidationError",
+]
+
 
 class ApiConnectionNotFoundError(LookupError):
-    pass
-
-
-class ApiConnectionValidationError(ValueError):
     pass
 
 
@@ -81,8 +89,12 @@ class ApiConnectionService:
             raise ApiConnectionValidationError(
                 "task-ephemeral connections require a conversation"
             )
+        normalized_public_configuration = dict(public_configuration)
         if scope == "task_ephemeral":
-            _validate_dingtalk_task_configuration(provider_id, public_configuration)
+            if provider_id == "dingtalk":
+                normalized_public_configuration = validate_new_task_configuration(
+                    public_configuration
+                )
             assert conversation_id is not None
             owned_conversation_id = await self._repository.session.scalar(
                 select(AgentConversationRecord.id)
@@ -112,7 +124,7 @@ class ApiConnectionService:
             display_name=normalized_display_name,
             scope=scope,
             conversation_id=conversation_id,
-            public_configuration=dict(public_configuration),
+            public_configuration=normalized_public_configuration,
             secret_ref=secret_ref,
             manifest_version=manifest.manifest_version,
             adapter_version=manifest.adapter_version,
@@ -217,10 +229,10 @@ class ApiConnectionService:
                 raise ApiConnectionValidationError(
                     "complete DingTalk configuration is required"
                 )
-            _validate_dingtalk_task_configuration(
-                record.provider_id,
-                public_configuration,
-            )
+            if record.provider_id == "dingtalk":
+                public_configuration = validate_new_task_configuration(
+                    public_configuration
+                )
         _validate_secret_shape(secret, self._manifest(record.provider_id))
         await self._secrets.rotate(
             tenant_id=tenant_id,
@@ -296,42 +308,16 @@ def _validate_secret_shape(
         )
 
 
-def _validate_dingtalk_task_configuration(
-    provider_id: str,
-    configuration: Mapping[str, object],
-) -> None:
-    if provider_id != "dingtalk":
-        return
-    if configuration.get("person_entity_kind") not in {"teacher", "student"}:
-        raise ApiConnectionValidationError(
-            "DingTalk personnel type must be teacher or student"
-        )
-    root_department_id = configuration.get("root_department_id")
-    if (
-        isinstance(root_department_id, bool)
-        or not isinstance(root_department_id, int)
-        or root_department_id <= 0
-    ):
-        raise ApiConnectionValidationError(
-            "DingTalk root department ID must be a positive integer"
-        )
-    for field_name in ("number_field", "class_name_field"):
-        value = configuration.get(field_name)
-        if value is not None and (
-            not isinstance(value, str) or not value.strip()
-        ):
-            raise ApiConnectionValidationError(
-                f"DingTalk {field_name} must be a non-blank string"
-            )
-
-
 def _safe_view(record: ApiConnectionRecord) -> SafeApiConnection:
+    public_configuration = dict(record.public_configuration)
+    if record.provider_id == "dingtalk":
+        public_configuration = redact_server_configuration(public_configuration)
     return SafeApiConnection(
         id=record.id,
         tenant_id=record.tenant_id,
         provider_id=record.provider_id,
         display_name=record.display_name,
-        public_configuration=dict(record.public_configuration),
+        public_configuration=public_configuration,
         manifest_version=record.manifest_version,
         adapter_version=record.adapter_version,
         capabilities=dict(record.capabilities),

@@ -180,10 +180,10 @@ def test_conversation_configuration_creates_a_task_ephemeral_connection(
             "provider_id": "dingtalk",
             "display_name": "钉钉临时连接-测试",
             "public_configuration": {
-                "person_entity_kind": "student",
+                "sync_scope": "people",
+                "person_classification_mode": "organization_unit_llm",
                 "root_department_id": 42,
                 "number_field": "student_number",
-                "class_name_field": "class_name",
             },
             "secret": {"app_key": "app", "app_secret": "secret"},
         },
@@ -203,7 +203,7 @@ def test_conversation_configuration_creates_a_task_ephemeral_connection(
     assert record.credentials_revoked_at is None
     current = client.get("/api/agent/conversations/current")
     assert current.status_code == 200, current.text
-    assert current.json()["intent"]["entity_types"] == ["student"]
+    assert current.json()["intent"]["entity_types"] == ["teacher", "student"]
 
 
 def test_successful_conversation_connection_test_exposes_start_confirmation(
@@ -223,9 +223,9 @@ def test_successful_conversation_connection_test_exposes_start_confirmation(
         json={
             "configuration_session_id": configuration_session["id"],
             "provider_id": "dingtalk",
-            "display_name": "钉钉学生连接",
+            "display_name": "钉钉部门连接",
             "public_configuration": {
-                "person_entity_kind": "student",
+                "sync_scope": "department",
                 "root_department_id": 42,
             },
             "secret": {"app_key": "app", "app_secret": "secret"},
@@ -236,7 +236,7 @@ def test_successful_conversation_connection_test_exposes_start_confirmation(
     adapter.result = ConnectionTestResult(
         eligible=False,
         capabilities={},
-        visibility_summary={"visible": False, "student_count": 0},
+        visibility_summary={"visible": False, "department_count": 0},
         safe_error_code="connector_visibility_empty",
     )
     failed_test = client.post(
@@ -254,7 +254,7 @@ def test_successful_conversation_connection_test_exposes_start_confirmation(
         json={
             "conversation_id": conversation["id"],
             "public_configuration": {
-                "person_entity_kind": "teacher",
+                "sync_scope": "department",
                 "root_department_id": 42,
             },
             "secret": {"app_key": "app-2", "app_secret": "secret-2"},
@@ -265,12 +265,12 @@ def test_successful_conversation_connection_test_exposes_start_confirmation(
         eligible=True,
         capabilities={
             "organization.read": True,
-            "entity.teacher.read": True,
+            "entity.department.read": True,
         },
         visibility_summary={
             "visible": True,
             "record_count": 5,
-            "teacher_count": 5,
+            "department_count": 5,
         },
     )
     tested = client.post(
@@ -283,9 +283,9 @@ def test_successful_conversation_connection_test_exposes_start_confirmation(
     current = client.get("/api/agent/conversations/current")
     assert current.status_code == 200, current.text
     assert current.json()["start_confirmation"] == {
-        "title": "钉钉教师同步",
-        "summary": "钉钉教师同步",
-        "entity_types": ["teacher"],
+        "title": "钉钉部门同步",
+        "summary": "钉钉部门同步",
+        "entity_types": ["department"],
     }
 
 
@@ -323,9 +323,9 @@ def test_conversation_configuration_preserves_an_existing_explicit_target(
         json={
             "configuration_session_id": configuration_session["id"],
             "provider_id": "dingtalk",
-            "display_name": "钉钉学生连接",
+            "display_name": "钉钉部门连接",
             "public_configuration": {
-                "person_entity_kind": "student",
+                "sync_scope": "department",
                 "root_department_id": 42,
             },
             "secret": {"app_key": "app", "app_secret": "secret"},
@@ -364,7 +364,7 @@ def test_conversation_configuration_requires_fresh_dingtalk_scope_fields(
     )
 
     assert created.status_code == 422
-    assert "personnel type" in created.json()["detail"]
+    assert "同步范围" in created.json()["detail"]
 
 
 def test_new_conversation_connection_supersedes_previous_unbound_connection(
@@ -386,11 +386,11 @@ def test_new_conversation_connection_supersedes_previous_unbound_connection(
             json={
                 "configuration_session_id": configuration_session["id"],
                 "provider_id": "dingtalk",
-                "display_name": display_name,
-                "public_configuration": {
-                    "person_entity_kind": "teacher",
-                    "root_department_id": 1,
-                },
+                    "display_name": display_name,
+                    "public_configuration": {
+                        "sync_scope": "department",
+                        "root_department_id": 1,
+                    },
                 "secret": {"app_key": "app", "app_secret": "secret"},
             },
         )
@@ -435,7 +435,7 @@ def test_ephemeral_connection_rotation_requires_its_conversation(
             "provider_id": "dingtalk",
             "display_name": "不可跨对话轮换",
             "public_configuration": {
-                "person_entity_kind": "teacher",
+                "sync_scope": "department",
                 "root_department_id": 1,
             },
             "secret": {"app_key": "app", "app_secret": "secret"},
@@ -447,7 +447,7 @@ def test_ephemeral_connection_rotation_requires_its_conversation(
         json={
             "conversation_id": "00000000-0000-0000-0000-000000000001",
             "public_configuration": {
-                "person_entity_kind": "teacher",
+                "sync_scope": "department",
                 "root_department_id": 1,
             },
             "secret": {"app_key": "new", "app_secret": "new-secret"},
@@ -476,7 +476,7 @@ def test_ephemeral_connection_test_requires_its_active_conversation_and_ttl(
             "provider_id": "dingtalk",
             "display_name": "需要对话校验的连接",
             "public_configuration": {
-                "person_entity_kind": "teacher",
+                "sync_scope": "department",
                 "root_department_id": 1,
             },
             "secret": {"app_key": "app", "app_secret": "secret"},
@@ -532,7 +532,7 @@ def test_conversation_reset_revokes_an_unbound_ephemeral_connection(
             "provider_id": "dingtalk",
             "display_name": "即将撤销的临时连接",
             "public_configuration": {
-                "person_entity_kind": "teacher",
+                "sync_scope": "department",
                 "root_department_id": 1,
             },
             "secret": {"app_key": "app", "app_secret": "secret"},

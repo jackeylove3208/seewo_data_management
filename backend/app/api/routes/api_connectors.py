@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 from uuid import UUID, uuid4
@@ -13,6 +14,7 @@ from app.agent_runtime.external_identity_service import (
     ExternalIdentityBindingValidation,
 )
 from app.api.dependencies import get_operator_context, get_session
+from app.api_connectors.dingtalk_configuration import entity_kinds_for_scope
 from app.api_connectors.policy import uses_task_scoped_conversation_credentials
 from app.api_connectors.service import (
     ApiConnectionConflictError,
@@ -170,16 +172,19 @@ async def create_api_connection(
             )
             .with_for_update()
         )
-        entity_kind = payload.public_configuration.get("person_entity_kind")
-        if conversation is not None and entity_kind in {"student", "teacher"}:
+        entity_types = _connection_entity_types(
+            payload.provider_id,
+            payload.public_configuration,
+        )
+        if conversation is not None and entity_types:
             default_target = request.app.state.settings.database_connector_configurations.get(
                 "seewo-data-mysql"
             )
             conversation.context = {
                 **conversation.context,
                 "title": conversation.context.get("title")
-                or f"钉钉{'学生' if entity_kind == 'student' else '教师'}同步",
-                "entity_types": [entity_kind],
+                or _connection_title(payload.provider_id, payload.public_configuration),
+                "entity_types": entity_types,
                 "source": {
                     "kind": "api",
                     "configuration_id": str(connection.id),
@@ -274,42 +279,39 @@ async def test_api_connection(
             and source.get("kind") == "api"
             and source.get("configuration_id") == str(connection_id)
         )
-        configured_entity = item.public_configuration.get("person_entity_kind")
-        entity_kind = (
-            configured_entity
-            if isinstance(configured_entity, str)
-            and configured_entity in ("student", "teacher")
-            else None
-        )
-        visible_count = (
-            item.visibility_summary.get(f"{entity_kind}_count")
-            if entity_kind is not None
-            else None
+        entity_types = _connection_entity_types(
+            item.provider_id,
+            item.public_configuration,
         )
         can_confirm = (
             item.state == "active"
             and source_matches
-            and entity_kind is not None
-            and item.capabilities.get(f"entity.{entity_kind}.read") is True
+            and bool(entity_types)
             and item.visibility_summary.get("visible") is True
-            and isinstance(visible_count, int)
-            and not isinstance(visible_count, bool)
-            and visible_count > 0
+            and all(
+                item.capabilities.get(f"entity.{entity_kind}.read") is True
+                and _is_positive_count(
+                    item.visibility_summary.get(f"{entity_kind}_count")
+                )
+                for entity_kind in entity_types
+            )
             and conversation.context.get("target") is not None
         )
         if source_matches:
             previous_entity_types = conversation.context.get("entity_types")
-            entity_changed = previous_entity_types != [entity_kind]
-            provider_label = "钉钉" if item.provider_id == "dingtalk" else item.display_name
-            entity_label = "学生" if entity_kind == "student" else "教师"
+            entity_changed = previous_entity_types != entity_types
             conversation.context = {
                 **conversation.context,
                 **(
                     {
-                        "title": f"{provider_label}{entity_label}同步",
-                        "entity_types": [entity_kind],
+                        "title": _connection_title(
+                            item.provider_id,
+                            item.public_configuration,
+                            fallback_label=item.display_name,
+                        ),
+                        "entity_types": entity_types,
                     }
-                    if entity_kind is not None and entity_changed
+                    if entity_types and entity_changed
                     else {}
                 ),
                 "decision_kind": (
@@ -384,6 +386,57 @@ def _service(request: Request, session: AsyncSession) -> ApiConnectionService:
         registry=request.app.state.api_provider_registry,
         fernet_key=settings.api_connector_secret_key,
     )
+
+
+def _connection_entity_types(
+    provider_id: str,
+    public_configuration: Mapping[str, object],
+) -> list[str]:
+    if provider_id == "dingtalk":
+        try:
+            return [
+                kind.value
+                for kind in entity_kinds_for_scope(
+                    public_configuration,
+                    allow_legacy=True,
+                )
+            ]
+        except ApiConnectionValidationError:
+            return []
+    configured_entity = public_configuration.get("person_entity_kind")
+    return (
+        [configured_entity]
+        if isinstance(configured_entity, str)
+        and configured_entity in {"student", "teacher"}
+        else []
+    )
+
+
+def _connection_title(
+    provider_id: str,
+    public_configuration: Mapping[str, object],
+    *,
+    fallback_label: str | None = None,
+) -> str:
+    if provider_id == "dingtalk":
+        scope = public_configuration.get("sync_scope")
+        scope_labels = {
+            "department": "部门",
+            "people": "人员",
+            "all": "全部",
+        }
+        scope_label = scope_labels.get(scope) if isinstance(scope, str) else None
+        if scope_label is not None:
+            return f"钉钉{scope_label}同步"
+    entity_types = _connection_entity_types(provider_id, public_configuration)
+    entity_label = {"student": "学生", "teacher": "教师"}.get(
+        entity_types[0] if len(entity_types) == 1 else ""
+    )
+    return f"{fallback_label or provider_id}{entity_label or '组织'}同步"
+
+
+def _is_positive_count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
 async def _consume_configuration_session(
