@@ -494,7 +494,7 @@ class AgentAnalysisRepository:
                 batch.status == "claimed"
                 and (
                     batch.lease_expires_at is None
-                    or batch.lease_expires_at <= now
+                    or _as_utc(batch.lease_expires_at) <= now
                     or batch.lease_owner != run.lease_owner
                 )
             )
@@ -522,7 +522,7 @@ class AgentAnalysisRepository:
             .where(AgentModelBatchRecord.id == batch_id)
             .with_for_update(skip_locked=True)
         )
-        if batch is None or batch.status == "completed":
+        if batch is None or batch.status in {"completed", "superseded"}:
             return None
         run = await self.session.get(AgentRunRecord, batch.run_id)
         if not self._analysis_run_is_active(

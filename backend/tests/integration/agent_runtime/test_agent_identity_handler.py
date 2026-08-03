@@ -1,11 +1,13 @@
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import select
 
 from app.agent_runtime.repository import AgentRuntimeRepository
-from app.agent_runtime.state_machine import AgentRunKind
+from app.agent_runtime.state_machine import AgentPhase, AgentRunKind, AgentRunStatus
 from app.ai.agent_batching import AgentBatchPlanner
+from app.api.routes.agent import _graph_progress_counts
 from app.models.agent_analysis import (
     AgentClarificationRecord,
     AgentIdentityClaimRecord,
@@ -100,11 +102,41 @@ async def test_builder_marks_correct_rows_silent_and_emits_duplicate_extra_and_m
     legacy_batches = await AgentBatchPlanner(session, max_items=3).create_for_run(
         run_id=run.id
     )
+    legacy_batches[0].status = "claimed"
+    legacy_batches[0].lease_owner = "stale-worker"
+    legacy_batches[0].lease_token = uuid4()
+    legacy_batches[0].lease_expires_at = (
+        datetime.now(UTC) - timedelta(seconds=1)
+    ).replace(tzinfo=None)
+    await session.flush()
     batches = await AgentBatchPlanner(session, max_items=2).create_for_run(run_id=run.id)
 
     await session.refresh(legacy_batches[0])
     assert legacy_batches[0].status == "superseded"
+    active_lease_token = uuid4()
+    run.phase = AgentPhase.ANALYZE_BATCHES.value
+    run.status = AgentRunStatus.RUNNING.value
+    run.lease_owner = "active-worker"
+    run.lease_token = active_lease_token
+    run.lease_expires_at = datetime.now(UTC) + timedelta(minutes=1)
+    assert (
+        await repository.claim_batch(
+            legacy_batches[0].id,
+            worker_id="active-worker",
+            run_lease_token=active_lease_token,
+            lease_seconds=60,
+        )
+        is None
+    )
     assert [batch.item_count for batch in batches] == [2, 1]
+    replayed = await AgentBatchPlanner(session, max_items=3).create_for_run(run_id=run.id)
+    assert [batch.id for batch in replayed] == [batch.id for batch in batches]
+    assert await _graph_progress_counts(
+        session,
+        run_id=run.id,
+        current_node="analyze_actionable_batches",
+        gates=(),
+    ) == (0, 2)
 
 
 async def _identity_conflict_run(session):

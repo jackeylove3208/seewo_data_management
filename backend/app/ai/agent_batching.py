@@ -81,20 +81,6 @@ class AgentBatchPlanner:
             run_id=run_id,
             max_items=self._max_items,
         )
-        covered_by_unsuperseded_oversized_batch = tuple(
-            await self._session.scalars(
-                select(AgentModelBatchItemRecord.work_item_id)
-                .join(
-                    AgentModelBatchRecord,
-                    AgentModelBatchRecord.id == AgentModelBatchItemRecord.batch_id,
-                )
-                .where(
-                    AgentModelBatchRecord.run_id == run_id,
-                    AgentModelBatchRecord.item_count > self._max_items,
-                    AgentModelBatchRecord.status != "superseded",
-                )
-            )
-        )
         filters = [
             AgentWorkItemRecord.run_id == run_id,
             AgentWorkItemRecord.kind.not_in(
@@ -103,10 +89,6 @@ class AgentBatchPlanner:
         ]
         if work_item_ids is not None:
             filters.append(AgentWorkItemRecord.id.in_(work_item_ids))
-        if covered_by_unsuperseded_oversized_batch:
-            filters.append(
-                AgentWorkItemRecord.id.not_in(covered_by_unsuperseded_oversized_batch)
-            )
         work_items = tuple(
             await self._session.scalars(
                 select(AgentWorkItemRecord)
@@ -114,11 +96,49 @@ class AgentBatchPlanner:
                 .order_by(AgentWorkItemRecord.entity_kind, AgentWorkItemRecord.id)
             )
         )
+        requested_ids = {item.id for item in work_items}
+        existing_batches = tuple(
+            await self._session.scalars(
+                select(AgentModelBatchRecord)
+                .where(
+                    AgentModelBatchRecord.run_id == run_id,
+                    AgentModelBatchRecord.status != "superseded",
+                )
+                .order_by(
+                    AgentModelBatchRecord.entity_kind,
+                    AgentModelBatchRecord.created_at,
+                    AgentModelBatchRecord.id,
+                )
+            )
+        )
+        memberships: dict[UUID, tuple[UUID, ...]] = {}
+        covered_ids: set[UUID] = set()
+        for batch in existing_batches:
+            members = tuple(
+                await self._session.scalars(
+                    select(AgentModelBatchItemRecord.work_item_id)
+                    .where(AgentModelBatchItemRecord.batch_id == batch.id)
+                    .order_by(AgentModelBatchItemRecord.ordinal)
+                )
+            )
+            memberships[batch.id] = members
+            covered_ids.update(members)
+        unbatched_work_items = tuple(
+            item for item in work_items if item.id not in covered_ids
+        )
         manifests = partition_analysis_batches(
-            ((AgentEntityKind(item.entity_kind), item.id) for item in work_items),
+            (
+                (AgentEntityKind(item.entity_kind), item.id)
+                for item in unbatched_work_items
+            ),
             max_items=self._max_items,
         )
-        saved: list[AgentModelBatchRecord] = []
+        saved = [
+            batch
+            for batch in existing_batches
+            if batch.item_count <= self._max_items
+            and set(memberships[batch.id]).issubset(requested_ids)
+        ]
         for manifest in manifests:
             input_hash = hashlib.sha256(
                 json.dumps(
