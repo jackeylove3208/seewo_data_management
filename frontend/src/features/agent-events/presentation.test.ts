@@ -110,6 +110,24 @@ describe("Agent event presentation", () => {
     expect(presented.description).toContain("任务数据和学校锁仍被安全保留");
   });
 
+  it.each([
+    ["model_timeout", "模型请求连续超时"],
+    ["model_transport_failure", "模型连接连续失败"],
+    ["model_rate_limited", "模型服务连续限流"],
+    ["model_upstream_5xx", "模型上游服务连续异常"],
+    ["model_http_rejected", "模型服务拒绝请求"],
+    ["model_response_invalid_json", "模型响应不是有效 JSON"],
+    ["model_response_contract_missing", "模型响应缺少结构化结果"],
+  ])("explains provider failure category %s", (category, expected) => {
+    const presented = presentAgentEvent(event("run.blocked_model_error", {
+      attempt_count: 4,
+      failure_categories: [category],
+    }));
+
+    expect(presented.description).toContain(expected);
+    expect(presented.description).not.toContain("Agent 受控处理未能完成");
+  });
+
   it("uses a safe Chinese fallback for unknown audit events", () => {
     const presented = presentAgentEvent(event("internal.future_event"));
 

@@ -142,6 +142,14 @@ NEW_AGENT_SKILLS = {
         "回滚",
         "执行事实",
     ),
+    "analyze-agent-failure": (
+        "system_failure_then_operator_terminated",
+        "model_timeout",
+        "model_rate_limited",
+        "analysis_progress",
+        "操作人终止只是后续动作",
+        "禁止把失败概括为",
+    ),
     "assess-agent-rollback-impact": (
         "独立",
         "学校锁",
@@ -238,6 +246,15 @@ def test_analysis_template_skill_has_no_tools_and_strict_contracts() -> None:
     assert skill.allowed_tools == ()
     assert skill.input_schema == "AnalysisTemplateInput"
     assert skill.output_schema == "AnalysisTemplateOutput"
+
+
+def test_failure_analysis_skill_is_one_read_only_structured_step() -> None:
+    skill = SkillRegistry().load("analyze-agent-failure", "1.0.0")
+
+    assert skill.phase == "generate_report"
+    assert skill.allowed_tools == ()
+    assert skill.input_schema == "FailureAnalysisInput"
+    assert skill.output_schema == "FailureAnalysisOutput"
 
 
 def test_agent_governance_report_uses_mutually_exclusive_exception_totals() -> None:

@@ -592,6 +592,14 @@ class AgentGraphWorker:
             "failed_node": context.current_node,
             "failure_categories": failure_categories,
         }
+        gateway_request_id = next(
+            (
+                str(detail["request_id"])
+                for detail in reversed(attempt_details)
+                if detail.get("request_id")
+            ),
+            None,
+        )
         async with self._session_factory() as session:
             async with session.begin():
                 runtime = AgentRuntimeRepository(session)
@@ -635,6 +643,7 @@ class AgentGraphWorker:
                     code=failure_code,
                     safe_message=safe_message,
                     attempt_count=attempt_count,
+                    gateway_request_id=gateway_request_id,
                     details=failure_details,
                 )
                 await runtime.append_event(
@@ -868,6 +877,18 @@ def _safe_model_attempt_details(
                     )
             if feedback:
                 detail["repair_feedback"] = feedback
+        status_class = raw_detail.get("status_class")
+        if isinstance(status_class, str):
+            detail["status_class"] = status_class[:32]
+        request_id = raw_detail.get("request_id")
+        if isinstance(request_id, str):
+            detail["request_id"] = request_id[:255]
+        duration_ms = raw_detail.get("duration_ms")
+        if isinstance(duration_ms, int) and duration_ms >= 0:
+            detail["duration_ms"] = duration_ms
+        transport_attempts = raw_detail.get("transport_attempts")
+        if isinstance(transport_attempts, int) and transport_attempts >= 1:
+            detail["transport_attempts"] = min(transport_attempts, 10)
         safe_details.append(detail)
     return safe_details
 
@@ -898,6 +919,22 @@ def _safe_blocked_failure_code(
 
 
 def _safe_blocked_failure_message(failure_categories: list[str]) -> str:
+    if "model_timeout" in failure_categories:
+        return "AI 模型请求连续超时，任务已安全暂停；已完成进度会保留，当前仅允许终止任务。"
+    if "model_rate_limited" in failure_categories:
+        return "AI 模型服务连续限流，任务已安全暂停；已完成进度会保留，当前仅允许终止任务。"
+    if "model_upstream_5xx" in failure_categories:
+        return "AI 模型上游服务连续异常，任务已安全暂停；已完成进度会保留，当前仅允许终止任务。"
+    if "model_response_invalid_json" in failure_categories:
+        return (
+            "AI 模型响应连续不是有效 JSON，任务已安全暂停；"
+            "已完成进度会保留，当前仅允许终止任务。"
+        )
+    if "model_response_contract_missing" in failure_categories:
+        return (
+            "AI 模型响应连续缺少结构化结果，任务已安全暂停；"
+            "已完成进度会保留，当前仅允许终止任务。"
+        )
     if "tool_authorization_failure" in failure_categories:
         return "后端授权状态与冻结任务上下文不一致，任务已安全暂停；当前仅允许终止任务。"
     if "tool_argument_rejected" in failure_categories:

@@ -589,6 +589,172 @@ async def test_termination_report_uses_verified_facts_without_calling_model(
 
 
 @pytest.mark.asyncio
+async def test_termination_after_model_failure_gets_one_safe_failure_analysis(
+    database,
+    tmp_path: Path,
+) -> None:
+    context = replace(
+        await _preflight_context(database, tmp_path),
+        current_node="termination_report",
+    )
+    async with database.session_factory() as session:
+        async with session.begin():
+            await AgentRuntimeRepository(session).record_failure(
+                context.run_id,
+                phase=AgentPhase.ANALYZE_BATCHES,
+                code="agent_model_retries_exhausted",
+                safe_message="AI 模型连续处理失败，任务已安全暂停。",
+                attempt_count=4,
+                details={
+                    "failed_node": "analyze_actionable_batches",
+                    "failure_categories": ["model_timeout"],
+                    "attempts": [
+                        {
+                            "attempt": 4,
+                            "safe_error_code": "model_timeout",
+                            "status_class": "transport",
+                            "duration_ms": 30_000,
+                            "transport_attempts": 3,
+                        }
+                    ],
+                },
+            )
+
+    class FailureAnalysisProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete_json_once(self, request):
+            self.calls += 1
+            prompt = "\n".join(message.content for message in request.messages)
+            assert "model_timeout" in prompt
+            assert "agent_model_retries_exhausted" in prompt
+            fact_ref = f"report-facts:{context.run_id}:{context.graph_cursor}"
+            return LLMResponse(
+                output={
+                    "result": {
+                        "schema_version": "agent-contract-v1",
+                        "reason_code": "system_failure_then_operator_terminated",
+                        "title_zh": "模型分析阶段超时后终止",
+                        "summary_zh": "模型分析请求多次超时，操作人随后终止了任务。",
+                        "impact_zh": "已完成结果保留，未完成批次没有写入治理结论。",
+                        "suggestion_zh": "检查模型网关时延后重新运行未完成任务。",
+                        "fact_refs": [fact_ref],
+                    }
+                },
+                provider="scripted",
+                model="failure-analysis-model",
+                request_id="failure-analysis-1",
+                usage=ModelUsage(input_tokens=20, output_tokens=30),
+            )
+
+    provider = FailureAnalysisProvider()
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=provider,
+        tokenization_secret="test-tokenization-secret",
+    )
+    action = AllowedActionV1(
+        action_id="finish_termination_report",
+        kind="dispatch_sub_agent",
+        sub_agent="governance-reporting",
+        resource_ids=(),
+        required_evidence=(),
+        risk="low",
+        requires_human=False,
+        successor_node="terminal",
+    )
+
+    await executor._generate_report(context, action)
+
+    async with database.session_factory() as session:
+        report = await session.scalar(
+            select(AgentReportRecord).where(
+                AgentReportRecord.task_id == context.task_id
+            )
+        )
+    assert provider.calls == 1
+    assert report is not None
+    assert report.generated_by == "agent-graph-failure-analysis-skill-v1"
+    assert report.facts["termination_context"]["reason_code"] == (
+        "system_failure_then_operator_terminated"
+    )
+    assert report.content["narrative"]["title_zh"] == "模型分析阶段超时后终止"
+
+
+@pytest.mark.asyncio
+async def test_failure_analysis_outage_uses_truthful_deterministic_fallback(
+    database,
+    tmp_path: Path,
+) -> None:
+    context = replace(
+        await _preflight_context(database, tmp_path),
+        current_node="termination_report",
+    )
+    async with database.session_factory() as session:
+        async with session.begin():
+            await AgentRuntimeRepository(session).record_failure(
+                context.run_id,
+                phase=AgentPhase.ANALYZE_BATCHES,
+                code="agent_model_retries_exhausted",
+                safe_message="AI 模型上游服务连续异常，任务已安全暂停。",
+                attempt_count=4,
+                details={
+                    "failed_node": "analyze_actionable_batches",
+                    "failure_categories": ["model_upstream_5xx"],
+                    "attempts": [],
+                },
+            )
+
+    class UnavailableFailureAnalysisProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete_json_once(self, _request):
+            self.calls += 1
+            raise ModelProviderError(
+                "synthetic outage",
+                safe_code="model_upstream_5xx",
+            )
+
+    provider = UnavailableFailureAnalysisProvider()
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=provider,
+        tokenization_secret="test-tokenization-secret",
+    )
+    await executor._generate_report(
+        context,
+        AllowedActionV1(
+            action_id="finish_termination_report",
+            kind="dispatch_sub_agent",
+            sub_agent="governance-reporting",
+            resource_ids=(),
+            required_evidence=(),
+            risk="low",
+            requires_human=False,
+            successor_node="terminal",
+        ),
+    )
+
+    async with database.session_factory() as session:
+        report = await session.scalar(
+            select(AgentReportRecord).where(
+                AgentReportRecord.task_id == context.task_id
+            )
+        )
+    assert provider.calls == 1
+    assert report is not None
+    assert report.generated_by == "agent-graph-failure-analysis-fallback-v1"
+    assert report.content["narrative"]["reason_code"] == (
+        "system_failure_then_operator_terminated"
+    )
+    assert "agent_model_retries_exhausted" in report.content["narrative"][
+        "suggestion_zh"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_abnormal_input_report_fallback_contains_deterministic_analysis(
     database,
     tmp_path: Path,

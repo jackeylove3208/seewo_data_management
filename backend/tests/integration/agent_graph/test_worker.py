@@ -745,6 +745,10 @@ async def test_model_failure_blocks_graph_run_and_keeps_school_lock(
             {
                 "attempt": max(attempt_count, 1),
                 "safe_error_code": failure_categories[0],
+                "status_class": "transport",
+                "duration_ms": 1_500,
+                "request_id": "gateway-request-safe",
+                "transport_attempts": 3,
                 "repair_feedback": [
                     {
                         "path": "result.findings",
@@ -798,11 +802,16 @@ async def test_model_failure_blocks_graph_run_and_keeps_school_lock(
         assert failure is not None
         assert failure.attempt_count == attempt_count
         assert failure.code == expected_code
+        assert failure.gateway_request_id == "gateway-request-safe"
         assert failure.details == {
             "attempts": [
                 {
                     "attempt": max(attempt_count, 1),
                     "safe_error_code": failure_categories[0],
+                    "status_class": "transport",
+                    "duration_ms": 1_500,
+                    "request_id": "gateway-request-safe",
+                    "transport_attempts": 3,
                     "repair_feedback": [
                         {
                             "path": "result.findings",

@@ -42,10 +42,11 @@ from app.models.agent_analysis import (
     AgentIdentityClaimRecord,
     AgentInputMarkRecord,
     AgentInputRecord,
+    AgentModelBatchRecord,
     AgentWorkItemRecord,
 )
 from app.models.agent_graph import AgentGraphRunRecord, AgentHumanGateRecord
-from app.models.agent_runtime import AgentRunRecord
+from app.models.agent_runtime import AgentFailureRecord, AgentRunRecord
 from app.models.executions import TargetVersionRecord
 from app.models.reconciliation import ReconciliationTask
 from app.models.snapshots import Snapshot, SourceFile
@@ -681,6 +682,20 @@ async def build_agent_report_facts(
         phase=AgentPhase.EXECUTE_AND_VERIFY,
         checkpoint_key="agent-csv-execution-v1",
     )
+    analysis_batches = tuple(
+        await session.scalars(
+            select(AgentModelBatchRecord).where(
+                AgentModelBatchRecord.run_id == run_id,
+                AgentModelBatchRecord.status != "superseded",
+            )
+        )
+    )
+    latest_failure = await session.scalar(
+        select(AgentFailureRecord)
+        .where(AgentFailureRecord.run_id == run_id)
+        .order_by(AgentFailureRecord.created_at.desc(), AgentFailureRecord.id.desc())
+        .limit(1)
+    )
     facts: dict[str, Any] = {
         "findings": [
             _report_finding(
@@ -721,7 +736,27 @@ async def build_agent_report_facts(
             }
             for item in operations
         ],
+        "analysis_progress": {
+            "total_batch_count": len(analysis_batches),
+            "completed_batch_count": sum(
+                item.status == "completed" for item in analysis_batches
+            ),
+            "pending_batch_count": sum(
+                item.status in {"pending", "claimed"} for item in analysis_batches
+            ),
+            "blocked_batch_count": sum(
+                item.status == "blocked" for item in analysis_batches
+            ),
+            "total_item_count": sum(item.item_count for item in analysis_batches),
+            "completed_item_count": sum(
+                item.item_count
+                for item in analysis_batches
+                if item.status == "completed"
+            ),
+        },
     }
+    if latest_failure is not None:
+        facts["latest_failure"] = _safe_report_failure(latest_failure)
     output_target_version_ids = tuple(
         str(item.verification["output_target_version_id"])
         for item in operations
@@ -735,6 +770,68 @@ async def build_agent_report_facts(
     if checkpoint is not None:
         facts.update(checkpoint.payload)
     return facts
+
+
+def _safe_report_failure(failure: AgentFailureRecord) -> dict[str, Any]:
+    details = failure.details if isinstance(failure.details, Mapping) else {}
+    raw_attempts = details.get("attempts")
+    attempts: list[dict[str, Any]] = []
+    if isinstance(raw_attempts, list):
+        for raw in raw_attempts[:4]:
+            if not isinstance(raw, Mapping):
+                continue
+            attempt = raw.get("attempt")
+            safe_error_code = raw.get("safe_error_code")
+            if not isinstance(attempt, int) or not isinstance(safe_error_code, str):
+                continue
+            item: dict[str, Any] = {
+                "attempt": max(1, min(attempt, 4)),
+                "safe_error_code": safe_error_code[:128],
+                "repair_feedback": [],
+            }
+            for key, maximum in (
+                ("status_class", 32),
+                ("request_id", 255),
+            ):
+                value = raw.get(key)
+                if isinstance(value, str):
+                    item[key] = value[:maximum]
+            duration_ms = raw.get("duration_ms")
+            if isinstance(duration_ms, int) and duration_ms >= 0:
+                item["duration_ms"] = duration_ms
+            transport_attempts = raw.get("transport_attempts")
+            if isinstance(transport_attempts, int) and transport_attempts >= 1:
+                item["transport_attempts"] = min(transport_attempts, 10)
+            feedback = raw.get("repair_feedback")
+            if isinstance(feedback, list):
+                item["repair_feedback"] = [
+                    {
+                        "path": str(candidate.get("path"))[:256],
+                        "code": str(candidate.get("code"))[:128],
+                    }
+                    for candidate in feedback[:20]
+                    if isinstance(candidate, Mapping)
+                    and candidate.get("path")
+                    and candidate.get("code")
+                ]
+            attempts.append(item)
+    categories = details.get("failure_categories")
+    return {
+        "phase": failure.phase,
+        "code": failure.code,
+        "safe_message": failure.safe_message,
+        "attempt_count": max(0, failure.attempt_count),
+        "failed_node": (
+            str(details["failed_node"])[:128]
+            if details.get("failed_node")
+            else None
+        ),
+        "failure_categories": [
+            str(value)[:128]
+            for value in (categories if isinstance(categories, list) else [])[:20]
+        ],
+        "attempts": attempts,
+    }
 
 
 def _input_diagnostics(

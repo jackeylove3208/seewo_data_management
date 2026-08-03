@@ -342,6 +342,55 @@ class GovernanceReportInput(AgentSkillInput):
     fact_refs: tuple[str, ...] = Field(min_length=1)
 
 
+class FailureRepairFact(StrictContract):
+    path: str = Field(min_length=1, max_length=256)
+    code: str = Field(min_length=1, max_length=128)
+
+
+class FailureAttemptFact(StrictContract):
+    attempt: int = Field(ge=1, le=4)
+    safe_error_code: str = Field(min_length=1, max_length=128)
+    status_class: str | None = Field(default=None, max_length=32)
+    duration_ms: int | None = Field(default=None, ge=0)
+    request_id: str | None = Field(default=None, max_length=255)
+    transport_attempts: int | None = Field(default=None, ge=1, le=10)
+    repair_feedback: tuple[FailureRepairFact, ...] = Field(max_length=20)
+
+
+class SafeAgentFailureFact(StrictContract):
+    phase: str = Field(min_length=1, max_length=64)
+    code: str = Field(min_length=1, max_length=128)
+    safe_message: str = Field(min_length=1, max_length=512)
+    attempt_count: int = Field(ge=0)
+    failed_node: str | None = Field(default=None, max_length=128)
+    failure_categories: tuple[str, ...] = Field(max_length=20)
+    attempts: tuple[FailureAttemptFact, ...] = Field(max_length=4)
+
+
+class AnalysisProgressFact(StrictContract):
+    total_batch_count: int = Field(ge=0)
+    completed_batch_count: int = Field(ge=0)
+    pending_batch_count: int = Field(ge=0)
+    blocked_batch_count: int = Field(ge=0)
+    total_item_count: int = Field(ge=0)
+    completed_item_count: int = Field(ge=0)
+
+
+class FailureAnalysisInput(AgentSkillInput):
+    fact_refs: tuple[str, ...] = Field(min_length=1)
+    failure: SafeAgentFailureFact
+    analysis_progress: AnalysisProgressFact
+
+
+class FailureAnalysisOutput(AgentSkillOutput):
+    reason_code: Literal["system_failure_then_operator_terminated"]
+    title_zh: str = Field(min_length=1)
+    summary_zh: str = Field(min_length=1)
+    impact_zh: str = Field(min_length=1)
+    suggestion_zh: str = Field(min_length=1)
+    fact_refs: tuple[str, ...] = Field(min_length=1)
+
+
 class InputExceptionAnalysis(StrictContract):
     reason_code: str = Field(min_length=1, max_length=128)
     title_zh: str = Field(min_length=1)
@@ -395,6 +444,7 @@ AGENT_SKILL_SCHEMAS: dict[str, type[BaseModel]] = {
         ConflictInstructionInput,
         GovernanceExecutionInput,
         GovernanceReportInput,
+        FailureAnalysisInput,
         RollbackAssessmentInput,
         RollbackExecutionInput,
         SupervisorContextV1,
@@ -410,6 +460,7 @@ AGENT_SKILL_SCHEMAS: dict[str, type[BaseModel]] = {
         ConflictDecisionDraft,
         GovernanceExecutionOutcome,
         AgentGovernanceReport,
+        FailureAnalysisOutput,
         AgentRollbackAssessment,
         AgentRollbackOutcome,
         SupervisorDecisionV1,

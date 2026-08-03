@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import NAMESPACE_URL, UUID, uuid5
 
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -80,6 +81,8 @@ from app.ai.skills.contracts import (
     DatabaseSchemaMappingInput,
     DatabaseSchemaMappingOutput,
     DatabaseSourceSchemaProfile,
+    FailureAnalysisInput,
+    FailureAnalysisOutput,
     GovernanceExecutionInput,
     GovernanceReportInput,
     IdentityWorkItem,
@@ -2959,30 +2962,167 @@ class ProductionGraphActionExecutor:
                 if terminal_state == "terminated":
                     termination_context = _termination_report_context(context, facts)
                     facts["termination_context"] = termination_context
-                    await AgentReportingService(session).generate(
-                        task_id=context.task_id,
-                        tenant_id=context.tenant_id,
-                        kind="sync",
-                        terminal_state=terminal_state,
-                        facts=facts,
-                        narrative={
-                            "title_zh": "任务终止报告",
-                            "summary_zh": _termination_report_summary(
-                                termination_context
+                    failure = facts.get("latest_failure")
+                    progress = facts.get("analysis_progress")
+                    if not isinstance(failure, Mapping) or not isinstance(
+                        progress, Mapping
+                    ):
+                        await AgentReportingService(session).generate(
+                            task_id=context.task_id,
+                            tenant_id=context.tenant_id,
+                            kind="sync",
+                            terminal_state=terminal_state,
+                            facts=facts,
+                            narrative={
+                                "title_zh": "任务终止报告",
+                                "summary_zh": _termination_report_summary(
+                                    termination_context
+                                ),
+                                "fact_refs": [fact_ref],
+                                "degraded": False,
+                            },
+                            generated_by=(
+                                "agent-graph-termination-fallback-v1"
                             ),
-                            "fact_refs": [fact_ref],
-                            "degraded": False,
-                        },
-                        generated_by="agent-graph-termination-fallback-v1",
+                        )
+                        await AgentRuntimeRepository(session).append_event(
+                            context.run_id,
+                            "termination.report.deterministic",
+                            {
+                                "phase": AgentPhase.GENERATE_REPORT.value,
+                                "status": "terminated",
+                            },
+                        )
+                        return _outcome(action)
+
+                    bound_action = action.model_copy(
+                        update={
+                            "resource_ids": (fact_ref,),
+                            "required_evidence": (fact_ref,),
+                        }
                     )
-                    await AgentRuntimeRepository(session).append_event(
-                        context.run_id,
-                        "termination.report.deterministic",
-                        {
-                            "phase": AgentPhase.GENERATE_REPORT.value,
-                            "status": "terminated",
-                        },
+                    manifest_id = await _record_manifest(
+                        session,
+                        context=context,
+                        action=bound_action,
+                        tokenization_secret=self._tokenization_secret,
                     )
+                    operator = OperatorContext(
+                        operator_id=context.worker_id,
+                        tenant_id=context.tenant_id,
+                    )
+                    runner = GraphSkillModelRunner(
+                        session,
+                        provider=self._provider,
+                        tool_gateway=GraphPhaseToolGateway(
+                            session,
+                            operator=operator,
+                            tools={},
+                        ),
+                        operator=operator,
+                        max_retries=0,
+                    )
+
+                    def validate_failure_analysis(output: BaseModel) -> BaseModel:
+                        if not isinstance(output, FailureAnalysisOutput):
+                            raise ValueError(
+                                "failure analysis Skill returned another schema"
+                            )
+                        if output.fact_refs != (fact_ref,):
+                            raise ValueError(
+                                "failure analysis changed frozen fact references"
+                            )
+                        return output
+
+                    try:
+                        result = await runner.run(
+                            GraphSkillInvocation(
+                                task_id=context.task_id,
+                                run_id=context.run_id,
+                                graph_run_id=context.graph_run_id,
+                                graph_node=context.current_node,
+                                graph_cursor=context.graph_cursor,
+                                action_id=action.action_id,
+                                evidence_manifest_id=manifest_id,
+                                skill_name="analyze-agent-failure",
+                                skill_version="1.0.0",
+                                input_payload=FailureAnalysisInput(
+                                    task_id=context.task_id,
+                                    run_id=context.run_id,
+                                    phase=AgentPhase.GENERATE_REPORT,
+                                    evidence_refs=(fact_ref,),
+                                    fact_refs=(fact_ref,),
+                                    failure=failure,
+                                    analysis_progress=progress,
+                                ).model_dump(mode="json"),
+                            ),
+                            result_validator=validate_failure_analysis,
+                        )
+                        output = result.output
+                        if not isinstance(output, FailureAnalysisOutput):
+                            raise RuntimeError(
+                                "validated failure analysis changed type"
+                            )
+                        await AgentReportingService(session).generate(
+                            task_id=context.task_id,
+                            tenant_id=context.tenant_id,
+                            kind="sync",
+                            terminal_state=terminal_state,
+                            facts=facts,
+                            narrative={
+                                "reason_code": output.reason_code,
+                                "title_zh": output.title_zh,
+                                "summary_zh": output.summary_zh,
+                                "impact_zh": output.impact_zh,
+                                "suggestion_zh": output.suggestion_zh,
+                                "fact_refs": list(output.fact_refs),
+                                "degraded": False,
+                            },
+                            generated_by=(
+                                "agent-graph-failure-analysis-skill-v1"
+                            ),
+                        )
+                        await AgentRuntimeRepository(session).append_event(
+                            context.run_id,
+                            "termination.failure_analysis.completed",
+                            {
+                                "phase": AgentPhase.GENERATE_REPORT.value,
+                                "status": "terminated",
+                                "failure_code": str(failure.get("code", ""))[
+                                    :128
+                                ],
+                            },
+                        )
+                    except GraphSubAgentFailure:
+                        deterministic = _deterministic_failure_analysis(
+                            termination_context
+                        )
+                        await AgentReportingService(session).generate(
+                            task_id=context.task_id,
+                            tenant_id=context.tenant_id,
+                            kind="sync",
+                            terminal_state=terminal_state,
+                            facts=facts,
+                            narrative={
+                                **deterministic,
+                                "fact_refs": [fact_ref],
+                                "degraded": True,
+                            },
+                            generated_by=(
+                                "agent-graph-failure-analysis-fallback-v1"
+                            ),
+                        )
+                        await AgentRuntimeRepository(session).append_event(
+                            context.run_id,
+                            "termination.failure_analysis.fallback",
+                            {
+                                "phase": AgentPhase.GENERATE_REPORT.value,
+                                "status": "terminated",
+                                "safe_error_code": (
+                                    "failure_analysis_model_unavailable"
+                                ),
+                            },
+                        )
                     return _outcome(action)
                 bound_action = action.model_copy(
                     update={
@@ -4774,9 +4914,20 @@ def _termination_report_context(
         if isinstance(item.get("verification"), Mapping)
         and item["verification"].get("valid") is True
     ]
-    return {
-        "reason_code": "operator_requested",
-        "reason_zh": "操作人主动终止任务",
+    latest_failure = facts.get("latest_failure")
+    analysis_progress = facts.get("analysis_progress")
+    has_system_failure = isinstance(latest_failure, Mapping)
+    result: dict[str, object] = {
+        "reason_code": (
+            "system_failure_then_operator_terminated"
+            if has_system_failure
+            else "operator_requested"
+        ),
+        "reason_zh": (
+            "系统处理失败后由操作人终止任务"
+            if has_system_failure
+            else "操作人主动终止任务"
+        ),
         "current_node": context.current_node,
         "phase_zh": "报告生成",
         "recorded_finding_count": len(finding_rows),
@@ -4784,6 +4935,20 @@ def _termination_report_context(
         "verified_mutation_count": len(verified),
         "data_modified": bool(succeeded),
     }
+    if isinstance(latest_failure, Mapping) and isinstance(
+        analysis_progress, Mapping
+    ):
+        result.update(
+            {
+                "failure_code": str(latest_failure.get("code", ""))[:128],
+                "failure_phase": str(latest_failure.get("phase", ""))[:64],
+                "failure_categories": list(
+                    latest_failure.get("failure_categories", [])
+                )[:20],
+                "analysis_progress": dict(analysis_progress),
+            }
+        )
+    return result
 
 
 def _termination_report_summary(context: Mapping[str, object]) -> str:
@@ -4794,6 +4959,23 @@ def _termination_report_summary(context: Mapping[str, object]) -> str:
     finding_count = report_count("recorded_finding_count")
     succeeded_count = report_count("succeeded_mutation_count")
     verified_count = report_count("verified_mutation_count")
+    if context.get("reason_code") == "system_failure_then_operator_terminated":
+        progress = context.get("analysis_progress")
+        completed_batches = (
+            progress.get("completed_batch_count", 0)
+            if isinstance(progress, Mapping)
+            else 0
+        )
+        total_batches = (
+            progress.get("total_batch_count", 0)
+            if isinstance(progress, Mapping)
+            else 0
+        )
+        return (
+            f"任务先因系统处理失败而安全暂停，随后由操作人终止；"
+            f"终止前已完成 {completed_batches}/{total_batches} 个分析批次，"
+            "已完成事实仍被保留，未完成批次没有写入治理结论。"
+        )
     if finding_count == 0 and succeeded_count == 0:
         return (
             "任务已按操作人要求终止；终止前尚未形成治理问题，"
@@ -4803,6 +4985,23 @@ def _termination_report_summary(context: Mapping[str, object]) -> str:
         f"任务已按操作人要求终止；终止前记录了 {finding_count} 项治理问题，"
         f"完成 {succeeded_count} 项数据修改，其中 {verified_count} 项通过服务端验证。"
     )
+
+
+def _deterministic_failure_analysis(
+    context: Mapping[str, object],
+) -> dict[str, str]:
+    failure_code = str(context.get("failure_code") or "system_failure")
+    return {
+        "reason_code": "system_failure_then_operator_terminated",
+        "title_zh": "系统处理失败后终止报告",
+        "summary_zh": _termination_report_summary(context),
+        "impact_zh": (
+            "已完成的分析事实和审计记录继续保留；未完成批次没有生成可执行治理结论。"
+        ),
+        "suggestion_zh": (
+            f"请按安全错误码 {failure_code} 检查模型服务、网络或输出合同后重新运行任务。"
+        ),
+    }
 
 
 def _deterministic_input_exception_analyses(

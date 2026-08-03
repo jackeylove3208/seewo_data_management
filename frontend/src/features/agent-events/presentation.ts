@@ -228,6 +228,11 @@ export function presentAgentEvent(event: AgentTaskEvent): PresentedAgentEvent {
     const title = {
       model_timeout: "模型响应超时",
       model_transport_failure: "模型连接暂时失败",
+      model_rate_limited: "模型服务限流",
+      model_upstream_5xx: "模型上游服务异常",
+      model_http_rejected: "模型服务拒绝了请求",
+      model_response_invalid_json: "模型响应不是有效 JSON",
+      model_response_contract_missing: "模型响应缺少结构化结果",
       model_provider_failure: "模型服务拒绝了请求",
       model_output_invalid: "模型输出未通过校验",
     }[category] ?? "本次模型分析失败";
@@ -290,6 +295,19 @@ function payloadStringArray(event: AgentTaskEvent, key: string): string[] {
 
 function blockedModelDescription(attempts: number, categories: string[]): string {
   const prefix = `本阶段共进行了 ${attempts} 次模型尝试。`;
+  const providerFailureDescriptions: Record<string, string> = {
+    model_timeout: "模型请求连续超时",
+    model_transport_failure: "模型连接连续失败",
+    model_rate_limited: "模型服务连续限流",
+    model_upstream_5xx: "模型上游服务连续异常",
+    model_http_rejected: "模型服务拒绝请求",
+    model_response_invalid_json: "模型响应不是有效 JSON",
+    model_response_contract_missing: "模型响应缺少结构化结果",
+    model_provider_failure: "模型服务未能完成处理",
+  };
+  const providerFailure = categories.find(
+    (category) => providerFailureDescriptions[category],
+  );
   if (categories.includes("tool_argument_rejected")) {
     return `${prefix}模型生成的工具参数未通过本批证据清单校验；失败审计已保存，请终止任务后检查批次工具契约。`;
   }
@@ -306,7 +324,7 @@ function blockedModelDescription(attempts: number, categories: string[]): string
     return `${prefix}后端传给 Agent 的输入合同未通过校验；任务数据和学校锁仍被安全保留，请终止任务后查看失败审计。`;
   }
   if (
-    categories.includes("model_provider_failure")
+    providerFailure
     && (
       categories.includes("model_contract_failure")
       || categories.includes("model_output_failure")
@@ -320,7 +338,10 @@ function blockedModelDescription(attempts: number, categories: string[]): string
   ) {
     return `${prefix}模型输出未通过结构化结果校验；任务数据和学校锁仍被安全保留。`;
   }
-  if (categories.length > 0 && !categories.includes("model_provider_failure")) {
+  if (providerFailure) {
+    return `${prefix}${providerFailureDescriptions[providerFailure]}；已完成进度仍被安全保留，请终止任务后查看失败原因分析。`;
+  }
+  if (categories.length > 0) {
     return `${prefix}Agent 受控处理未能完成；任务数据和学校锁仍被安全保留，请终止任务后查看失败审计。`;
   }
   return `${prefix}模型服务未能完成处理。任务数据和学校锁仍被安全保留，请终止任务后检查模型服务。`;
