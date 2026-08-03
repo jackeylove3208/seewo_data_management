@@ -1,7 +1,7 @@
 import json
 import re
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from cryptography.fernet import Fernet
@@ -42,6 +42,21 @@ class ApiConversationProvider:
                 "message_zh": "已确认 API 只读权威来源和 MySQL 希沃目标。",
             }
         return LLMResponse(output={"result": result}, provider="stub", model="stub")
+
+
+class OrdinaryQuestionProvider:
+    async def complete_json_once(self, request: LLMRequest) -> LLMResponse:
+        del request
+        return LLMResponse(
+            output={
+                "result": {
+                    "kind": "clarification",
+                    "message_zh": "请说明这条普通问题与数据同步的关系。",
+                }
+            },
+            provider="stub",
+            model="stub",
+        )
 
 
 @pytest.fixture
@@ -229,6 +244,91 @@ def test_hydration_keeps_current_configuration_and_pending_api_cards(
     pending_current = client.get("/api/agent/conversations/current")
 
     assert pending_current.json()["api_connection"]["state"] == "pending"
+
+
+def test_ordinary_message_after_dingtalk_task_does_not_reopen_connection_card(
+    api_conversation_client,
+) -> None:
+    client, _key, _adapter = api_conversation_client
+    conversation_id = _conversation(client)
+    previous_connection_id = uuid4()
+
+    async def seed_completed_task_context() -> None:
+        async with client.app.state.database.session_factory() as session:
+            async with session.begin():
+                conversation = await session.get(
+                    AgentConversationRecord,
+                    UUID(conversation_id),
+                )
+                assert conversation is not None
+                conversation.context = {
+                    "title": "钉钉人员同步",
+                    "entity_types": ["teacher", "student"],
+                    "source": {
+                        "kind": "api",
+                        "configuration_id": str(previous_connection_id),
+                    },
+                    "target": {
+                        "kind": "database",
+                        "configuration_id": "seewo-mysql",
+                    },
+                    "decision_kind": "task_started",
+                    "api_provider_id": "dingtalk",
+                }
+
+    client.portal.call(seed_completed_task_context)
+    client.app.state.conversation_provider = OrdinaryQuestionProvider()
+
+    response = client.post(
+        f"/api/agent/conversations/{conversation_id}/messages",
+        json={"message": "今天学校有什么安排？"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json().get("api_connection") is None
+    current = client.get("/api/agent/conversations/current")
+    assert current.status_code == 200, current.text
+    assert current.json().get("api_connection") is None
+
+
+def test_explicit_dingtalk_message_after_task_opens_fresh_connection_card(
+    api_conversation_client,
+) -> None:
+    client, _key, _adapter = api_conversation_client
+    conversation_id = _conversation(client)
+
+    async def seed_completed_task_context() -> None:
+        async with client.app.state.database.session_factory() as session:
+            async with session.begin():
+                conversation = await session.get(
+                    AgentConversationRecord,
+                    UUID(conversation_id),
+                )
+                assert conversation is not None
+                conversation.context = {
+                    "title": "钉钉人员同步",
+                    "entity_types": ["teacher", "student"],
+                    "source": {
+                        "kind": "api",
+                        "configuration_id": str(uuid4()),
+                    },
+                    "target": {
+                        "kind": "database",
+                        "configuration_id": "seewo-mysql",
+                    },
+                    "decision_kind": "task_started",
+                    "api_provider_id": "dingtalk",
+                }
+
+    client.portal.call(seed_completed_task_context)
+
+    response = client.post(
+        f"/api/agent/conversations/{conversation_id}/messages",
+        json={"message": "再次同步钉钉人员数据"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["api_connection"]["state"] == "configuration_required"
 
 
 def test_confirmed_api_connection_creates_one_idempotent_graph_task(
