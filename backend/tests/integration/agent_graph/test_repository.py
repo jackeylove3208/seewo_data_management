@@ -207,5 +207,94 @@ async def test_manifest_invocation_tool_and_human_gate_are_linked_facts(session)
 
     assert invocation.evidence_manifest_id == manifest.id
     assert tool_call.invocation_id == invocation.id
+    assert tool_call.model_turn is None
+    assert tool_call.replay_descriptor is None
     assert gate.member_ids == ["finding:1"]
 
+
+@pytest.mark.asyncio
+async def test_replayable_tool_calls_are_ordered_across_semantic_attempts(session) -> None:
+    _task, run = await _graph_run(session)
+    repository = AgentGraphRepository(session)
+    state = await repository.create_run_state(
+        run_id=run.id,
+        graph_version="agent-sync-graph-v1",
+        initial_node="analyze_actionable_batches",
+    )
+    manifest = await repository.record_manifest(
+        graph_run_id=state.id,
+        cursor=0,
+        graph_node="analyze_actionable_batches",
+        action_id="analyze_batch_1",
+        manifest={
+            "resource_ids": ["work-item:1"],
+            "allowed_evidence_refs": ["paired-record:1"],
+        },
+        content_hash="sha256:" + ("7" * 64),
+    )
+    invocations = []
+    for attempt in (1, 2):
+        invocations.append(
+            await repository.record_invocation(
+                graph_run_id=state.id,
+                cursor=0,
+                action_id="analyze_batch_1",
+                evidence_manifest_id=manifest.id,
+                execution_mode="skill_model",
+                skill_name="reconcile-entity-batch",
+                skill_version="1.0.0",
+                schema_version="agent-finding-v1",
+                attempt=attempt,
+                status="completed",
+                input_hash="sha256:input",
+                output_hash=f"sha256:output-{attempt}",
+                model_provenance={},
+            )
+        )
+    await repository.record_tool_call(
+        invocation_id=invocations[0].id,
+        tool_name="read_work_item",
+        arguments_hash="sha256:arguments-1",
+        result_hash="sha256:result-1",
+        authorized=True,
+        status="completed",
+        trace_id="trace-replay-1",
+        model_turn=1,
+        replay_descriptor={"resource_id": "work-item:1"},
+    )
+    await repository.record_tool_call(
+        invocation_id=invocations[1].id,
+        tool_name="read_claim_state",
+        arguments_hash="sha256:arguments-2",
+        result_hash="sha256:result-2",
+        authorized=True,
+        status="completed",
+        trace_id="trace-replay-2",
+        model_turn=2,
+        replay_descriptor={"resource_id": "work-item:1"},
+    )
+    await repository.record_tool_call(
+        invocation_id=invocations[1].id,
+        tool_name="read_work_item",
+        arguments_hash="sha256:ignored",
+        result_hash="sha256:ignored",
+        authorized=False,
+        status="denied",
+        trace_id="trace-denied",
+        model_turn=3,
+        replay_descriptor=None,
+    )
+
+    calls = await repository.list_replayable_tool_calls(
+        graph_run_id=state.id,
+        cursor=state.cursor,
+        action_id="analyze_batch_1",
+        skill_name="reconcile-entity-batch",
+        input_hash="sha256:input",
+    )
+
+    assert [(item.model_turn, item.tool_name) for item in calls] == [
+        (1, "read_work_item"),
+        (2, "read_claim_state"),
+    ]
+    assert calls[0].replay_descriptor == {"resource_id": "work-item:1"}

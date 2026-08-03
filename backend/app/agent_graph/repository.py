@@ -373,6 +373,8 @@ class AgentGraphRepository:
         authorized: bool,
         status: str,
         trace_id: str,
+        model_turn: int | None = None,
+        replay_descriptor: dict[str, Any] | None = None,
     ) -> AgentToolCallRecord:
         invocation = await self.session.get(
             AgentSubAgentInvocationRecord,
@@ -398,10 +400,41 @@ class AgentGraphRepository:
             authorized=authorized,
             status=status,
             trace_id=trace_id,
+            model_turn=model_turn,
+            replay_descriptor=replay_descriptor,
         )
         self.session.add(record)
         await self.session.flush()
         return record
+
+    async def list_replayable_tool_calls(
+        self,
+        *,
+        graph_run_id: UUID,
+        cursor: int,
+        action_id: str,
+        skill_name: str,
+        input_hash: str,
+    ) -> tuple[AgentToolCallRecord, ...]:
+        statement = (
+            select(AgentToolCallRecord)
+            .join(AgentSubAgentInvocationRecord)
+            .where(
+                AgentSubAgentInvocationRecord.graph_run_id == graph_run_id,
+                AgentSubAgentInvocationRecord.cursor == cursor,
+                AgentSubAgentInvocationRecord.action_id == action_id,
+                AgentSubAgentInvocationRecord.skill_name == skill_name,
+                AgentSubAgentInvocationRecord.input_hash == input_hash,
+                AgentToolCallRecord.authorized.is_(True),
+                AgentToolCallRecord.status == "completed",
+                AgentToolCallRecord.replay_descriptor.is_not(None),
+            )
+            .order_by(
+                AgentSubAgentInvocationRecord.attempt,
+                AgentToolCallRecord.sequence,
+            )
+        )
+        return tuple(await self.session.scalars(statement))
 
     async def finalize_invocation(
         self,

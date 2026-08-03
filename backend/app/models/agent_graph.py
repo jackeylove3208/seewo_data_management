@@ -190,6 +190,10 @@ class AgentToolCallRecord(Base, TimestampMixin):
     authorized: Mapped[bool] = mapped_column(Boolean)
     status: Mapped[str] = mapped_column(String(32), index=True)
     trace_id: Mapped[str] = mapped_column(String(128), index=True)
+    model_turn: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    replay_descriptor: Mapped[dict[str, Any] | None] = mapped_column(
+        _json_type(), nullable=True
+    )
 
     __table_args__ = (
         UniqueConstraint(
