@@ -358,6 +358,91 @@ async def test_api_task_binds_resource_and_selects_graph_v2_without_provider_cal
     assert actions[0].resource_ids == (f"api-source:{api_source.id}",)
 
 
+async def test_api_task_freezes_dingtalk_scope_classification_without_model_call(
+    database,
+) -> None:
+    key = Fernet.generate_key()
+    settings = _settings(key)
+    adapter = AdapterMustNotRun()
+    registry = ProviderRegistry()
+    registry.register(MANIFEST, adapter)
+    classification = {
+        "mode": "organization_unit_llm",
+        "skill_version": "1.0.0",
+        "tree_fingerprint": "a" * 64,
+        "input_hash": "b" * 64,
+        "output_hash": "c" * 64,
+        "attempts": [],
+    }
+    async with database.session_factory() as session:
+        async with session.begin():
+            connection = await _seed_connection(session, fernet_key=key)
+            connection.public_configuration = {
+                "sync_scope": "people",
+                "root_department_id": 1,
+                "person_classification_mode": "organization_unit_llm",
+                "department_entity_kinds": {
+                    "10": "teacher",
+                    "11": "teacher",
+                    "20": "student",
+                    "21": "student",
+                },
+                "organization_classification": classification,
+            }
+            connection.capabilities = {
+                "entity.teacher.read": True,
+                "entity.student.read": True,
+            }
+            connection.visibility_summary = {
+                "visible": True,
+                "teacher_count": 2,
+                "student_count": 2,
+            }
+            intent = AgentTaskIntent.model_validate(
+                {
+                    "title": "钉钉人员同步",
+                    "entity_types": ["teacher", "student"],
+                    "source": {
+                        "kind": "api",
+                        "configuration_id": str(connection.id),
+                    },
+                    "target": {
+                        "kind": "database",
+                        "configuration_id": "seewo-mysql",
+                    },
+                }
+            )
+            task, _run = await AgentTaskService(
+                session,
+                operator=OperatorContext(
+                    operator_id="operator-1",
+                    tenant_id="school-1",
+                ),
+                settings=settings,
+                provider_registry=registry,
+            ).create(intent, idempotency_key="api-task-frozen-classification")
+            api_source = await session.scalar(
+                select(ApiAuthoritySourceRecord).where(
+                    ApiAuthoritySourceRecord.task_id == task.id
+                )
+            )
+
+    assert api_source is not None
+    assert api_source.selected_entities == ["student", "teacher"]
+    assert api_source.frozen_public_configuration[
+        "department_entity_kinds"
+    ] == {
+        "10": "teacher",
+        "11": "teacher",
+        "20": "student",
+        "21": "student",
+    }
+    assert api_source.frozen_public_configuration[
+        "organization_classification"
+    ] == classification
+    assert adapter.calls == 0
+
+
 async def test_conversation_api_task_rejects_a_persistent_connection(
     database,
 ) -> None:
