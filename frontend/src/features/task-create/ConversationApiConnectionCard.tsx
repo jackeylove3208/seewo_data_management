@@ -21,13 +21,13 @@ const safeErrorMessages: Record<string, string> = {
   connector_permission_denied:
     "钉钉部门或人员目录权限或可见范围不足，请在钉钉开发者后台修正后重试。",
   connector_entity_classification_unknown:
-    "部分有人员的行政单元无法判断为教职工或学生，请调整钉钉组织归属后重试。",
+    "人员分类服务暂时不可用，请稍后重试连接。",
   connector_entity_classification_ambiguous:
-    "存在同时归属教职工与学生分支的人员，请调整钉钉组织归属后重试。",
+    "人员分类服务暂时不可用，请稍后重试连接。",
   connector_entity_classification_invalid:
-    "钉钉行政单元分类结果不完整或互相矛盾，请重新测试连接。",
+    "人员分类服务暂时不可用，请稍后重试连接。",
   connector_entity_classification_unavailable:
-    "暂时无法完成钉钉行政单元分类，请稍后重试。",
+    "人员分类服务暂时不可用，请稍后重试连接。",
   connector_organization_changed:
     "钉钉组织结构在检测期间发生变化，请重新测试连接。",
 };

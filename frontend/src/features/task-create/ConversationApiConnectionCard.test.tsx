@@ -4,6 +4,30 @@ import { expect, it, vi } from "vitest";
 
 import { ConversationApiConnectionCard } from "./ConversationApiConnectionCard";
 
+it("describes classification failures as retryable service errors", () => {
+  render(
+    <ConversationApiConnectionCard
+      conversationId="00000000-0000-0000-0000-000000000001"
+      connection={{
+        provider_id: "dingtalk",
+        state: "invalid",
+        safe_error_code: "connector_entity_classification_unknown",
+        required_secret_fields: ["app_key", "app_secret"],
+        display_name: "钉钉临时连接-测试",
+        capabilities: {},
+        visibility_summary: {},
+      }}
+      configure={vi.fn()}
+      onChange={vi.fn()}
+    />,
+  );
+
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "人员分类服务暂时不可用，请稍后重试连接。",
+  );
+  expect(screen.getByRole("alert")).not.toHaveTextContent("调整钉钉组织归属");
+});
+
 it("clears credential inputs after a failed submission", async () => {
   const configure = vi.fn().mockRejectedValue(new Error("连接失败"));
   const user = userEvent.setup();
