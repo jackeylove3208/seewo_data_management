@@ -13,8 +13,12 @@ from app.agent_runtime.external_identity_service import (
     ExternalIdentityBindingNotFound,
     ExternalIdentityBindingValidation,
 )
+from app.ai.providers.llm import HttpLLMProvider
 from app.api.dependencies import get_operator_context, get_session
 from app.api_connectors.dingtalk_configuration import entity_kinds_for_scope
+from app.api_connectors.organization_unit_classifier import (
+    DingTalkOrganizationUnitClassifier,
+)
 from app.api_connectors.policy import uses_task_scoped_conversation_credentials
 from app.api_connectors.service import (
     ApiConnectionConflictError,
@@ -385,6 +389,13 @@ def _service(request: Request, session: AsyncSession) -> ApiConnectionService:
         session,
         registry=request.app.state.api_provider_registry,
         fernet_key=settings.api_connector_secret_key,
+        classifier=DingTalkOrganizationUnitClassifier(
+            getattr(
+                request.app.state,
+                "conversation_provider",
+                HttpLLMProvider(settings=settings),
+            )
+        ),
     )
 
 

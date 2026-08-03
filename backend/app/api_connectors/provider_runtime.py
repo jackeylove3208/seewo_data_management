@@ -13,6 +13,10 @@ from app.api_connectors.contracts import (
     FrozenApiRecord,
     ProviderManifest,
 )
+from app.api_connectors.dingtalk_configuration import (
+    ApiConnectionValidationError,
+    entity_kinds_for_scope,
+)
 from app.schemas.agent_ingestion import AgentEntityKind
 
 
@@ -87,6 +91,16 @@ def _retry_delay(response: httpx.Response, attempt: int) -> float:
 def configured_person_kinds(
     public_configuration: Mapping[str, object],
 ) -> frozenset[AgentEntityKind]:
+    scope = public_configuration.get("sync_scope")
+    if scope == "department":
+        return frozenset()
+    if scope in {"people", "all"}:
+        configured_rules = public_configuration.get("department_entity_kinds")
+        if not isinstance(configured_rules, dict) or not configured_rules:
+            raise ApiProviderError("connector_configuration_invalid")
+        if any(value not in {"teacher", "student"} for value in configured_rules.values()):
+            raise ApiProviderError("connector_configuration_invalid")
+        return frozenset({AgentEntityKind.TEACHER, AgentEntityKind.STUDENT})
     values: set[AgentEntityKind] = set()
     default_kind = public_configuration.get("person_entity_kind", "teacher")
     try:
@@ -126,6 +140,8 @@ def person_kind(
         raise ApiProviderError("connector_entity_classification_ambiguous")
     if matched:
         return matched.pop()
+    if public_configuration.get("sync_scope") in {"people", "all"}:
+        raise ApiProviderError("connector_configuration_invalid")
     default_kind = public_configuration.get("person_entity_kind", "teacher")
     try:
         kind = AgentEntityKind(str(default_kind))
@@ -140,6 +156,14 @@ def require_supported_selection(
     public_configuration: Mapping[str, object],
     selected_entities: frozenset[AgentEntityKind],
 ) -> None:
+    if "sync_scope" in public_configuration:
+        try:
+            supported = set(entity_kinds_for_scope(public_configuration))
+        except ApiConnectionValidationError as error:
+            raise ApiProviderError("connector_configuration_invalid") from error
+        if not selected_entities or not selected_entities <= supported:
+            raise ApiProviderError("connector_entity_unsupported")
+        return
     supported = {
         AgentEntityKind.DEPARTMENT,
         *configured_person_kinds(public_configuration),

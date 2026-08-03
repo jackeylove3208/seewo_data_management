@@ -14,6 +14,14 @@ from app.ai.skills.contracts import (
 from app.ai.skills.registry import SkillRegistry
 
 NEW_AGENT_SKILLS = {
+    "classify-dingtalk-organization-units": (
+        "行政单元",
+        "teacher",
+        "student",
+        "unknown",
+        "每个",
+        "不得",
+    ),
     "converse-school-data-sync": (
         "活动任务",
         "学校锁",
@@ -148,6 +156,7 @@ NEW_AGENT_SKILLS = {
 }
 
 NEW_AGENT_SKILL_VERSIONS = {
+    "classify-dingtalk-organization-units": "1.0.0",
     "converse-school-data-sync": "1.6.0",
     "assess-agent-rollback-impact": "2.1.0",
     "execute-approved-rollback": "2.1.0",

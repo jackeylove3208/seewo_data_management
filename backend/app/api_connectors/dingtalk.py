@@ -15,6 +15,10 @@ from app.api_connectors.contracts import (
     OrganizationUnitNode,
     ProviderManifest,
 )
+from app.api_connectors.dingtalk_configuration import (
+    ApiConnectionValidationError,
+    entity_kinds_for_scope,
+)
 from app.api_connectors.provider_runtime import (
     append_unique_record,
     configured_field,
@@ -60,8 +64,15 @@ class DingtalkOrganizationAdapter:
         public_configuration: Mapping[str, object],
         secret: Mapping[str, str],
     ) -> ConnectionTestResult:
-        person_kinds = configured_person_kinds(public_configuration)
-        selected = frozenset({AgentEntityKind.DEPARTMENT, *person_kinds})
+        if "sync_scope" in public_configuration:
+            try:
+                selected = frozenset(entity_kinds_for_scope(public_configuration))
+            except ApiConnectionValidationError as error:
+                raise ApiProviderError("connector_configuration_invalid") from error
+            person_kinds = selected - {AgentEntityKind.DEPARTMENT}
+        else:
+            person_kinds = configured_person_kinds(public_configuration)
+            selected = frozenset({AgentEntityKind.DEPARTMENT, *person_kinds})
         return await summarize_connection_test(
             self.capture(public_configuration, secret, selected),
             person_kinds=person_kinds,
@@ -122,6 +133,15 @@ class DingtalkOrganizationAdapter:
         records: list[FrozenApiRecord] = []
         unique_records: dict[tuple[AgentEntityKind, str], FrozenApiRecord] = {}
         departments = await self._read_department_tree(api, root_department_id)
+        if public_configuration.get("sync_scope") in {"people", "all"}:
+            classification = public_configuration.get("organization_classification")
+            if not isinstance(classification, dict):
+                raise ApiProviderError("connector_configuration_invalid")
+            expected_fingerprint = classification.get("tree_fingerprint")
+            if not isinstance(expected_fingerprint, str):
+                raise ApiProviderError("connector_configuration_invalid")
+            if _tree_fingerprint(departments) != expected_fingerprint:
+                raise ApiProviderError("connector_organization_changed")
         for department in departments:
             if AgentEntityKind.DEPARTMENT in selected_entities:
                 record = _department_record(

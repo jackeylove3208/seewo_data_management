@@ -445,6 +445,40 @@ async def test_dingtalk_department_capture_never_reads_people() -> None:
     assert sum(len(page.records) for page in pages) == 6
 
 
+async def test_dingtalk_capture_rejects_changed_classified_tree() -> None:
+    adapter, client = _adapter("dingtalk", _dingtalk_hierarchy_handler)
+    try:
+        with pytest.raises(ApiProviderError) as captured:
+            _ = [
+                page
+                async for page in adapter.capture(
+                    {
+                        "sync_scope": "people",
+                        "person_classification_mode": "organization_unit_llm",
+                        "root_department_id": 1,
+                        "department_entity_kinds": {
+                            "10": "teacher",
+                            "11": "teacher",
+                            "20": "student",
+                            "21": "student",
+                            "22": "student",
+                        },
+                        "organization_classification": {
+                            "tree_fingerprint": "b" * 64
+                        },
+                    },
+                    _secret("dingtalk"),
+                    frozenset(
+                        {AgentEntityKind.TEACHER, AgentEntityKind.STUDENT}
+                    ),
+                )
+            ]
+    finally:
+        await client.aclose()
+
+    assert captured.value.safe_code == "connector_organization_changed"
+
+
 def _wecom_duplicate_user_handler(request: httpx.Request) -> httpx.Response:
     if request.url.path != "/cgi-bin/user/list":
         return _wecom_handler(request)
