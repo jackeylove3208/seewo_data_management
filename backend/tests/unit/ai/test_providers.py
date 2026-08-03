@@ -186,6 +186,7 @@ async def test_llm_extracts_json_from_openai_compatible_response() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         assert payload["model"] == "test-model"
+        assert payload["max_tokens"] == 8_192
         assert "response_schema" not in payload
         assert payload["response_format"] == {
             "type": "json_schema",
@@ -222,6 +223,39 @@ async def test_llm_extracts_json_from_openai_compatible_response() -> None:
     assert response.output == {"cause": "attribute mismatch"}
     assert response.usage.input_tokens == 3
     assert response.usage.output_tokens == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("configured_limit", "extra_body", "expected_limit"),
+    [
+        (4_096, {}, 4_096),
+        (4_096, {"max_tokens": 2_048}, 2_048),
+    ],
+)
+async def test_llm_request_uses_configured_or_provider_output_limit(
+    configured_limit: int,
+    extra_body: dict[str, int],
+    expected_limit: int,
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["max_tokens"] == expected_limit
+        return httpx.Response(200, json={"output": {"cause": "ok"}}, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = HttpLLMProvider(
+            settings=Settings(
+                llm_url="https://gateway.example.test/v1/chat/completions",
+                llm_api_key="secret-token",
+                llm_max_output_tokens=configured_limit,
+                llm_extra_body_json=extra_body,
+            ),
+            client=client,
+        )
+        await provider.complete_json_once(
+            LLMRequest(messages=(Message(role="user", content="analyze"),))
+        )
 
 
 @pytest.mark.asyncio
