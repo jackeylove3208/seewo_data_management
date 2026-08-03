@@ -19,6 +19,8 @@ from app.agent_graph.tools import (
     GraphToolAuthorizationError,
     GraphToolContext,
     GraphToolExecutionError,
+    GraphToolReplayConflict,
+    GraphToolResult,
 )
 from app.ai.agent_prompting import (
     build_json_repair_request,
@@ -35,7 +37,7 @@ from app.ai.providers.base import (
 )
 from app.ai.skills.registry import SkillDefinition, SkillRegistry, UnsafeSkillError
 from app.core.security import OperatorContext
-from app.models.agent_graph import AgentEvidenceManifestRecord
+from app.models.agent_graph import AgentEvidenceManifestRecord, AgentToolCallRecord
 
 
 class GraphSubAgentFailure(RuntimeError):
@@ -115,6 +117,7 @@ class GraphSkillModelRunner:
         skills: SkillRegistry | None = None,
         max_retries: int = 3,
         max_tool_calls: int = 8,
+        durable_tool_recovery: bool = False,
     ) -> None:
         if not 0 <= max_retries <= 3:
             raise ValueError("graph sub-agent max_retries must be between zero and three")
@@ -127,6 +130,7 @@ class GraphSkillModelRunner:
         self._skills = skills or SkillRegistry()
         self._max_retries = max_retries
         self._max_tool_calls = max_tool_calls
+        self._durable_tool_recovery = durable_tool_recovery
         self._repository = AgentGraphRepository(session)
 
     async def run(
@@ -216,6 +220,14 @@ class GraphSkillModelRunner:
                     else {}
                 ),
             )
+            await self._commit_recovery_boundary()
+            replay_calls = await self._repository.list_replayable_tool_calls(
+                graph_run_id=invocation.graph_run_id,
+                cursor=invocation.graph_cursor,
+                action_id=invocation.action_id,
+                skill_name=skill.name,
+                input_hash=input_hash,
+            )
             try:
                 output, provenance = await self._run_attempt(
                     invocation,
@@ -224,6 +236,7 @@ class GraphSkillModelRunner:
                     input_payload,
                     manifest=manifest,
                     repair_feedback=repair_feedback,
+                    replay_calls=replay_calls,
                     result_validator=result_validator,
                 )
                 await self._repository.finalize_invocation(
@@ -233,6 +246,7 @@ class GraphSkillModelRunner:
                     output_payload=output.model_dump(mode="json"),
                     model_provenance=provenance,
                 )
+                await self._commit_recovery_boundary()
                 return GraphSkillRunResult(
                     output=output,
                     invocation_id=record.id,
@@ -271,10 +285,13 @@ class GraphSkillModelRunner:
                     output_hash=_safe_hash({"safe_error_code": safe_error_code}),
                     model_provenance=failure_provenance,
                 )
+                await self._commit_recovery_boundary()
                 if isinstance(error, GraphToolAuthorizationError) and not isinstance(
                     error,
                     GraphToolArgumentRejected,
                 ):
+                    break
+                if isinstance(error, GraphToolReplayConflict):
                     break
 
         raise GraphSubAgentFailure(
@@ -287,6 +304,10 @@ class GraphSkillModelRunner:
             attempt_count=attempted,
             attempt_details=tuple(attempt_details),
         ) from last_error
+
+    async def _commit_recovery_boundary(self) -> None:
+        if self._durable_tool_recovery:
+            await self._session.commit()
 
     async def _load_evidence_manifest(
         self,
@@ -334,19 +355,70 @@ class GraphSkillModelRunner:
         *,
         manifest: EvidenceManifestV1,
         repair_feedback: tuple[dict[str, str], ...] = (),
+        replay_calls: tuple[AgentToolCallRecord, ...] = (),
         result_validator: ResultValidator | None = None,
     ) -> tuple[BaseModel, dict[str, Any]]:
         response_schema = _response_schema(skill, self._skills, manifest=manifest)
         response_example = response_example_from_schema(response_schema)
-        initial_request = LLMRequest(
-            messages=tuple(
-                _initial_messages(
-                    skill,
-                    invocation,
-                    input_payload,
+        messages = _initial_messages(
+            skill,
+            invocation,
+            input_payload,
+            manifest=manifest,
+        )
+        allowed_tools = frozenset(skill.allowed_tools)
+        context = GraphToolContext(
+            operator_id=self._operator.operator_id,
+            tenant_id=self._operator.tenant_id,
+            task_id=invocation.task_id,
+            run_id=invocation.run_id,
+            graph_run_id=invocation.graph_run_id,
+            graph_node=invocation.graph_node,
+            graph_cursor=invocation.graph_cursor,
+            action_id=invocation.action_id,
+            evidence_manifest_id=invocation.evidence_manifest_id,
+            invocation_id=invocation_id,
+            allowed_tools=allowed_tools,
+        )
+        for replay_call in replay_calls:
+            arguments = replay_call.replay_descriptor
+            if (
+                not isinstance(arguments, dict)
+                or not isinstance(replay_call.model_turn, int)
+                or replay_call.model_turn < 1
+            ):
+                raise GraphToolReplayConflict(
+                    "tool replay checkpoint is incomplete"
+                )
+            if replay_call.tool_name not in allowed_tools:
+                raise GraphToolReplayConflict(
+                    "tool replay checkpoint is no longer authorized by the Skill"
+                )
+            try:
+                _validate_tool_arguments(
+                    replay_call.tool_name,
+                    arguments,
                     manifest=manifest,
                 )
-            ),
+            except ValueError as error:
+                raise GraphToolReplayConflict(
+                    "tool replay checkpoint arguments are invalid"
+                ) from error
+            replayed = await self._tool_gateway.replay(
+                replay_call.tool_name,
+                context=context,
+                arguments=arguments,
+                expected_result_hash=replay_call.result_hash,
+            )
+            messages.extend(
+                _tool_exchange_messages(
+                    tool_name=replay_call.tool_name,
+                    arguments=arguments,
+                    result=replayed,
+                )
+            )
+        initial_request = LLMRequest(
+            messages=tuple(messages),
             response_schema=response_schema,
             response_example=response_example,
         )
@@ -362,21 +434,7 @@ class GraphSkillModelRunner:
         output_tokens = 0
         provider = "unavailable"
         model = "unavailable"
-        allowed_tools = frozenset(skill.allowed_tools)
-        context = GraphToolContext(
-            operator_id=self._operator.operator_id,
-            tenant_id=self._operator.tenant_id,
-            task_id=invocation.task_id,
-            run_id=invocation.run_id,
-            graph_run_id=invocation.graph_run_id,
-            graph_node=invocation.graph_node,
-            graph_cursor=invocation.graph_cursor,
-            action_id=invocation.action_id,
-            evidence_manifest_id=invocation.evidence_manifest_id,
-            invocation_id=invocation_id,
-            allowed_tools=allowed_tools,
-        )
-        tool_calls = 0
+        tool_calls = len(replay_calls)
 
         while True:
             request = LLMRequest(
@@ -414,7 +472,7 @@ class GraphSkillModelRunner:
                     raise ValueError("graph sub-agent tool call is invalid")
                 if name not in allowed_tools:
                     raise ValueError("Skill did not authorize phase tool")
-                _validate_tool_arguments(name, arguments)
+                _validate_tool_arguments(name, arguments, manifest=manifest)
                 tool_calls += 1
                 if tool_calls > self._max_tool_calls:
                     raise ValueError("graph sub-agent tool-call limit exceeded")
@@ -442,6 +500,7 @@ class GraphSkillModelRunner:
                     resource_id=_optional_argument(arguments, "resource_id"),
                     evidence_ref=_optional_argument(arguments, "evidence_ref"),
                     sensitive_token=_optional_argument(arguments, "sensitive_token"),
+                    model_turn=tool_calls,
                 )
             except GraphToolArgumentRejected as error:
                 raise _RepairableGraphModelOutput(
@@ -455,29 +514,13 @@ class GraphSkillModelRunner:
                         output_tokens=output_tokens,
                     ),
                 ) from error
+            await self._commit_recovery_boundary()
             messages.extend(
-                (
-                    Message(
-                        role="assistant",
-                        content=json.dumps(
-                            response.output,
-                            ensure_ascii=False,
-                            sort_keys=True,
-                            default=str,
-                        ),
-                    ),
-                    Message(
-                        role="user",
-                        content=json.dumps(
-                            {
-                                "authorized_tool_result": tool_result.payload,
-                                "trace_id": tool_result.trace_id,
-                            },
-                            ensure_ascii=False,
-                            sort_keys=True,
-                            default=str,
-                        ),
-                    ),
+                _tool_exchange_messages(
+                    tool_name=name,
+                    arguments=arguments,
+                    result=tool_result,
+                    assistant_output=response.output,
                 )
             )
 
@@ -743,7 +786,12 @@ def _manifest_member_schema(
     return {"type": "string", "minLength": 1}
 
 
-def _validate_tool_arguments(name: str, arguments: dict[str, Any]) -> None:
+def _validate_tool_arguments(
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    manifest: EvidenceManifestV1 | None = None,
+) -> None:
     if name == "submit_conflict_interpretation":
         from app.ai.skills.contracts import ConflictDecisionDraft
 
@@ -760,7 +808,7 @@ def _validate_tool_arguments(name: str, arguments: dict[str, Any]) -> None:
             }
         )
         return
-    schema = _tool_arguments_schema(name)
+    schema = _tool_arguments_schema(name, manifest=manifest)
     properties = schema.get("properties", {})
     required = schema.get("required", ())
     missing = [key for key in required if key not in arguments]
@@ -832,6 +880,46 @@ def _optional_argument(arguments: Mapping[str, object], key: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _tool_exchange_messages(
+    *,
+    tool_name: str,
+    arguments: dict[str, Any],
+    result: GraphToolResult,
+    assistant_output: dict[str, Any] | None = None,
+) -> tuple[Message, Message]:
+    output = assistant_output or {
+        "result": {
+            "tool_call": {
+                "name": tool_name,
+                "arguments": arguments,
+            }
+        }
+    }
+    return (
+        Message(
+            role="assistant",
+            content=json.dumps(
+                output,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            ),
+        ),
+        Message(
+            role="user",
+            content=json.dumps(
+                {
+                    "authorized_tool_result": result.payload,
+                    "trace_id": result.trace_id,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            ),
+        ),
+    )
+
+
 def _safe_hash(value: object) -> str:
     encoded = json.dumps(
         value,
@@ -857,6 +945,8 @@ def _safe_error_code(error: Exception) -> str:
         return "tool_authorization_failure"
     if isinstance(error, GraphToolExecutionError):
         return "tool_execution_failure"
+    if isinstance(error, GraphToolReplayConflict):
+        return "tool_replay_conflict"
     if isinstance(error, (ValidationError, UnsafeSkillError)):
         return "model_contract_failure"
     return "model_output_failure"

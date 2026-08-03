@@ -642,7 +642,9 @@ async def test_real_skill_invocation_repairs_invalid_output_shape(session) -> No
 
 
 @pytest.mark.asyncio
-async def test_repair_retry_replays_tools_under_the_new_invocation(session) -> None:
+async def test_contract_failure_after_tool_result_retries_final_output_with_replayed_context(
+    session,
+) -> None:
     task, run, state, manifest = await _graph_invocation_fixture(
         session,
         node="inspect_sources",
@@ -676,9 +678,7 @@ async def test_repair_retry_replays_tools_under_the_new_invocation(session) -> N
             "safe_problem_codes": [],
         }
     }
-    provider = ScriptedProvider(
-        [tool_call, invalid_result, tool_call, valid_result]
-    )
+    provider = ScriptedProvider([tool_call, invalid_result, valid_result])
 
     async def inspect_source(_context, arguments):
         return {
@@ -701,6 +701,7 @@ async def test_repair_retry_replays_tools_under_the_new_invocation(session) -> N
         ),
         operator=operator,
         max_retries=1,
+        durable_tool_recovery=True,
     ).run(
         GraphSkillInvocation(
             task_id=task.id,
@@ -724,11 +725,11 @@ async def test_repair_retry_replays_tools_under_the_new_invocation(session) -> N
     )
 
     assert result.output.model_dump()["detected_fields"] == ("category",)
-    assert len(provider.requests) == 4
+    assert len(provider.requests) == 3
     second_attempt_messages = provider.requests[2].messages
     assert "validation_errors" in second_attempt_messages[-1].content
-    assert all(
-        "authorized_tool_result" not in message.content
+    assert any(
+        "authorized_tool_result" in message.content
         for message in second_attempt_messages
     )
     invocations = tuple(
@@ -747,19 +748,91 @@ async def test_repair_retry_replays_tools_under_the_new_invocation(session) -> N
             )
         )
     )
-    assert {item.invocation_id for item in tool_records} == {
-        invocations[0].id,
-        invocations[1].id,
-    }
+    assert {item.invocation_id for item in tool_records} == {invocations[0].id}
     assert invocations[0].model_provenance["request_ids"] == [
         "request-1",
         "request-2",
     ]
     assert invocations[1].model_provenance["request_ids"] == [
         "request-3",
-        "request-4",
     ]
     assert invocations[1].model_provenance["tool_call_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_changed_tool_result_stops_recovery_without_consuming_all_attempts(
+    session,
+) -> None:
+    task, run, state, manifest = await _graph_invocation_fixture(
+        session,
+        node="inspect_sources",
+        action_id="inspect_authority:page-1",
+    )
+    tool_call = {
+        "result": {
+            "tool_call": {
+                "name": "inspect_configured_source",
+                "arguments": {
+                    "resource_id": "source:authoritative:page:1",
+                },
+            }
+        }
+    }
+    provider = ScriptedProvider([tool_call, ModelProviderError("gateway failed")])
+    executions = 0
+
+    async def changing_source(_context, arguments):
+        nonlocal executions
+        executions += 1
+        return {
+            "resource_id": arguments["resource_id"],
+            "version": executions,
+        }
+
+    operator = OperatorContext(
+        operator_id="demo-operator",
+        tenant_id=task.tenant_id,
+    )
+    runner = GraphSkillModelRunner(
+        session,
+        provider=provider,
+        tool_gateway=GraphPhaseToolGateway(
+            session,
+            operator=operator,
+            tools={"inspect_configured_source": changing_source},
+        ),
+        operator=operator,
+        durable_tool_recovery=True,
+    )
+
+    with pytest.raises(GraphSubAgentFailure) as captured:
+        await runner.run(
+            GraphSkillInvocation(
+                task_id=task.id,
+                run_id=run.id,
+                graph_run_id=state.id,
+                graph_node=state.current_node,
+                graph_cursor=state.cursor,
+                action_id="inspect_authority:page-1",
+                evidence_manifest_id=manifest.id,
+                skill_name="inspect-external-data-source",
+                skill_version="1.0.0",
+                input_payload={
+                    "task_id": str(task.id),
+                    "run_id": str(run.id),
+                    "phase": "ingest_and_normalize",
+                    "evidence_refs": ["source:authoritative:inspection"],
+                    "connector_kind": "csv",
+                    "connector_ref": "source:authoritative:page:1",
+                },
+            )
+        )
+
+    assert captured.value.attempt_count == 2
+    assert captured.value.failure_categories == (
+        "model_provider_failure",
+        "tool_replay_conflict",
+    )
 
 
 @pytest.mark.asyncio
@@ -1230,20 +1303,11 @@ async def test_interrupted_invocation_after_tool_result_preserves_audit_and_resu
                 tools={"inspect_configured_source": inspect_source},
             ),
             operator=operator,
+            durable_tool_recovery=True,
         ).run(request)
 
     recovery_provider = ScriptedProvider(
         [
-            {
-                "result": {
-                    "tool_call": {
-                        "name": "inspect_configured_source",
-                        "arguments": {
-                            "resource_id": "source:authoritative:page:1",
-                        },
-                    }
-                }
-            },
             {
                 "result": {
                     "schema_version": "agent-contract-v1",
@@ -1264,6 +1328,7 @@ async def test_interrupted_invocation_after_tool_result_preserves_audit_and_resu
             tools={"inspect_configured_source": inspect_source},
         ),
         operator=operator,
+        durable_tool_recovery=True,
     ).run(request)
 
     tool_calls = tuple(
@@ -1273,8 +1338,9 @@ async def test_interrupted_invocation_after_tool_result_preserves_audit_and_resu
     )
     assert recovered.attempt_count == 2
     assert tool_executions == 2
-    assert len(tool_calls) == 2
+    assert len(tool_calls) == 1
     assert all(item.authorized and item.status == "completed" for item in tool_calls)
+    assert "authorized_tool_result" in recovery_provider.requests[0].messages[-1].content
 
 
 @pytest.mark.asyncio
