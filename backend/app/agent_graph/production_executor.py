@@ -2299,38 +2299,38 @@ class ProductionGraphActionExecutor:
         result = None
         model_failure: GraphSubAgentFailure | None = None
         async with self._session_factory() as model_session:
-            async with model_session.begin():
-                tools, runner, replay_manifest_id = await self._analysis_runtime(
-                    model_session,
-                    context=context,
-                    action=action,
+            tools, runner, replay_manifest_id = await self._analysis_runtime(
+                model_session,
+                context=context,
+                action=action,
+                durable_tool_recovery=True,
+            )
+            if replay_manifest_id != manifest_id:
+                raise RuntimeError(
+                    "analysis evidence manifest replay changed identity"
                 )
-                if replay_manifest_id != manifest_id:
-                    raise RuntimeError(
-                        "analysis evidence manifest replay changed identity"
-                    )
-                try:
-                    result = await GraphIngestionAnalysisExecutors(
-                        runner
-                    ).analyze_actionable_batch(
-                        GraphSkillInvocation(
-                            task_id=context.task_id,
-                            run_id=context.run_id,
-                            graph_run_id=context.graph_run_id,
-                            graph_node=context.current_node,
-                            graph_cursor=context.graph_cursor,
-                            action_id=action.action_id,
-                            evidence_manifest_id=manifest_id,
-                            skill_name="reconcile-entity-batch",
-                            skill_version="1.0.0",
-                            input_payload=input_payload,
-                        ),
-                        expected_work_item_kinds=expected_kinds,
-                        allowed_evidence_refs=frozenset(action.required_evidence),
-                    )
-                except GraphSubAgentFailure as error:
-                    model_failure = error
-                del tools
+            try:
+                result = await GraphIngestionAnalysisExecutors(
+                    runner
+                ).analyze_actionable_batch(
+                    GraphSkillInvocation(
+                        task_id=context.task_id,
+                        run_id=context.run_id,
+                        graph_run_id=context.graph_run_id,
+                        graph_node=context.current_node,
+                        graph_cursor=context.graph_cursor,
+                        action_id=action.action_id,
+                        evidence_manifest_id=manifest_id,
+                        skill_name="reconcile-entity-batch",
+                        skill_version="1.0.0",
+                        input_payload=input_payload,
+                    ),
+                    expected_work_item_kinds=expected_kinds,
+                    allowed_evidence_refs=frozenset(action.required_evidence),
+                )
+            except GraphSubAgentFailure as error:
+                model_failure = error
+            del tools
 
         if model_failure is not None:
             async with self._session_factory() as release_session:
@@ -3664,6 +3664,7 @@ class ProductionGraphActionExecutor:
         context: GraphWorkContext,
         action: AllowedActionV1,
         prepare_sensitive_tokens: bool = True,
+        durable_tool_recovery: bool = False,
     ) -> tuple[GraphAnalysisEvidenceTools, GraphSkillModelRunner, UUID]:
         operator = OperatorContext(
             operator_id=context.worker_id,
@@ -3701,6 +3702,7 @@ class ProductionGraphActionExecutor:
                 tool_gateway=gateway,
                 operator=operator,
                 max_retries=self._max_retries,
+                durable_tool_recovery=durable_tool_recovery,
             ),
             manifest_id,
         )
