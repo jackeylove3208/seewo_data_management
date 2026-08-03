@@ -67,7 +67,6 @@ async def test_builder_marks_correct_rows_silent_and_emits_duplicate_extra_and_m
     for role, row, number in (
         ("authoritative", 2, "S1"), ("authoritative", 3, "S2"),
         ("target", 2, "S1"), ("target", 3, "S1"), ("target", 4, "S9"),
-        ("target", 5, "S8"),
     ):
         records.append(
             AgentContractRecord(
@@ -96,25 +95,24 @@ async def test_builder_marks_correct_rows_silent_and_emits_duplicate_extra_and_m
         await session.scalars(select(AgentWorkItemRecord).order_by(AgentWorkItemRecord.kind))
     )
     assert [item.kind for item in work_items] == [
-        "correct", "target_duplicate", "target_extra", "target_extra", "target_missing"
+        "correct", "target_duplicate", "target_extra", "target_missing"
     ]
-    assert len(tuple(await session.scalars(select(AgentInputRecord)))) == 6
+    assert len(tuple(await session.scalars(select(AgentInputRecord)))) == 5
 
     legacy_batches = await AgentBatchPlanner(session, max_items=3).create_for_run(
         run_id=run.id
     )
-    legacy_oversized = next(batch for batch in legacy_batches if batch.item_count == 2)
-    legacy_oversized.status = "claimed"
-    legacy_oversized.lease_owner = "stale-worker"
-    legacy_oversized.lease_token = uuid4()
-    legacy_oversized.lease_expires_at = (
+    legacy_batches[0].status = "claimed"
+    legacy_batches[0].lease_owner = "stale-worker"
+    legacy_batches[0].lease_token = uuid4()
+    legacy_batches[0].lease_expires_at = (
         datetime.now(UTC) - timedelta(seconds=1)
     ).replace(tzinfo=None)
     await session.flush()
-    batches = await AgentBatchPlanner(session, max_items=1).create_for_run(run_id=run.id)
+    batches = await AgentBatchPlanner(session, max_items=2).create_for_run(run_id=run.id)
 
-    await session.refresh(legacy_oversized)
-    assert legacy_oversized.status == "superseded"
+    await session.refresh(legacy_batches[0])
+    assert legacy_batches[0].status == "superseded"
     active_lease_token = uuid4()
     run.phase = AgentPhase.ANALYZE_BATCHES.value
     run.status = AgentRunStatus.RUNNING.value
@@ -123,14 +121,14 @@ async def test_builder_marks_correct_rows_silent_and_emits_duplicate_extra_and_m
     run.lease_expires_at = datetime.now(UTC) + timedelta(minutes=1)
     assert (
         await repository.claim_batch(
-            legacy_oversized.id,
+            legacy_batches[0].id,
             worker_id="active-worker",
             run_lease_token=active_lease_token,
             lease_seconds=60,
         )
         is None
     )
-    assert [batch.item_count for batch in batches] == [1, 1, 1, 1]
+    assert [batch.item_count for batch in batches] == [2, 1]
     replayed = await AgentBatchPlanner(session, max_items=3).create_for_run(run_id=run.id)
     assert [batch.id for batch in replayed] == [batch.id for batch in batches]
     assert await _graph_progress_counts(
@@ -138,7 +136,7 @@ async def test_builder_marks_correct_rows_silent_and_emits_duplicate_extra_and_m
         run_id=run.id,
         current_node="analyze_actionable_batches",
         gates=(),
-    ) == (0, 4)
+    ) == (0, 2)
 
 
 async def _identity_conflict_run(session):

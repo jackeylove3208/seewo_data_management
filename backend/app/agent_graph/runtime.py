@@ -412,6 +412,7 @@ class ProductionGraphCandidateProvider:
                     await AgentBatchPlanner(
                         recovery_session,
                         max_items=self._analysis_batch_size,
+                        group_by_work_kind=True,
                     ).create_for_run(run_id=context.run_id)
         async with self._session_factory() as session:
             actions = await self._actions(session, context)

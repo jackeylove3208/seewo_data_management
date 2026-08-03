@@ -2235,6 +2235,7 @@ class ProductionGraphActionExecutor:
                 batches = await AgentBatchPlanner(
                     session,
                     max_items=self._analysis_batch_size,
+                    group_by_work_kind=True,
                 ).create_for_run(
                     run_id=context.run_id
                 )
@@ -2532,6 +2533,7 @@ class ProductionGraphActionExecutor:
                 batches = await AgentBatchPlanner(
                     session,
                     max_items=self._analysis_batch_size,
+                    group_by_work_kind=True,
                 ).create_for_run(
                     run_id=context.run_id,
                     work_item_ids=tuple(item.id for item in resolved),

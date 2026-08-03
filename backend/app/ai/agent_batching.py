@@ -69,12 +69,14 @@ class AgentBatchPlanner:
         session: AsyncSession,
         *,
         max_items: int = MAX_MODEL_ANALYSIS_BATCH_SIZE,
+        group_by_work_kind: bool = False,
     ) -> None:
         if not 1 <= max_items <= MAX_MODEL_ANALYSIS_BATCH_SIZE:
             raise ValueError("new Agent model batch size must be between 1 and 10")
         self._session = session
         self._repository = AgentAnalysisRepository(session)
         self._max_items = max_items
+        self._group_by_work_kind = group_by_work_kind
 
     async def create_for_run(
         self,
@@ -142,7 +144,11 @@ class AgentBatchPlanner:
                 for item in unbatched_work_items
             ),
             max_items=self._max_items,
-            group_keys={item.id: item.kind for item in unbatched_work_items},
+            group_keys=(
+                {item.id: item.kind for item in unbatched_work_items}
+                if self._group_by_work_kind
+                else None
+            ),
         )
         saved = [
             batch
