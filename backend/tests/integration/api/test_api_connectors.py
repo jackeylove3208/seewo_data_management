@@ -1,5 +1,6 @@
 import json
 from collections.abc import AsyncIterator, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
@@ -48,6 +49,11 @@ MANIFEST = ProviderManifest(
 )
 
 
+@dataclass(frozen=True)
+class FakeDingTalkSnapshot:
+    inspection: OrganizationInspection
+
+
 class FakeDingTalkAdapter:
     manifest = MANIFEST
 
@@ -55,6 +61,9 @@ class FakeDingTalkAdapter:
         self.secrets_seen: list[dict[str, str]] = []
         self.configurations_seen: list[dict[str, object]] = []
         self.inspection_calls = 0
+        self.snapshot_calls = 0
+        self.snapshot_test_calls = 0
+        self.regular_test_calls = 0
         self.inspection_safe_error_code: str | None = None
         self.unresolved_inspection = False
         self.result = ConnectionTestResult(
@@ -69,6 +78,7 @@ class FakeDingTalkAdapter:
         public_configuration: Mapping[str, object],
         secret: Mapping[str, str],
     ) -> ConnectionTestResult:
+        self.regular_test_calls += 1
         self.configurations_seen.append(dict(public_configuration))
         self.secrets_seen.append(dict(secret))
         if self.safe_error_code is not None:
@@ -120,6 +130,26 @@ class FakeDingTalkAdapter:
             visible_person_count=len(memberships),
             tree_fingerprint="a" * 64,
         )
+
+    async def inspect_organization_snapshot(
+        self,
+        public_configuration: Mapping[str, object],
+        secret: Mapping[str, str],
+    ) -> FakeDingTalkSnapshot:
+        self.snapshot_calls += 1
+        return FakeDingTalkSnapshot(
+            inspection=await self.inspect_organization(public_configuration, secret)
+        )
+
+    async def test_connection_snapshot(
+        self,
+        public_configuration: Mapping[str, object],
+        snapshot: FakeDingTalkSnapshot,
+    ) -> ConnectionTestResult:
+        del snapshot
+        self.snapshot_test_calls += 1
+        self.configurations_seen.append(dict(public_configuration))
+        return self.result
 
     async def capture(
         self,
@@ -419,6 +449,9 @@ def test_people_connection_test_persists_and_redacts_server_classification(
     assert "person_membership_entity_kinds" not in tested.json()["public_configuration"]
     assert "organization_classification" not in tested.json()["public_configuration"]
     assert adapter.inspection_calls == 1
+    assert adapter.snapshot_calls == 1
+    assert adapter.snapshot_test_calls == 1
+    assert adapter.regular_test_calls == 0
     assert client.app.state.conversation_provider.requests == []
     assert adapter.configurations_seen[-1]["department_entity_kinds"] == {
         "10": "teacher",

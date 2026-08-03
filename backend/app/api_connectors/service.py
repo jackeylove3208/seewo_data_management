@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import cast
+from typing import Protocol, cast
 from uuid import UUID
 
 from pydantic import SecretStr
@@ -10,7 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai.providers.base import ModelProviderError
 from app.api_connectors.contracts import (
     ApiProviderError,
-    OrganizationInspectionAdapter,
+    ConnectionTestResult,
+    OrganizationInspection,
     ProviderManifest,
     SafeApiConnection,
 )
@@ -47,6 +48,24 @@ class ApiConnectionNotFoundError(LookupError):
 
 class ApiConnectionConflictError(RuntimeError):
     pass
+
+
+class _OrganizationSnapshot(Protocol):
+    inspection: OrganizationInspection
+
+
+class _DingTalkSnapshotAdapter(Protocol):
+    async def inspect_organization_snapshot(
+        self,
+        public_configuration: Mapping[str, object],
+        secret: Mapping[str, str],
+    ) -> _OrganizationSnapshot: ...
+
+    async def test_connection_snapshot(
+        self,
+        public_configuration: Mapping[str, object],
+        snapshot: _OrganizationSnapshot,
+    ) -> ConnectionTestResult: ...
 
 
 class ApiConnectionService:
@@ -194,9 +213,9 @@ class ApiConnectionService:
             secret_ref=record.secret_ref,
         )
         adapter = self._registry.adapter(record.provider_id)
-        classification_error = await self._classify_dingtalk_people(
+        classification_error, organization_snapshot = await self._classify_dingtalk_people(
             record,
-            adapter=cast(OrganizationInspectionAdapter, adapter),
+            adapter=cast(_DingTalkSnapshotAdapter, adapter),
             secret=secret,
         )
         if classification_error is not None:
@@ -219,7 +238,19 @@ class ApiConnectionService:
             record.updated_by = operator_id
             return _safe_view(record)
         try:
-            result = await adapter.test_connection(record.public_configuration, secret)
+            if organization_snapshot is None:
+                result = await adapter.test_connection(
+                    record.public_configuration,
+                    secret,
+                )
+            else:
+                result = await cast(
+                    _DingTalkSnapshotAdapter,
+                    adapter,
+                ).test_connection_snapshot(
+                    record.public_configuration,
+                    organization_snapshot,
+                )
         except ApiProviderError as error:
             record.capabilities = {}
             record.visibility_summary = {}
@@ -238,33 +269,39 @@ class ApiConnectionService:
         self,
         record: ApiConnectionRecord,
         *,
-        adapter: OrganizationInspectionAdapter,
+        adapter: _DingTalkSnapshotAdapter,
         secret: Mapping[str, str],
-    ) -> OrganizationClassificationError | None:
+    ) -> tuple[OrganizationClassificationError | None, _OrganizationSnapshot | None]:
         if (
             record.provider_id != "dingtalk"
             or record.scope != "task_ephemeral"
             or record.public_configuration.get("sync_scope") not in {"people", "all"}
         ):
-            return None
+            return None, None
         if self._classifier is None:
-            return OrganizationClassificationError(
-                "connector_entity_classification_unavailable"
+            return (
+                OrganizationClassificationError(
+                    "connector_entity_classification_unavailable"
+                ),
+                None,
             )
         try:
-            inspection = await adapter.inspect_organization(
+            snapshot = await adapter.inspect_organization_snapshot(
                 record.public_configuration,
                 secret,
             )
         except ApiProviderError as error:
-            return OrganizationClassificationError(error.safe_code)
+            return OrganizationClassificationError(error.safe_code), None
         try:
-            result = await self._classifier.classify(inspection)
+            result = await self._classifier.classify(snapshot.inspection)
         except OrganizationClassificationError as error:
-            return error
+            return error, None
         except ModelProviderError:
-            return OrganizationClassificationError(
-                "connector_entity_classification_unavailable"
+            return (
+                OrganizationClassificationError(
+                    "connector_entity_classification_unavailable"
+                ),
+                None,
             )
         record.public_configuration = {
             **record.public_configuration,
@@ -275,7 +312,7 @@ class ApiConnectionService:
             "organization_classification": {
                 "mode": "organization_unit_llm",
                 "skill_version": result.skill_version,
-                "tree_fingerprint": inspection.tree_fingerprint,
+                "tree_fingerprint": snapshot.inspection.tree_fingerprint,
                 "input_hash": result.input_hash,
                 "output_hash": result.output_hash,
                 "attempts": [
@@ -283,7 +320,7 @@ class ApiConnectionService:
                 ],
             },
         }
-        return None
+        return None, snapshot
 
     async def rotate(
         self,

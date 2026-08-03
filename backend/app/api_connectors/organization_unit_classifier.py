@@ -95,7 +95,7 @@ class DingTalkOrganizationUnitClassifier:
             inspection,
             department_kinds,
         )
-        model_input = {
+        model_input: dict[str, object] = {
             "departments": [
                 node.model_dump(mode="json")
                 for node in sorted(

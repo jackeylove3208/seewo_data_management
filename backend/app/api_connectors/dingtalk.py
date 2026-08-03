@@ -53,6 +53,13 @@ _OAPI_BASE = "https://oapi.dingtalk.com"
 _PAGE_SIZE = 100
 
 
+@dataclass(frozen=True, slots=True)
+class DingTalkOrganizationSnapshot:
+    inspection: OrganizationInspection
+    departments: tuple[OrganizationUnitNode, ...]
+    users: tuple["_DingTalkUser", ...]
+
+
 class DingtalkOrganizationAdapter:
     manifest = DINGTALK_MANIFEST
 
@@ -83,30 +90,41 @@ class DingtalkOrganizationAdapter:
         public_configuration: Mapping[str, object],
         secret: Mapping[str, str],
     ) -> OrganizationInspection:
+        return (
+            await self.inspect_organization_snapshot(public_configuration, secret)
+        ).inspection
+
+    async def inspect_organization_snapshot(
+        self,
+        public_configuration: Mapping[str, object],
+        secret: Mapping[str, str],
+    ) -> DingTalkOrganizationSnapshot:
         api = await self._api(secret)
         root_department_id = positive_int(
             public_configuration.get("root_department_id", 1)
         )
         departments = await self._read_department_tree(api, root_department_id)
         users = await self._read_users(api, departments)
-        memberships_by_user: dict[str, tuple[str, ...]] = {}
-        for user in users:
-            existing = memberships_by_user.get(user.external_id)
-            if existing is not None and existing != user.memberships:
-                raise ApiProviderError("connector_invalid_response")
-            memberships_by_user[user.external_id] = user.memberships
-        personnel_memberships = tuple(sorted(set(memberships_by_user.values())))
-        personnel_department_ids = frozenset(
-            department_id
-            for memberships in personnel_memberships
-            for department_id in memberships
-        )
-        return OrganizationInspection(
+        inspection = _inspection(departments, users)
+        return DingTalkOrganizationSnapshot(
+            inspection=inspection,
             departments=departments,
-            personnel_department_ids=personnel_department_ids,
-            personnel_memberships=personnel_memberships,
-            visible_person_count=len(memberships_by_user),
-            tree_fingerprint=_tree_fingerprint(departments),
+            users=users,
+        )
+
+    async def test_connection_snapshot(
+        self,
+        public_configuration: Mapping[str, object],
+        snapshot: DingTalkOrganizationSnapshot,
+    ) -> ConnectionTestResult:
+        try:
+            selected = frozenset(entity_kinds_for_scope(public_configuration))
+        except ApiConnectionValidationError as error:
+            raise ApiProviderError("connector_configuration_invalid") from error
+        person_kinds = selected - {AgentEntityKind.DEPARTMENT}
+        return await summarize_connection_test(
+            self._capture_snapshot(public_configuration, snapshot, selected),
+            person_kinds=person_kinds,
         )
 
     async def capture(
@@ -120,6 +138,33 @@ class DingtalkOrganizationAdapter:
         root_department_id = positive_int(
             public_configuration.get("root_department_id", 1)
         )
+        departments = await self._read_department_tree(api, root_department_id)
+        _validate_classified_tree(public_configuration, departments)
+        users = (
+            await self._read_users(api, departments)
+            if selected_entities - {AgentEntityKind.DEPARTMENT}
+            else ()
+        )
+        snapshot = DingTalkOrganizationSnapshot(
+            inspection=_inspection(departments, users),
+            departments=departments,
+            users=users,
+        )
+        async for page in self._capture_snapshot(
+            public_configuration,
+            snapshot,
+            selected_entities,
+        ):
+            yield page
+
+    async def _capture_snapshot(
+        self,
+        public_configuration: Mapping[str, object],
+        snapshot: DingTalkOrganizationSnapshot,
+        selected_entities: frozenset[AgentEntityKind],
+    ) -> AsyncIterator[CapturedApiPage]:
+        require_supported_selection(public_configuration, selected_entities)
+        _validate_classified_tree(public_configuration, snapshot.departments)
         number_field = configured_field(
             public_configuration,
             "number_field",
@@ -132,17 +177,7 @@ class DingtalkOrganizationAdapter:
         )
         records: list[FrozenApiRecord] = []
         unique_records: dict[tuple[AgentEntityKind, str], FrozenApiRecord] = {}
-        departments = await self._read_department_tree(api, root_department_id)
-        if public_configuration.get("sync_scope") in {"people", "all"}:
-            classification = public_configuration.get("organization_classification")
-            if not isinstance(classification, dict):
-                raise ApiProviderError("connector_configuration_invalid")
-            expected_fingerprint = classification.get("tree_fingerprint")
-            if not isinstance(expected_fingerprint, str):
-                raise ApiProviderError("connector_configuration_invalid")
-            if _tree_fingerprint(departments) != expected_fingerprint:
-                raise ApiProviderError("connector_organization_changed")
-        for department in departments:
+        for department in snapshot.departments:
             if AgentEntityKind.DEPARTMENT in selected_entities:
                 record = _department_record(
                     positive_int(department.department_id),
@@ -158,7 +193,7 @@ class DingtalkOrganizationAdapter:
                 )
                 append_unique_record(records, unique_records, record)
         if selected_entities - {AgentEntityKind.DEPARTMENT}:
-            for user in await self._read_users(api, departments):
+            for user in snapshot.users:
                 entity_kind = person_kind(public_configuration, user.memberships)
                 if entity_kind not in selected_entities:
                     continue
@@ -321,6 +356,46 @@ class _DingTalkUser:
     external_id: str
     memberships: tuple[str, ...]
     raw: dict[str, object]
+
+
+def _inspection(
+    departments: tuple[OrganizationUnitNode, ...],
+    users: tuple[_DingTalkUser, ...],
+) -> OrganizationInspection:
+    memberships_by_user: dict[str, tuple[str, ...]] = {}
+    for user in users:
+        existing = memberships_by_user.get(user.external_id)
+        if existing is not None and existing != user.memberships:
+            raise ApiProviderError("connector_invalid_response")
+        memberships_by_user[user.external_id] = user.memberships
+    personnel_memberships = tuple(sorted(set(memberships_by_user.values())))
+    return OrganizationInspection(
+        departments=departments,
+        personnel_department_ids=frozenset(
+            department_id
+            for memberships in personnel_memberships
+            for department_id in memberships
+        ),
+        personnel_memberships=personnel_memberships,
+        visible_person_count=len(memberships_by_user),
+        tree_fingerprint=_tree_fingerprint(departments),
+    )
+
+
+def _validate_classified_tree(
+    public_configuration: Mapping[str, object],
+    departments: tuple[OrganizationUnitNode, ...],
+) -> None:
+    if public_configuration.get("sync_scope") not in {"people", "all"}:
+        return
+    classification = public_configuration.get("organization_classification")
+    if not isinstance(classification, dict):
+        raise ApiProviderError("connector_configuration_invalid")
+    expected_fingerprint = classification.get("tree_fingerprint")
+    if not isinstance(expected_fingerprint, str):
+        raise ApiProviderError("connector_configuration_invalid")
+    if _tree_fingerprint(departments) != expected_fingerprint:
+        raise ApiProviderError("connector_organization_changed")
 
 
 @dataclass(slots=True)

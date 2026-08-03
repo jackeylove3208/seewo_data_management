@@ -423,6 +423,50 @@ async def test_dingtalk_inspection_returns_only_safe_hierarchy_and_memberships()
     assert "staff@example.test" not in serialized
 
 
+async def test_dingtalk_snapshot_test_reuses_the_inspection_requests() -> None:
+    request_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        request_paths.append(request.url.path)
+        return _dingtalk_hierarchy_handler(request)
+
+    adapter, client = _adapter("dingtalk", handler)
+    try:
+        snapshot = await adapter.inspect_organization_snapshot(
+            {"sync_scope": "people", "root_department_id": 1},
+            _secret("dingtalk"),
+        )
+        inspection_request_count = len(request_paths)
+        result = await adapter.test_connection_snapshot(
+            {
+                "sync_scope": "people",
+                "person_classification_mode": "organization_unit_llm",
+                "root_department_id": 1,
+                "department_entity_kinds": {
+                    "10": "teacher",
+                    "11": "teacher",
+                    "20": "student",
+                    "21": "student",
+                    "22": "student",
+                },
+                "person_membership_entity_kinds": {
+                    "11": "teacher",
+                    "22": "student",
+                },
+                "organization_classification": {
+                    "tree_fingerprint": snapshot.inspection.tree_fingerprint,
+                },
+            },
+            snapshot,
+        )
+    finally:
+        await client.aclose()
+
+    assert result.eligible is True
+    assert len(request_paths) == inspection_request_count
+    assert request_paths.count("/v1.0/oauth2/accessToken") == 1
+
+
 async def test_dingtalk_department_capture_never_reads_people() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/topapi/v2/user/list":
