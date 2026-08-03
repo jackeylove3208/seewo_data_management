@@ -14,6 +14,12 @@ from app.ai.graph_subagents import GraphSkillInvocation, GraphSkillModelRunner
 from app.ai.skills.contracts import AgentGovernanceReport
 from app.models.reporting import AgentReportRecord
 
+_INCLUDED_WARNING_TITLE_ZH = "数据同步任务报告"
+_INCLUDED_WARNING_SUMMARY_ZH = (
+    "来源字段缺失已记录为质量提醒；允许同步的记录仍参与匹配与同步，"
+    "具体执行结果见下方服务端事实。"
+)
+
 
 @dataclass(frozen=True)
 class GraphReportResult:
@@ -154,6 +160,8 @@ class GraphReportExecutor:
         output = result.output
         if not isinstance(output, AgentGovernanceReport):
             raise RuntimeError("validated report output changed type")
+        included_quality_warnings = _included_quality_warning_analyses(facts)
+        has_included_quality_warning = bool(included_quality_warnings)
         report = await AgentReportingService(self._session).generate(
             task_id=invocation.task_id,
             tenant_id=tenant_id,
@@ -161,10 +169,20 @@ class GraphReportExecutor:
             terminal_state=terminal_state,
             facts=facts,
             narrative={
-                "title_zh": output.title_zh,
-                "summary_zh": output.summary_zh,
+                "title_zh": (
+                    _INCLUDED_WARNING_TITLE_ZH
+                    if has_included_quality_warning
+                    else output.title_zh
+                ),
+                "summary_zh": (
+                    _INCLUDED_WARNING_SUMMARY_ZH
+                    if has_included_quality_warning
+                    else output.summary_zh
+                ),
                 "input_exception_analyses": [
-                    item.model_dump(mode="json")
+                    included_quality_warnings.get(
+                        item.reason_code, item.model_dump(mode="json")
+                    )
                     for item in output.input_exception_analyses
                 ],
                 "fact_refs": list(output.fact_refs),
@@ -172,6 +190,140 @@ class GraphReportExecutor:
             generated_by="agent-graph-report-skill-v1",
         )
         return GraphReportResult(report=report, invocation_id=result.invocation_id)
+
+
+def _included_quality_warning_analyses(
+    facts: Mapping[str, Any],
+) -> dict[str, dict[str, str]]:
+    field_unavailable_findings = [
+        item
+        for item in facts.get("excluded_findings", ())
+        if isinstance(item, Mapping)
+        and item.get("reason") == "authority_field_unavailable"
+    ]
+    included_findings = [
+        item
+        for item in field_unavailable_findings
+        if item.get("inclusion_state") == "included"
+    ]
+    if not included_findings:
+        return {}
+
+    has_non_included_findings = any(
+        item.get("inclusion_state") in {"excluded", "anomaly"}
+        for item in field_unavailable_findings
+    )
+    input_diagnostics = facts.get("input_diagnostics")
+    if isinstance(input_diagnostics, Mapping):
+        reason_counts = input_diagnostics.get("reason_counts")
+        reason_count = (
+            reason_counts.get("authority_field_unavailable")
+            if isinstance(reason_counts, Mapping)
+            else None
+        )
+        if not isinstance(reason_count, int) or reason_count <= 0:
+            return {}
+        count_zh = reason_count
+        unavailable_field_counts = input_diagnostics.get("unavailable_field_counts")
+        affected_fields = (
+            {
+                str(field)
+                for field, value in unavailable_field_counts.items()
+                if isinstance(value, int) and value > 0
+            }
+            if isinstance(unavailable_field_counts, Mapping)
+            else set()
+        )
+        entity_candidates = [
+            item
+            for item in included_findings
+            if affected_fields.intersection(
+                str(field) for field in item.get("affected_fields", ())
+            )
+        ]
+        has_ambiguous_entity_attribution = (
+            len(entity_candidates) != reason_count
+            or has_non_included_findings
+            or any(
+                not isinstance(evidence := item.get("safe_evidence"), Mapping)
+                or not evidence.get("entity_kind")
+                for item in entity_candidates
+            )
+        )
+        entity_findings = (
+            [] if has_ambiguous_entity_attribution else entity_candidates
+        )
+    else:
+        count_zh = len(included_findings)
+        affected_fields = {
+            str(field)
+            for item in included_findings
+            for field in item.get("affected_fields", ())
+        }
+        entity_findings = included_findings
+        has_ambiguous_entity_attribution = False
+
+    entity_kinds = {
+        str(evidence["entity_kind"])
+        for item in entity_findings
+        if isinstance(evidence := item.get("safe_evidence"), Mapping)
+        and evidence.get("entity_kind")
+    }
+    entity_zh = _localized_labels(
+        entity_kinds,
+        {"department": "部门", "student": "学生", "teacher": "教师"},
+        "记录",
+    )
+    field_zh = _localized_labels(
+        affected_fields,
+        {
+            "category": "类别",
+            "name": "名称",
+            "number": "编号",
+            "class_name": "班级信息",
+            "phone": "手机号",
+            "email": "邮箱",
+        },
+        "字段信息",
+    )
+    if has_non_included_findings:
+        impact_zh = (
+            f"{field_zh}不可用仅作为数据质量提醒；"
+            "允许同步的记录仍保留在匹配与同步范围内；"
+            "其他记录按排除或异常状态处理。"
+        )
+    elif has_ambiguous_entity_attribution:
+        impact_zh = (
+            f"{field_zh}不可用仅作为数据质量提醒；"
+            "允许同步的记录仍保留在匹配与同步范围内；"
+            "其他记录按其更高优先级异常状态处理。"
+        )
+    else:
+        impact_zh = (
+            f"{field_zh}不可用仅作为数据质量提醒；这些{entity_zh}"
+            "仍保留在匹配与同步范围内，允许同步。"
+        )
+    return {
+        "authority_field_unavailable": {
+            "reason_code": "authority_field_unavailable",
+            "title_zh": f"权威{entity_zh}数据缺少{field_zh}",
+            "analysis_zh": (
+                f"权威{entity_zh}数据中有 {count_zh} 条记录缺少{field_zh}。"
+            ),
+            "impact_zh": impact_zh,
+            "suggestion_zh": (
+                f"建议补充{field_zh}以提升数据质量；已完成的同步无需重试。"
+            ),
+        }
+    }
+
+
+def _localized_labels(
+    values: set[str],
+    labels: Mapping[str, str],
+    fallback: str,
+) -> str:
+    return "、".join(sorted(labels.get(value, value) for value in values)) or fallback
 
 
 def _redact_phone_values(value: object, *, field: str | None = None) -> object:
