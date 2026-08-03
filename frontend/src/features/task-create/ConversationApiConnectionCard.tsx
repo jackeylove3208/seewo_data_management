@@ -17,6 +17,21 @@ const secretFieldLabels: Record<string, string> = {
   corp_secret: "CorpSecret",
 };
 
+const safeErrorMessages: Record<string, string> = {
+  connector_permission_denied:
+    "钉钉部门或人员目录权限或可见范围不足，请在钉钉开发者后台修正后重试。",
+  connector_entity_classification_unknown:
+    "部分有人员的行政单元无法判断为教职工或学生，请调整钉钉组织归属后重试。",
+  connector_entity_classification_ambiguous:
+    "存在同时归属教职工与学生分支的人员，请调整钉钉组织归属后重试。",
+  connector_entity_classification_invalid:
+    "钉钉行政单元分类结果不完整或互相矛盾，请重新测试连接。",
+  connector_entity_classification_unavailable:
+    "暂时无法完成钉钉行政单元分类，请稍后重试。",
+  connector_organization_changed:
+    "钉钉组织结构在检测期间发生变化，请重新测试连接。",
+};
+
 function providerLabel(providerId: string) {
   return providerLabels[providerId] ?? providerId;
 }
@@ -37,12 +52,11 @@ export function ConversationApiConnectionCard({
   const [displayName, setDisplayName] = useState(
     connection.display_name ?? `${providerLabel(connection.provider_id)}组织连接`,
   );
-  const [personEntityKind, setPersonEntityKind] = useState<
-    "" | "teacher" | "student"
+  const [syncScope, setSyncScope] = useState<
+    "" | "department" | "people" | "all"
   >("");
   const [rootDepartmentId, setRootDepartmentId] = useState("");
   const [numberField, setNumberField] = useState("");
-  const [classNameField, setClassNameField] = useState("");
   const [secret, setSecret] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
@@ -57,10 +71,9 @@ export function ConversationApiConnectionCard({
 
   useEffect(() => {
     if (connection.state !== "configuration_required") return;
-    setPersonEntityKind("");
+    setSyncScope("");
     setRootDepartmentId("");
     setNumberField("");
-    setClassNameField("");
   }, [connection.display_name, connection.provider_id, connection.state]);
 
   async function submit(event: FormEvent) {
@@ -75,12 +88,12 @@ export function ConversationApiConnectionCard({
         display_name: displayName.trim(),
         required_secret_fields: connection.required_secret_fields,
         public_configuration: {
-          person_entity_kind: personEntityKind as "teacher" | "student",
+          sync_scope: syncScope as "department" | "people" | "all",
           root_department_id: Number(rootDepartmentId),
-          ...(numberField.trim() ? { number_field: numberField.trim() } : {}),
-          ...(personEntityKind === "student" && classNameField.trim()
-            ? { class_name_field: classNameField.trim() }
+          ...(syncScope === "people" || syncScope === "all"
+            ? { person_classification_mode: "organization_unit_llm" as const }
             : {}),
+          ...(numberField.trim() ? { number_field: numberField.trim() } : {}),
         },
         secret: Object.fromEntries(
           connection.required_secret_fields.map((field) => [
@@ -126,18 +139,19 @@ export function ConversationApiConnectionCard({
             />
           </label>
           <label>
-            <span>人员类型</span>
+            <span>同步范围</span>
             <select
-              aria-label="人员类型"
+              aria-label="同步范围"
               required
-              value={personEntityKind}
-              onChange={(event) => setPersonEntityKind(
-                event.target.value as "teacher" | "student",
+              value={syncScope}
+              onChange={(event) => setSyncScope(
+                event.target.value as "department" | "people" | "all",
               )}
             >
               <option value="" disabled>请选择</option>
-              <option value="teacher">教师</option>
-              <option value="student">学生</option>
+              <option value="department">部门</option>
+              <option value="people">人员</option>
+              <option value="all">全部</option>
             </select>
           </label>
           <label>
@@ -157,21 +171,10 @@ export function ConversationApiConnectionCard({
             <input
               aria-label="人员编号字段"
               value={numberField}
-              placeholder="可选，例如 student_number"
+              placeholder="可选，例如 job_number"
               onChange={(event) => setNumberField(event.target.value)}
             />
           </label>
-          {personEntityKind === "student" && (
-            <label>
-              <span>班级字段</span>
-              <input
-                aria-label="班级字段"
-                value={classNameField}
-                placeholder="可选，例如 class_name"
-                onChange={(event) => setClassNameField(event.target.value)}
-              />
-            </label>
-          )}
           {connection.required_secret_fields.map((field) => (
             <label key={field}>
               <span>{secretFieldLabels[field] ?? field}</span>
@@ -194,7 +197,10 @@ export function ConversationApiConnectionCard({
         </form>
       )}
       {connection.safe_error_code && (
-        <p role="alert">连接测试未通过：{connection.safe_error_code}</p>
+        <p role="alert">
+          {safeErrorMessages[connection.safe_error_code]
+            ?? `连接测试未通过：${connection.safe_error_code}`}
+        </p>
       )}
       {error && <p role="alert">{error}</p>}
     </article>

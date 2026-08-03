@@ -115,10 +115,10 @@ describe("Agent API", () => {
       display_name: "学校钉钉",
       required_secret_fields: ["app_key", "app_secret"],
       public_configuration: {
-        person_entity_kind: "student",
+        sync_scope: "people",
         root_department_id: 2,
+        person_classification_mode: "organization_unit_llm",
         number_field: "student_number",
-        class_name_field: "class_name",
       },
       secret: { app_key: "ding-app", app_secret: "ding-secret" },
     });
@@ -138,10 +138,10 @@ describe("Agent API", () => {
       provider_id: "dingtalk",
       display_name: "学校钉钉",
       public_configuration: {
-        person_entity_kind: "student",
+        sync_scope: "people",
         root_department_id: 2,
+        person_classification_mode: "organization_unit_llm",
         number_field: "student_number",
-        class_name_field: "class_name",
       },
       secret: { app_key: "ding-app", app_secret: "ding-secret" },
     });
@@ -175,8 +175,9 @@ describe("Agent API", () => {
       display_name: "学校钉钉",
       required_secret_fields: ["app_key", "app_secret"],
       public_configuration: {
-        person_entity_kind: "student",
+        sync_scope: "people",
         root_department_id: 2,
+        person_classification_mode: "organization_unit_llm",
       },
       secret: { app_key: "ding-app", app_secret: "ding-secret" },
       connection_id: "connection-1",
@@ -189,8 +190,9 @@ describe("Agent API", () => {
     ]);
     expect(JSON.parse(String((calls[0]?.[1] as RequestInit).body))).toEqual({
       public_configuration: {
-        person_entity_kind: "student",
+        sync_scope: "people",
         root_department_id: 2,
+        person_classification_mode: "organization_unit_llm",
       },
       secret: { app_key: "ding-app", app_secret: "ding-secret" },
     });
