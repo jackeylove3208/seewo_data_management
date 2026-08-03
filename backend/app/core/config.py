@@ -70,13 +70,13 @@ class Settings(BaseSettings):
     llm_response_mode: LLMResponseMode = LLMResponseMode.JSON_SCHEMA
     llm_extra_headers_json: dict[str, str] = {}
     llm_extra_body_json: dict[str, Any] = {}
-    llm_timeout_seconds: PositiveFloat = 60
+    llm_timeout_seconds: PositiveFloat = 120
     conversation_context_max_tokens: PositiveInt = 65_536
     conversation_context_reserved_output_tokens: PositiveInt = 2_048
     tokenization_secret: SecretStr | None = None
     proposal_preview_secret: SecretStr | None = None
     analysis_batch_size: PositiveInt = Field(default=10, le=10)
-    analysis_worker_lease_seconds: PositiveInt = 90
+    analysis_worker_lease_seconds: PositiveInt = 150
     analysis_worker_concurrency: PositiveInt = 4
     analysis_worker_poll_seconds: PositiveFloat = 0.5
     analysis_worker_retry_wait_seconds: NonNegativeFloat = 2

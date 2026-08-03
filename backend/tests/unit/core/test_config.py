@@ -586,8 +586,8 @@ def test_agent_batch_size_cannot_exceed_model_analysis_limit() -> None:
 
 
 def test_agent_model_timeout_allows_structured_analysis_to_finish() -> None:
-    assert Settings(_env_file=None).llm_timeout_seconds == 60
-    assert Settings(_env_file=None).analysis_worker_lease_seconds == 90
+    assert Settings(_env_file=None).llm_timeout_seconds == 120
+    assert Settings(_env_file=None).analysis_worker_lease_seconds == 150
 
 
 def test_conversation_context_budget_reserves_model_output_capacity() -> None:
