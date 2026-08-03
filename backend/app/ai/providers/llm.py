@@ -155,6 +155,7 @@ def _request_body(settings: Settings, request: LLMRequest) -> dict[str, Any]:
         "model": settings.llm_model,
         "messages": messages,
         "temperature": request.temperature,
+        "max_tokens": settings.llm_max_output_tokens,
         **settings.llm_extra_body_json,
     }
     if settings.llm_response_mode.value == "json_schema":
