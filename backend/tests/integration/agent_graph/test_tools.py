@@ -11,6 +11,7 @@ from app.agent_graph.tools import (
     GraphToolAuthorizationError,
     GraphToolContext,
     GraphToolExecutionError,
+    GraphToolReplayConflict,
 )
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentPhase, AgentRunKind
@@ -113,6 +114,7 @@ async def test_graph_tool_reads_only_manifest_members_and_records_audit(session)
         context=context,
         arguments={"resource_id": "work-item:1"},
         resource_id="work-item:1",
+        model_turn=1,
     )
 
     assert result.payload == {"resource_id": "work-item:1", "safe": True}
@@ -120,6 +122,75 @@ async def test_graph_tool_reads_only_manifest_members_and_records_audit(session)
     assert len(records) == 1
     assert records[0].authorized is True
     assert records[0].tool_name == "read_work_item"
+    assert records[0].model_turn == 1
+    assert records[0].replay_descriptor == {"resource_id": "work-item:1"}
+
+
+@pytest.mark.asyncio
+async def test_graph_tool_replay_reauthorizes_without_duplicate_audit(session) -> None:
+    context = await _tool_fixture(session)
+
+    async def read_work_item(_context, arguments):
+        return {"resource_id": arguments["resource_id"], "safe": True}
+
+    gateway = GraphPhaseToolGateway(
+        session,
+        operator=OperatorContext(operator_id="demo-operator", tenant_id="school-1"),
+        tools={"read_work_item": read_work_item},
+    )
+    original = await gateway.call(
+        "read_work_item",
+        context=context,
+        arguments={"resource_id": "work-item:1"},
+        resource_id="work-item:1",
+        model_turn=1,
+    )
+    record = await session.scalar(select(AgentToolCallRecord))
+    assert record is not None
+
+    replayed = await gateway.replay(
+        "read_work_item",
+        context=context,
+        arguments={"resource_id": "work-item:1"},
+        expected_result_hash=record.result_hash,
+    )
+
+    assert replayed.payload == original.payload
+    records = tuple(await session.scalars(select(AgentToolCallRecord)))
+    assert len(records) == 1
+
+
+@pytest.mark.asyncio
+async def test_graph_tool_replay_rejects_changed_result(session) -> None:
+    context = await _tool_fixture(session)
+    current_payload = {"resource_id": "work-item:1", "version": 1}
+
+    async def read_work_item(_context, _arguments):
+        return current_payload
+
+    gateway = GraphPhaseToolGateway(
+        session,
+        operator=OperatorContext(operator_id="demo-operator", tenant_id="school-1"),
+        tools={"read_work_item": read_work_item},
+    )
+    await gateway.call(
+        "read_work_item",
+        context=context,
+        arguments={"resource_id": "work-item:1"},
+        resource_id="work-item:1",
+        model_turn=1,
+    )
+    record = await session.scalar(select(AgentToolCallRecord))
+    assert record is not None
+    current_payload["version"] = 2
+
+    with pytest.raises(GraphToolReplayConflict, match="changed"):
+        await gateway.replay(
+            "read_work_item",
+            context=context,
+            arguments={"resource_id": "work-item:1"},
+            expected_result_hash=record.result_hash,
+        )
 
 
 @pytest.mark.asyncio

@@ -49,6 +49,10 @@ class GraphToolExecutionError(RuntimeError):
     pass
 
 
+class GraphToolReplayConflict(RuntimeError):
+    """A committed tool checkpoint no longer reconstructs the same evidence."""
+
+
 class GraphToolContext(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -201,6 +205,7 @@ class GraphPhaseToolGateway:
         resource_id: str | None = None,
         evidence_ref: str | None = None,
         sensitive_token: str | None = None,
+        model_turn: int | None = None,
     ) -> GraphToolResult:
         manifest = await self._authorize_durable_context(context)
         trace_id = str(uuid4())
@@ -254,8 +259,52 @@ class GraphPhaseToolGateway:
             authorized=True,
             status="completed",
             trace_id=trace_id,
+            model_turn=model_turn,
+            replay_descriptor=dict(arguments),
         )
         return GraphToolResult(payload=payload, trace_id=trace_id)
+
+    async def replay(
+        self,
+        tool_name: str,
+        *,
+        context: GraphToolContext,
+        arguments: Mapping[str, object],
+        expected_result_hash: str,
+    ) -> GraphToolResult:
+        manifest = await self._authorize_durable_context(context)
+        resource_id = arguments.get("resource_id")
+        evidence_ref = arguments.get("evidence_ref")
+        sensitive_token = arguments.get("sensitive_token")
+        self._authorize_call(
+            tool_name,
+            context=context,
+            manifest=manifest,
+            arguments=arguments,
+            resource_id=resource_id if isinstance(resource_id, str) else None,
+            evidence_ref=evidence_ref if isinstance(evidence_ref, str) else None,
+            sensitive_token=(
+                sensitive_token if isinstance(sensitive_token, str) else None
+            ),
+        )
+        handler = self._tools.get(tool_name)
+        if handler is None:
+            raise GraphToolAuthorizationError(
+                "phase tool has no registered server handler"
+            )
+        try:
+            payload = await handler(context, arguments)
+            if not isinstance(payload, dict):
+                raise ValueError("phase tool returned an invalid server payload")
+        except Exception as error:
+            raise GraphToolExecutionError(
+                "authorized phase tool replay failed safely"
+            ) from error
+        if _safe_hash(payload) != expected_result_hash:
+            raise GraphToolReplayConflict(
+                "replayed phase tool result changed from its checkpoint"
+            )
+        return GraphToolResult(payload=payload, trace_id=str(uuid4()))
 
     async def _authorize_durable_context(
         self,
