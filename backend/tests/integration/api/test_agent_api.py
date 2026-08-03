@@ -886,7 +886,7 @@ def test_conversation_uses_model_discovered_local_sources(
         "untrusted_evidence"
     ]
     assert evidence["conversation_remote_csv_enabled"] is False
-    assert "converse-school-data-sync@1.6.0" in provider.requests[0].messages[0].content
+    assert "converse-school-data-sync@1.7.0" in provider.requests[0].messages[0].content
 
     created = agent_client.post(
         f"/api/agent/conversations/{conversation.json()['id']}/tasks",

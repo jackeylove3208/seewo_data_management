@@ -869,6 +869,13 @@ async def send_agent_message(
             else previous_intent.get("api_provider_id")
         ),
     }
+    selected_source = intent.get("source")
+    if (
+        decision.kind != "api_configuration"
+        and isinstance(selected_source, dict)
+        and selected_source.get("kind") != "api"
+    ):
+        intent.pop("api_provider_id", None)
     conversation.context = intent
     await repository.append_conversation_message(
         conversation_id=conversation.id,
@@ -901,7 +908,7 @@ async def send_agent_message(
         message=decision.message_zh,
         intent=view,
         start_confirmation=confirmation,
-        api_connection=api_connection,
+        api_connection=_api_card_from_context(intent, api_catalog),
     )
 
 
@@ -3532,16 +3539,21 @@ def _api_card_from_context(
 ) -> AgentApiConnectionCard | None:
     provider_id = context.get("api_provider_id")
     source = context.get("source")
+    source_is_api = isinstance(source, dict) and source.get("kind") == "api"
+    if context.get("decision_kind") != "api_configuration" and not source_is_api:
+        return None
     connection_id = None
-    if isinstance(source, dict) and source.get("kind") == "api":
+    if source_is_api:
+        assert isinstance(source, dict)
         try:
             connection_id = UUID(str(source.get("configuration_id")))
         except ValueError:
             connection_id = None
-    return catalog.card(
+    card = catalog.card(
         provider_id=provider_id if isinstance(provider_id, str) else None,
         connection_id=connection_id,
     )
+    return None if card is not None and card.state == "active" else card
 
 
 def _intent_view(

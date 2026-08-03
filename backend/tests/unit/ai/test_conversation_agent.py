@@ -65,7 +65,7 @@ async def test_supervisor_uses_versioned_skill_and_returns_confirmation() -> Non
 
     assert decision.kind == "start_confirmation"
     assert decision.source_ref == "third-party/roster.csv"
-    assert "converse-school-data-sync@1.6.0" in provider.requests[0].messages[0].content
+    assert "converse-school-data-sync@1.7.0" in provider.requests[0].messages[0].content
     assert "不可信证据" in provider.requests[0].messages[0].content
 
 
@@ -820,6 +820,8 @@ async def test_supervisor_rejects_api_connection_without_selected_visibility() -
     assert decision.kind == "clarification"
     assert decision.source_api_connection_id is None
     assert "权限或可见范围" in decision.message_zh
+    assert "部门或人员目录" in decision.message_zh
+    assert "教师接口" not in decision.message_zh
 
 
 @pytest.mark.asyncio

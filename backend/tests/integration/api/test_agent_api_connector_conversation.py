@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from app.ai.providers.base import LLMRequest, LLMResponse
 from app.api_connectors.registry import ProviderRegistry
 from app.main import create_app
+from app.models.agent_runtime import AgentConversationRecord
 from tests.integration.agent_runtime.test_api_task_binding import (
     MANIFEST,
     AdapterMustNotRun,
@@ -128,6 +129,106 @@ def test_conversation_does_not_reuse_a_persistent_api_connection(
     assert payload.get("start_confirmation") is None
     assert payload["api_connection"]["state"] == "configuration_required"
     assert payload["api_connection"].get("connection_id") is None
+
+
+def test_hydration_does_not_restore_card_from_stale_provider_context(
+    api_conversation_client,
+) -> None:
+    client, _key, _adapter = api_conversation_client
+    conversation_id = _conversation(client)
+
+    async def seed_stale_context() -> None:
+        async with client.app.state.database.session_factory() as session:
+            async with session.begin():
+                conversation = await session.get(
+                    AgentConversationRecord,
+                    UUID(conversation_id),
+                )
+                assert conversation is not None
+                conversation.context = {
+                    "title": "本地教师同步",
+                    "entity_types": ["teacher"],
+                    "source": {"kind": "local", "source_ref": "third-party.csv"},
+                    "decision_kind": "clarification",
+                    "api_provider_id": "dingtalk",
+                }
+
+    client.portal.call(seed_stale_context)
+
+    current = client.get("/api/agent/conversations/current")
+
+    assert current.status_code == 200, current.text
+    assert current.json().get("api_connection") is None
+
+
+def test_hydration_keeps_current_configuration_and_pending_api_cards(
+    api_conversation_client,
+) -> None:
+    client, key, _adapter = api_conversation_client
+    configuration_conversation_id = _conversation(client)
+
+    async def seed_configuration_context() -> None:
+        async with client.app.state.database.session_factory() as session:
+            async with session.begin():
+                conversation = await session.get(
+                    AgentConversationRecord,
+                    UUID(configuration_conversation_id),
+                )
+                assert conversation is not None
+                conversation.context = {
+                    "title": "钉钉人员同步",
+                    "entity_types": ["teacher", "student"],
+                    "decision_kind": "api_configuration",
+                    "api_provider_id": "dingtalk",
+                }
+
+    client.portal.call(seed_configuration_context)
+    configuration_current = client.get("/api/agent/conversations/current")
+    assert configuration_current.json()["api_connection"]["state"] == (
+        "configuration_required"
+    )
+
+    reset = client.post(
+        "/api/agent/conversations/current/reset",
+        headers={"Idempotency-Key": "reset-before-pending-card"},
+        json={},
+    )
+    assert reset.status_code == 201, reset.text
+    pending_conversation_id = reset.json()["id"]
+
+    async def seed_pending_source() -> None:
+        async with client.app.state.database.session_factory() as session:
+            async with session.begin():
+                connection = await _seed_connection(
+                    session,
+                    fernet_key=key,
+                    scope="task_ephemeral",
+                    conversation_id=UUID(pending_conversation_id),
+                    manifest=DINGTALK_MANIFEST,
+                )
+                connection.state = "pending"
+                connection.capabilities = {}
+                connection.visibility_summary = {}
+                conversation = await session.get(
+                    AgentConversationRecord,
+                    UUID(pending_conversation_id),
+                )
+                assert conversation is not None
+                conversation.context = {
+                    "title": "钉钉人员同步",
+                    "entity_types": ["teacher", "student"],
+                    "source": {
+                        "kind": "api",
+                        "configuration_id": str(connection.id),
+                    },
+                    "decision_kind": "clarification",
+                    "api_provider_id": "dingtalk",
+                }
+
+    client.portal.call(seed_pending_source)
+    pending_current = client.get("/api/agent/conversations/current")
+
+    assert pending_current.json()["api_connection"]["state"] == "pending"
 
 
 def test_confirmed_api_connection_creates_one_idempotent_graph_task(
