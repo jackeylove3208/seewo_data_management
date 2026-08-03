@@ -12,10 +12,13 @@ from app.ai.agent_prompting import (
 )
 from app.ai.providers.base import LLMResponse, ModelProviderError
 from app.ai.skills.registry import SkillRegistry
-from app.api_connectors.contracts import OrganizationInspection
+from app.api_connectors.contracts import OrganizationInspection, OrganizationUnitNode
 
-_SKILL_VERSION: Literal["1.0.0"] = "1.0.0"
-_CLASSIFIED_KINDS = frozenset({"teacher", "student"})
+_SKILL_VERSION: Literal["2.0.0"] = "2.0.0"
+_TEACHER_UNIT_NAMES = frozenset(
+    {"教职工", "教师", "老师", "员工", "行政人员", "教职员工"}
+)
+_STUDENT_UNIT_NAMES = frozenset({"学生", "学员"})
 
 
 class ClassificationAttemptEvidence(BaseModel):
@@ -31,23 +34,24 @@ class OrganizationClassificationResult(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     department_entity_kinds: dict[str, Literal["teacher", "student"]]
+    person_membership_entity_kinds: dict[str, Literal["teacher", "student"]]
     input_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     output_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    skill_version: Literal["1.0.0"] = _SKILL_VERSION
+    skill_version: Literal["2.0.0"] = _SKILL_VERSION
     attempts: tuple[ClassificationAttemptEvidence, ...]
 
 
-class _ClassificationItem(BaseModel):
+class _MembershipClassificationItem(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    department_id: str = Field(min_length=1, max_length=512)
-    entity_kind: Literal["teacher", "student", "unknown"]
+    membership_key: str = Field(min_length=1, max_length=4096)
+    entity_kind: Literal["teacher", "student"]
 
 
 class _ClassificationResponse(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    classifications: tuple[_ClassificationItem, ...] = Field(min_length=1)
+    classifications: tuple[_MembershipClassificationItem, ...] = Field(min_length=1)
 
 
 class OrganizationClassificationError(ValueError):
@@ -63,14 +67,8 @@ class OrganizationClassificationError(ValueError):
 
 
 class _RepairableClassificationError(ValueError):
-    def __init__(
-        self,
-        safe_code: str,
-        *,
-        issue_paths: tuple[tuple[str, ...], ...] = (),
-    ) -> None:
+    def __init__(self, safe_code: str) -> None:
         self.safe_code = safe_code
-        self.issue_paths = issue_paths
         super().__init__(safe_code)
 
 
@@ -92,6 +90,11 @@ class DingTalkOrganizationUnitClassifier:
         self,
         inspection: OrganizationInspection,
     ) -> OrganizationClassificationResult:
+        department_kinds = _explicit_department_kinds(inspection.departments)
+        membership_kinds, unresolved = _resolve_memberships(
+            inspection,
+            department_kinds,
+        )
         model_input = {
             "departments": [
                 node.model_dump(mode="json")
@@ -99,8 +102,41 @@ class DingTalkOrganizationUnitClassifier:
                     inspection.departments,
                     key=lambda item: item.department_id,
                 )
-            ]
+            ],
+            "unresolved_memberships": [
+                {
+                    "membership_key": key,
+                    "department_ids": key.split("|"),
+                }
+                for key in sorted(unresolved)
+            ],
         }
+        attempts: list[ClassificationAttemptEvidence] = []
+        if unresolved:
+            model_decisions, attempts = await self._classify_unresolved(
+                model_input,
+                unresolved,
+            )
+            membership_kinds.update(model_decisions)
+        output = {
+            "department_entity_kinds": department_kinds,
+            "person_membership_entity_kinds": membership_kinds,
+        }
+        return OrganizationClassificationResult(
+            **output,
+            input_hash=_hash_json(model_input),
+            output_hash=_hash_json(output),
+            attempts=tuple(attempts),
+        )
+
+    async def _classify_unresolved(
+        self,
+        model_input: dict[str, object],
+        unresolved: frozenset[str],
+    ) -> tuple[
+        dict[str, Literal["teacher", "student"]],
+        list[ClassificationAttemptEvidence],
+    ]:
         skill = self._skills.load(
             "classify-dingtalk-organization-units",
             _SKILL_VERSION,
@@ -108,8 +144,6 @@ class DingTalkOrganizationUnitClassifier:
         request = build_agent_request(skill, model_input, _ClassificationResponse)
         attempts: list[ClassificationAttemptEvidence] = []
         last_error: Exception | None = None
-        last_paths: tuple[tuple[str, ...], ...] = ()
-        last_safe_code = "connector_entity_classification_invalid"
         for attempt_number in range(1, self._max_attempts + 1):
             response: LLMResponse | None = None
             try:
@@ -117,21 +151,16 @@ class DingTalkOrganizationUnitClassifier:
                 parsed = _ClassificationResponse.model_validate(
                     extract_model_result(response.output)
                 )
-                expanded = _validate_and_expand(parsed, inspection)
-                _validate_memberships(expanded, inspection)
+                decisions = _validate_model_decisions(parsed, unresolved)
             except ModelProviderError:
                 raise
             except (ValidationError, _RepairableClassificationError) as error:
                 last_error = error
-                if isinstance(error, _RepairableClassificationError):
-                    last_safe_code = error.safe_code
-                    last_paths = error.issue_paths
                 if response is not None:
                     attempts.append(_attempt(response, "rejected"))
                 if attempt_number == self._max_attempts:
                     raise OrganizationClassificationError(
-                        last_safe_code,
-                        issue_paths=last_paths,
+                        "connector_entity_classification_invalid"
                     ) from error
                 request = build_json_repair_request(
                     request,
@@ -140,80 +169,97 @@ class DingTalkOrganizationUnitClassifier:
                 )
                 continue
             attempts.append(_attempt(response, "accepted"))
-            return OrganizationClassificationResult(
-                department_entity_kinds=expanded,
-                input_hash=_hash_json(model_input),
-                output_hash=_hash_json(expanded),
-                attempts=tuple(attempts),
-            )
+            return decisions, attempts
         assert last_error is not None
-        raise OrganizationClassificationError(last_safe_code) from last_error
-
-
-def _validate_and_expand(
-    response: _ClassificationResponse,
-    inspection: OrganizationInspection,
-) -> dict[str, Literal["teacher", "student"]]:
-    expected = {node.department_id for node in inspection.departments}
-    labels: dict[str, Literal["teacher", "student", "unknown"]] = {}
-    for item in response.classifications:
-        if item.department_id in labels:
-            raise _RepairableClassificationError(
-                "connector_entity_classification_invalid"
-            )
-        labels[item.department_id] = item.entity_kind
-    if set(labels) != expected:
-        raise _RepairableClassificationError(
+        raise OrganizationClassificationError(
             "connector_entity_classification_invalid"
-        )
+        ) from last_error
 
-    nodes = {node.department_id: node for node in inspection.departments}
+
+def canonical_membership_key(memberships: tuple[str, ...]) -> str:
+    return "|".join(sorted(set(memberships)))
+
+
+def _explicit_department_kinds(
+    departments: tuple[OrganizationUnitNode, ...],
+) -> dict[str, Literal["teacher", "student"]]:
+    nodes = {node.department_id: node for node in departments}
     expanded: dict[str, Literal["teacher", "student"]] = {}
-    for node in sorted(inspection.departments, key=lambda item: len(item.path)):
+    for node in sorted(departments, key=lambda item: len(item.path)):
         if node.parent_id is not None and node.parent_id not in nodes:
-            raise _RepairableClassificationError(
+            raise OrganizationClassificationError(
                 "connector_entity_classification_invalid"
             )
         inherited = expanded.get(node.parent_id or "")
-        explicit = labels[node.department_id]
+        explicit = _explicit_name_kind(node.name)
         if inherited is not None:
-            if explicit in _CLASSIFIED_KINDS and explicit != inherited:
-                raise _RepairableClassificationError(
-                    "connector_entity_classification_invalid",
-                    issue_paths=(node.path,),
-                )
+            if explicit is not None and explicit != inherited:
+                continue
             expanded[node.department_id] = inherited
-        elif explicit == "teacher" or explicit == "student":
+        elif explicit is not None:
             expanded[node.department_id] = explicit
-
-    unknown_paths = tuple(
-        nodes[department_id].path
-        for department_id in sorted(inspection.personnel_department_ids)
-        if department_id in nodes and department_id not in expanded
-    )
-    if unknown_paths:
-        raise _RepairableClassificationError(
-            "connector_entity_classification_unknown",
-            issue_paths=unknown_paths,
-        )
-    if not inspection.personnel_department_ids <= set(nodes):
-        raise _RepairableClassificationError(
-            "connector_entity_classification_invalid"
-        )
     return expanded
 
 
-def _validate_memberships(
-    expanded: dict[str, Literal["teacher", "student"]],
+def _explicit_name_kind(
+    name: str,
+) -> Literal["teacher", "student"] | None:
+    normalized = "".join(name.split()).casefold()
+    if normalized in _TEACHER_UNIT_NAMES:
+        return "teacher"
+    if normalized in _STUDENT_UNIT_NAMES:
+        return "student"
+    return None
+
+
+def _resolve_memberships(
     inspection: OrganizationInspection,
-) -> None:
+    department_kinds: dict[str, Literal["teacher", "student"]],
+) -> tuple[
+    dict[str, Literal["teacher", "student"]],
+    frozenset[str],
+]:
+    known_ids = {node.department_id for node in inspection.departments}
+    if not inspection.personnel_department_ids <= known_ids:
+        raise OrganizationClassificationError(
+            "connector_entity_classification_invalid"
+        )
+    resolved: dict[str, Literal["teacher", "student"]] = {}
+    unresolved: set[str] = set()
     for memberships in inspection.personnel_memberships:
-        kinds = {expanded.get(department_id) for department_id in memberships}
-        kinds.discard(None)
-        if len(kinds) > 1:
+        key = canonical_membership_key(memberships)
+        if not key or not set(memberships) <= known_ids:
             raise OrganizationClassificationError(
-                "connector_entity_classification_ambiguous"
+                "connector_entity_classification_invalid"
             )
+        kinds = {
+            department_kinds[department_id]
+            for department_id in memberships
+            if department_id in department_kinds
+        }
+        if len(kinds) == 1:
+            resolved[key] = kinds.pop()
+        else:
+            unresolved.add(key)
+    return resolved, frozenset(unresolved)
+
+
+def _validate_model_decisions(
+    response: _ClassificationResponse,
+    expected: frozenset[str],
+) -> dict[str, Literal["teacher", "student"]]:
+    decisions: dict[str, Literal["teacher", "student"]] = {}
+    for item in response.classifications:
+        if item.membership_key in decisions:
+            raise _RepairableClassificationError(
+                "connector_entity_classification_invalid"
+            )
+        decisions[item.membership_key] = item.entity_kind
+    if set(decisions) != expected:
+        raise _RepairableClassificationError(
+            "connector_entity_classification_invalid"
+        )
+    return decisions
 
 
 def _attempt(

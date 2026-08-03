@@ -18,7 +18,8 @@ NEW_AGENT_SKILLS = {
         "行政单元",
         "teacher",
         "student",
-        "unknown",
+        "membership_key",
+        "二选一",
         "每个",
         "不得",
     ),
@@ -156,7 +157,7 @@ NEW_AGENT_SKILLS = {
 }
 
 NEW_AGENT_SKILL_VERSIONS = {
-    "classify-dingtalk-organization-units": "1.0.0",
+    "classify-dingtalk-organization-units": "2.0.0",
     "converse-school-data-sync": "1.7.0",
     "assess-agent-rollback-impact": "2.1.0",
     "execute-approved-rollback": "2.1.0",
