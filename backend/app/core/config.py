@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     conversation_context_reserved_output_tokens: PositiveInt = 2_048
     tokenization_secret: SecretStr | None = None
     proposal_preview_secret: SecretStr | None = None
-    analysis_batch_size: PositiveInt = Field(default=10, le=50)
+    analysis_batch_size: PositiveInt = Field(default=10, le=10)
     analysis_worker_lease_seconds: PositiveInt = 90
     analysis_worker_concurrency: PositiveInt = 4
     analysis_worker_poll_seconds: PositiveFloat = 0.5
@@ -374,8 +374,8 @@ class Settings(BaseSettings):
             raise ValueError("new Agent workflow flag is disabled")
         if not self.model_gateway_configured:
             raise ValueError("Agent model gateway and tokenization must be configured")
-        if self.analysis_batch_size > 50:
-            raise ValueError("Agent analysis batch maximum is 50")
+        if self.analysis_batch_size > 10:
+            raise ValueError("Agent analysis batch maximum is 10")
         if self.model_retry_attempts != 3:
             raise ValueError("Agent model retry count must be exactly three")
         if self.analysis_worker_lease_seconds <= self.llm_timeout_seconds:

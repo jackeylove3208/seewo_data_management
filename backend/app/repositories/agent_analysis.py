@@ -405,8 +405,8 @@ class AgentAnalysisRepository:
         input_hash: str,
         work_item_ids: tuple[UUID, ...],
     ) -> AgentModelBatchRecord:
-        if not 1 <= len(work_item_ids) <= 50 or len(set(work_item_ids)) != len(work_item_ids):
-            raise ValueError("model batches require 1..50 distinct work items")
+        if not 1 <= len(work_item_ids) <= 10 or len(set(work_item_ids)) != len(work_item_ids):
+            raise ValueError("model batches require 1..10 distinct work items")
         run = await self.session.get(AgentRunRecord, run_id)
         if run is None or run.task_id != task_id or run.tenant_id != tenant_id:
             raise ReplayConflict("model batch context does not match its Agent run")

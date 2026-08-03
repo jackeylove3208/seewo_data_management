@@ -31,8 +31,8 @@
 - `AgentBatchPlanner(session, max_items=10)` controls persisted analysis batch membership.
 - `Settings.analysis_batch_size` accepts only values from 1 through 10.
 
-- [ ] Add failing tests for 43-item partitioning, configured planner partitioning, and configuration bounds.
-- [ ] Run the focused tests and confirm they fail for the missing limit propagation.
-- [ ] Implement the shared 10-item invariant and pass settings from both execution entry points.
-- [ ] Run focused and related tests, then lint and type-check the backend.
+- [x] Add failing tests for 43-item partitioning, configured planner partitioning, and configuration bounds.
+- [x] Run the focused tests and confirm they fail for the missing limit propagation.
+- [x] Implement the shared 10-item invariant and pass settings from both execution entry points.
+- [x] Run focused and related tests, then lint and type-check the backend.
 - [ ] Commit the verified change.

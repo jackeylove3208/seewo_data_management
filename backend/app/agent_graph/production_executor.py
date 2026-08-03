@@ -170,6 +170,7 @@ class ProductionGraphActionExecutor:
         )
         self._csv_execution_enabled = csv_execution_enabled
         self._settings = settings
+        self._analysis_batch_size = settings.analysis_batch_size if settings else 10
         self._remote_materializer = remote_materializer or (
             RemoteSourceMaterializer(settings) if settings is not None else None
         )
@@ -2223,7 +2224,10 @@ class ProductionGraphActionExecutor:
     ) -> GraphActionOutcome:
         async with self._session_factory() as session:
             async with session.begin():
-                batches = await AgentBatchPlanner(session).create_for_run(
+                batches = await AgentBatchPlanner(
+                    session,
+                    max_items=self._analysis_batch_size,
+                ).create_for_run(
                     run_id=context.run_id
                 )
                 await self._record_deterministic_invocation(
@@ -2421,7 +2425,10 @@ class ProductionGraphActionExecutor:
                 resolved = await AgentIdentityIndexBuilder(
                     session
                 ).resolve_confirmed_conflicts(run_id=context.run_id)
-                batches = await AgentBatchPlanner(session).create_for_run(
+                batches = await AgentBatchPlanner(
+                    session,
+                    max_items=self._analysis_batch_size,
+                ).create_for_run(
                     run_id=context.run_id,
                     work_item_ids=tuple(item.id for item in resolved),
                 )

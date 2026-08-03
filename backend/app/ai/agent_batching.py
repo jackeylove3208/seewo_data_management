@@ -15,6 +15,8 @@ from app.models.agent_runtime import AgentRunRecord
 from app.repositories.agent_analysis import AgentAnalysisRepository
 from app.schemas.agent_ingestion import AgentEntityKind
 
+MAX_MODEL_ANALYSIS_BATCH_SIZE = 10
+
 
 @dataclass(frozen=True)
 class AgentAnalysisBatchManifest:
@@ -25,10 +27,10 @@ class AgentAnalysisBatchManifest:
 def partition_analysis_batches(
     items: Iterable[tuple[AgentEntityKind, UUID]],
     *,
-    max_items: int = 50,
+    max_items: int = MAX_MODEL_ANALYSIS_BATCH_SIZE,
 ) -> tuple[AgentAnalysisBatchManifest, ...]:
-    if not 1 <= max_items <= 50:
-        raise ValueError("new Agent model batch size must be between 1 and 50")
+    if not 1 <= max_items <= MAX_MODEL_ANALYSIS_BATCH_SIZE:
+        raise ValueError("new Agent model batch size must be between 1 and 10")
     by_kind: dict[AgentEntityKind, list[UUID]] = defaultdict(list)
     for entity_kind, work_item_id in items:
         by_kind[entity_kind].append(work_item_id)
@@ -48,9 +50,17 @@ def partition_analysis_batches(
 class AgentBatchPlanner:
     """Materialize replay-safe model batches from actionable persisted work items."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        max_items: int = MAX_MODEL_ANALYSIS_BATCH_SIZE,
+    ) -> None:
+        if not 1 <= max_items <= MAX_MODEL_ANALYSIS_BATCH_SIZE:
+            raise ValueError("new Agent model batch size must be between 1 and 10")
         self._session = session
         self._repository = AgentAnalysisRepository(session)
+        self._max_items = max_items
 
     async def create_for_run(
         self,
@@ -79,7 +89,8 @@ class AgentBatchPlanner:
             )
         )
         manifests = partition_analysis_batches(
-            (AgentEntityKind(item.entity_kind), item.id) for item in work_items
+            ((AgentEntityKind(item.entity_kind), item.id) for item in work_items),
+            max_items=self._max_items,
         )
         saved: list[AgentModelBatchRecord] = []
         for manifest in manifests:

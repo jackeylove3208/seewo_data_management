@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.agent_analysis import operation_is_allowed
+from app.ai.agent_batching import MAX_MODEL_ANALYSIS_BATCH_SIZE
 from app.ai.graph_subagents import (
     GraphSkillInvocation,
     GraphSkillModelRunner,
@@ -145,8 +146,8 @@ class GraphIngestionAnalysisExecutors:
             raise ValueError(
                 "reconciliation requires analyze_actionable_batches graph node"
             )
-        if not 1 <= len(expected_work_item_kinds) <= 50:
-            raise ValueError("one analysis invocation requires one to fifty work items")
+        if not 1 <= len(expected_work_item_kinds) <= MAX_MODEL_ANALYSIS_BATCH_SIZE:
+            raise ValueError("one analysis invocation requires one to ten work items")
 
         def validate_findings(output: BaseModel) -> BaseModel:
             if not isinstance(output, AgentFindingBatch):

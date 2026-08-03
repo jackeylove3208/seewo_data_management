@@ -97,9 +97,9 @@ async def test_builder_marks_correct_rows_silent_and_emits_duplicate_extra_and_m
     ]
     assert len(tuple(await session.scalars(select(AgentInputRecord)))) == 5
 
-    batches = await AgentBatchPlanner(session).create_for_run(run_id=run.id)
+    batches = await AgentBatchPlanner(session, max_items=2).create_for_run(run_id=run.id)
 
-    assert [batch.item_count for batch in batches] == [3]
+    assert [batch.item_count for batch in batches] == [2, 1]
 
 
 async def _identity_conflict_run(session):
