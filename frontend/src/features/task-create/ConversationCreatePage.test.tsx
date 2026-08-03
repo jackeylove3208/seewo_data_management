@@ -508,15 +508,15 @@ describe("backend Agent conversation", () => {
         status: "active",
         messages: [],
         intent: {
-          title: "钉钉学生同步",
-          entity_types: ["student"],
+          title: "钉钉人员同步",
+          entity_types: ["teacher", "student"],
           source: { kind: "api", configuration_id: "connection-1" },
           target: { kind: "database", configuration_id: "seewo-data-mysql" },
         },
         start_confirmation: {
-          title: "钉钉学生同步",
+          title: "钉钉人员同步",
           summary: "钉钉连接测试通过，可以开始同步。",
-          entity_types: ["student"],
+          entity_types: ["teacher", "student"],
         },
         api_connection: {
           provider_id: "dingtalk",
@@ -542,11 +542,10 @@ describe("backend Agent conversation", () => {
     );
     await user.clear(within(card).getByLabelText("连接名称"));
     await user.type(within(card).getByLabelText("连接名称"), "学校钉钉");
-    await user.selectOptions(within(card).getByLabelText("人员类型"), "student");
+    await user.selectOptions(within(card).getByLabelText("同步范围"), "people");
     await user.clear(within(card).getByLabelText("根部门 ID"));
     await user.type(within(card).getByLabelText("根部门 ID"), "2");
     await user.type(within(card).getByLabelText("人员编号字段"), "student_number");
-    await user.type(within(card).getByLabelText("班级字段"), "class_name");
     await user.type(within(card).getByLabelText("AppKey"), "ding-app");
     await user.type(within(card).getByLabelText("AppSecret"), "ding-secret");
     await user.click(within(card).getByRole("button", { name: "保存并测试连接" }));
@@ -557,16 +556,16 @@ describe("backend Agent conversation", () => {
       display_name: "学校钉钉",
       required_secret_fields: ["app_key", "app_secret"],
       public_configuration: {
-        person_entity_kind: "student",
+        sync_scope: "people",
         root_department_id: 2,
+        person_classification_mode: "organization_unit_llm",
         number_field: "student_number",
-        class_name_field: "class_name",
       },
       secret: { app_key: "ding-app", app_secret: "ding-secret" },
     }));
     expect(
       await within(card).findByText(
-        "连接测试未通过：connector_permission_denied",
+        "钉钉部门或人员目录权限或可见范围不足，请在钉钉开发者后台修正后重试。",
       ),
     ).toBeInTheDocument();
 
@@ -585,10 +584,10 @@ describe("backend Agent conversation", () => {
       display_name: "学校钉钉",
       required_secret_fields: ["app_key", "app_secret"],
       public_configuration: {
-        person_entity_kind: "student",
+        sync_scope: "people",
         root_department_id: 2,
+        person_classification_mode: "organization_unit_llm",
         number_field: "student_number",
-        class_name_field: "class_name",
       },
       secret: {
         app_key: "ding-app-fixed",
@@ -713,7 +712,7 @@ describe("backend Agent conversation", () => {
     })} />);
 
     const card = await screen.findByLabelText("API 连接配置");
-    await user.selectOptions(within(card).getByLabelText("人员类型"), "teacher");
+    await user.selectOptions(within(card).getByLabelText("同步范围"), "department");
     await user.type(within(card).getByLabelText("根部门 ID"), "1");
     await user.type(within(card).getByLabelText("AppKey"), "app-key");
     await user.type(within(card).getByLabelText("AppSecret"), "app-secret");
@@ -789,7 +788,7 @@ describe("backend Agent conversation", () => {
     })} />);
 
     const card = await screen.findByLabelText("API 连接配置");
-    await user.selectOptions(within(card).getByLabelText("人员类型"), "teacher");
+    await user.selectOptions(within(card).getByLabelText("同步范围"), "department");
     await user.type(within(card).getByLabelText("根部门 ID"), "1");
     await user.type(within(card).getByLabelText("AppKey"), "app-key");
     await user.type(within(card).getByLabelText("AppSecret"), "app-secret");

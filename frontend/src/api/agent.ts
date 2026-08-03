@@ -41,10 +41,10 @@ export interface AgentApiConnectionConfiguration {
   display_name: string;
   required_secret_fields: string[];
   public_configuration: {
-    person_entity_kind: "teacher" | "student";
+    sync_scope: "department" | "people" | "all";
     root_department_id: number;
+    person_classification_mode?: "organization_unit_llm";
     number_field?: string;
-    class_name_field?: string;
   };
   secret: Record<string, string>;
   connection_id?: string | null;

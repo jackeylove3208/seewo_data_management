@@ -55,7 +55,7 @@ class ConversationSupervisorAgent:
         self._max_attempts = max_attempts
 
     async def reply(self, context: ConversationAgentContext) -> ConversationAgentDecision:
-        skill = self._skills.load("converse-school-data-sync", "1.6.0")
+        skill = self._skills.load("converse-school-data-sync", "1.7.0")
         request = build_agent_request(
             skill,
             context.model_dump(mode="json"),
@@ -430,7 +430,10 @@ def _validate_api_selection(
     if not eligible:
         return ConversationAgentDecision(
             kind="clarification",
-            message_zh="API 连接的权限或可见范围不足，请修正配置并重新测试。",
+            message_zh=(
+                "组织 API 的部门或人员目录权限或可见范围不足，"
+                "请修正连接配置并重新测试。"
+            ),
         )
     if target is None:
         available_targets = sorted(

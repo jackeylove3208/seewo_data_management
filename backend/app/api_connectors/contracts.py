@@ -116,6 +116,25 @@ class CapturedApiPage(BaseModel):
     next_cursor: str | None = Field(default=None, max_length=2048)
 
 
+class OrganizationUnitNode(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    department_id: str = Field(min_length=1, max_length=512)
+    name: str = Field(min_length=1, max_length=255)
+    parent_id: str | None = Field(default=None, max_length=512)
+    path: tuple[str, ...] = Field(min_length=1)
+
+
+class OrganizationInspection(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    departments: tuple[OrganizationUnitNode, ...] = Field(min_length=1)
+    personnel_department_ids: frozenset[str] = frozenset()
+    personnel_memberships: tuple[tuple[str, ...], ...] = ()
+    visible_person_count: int = Field(ge=0)
+    tree_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class OrganizationApiAdapter(Protocol):
     """Deterministic provider boundary; secrets never cross beyond this protocol."""
 
@@ -133,6 +152,14 @@ class OrganizationApiAdapter(Protocol):
         secret: Mapping[str, str],
         selected_entities: frozenset[AgentEntityKind],
     ) -> AsyncIterator[CapturedApiPage]: ...
+
+
+class OrganizationInspectionAdapter(Protocol):
+    async def inspect_organization(
+        self,
+        public_configuration: Mapping[str, object],
+        secret: Mapping[str, str],
+    ) -> OrganizationInspection: ...
 
 
 def _validate_safe_configuration(value: object) -> None:

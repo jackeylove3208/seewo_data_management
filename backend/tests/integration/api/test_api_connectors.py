@@ -8,11 +8,14 @@ import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
+from app.ai.providers.base import LLMRequest, LLMResponse, ModelProviderError
 from app.api.dependencies import get_operator_context
 from app.api_connectors.contracts import (
     ApiProviderError,
     CapturedApiPage,
     ConnectionTestResult,
+    OrganizationInspection,
+    OrganizationUnitNode,
     ProviderManifest,
 )
 from app.api_connectors.registry import ProviderRegistry
@@ -50,6 +53,9 @@ class FakeDingTalkAdapter:
 
     def __init__(self) -> None:
         self.secrets_seen: list[dict[str, str]] = []
+        self.configurations_seen: list[dict[str, object]] = []
+        self.inspection_calls = 0
+        self.inspection_safe_error_code: str | None = None
         self.result = ConnectionTestResult(
             eligible=True,
             capabilities={"organization.read": True},
@@ -62,11 +68,47 @@ class FakeDingTalkAdapter:
         public_configuration: Mapping[str, object],
         secret: Mapping[str, str],
     ) -> ConnectionTestResult:
-        del public_configuration
+        self.configurations_seen.append(dict(public_configuration))
         self.secrets_seen.append(dict(secret))
         if self.safe_error_code is not None:
             raise ApiProviderError(self.safe_error_code)
         return self.result
+
+    async def inspect_organization(
+        self,
+        public_configuration: Mapping[str, object],
+        secret: Mapping[str, str],
+    ) -> OrganizationInspection:
+        del public_configuration, secret
+        self.inspection_calls += 1
+        if self.inspection_safe_error_code is not None:
+            raise ApiProviderError(self.inspection_safe_error_code)
+        return OrganizationInspection(
+            departments=(
+                OrganizationUnitNode(
+                    department_id="1",
+                    name="示例学校",
+                    parent_id=None,
+                    path=("示例学校",),
+                ),
+                OrganizationUnitNode(
+                    department_id="10",
+                    name="教职工",
+                    parent_id="1",
+                    path=("示例学校", "教职工"),
+                ),
+                OrganizationUnitNode(
+                    department_id="20",
+                    name="学生",
+                    parent_id="1",
+                    path=("示例学校", "学生"),
+                ),
+            ),
+            personnel_department_ids=frozenset({"10", "20"}),
+            personnel_memberships=(("10",), ("20",)),
+            visible_person_count=2,
+            tree_fingerprint="a" * 64,
+        )
 
     async def capture(
         self,
@@ -77,6 +119,31 @@ class FakeDingTalkAdapter:
         del public_configuration, secret, selected_entities
         if False:
             yield CapturedApiPage(page_number=1, records=(), next_cursor=None)
+
+
+class FakeClassificationProvider:
+    def __init__(self) -> None:
+        self.requests: list[LLMRequest] = []
+        self.error: ModelProviderError | None = None
+
+    async def complete_json_once(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        if self.error is not None:
+            raise self.error
+        return LLMResponse(
+            output={
+                "result": {
+                    "classifications": [
+                        {"department_id": "1", "entity_kind": "unknown"},
+                        {"department_id": "10", "entity_kind": "teacher"},
+                        {"department_id": "20", "entity_kind": "student"},
+                    ]
+                }
+            },
+            provider="stub-provider",
+            model="stub-model",
+            request_id="classification-request",
+        )
 
 @pytest.fixture
 def connector_client(tmp_path: Path):
@@ -132,10 +199,12 @@ def connector_client(tmp_path: Path):
         },
     )
     adapter = FakeDingTalkAdapter()
+    classification_provider = FakeClassificationProvider()
     registry = ProviderRegistry()
     registry.register(MANIFEST, adapter)
     with TestClient(create_app(settings)) as test_client:
         test_client.app.state.api_provider_registry = registry
+        test_client.app.state.conversation_provider = classification_provider
         yield test_client, adapter
 
 
@@ -180,10 +249,10 @@ def test_conversation_configuration_creates_a_task_ephemeral_connection(
             "provider_id": "dingtalk",
             "display_name": "钉钉临时连接-测试",
             "public_configuration": {
-                "person_entity_kind": "student",
+                "sync_scope": "people",
+                "person_classification_mode": "organization_unit_llm",
                 "root_department_id": 42,
                 "number_field": "student_number",
-                "class_name_field": "class_name",
             },
             "secret": {"app_key": "app", "app_secret": "secret"},
         },
@@ -203,7 +272,7 @@ def test_conversation_configuration_creates_a_task_ephemeral_connection(
     assert record.credentials_revoked_at is None
     current = client.get("/api/agent/conversations/current")
     assert current.status_code == 200, current.text
-    assert current.json()["intent"]["entity_types"] == ["student"]
+    assert current.json()["intent"]["entity_types"] == ["teacher", "student"]
 
 
 def test_successful_conversation_connection_test_exposes_start_confirmation(
@@ -223,9 +292,9 @@ def test_successful_conversation_connection_test_exposes_start_confirmation(
         json={
             "configuration_session_id": configuration_session["id"],
             "provider_id": "dingtalk",
-            "display_name": "钉钉学生连接",
+            "display_name": "钉钉部门连接",
             "public_configuration": {
-                "person_entity_kind": "student",
+                "sync_scope": "department",
                 "root_department_id": 42,
             },
             "secret": {"app_key": "app", "app_secret": "secret"},
@@ -236,7 +305,7 @@ def test_successful_conversation_connection_test_exposes_start_confirmation(
     adapter.result = ConnectionTestResult(
         eligible=False,
         capabilities={},
-        visibility_summary={"visible": False, "student_count": 0},
+        visibility_summary={"visible": False, "department_count": 0},
         safe_error_code="connector_visibility_empty",
     )
     failed_test = client.post(
@@ -254,7 +323,7 @@ def test_successful_conversation_connection_test_exposes_start_confirmation(
         json={
             "conversation_id": conversation["id"],
             "public_configuration": {
-                "person_entity_kind": "teacher",
+                "sync_scope": "department",
                 "root_department_id": 42,
             },
             "secret": {"app_key": "app-2", "app_secret": "secret-2"},
@@ -265,12 +334,12 @@ def test_successful_conversation_connection_test_exposes_start_confirmation(
         eligible=True,
         capabilities={
             "organization.read": True,
-            "entity.teacher.read": True,
+            "entity.department.read": True,
         },
         visibility_summary={
             "visible": True,
             "record_count": 5,
-            "teacher_count": 5,
+            "department_count": 5,
         },
     )
     tested = client.post(
@@ -283,10 +352,134 @@ def test_successful_conversation_connection_test_exposes_start_confirmation(
     current = client.get("/api/agent/conversations/current")
     assert current.status_code == 200, current.text
     assert current.json()["start_confirmation"] == {
-        "title": "钉钉教师同步",
-        "summary": "钉钉教师同步",
-        "entity_types": ["teacher"],
+        "title": "钉钉部门同步",
+        "summary": "钉钉部门同步",
+        "entity_types": ["department"],
     }
+    assert adapter.inspection_calls == 0
+    assert client.app.state.conversation_provider.requests == []
+
+
+def test_people_connection_test_persists_and_redacts_server_classification(
+    connector_client: tuple[TestClient, FakeDingTalkAdapter],
+) -> None:
+    client, adapter = connector_client
+    conversation = client.post("/api/agent/conversations").json()
+    configuration_session = client.post(
+        "/api/connectors/configuration-sessions",
+        json={"provider_id": "dingtalk", "conversation_id": conversation["id"]},
+    ).json()
+    created = client.post(
+        "/api/connectors/connections",
+        json={
+            "configuration_session_id": configuration_session["id"],
+            "provider_id": "dingtalk",
+            "display_name": "钉钉人员连接",
+            "public_configuration": {
+                "sync_scope": "people",
+                "person_classification_mode": "organization_unit_llm",
+                "root_department_id": 1,
+            },
+            "secret": {"app_key": "app", "app_secret": "secret"},
+        },
+    )
+    assert created.status_code == 201, created.text
+    adapter.result = ConnectionTestResult(
+        eligible=True,
+        capabilities={
+            "organization.read": True,
+            "entity.teacher.read": True,
+            "entity.student.read": True,
+        },
+        visibility_summary={
+            "visible": True,
+            "record_count": 2,
+            "teacher_count": 1,
+            "student_count": 1,
+        },
+    )
+
+    tested = client.post(
+        f"/api/connectors/connections/{created.json()['id']}/test",
+        json={"conversation_id": conversation["id"]},
+    )
+
+    assert tested.status_code == 200, tested.text
+    assert tested.json()["state"] == "active"
+    assert "department_entity_kinds" not in tested.json()["public_configuration"]
+    assert "organization_classification" not in tested.json()["public_configuration"]
+    assert adapter.inspection_calls == 1
+    assert len(client.app.state.conversation_provider.requests) == 1
+    assert adapter.configurations_seen[-1]["department_entity_kinds"] == {
+        "10": "teacher",
+        "20": "student",
+    }
+
+    async def inspect_connection() -> ApiConnectionRecord | None:
+        async with client.app.state.database.session_factory() as session:
+            return await session.get(ApiConnectionRecord, UUID(created.json()["id"]))
+
+    record = client.portal.call(inspect_connection)
+    assert record is not None
+    assert record.public_configuration["department_entity_kinds"] == {
+        "10": "teacher",
+        "20": "student",
+    }
+    audit = record.public_configuration["organization_classification"]
+    assert isinstance(audit, dict)
+    assert audit["skill_version"] == "1.0.0"
+    assert audit["tree_fingerprint"] == "a" * 64
+
+
+@pytest.mark.parametrize(
+    ("failure_source", "expected_code"),
+    [
+        ("model", "connector_entity_classification_unavailable"),
+        ("inspection", "connector_permission_denied"),
+    ],
+)
+def test_people_connection_test_closes_model_and_inspection_failures_safely(
+    connector_client: tuple[TestClient, FakeDingTalkAdapter],
+    failure_source: str,
+    expected_code: str,
+) -> None:
+    client, adapter = connector_client
+    conversation = client.post("/api/agent/conversations").json()
+    configuration_session = client.post(
+        "/api/connectors/configuration-sessions",
+        json={"provider_id": "dingtalk", "conversation_id": conversation["id"]},
+    ).json()
+    created = client.post(
+        "/api/connectors/connections",
+        json={
+            "configuration_session_id": configuration_session["id"],
+            "provider_id": "dingtalk",
+            "display_name": "钉钉人员失败连接",
+            "public_configuration": {
+                "sync_scope": "people",
+                "person_classification_mode": "organization_unit_llm",
+                "root_department_id": 1,
+            },
+            "secret": {"app_key": "app", "app_secret": "secret"},
+        },
+    )
+    assert created.status_code == 201, created.text
+    if failure_source == "model":
+        client.app.state.conversation_provider.error = ModelProviderError(
+            "raw model failure"
+        )
+    else:
+        adapter.inspection_safe_error_code = "connector_permission_denied"
+
+    tested = client.post(
+        f"/api/connectors/connections/{created.json()['id']}/test",
+        json={"conversation_id": conversation["id"]},
+    )
+
+    assert tested.status_code == 200, tested.text
+    assert tested.json()["state"] == "invalid"
+    assert tested.json()["last_safe_error_code"] == expected_code
+    assert "raw model failure" not in tested.text
 
 
 def test_conversation_configuration_preserves_an_existing_explicit_target(
@@ -323,9 +516,9 @@ def test_conversation_configuration_preserves_an_existing_explicit_target(
         json={
             "configuration_session_id": configuration_session["id"],
             "provider_id": "dingtalk",
-            "display_name": "钉钉学生连接",
+            "display_name": "钉钉部门连接",
             "public_configuration": {
-                "person_entity_kind": "student",
+                "sync_scope": "department",
                 "root_department_id": 42,
             },
             "secret": {"app_key": "app", "app_secret": "secret"},
@@ -364,7 +557,7 @@ def test_conversation_configuration_requires_fresh_dingtalk_scope_fields(
     )
 
     assert created.status_code == 422
-    assert "personnel type" in created.json()["detail"]
+    assert "同步范围" in created.json()["detail"]
 
 
 def test_new_conversation_connection_supersedes_previous_unbound_connection(
@@ -386,11 +579,11 @@ def test_new_conversation_connection_supersedes_previous_unbound_connection(
             json={
                 "configuration_session_id": configuration_session["id"],
                 "provider_id": "dingtalk",
-                "display_name": display_name,
-                "public_configuration": {
-                    "person_entity_kind": "teacher",
-                    "root_department_id": 1,
-                },
+                    "display_name": display_name,
+                    "public_configuration": {
+                        "sync_scope": "department",
+                        "root_department_id": 1,
+                    },
                 "secret": {"app_key": "app", "app_secret": "secret"},
             },
         )
@@ -435,7 +628,7 @@ def test_ephemeral_connection_rotation_requires_its_conversation(
             "provider_id": "dingtalk",
             "display_name": "不可跨对话轮换",
             "public_configuration": {
-                "person_entity_kind": "teacher",
+                "sync_scope": "department",
                 "root_department_id": 1,
             },
             "secret": {"app_key": "app", "app_secret": "secret"},
@@ -447,7 +640,7 @@ def test_ephemeral_connection_rotation_requires_its_conversation(
         json={
             "conversation_id": "00000000-0000-0000-0000-000000000001",
             "public_configuration": {
-                "person_entity_kind": "teacher",
+                "sync_scope": "department",
                 "root_department_id": 1,
             },
             "secret": {"app_key": "new", "app_secret": "new-secret"},
@@ -476,7 +669,7 @@ def test_ephemeral_connection_test_requires_its_active_conversation_and_ttl(
             "provider_id": "dingtalk",
             "display_name": "需要对话校验的连接",
             "public_configuration": {
-                "person_entity_kind": "teacher",
+                "sync_scope": "department",
                 "root_department_id": 1,
             },
             "secret": {"app_key": "app", "app_secret": "secret"},
@@ -532,7 +725,7 @@ def test_conversation_reset_revokes_an_unbound_ephemeral_connection(
             "provider_id": "dingtalk",
             "display_name": "即将撤销的临时连接",
             "public_configuration": {
-                "person_entity_kind": "teacher",
+                "sync_scope": "department",
                 "root_department_id": 1,
             },
             "secret": {"app_key": "app", "app_secret": "secret"},

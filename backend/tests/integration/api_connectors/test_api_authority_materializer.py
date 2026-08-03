@@ -49,9 +49,17 @@ MANIFEST = ProviderManifest(
 class FakeCaptureAdapter:
     manifest = MANIFEST
 
-    def __init__(self, pages: tuple[CapturedApiPage, ...]) -> None:
+    def __init__(
+        self,
+        pages: tuple[CapturedApiPage, ...],
+        *,
+        expected_configuration: Mapping[str, object] | None = None,
+    ) -> None:
         self.pages = pages
         self.capture_calls = 0
+        self.expected_configuration = dict(
+            expected_configuration or {"person_entity_kind": "teacher"}
+        )
 
     async def test_connection(
         self,
@@ -67,7 +75,7 @@ class FakeCaptureAdapter:
         secret: Mapping[str, str],
         selected_entities: frozenset[AgentEntityKind],
     ) -> AsyncIterator[CapturedApiPage]:
-        assert public_configuration == {"person_entity_kind": "teacher"}
+        assert public_configuration == self.expected_configuration
         del selected_entities
         assert secret == {"client_id": "client", "client_secret": "secret"}
         self.capture_calls += 1
@@ -91,12 +99,34 @@ def _teacher(external_id: str, name: str = "周明远") -> FrozenApiRecord:
     )
 
 
+def _student(external_id: str, name: str = "合成学生") -> FrozenApiRecord:
+    return FrozenApiRecord(
+        external_id=external_id,
+        entity_kind=AgentEntityKind.STUDENT,
+        provider_fields={"userid": external_id, "name": name},
+        projected_fields={
+            "category": "学生",
+            "name": name,
+            "number": None,
+            "class_name": "一班",
+            "phone": None,
+            "email": None,
+        },
+        unavailable_fields=("email", "number", "phone"),
+    )
+
+
 async def _seed_source(
     session: AsyncSession,
     *,
     fernet_key: bytes,
     ephemeral: bool = False,
+    public_configuration: Mapping[str, object] | None = None,
+    selected_entities: tuple[str, ...] = ("teacher",),
 ) -> tuple[ReconciliationTask, ApiAuthoritySourceRecord]:
+    configuration = dict(
+        public_configuration or {"person_entity_kind": "teacher"}
+    )
     conversation = None
     if ephemeral:
         conversation = AgentConversationRecord(
@@ -111,7 +141,7 @@ async def _seed_source(
         tenant_id="school-1",
         scope_id="all",
         snapshot_mode="full",
-        entity_types=["teacher"],
+        entity_types=list(selected_entities),
         status="running",
         stage="ingestion",
         workflow_version="agent-graph-v1",
@@ -138,12 +168,15 @@ async def _seed_source(
         scope="task_ephemeral" if ephemeral else "persistent",
         conversation_id=conversation.id if conversation is not None else None,
         task_id=task.id if ephemeral else None,
-        public_configuration={"person_entity_kind": "teacher"},
+        public_configuration=configuration,
         secret_ref=secret_ref,
         manifest_version=MANIFEST.manifest_version,
         adapter_version=MANIFEST.adapter_version,
-        capabilities={"entity.teacher.read": True},
-        visibility_summary={"visible": True, "teacher_count": 2},
+        capabilities={f"entity.{kind}.read": True for kind in selected_entities},
+        visibility_summary={
+            "visible": True,
+            **{f"{kind}_count": 2 for kind in selected_entities},
+        },
         state="active",
         created_by="operator-1",
         updated_by="operator-1",
@@ -156,8 +189,8 @@ async def _seed_source(
         connection_id=connection.id,
         frozen_public_configuration=dict(connection.public_configuration),
         frozen_secret_ref=connection.secret_ref,
-        selected_entities=["teacher"],
-        selection_hash=_selection_hash(("teacher",)),
+        selected_entities=list(selected_entities),
+        selection_hash=_selection_hash(tuple(sorted(selected_entities))),
         state="registered",
         manifest_version=MANIFEST.manifest_version,
         adapter_version=MANIFEST.adapter_version,
@@ -263,6 +296,68 @@ async def test_api_materializer_publishes_complete_immutable_jsonl_and_replays(
     assert persisted.page_count == 2
     assert persisted.content_sha256 == source.sha256
     assert snapshot is not None and snapshot.source_role == "authoritative"
+
+
+async def test_api_materializer_reuses_frozen_dingtalk_classification(
+    session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    key = Fernet.generate_key()
+    configuration = {
+        "sync_scope": "people",
+        "root_department_id": 1,
+        "person_classification_mode": "organization_unit_llm",
+        "department_entity_kinds": {"10": "teacher", "20": "student"},
+        "organization_classification": {
+            "mode": "organization_unit_llm",
+            "skill_version": "1.0.0",
+            "tree_fingerprint": "a" * 64,
+            "input_hash": "b" * 64,
+            "output_hash": "c" * 64,
+            "attempts": [],
+        },
+    }
+    task, api_source = await _seed_source(
+        session,
+        fernet_key=key,
+        public_configuration=configuration,
+        selected_entities=("student", "teacher"),
+    )
+    await session.commit()
+    adapter = FakeCaptureAdapter(
+        (
+            CapturedApiPage(
+                page_number=1,
+                records=(
+                    _teacher("staff-in-math-group"),
+                    _student("student-in-class-one"),
+                ),
+                next_cursor=None,
+            ),
+        ),
+        expected_configuration=configuration,
+    )
+    materializer = ApiAuthorityMaterializer(
+        Settings(upload_root=tmp_path / "uploads", _env_file=None),
+        registry=_registry(adapter),
+        fernet_key=key,
+    )
+
+    source = await materializer.materialize(
+        session,
+        task_id=task.id,
+        api_source_id=api_source.id,
+    )
+
+    lines = [
+        json.loads(line)
+        for line in (await anyio.Path(source.storage_path).read_text()).splitlines()[1:]
+    ]
+    assert [(line["external_id"], line["entity_kind"]) for line in lines] == [
+        ("student-in-class-one", "student"),
+        ("staff-in-math-group", "teacher"),
+    ]
+    assert adapter.capture_calls == 1
 
 
 async def test_api_materializer_revokes_ephemeral_credentials_after_publication(

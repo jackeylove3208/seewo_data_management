@@ -1,15 +1,27 @@
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from typing import cast
 from uuid import UUID
 
 from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai.providers.base import ModelProviderError
 from app.api_connectors.contracts import (
     ApiProviderError,
+    OrganizationInspectionAdapter,
     ProviderManifest,
     SafeApiConnection,
+)
+from app.api_connectors.dingtalk_configuration import (
+    ApiConnectionValidationError,
+    redact_server_configuration,
+    validate_new_task_configuration,
+)
+from app.api_connectors.organization_unit_classifier import (
+    DingTalkOrganizationUnitClassifier,
+    OrganizationClassificationError,
 )
 from app.api_connectors.policy import task_ephemeral_credentials_expired
 from app.api_connectors.registry import ProviderRegistry
@@ -21,12 +33,15 @@ from app.api_connectors.secrets import (
 from app.models.agent_runtime import AgentConversationRecord
 from app.models.api_connectors import ApiConnectionRecord
 
+__all__ = [
+    "ApiConnectionConflictError",
+    "ApiConnectionNotFoundError",
+    "ApiConnectionService",
+    "ApiConnectionValidationError",
+]
+
 
 class ApiConnectionNotFoundError(LookupError):
-    pass
-
-
-class ApiConnectionValidationError(ValueError):
     pass
 
 
@@ -41,10 +56,12 @@ class ApiConnectionService:
         *,
         registry: ProviderRegistry,
         fernet_key: bytes | str | SecretStr,
+        classifier: DingTalkOrganizationUnitClassifier | None = None,
     ) -> None:
         self._repository = ApiConnectionRepository(session)
         self._secrets = EncryptedDatabaseSecretStore(session, fernet_key=fernet_key)
         self._registry = registry
+        self._classifier = classifier
 
     def providers(self) -> tuple[ProviderManifest, ...]:
         return tuple(
@@ -81,8 +98,12 @@ class ApiConnectionService:
             raise ApiConnectionValidationError(
                 "task-ephemeral connections require a conversation"
             )
+        normalized_public_configuration = dict(public_configuration)
         if scope == "task_ephemeral":
-            _validate_dingtalk_task_configuration(provider_id, public_configuration)
+            if provider_id == "dingtalk":
+                normalized_public_configuration = validate_new_task_configuration(
+                    public_configuration
+                )
             assert conversation_id is not None
             owned_conversation_id = await self._repository.session.scalar(
                 select(AgentConversationRecord.id)
@@ -112,7 +133,7 @@ class ApiConnectionService:
             display_name=normalized_display_name,
             scope=scope,
             conversation_id=conversation_id,
-            public_configuration=dict(public_configuration),
+            public_configuration=normalized_public_configuration,
             secret_ref=secret_ref,
             manifest_version=manifest.manifest_version,
             adapter_version=manifest.adapter_version,
@@ -173,6 +194,30 @@ class ApiConnectionService:
             secret_ref=record.secret_ref,
         )
         adapter = self._registry.adapter(record.provider_id)
+        classification_error = await self._classify_dingtalk_people(
+            record,
+            adapter=cast(OrganizationInspectionAdapter, adapter),
+            secret=secret,
+        )
+        if classification_error is not None:
+            record.capabilities = {}
+            record.visibility_summary = {
+                "visible": False,
+                **(
+                    {
+                        "classification_issue_path": " / ".join(
+                            classification_error.issue_paths[0]
+                        )
+                    }
+                    if classification_error.issue_paths
+                    else {}
+                ),
+            }
+            record.state = "invalid"
+            record.last_safe_error_code = classification_error.safe_code
+            record.last_tested_at = datetime.now(UTC)
+            record.updated_by = operator_id
+            return _safe_view(record)
         try:
             result = await adapter.test_connection(record.public_configuration, secret)
         except ApiProviderError as error:
@@ -188,6 +233,54 @@ class ApiConnectionService:
         record.last_tested_at = datetime.now(UTC)
         record.updated_by = operator_id
         return _safe_view(record)
+
+    async def _classify_dingtalk_people(
+        self,
+        record: ApiConnectionRecord,
+        *,
+        adapter: OrganizationInspectionAdapter,
+        secret: Mapping[str, str],
+    ) -> OrganizationClassificationError | None:
+        if (
+            record.provider_id != "dingtalk"
+            or record.scope != "task_ephemeral"
+            or record.public_configuration.get("sync_scope") not in {"people", "all"}
+        ):
+            return None
+        if self._classifier is None:
+            return OrganizationClassificationError(
+                "connector_entity_classification_unavailable"
+            )
+        try:
+            inspection = await adapter.inspect_organization(
+                record.public_configuration,
+                secret,
+            )
+        except ApiProviderError as error:
+            return OrganizationClassificationError(error.safe_code)
+        try:
+            result = await self._classifier.classify(inspection)
+        except OrganizationClassificationError as error:
+            return error
+        except ModelProviderError:
+            return OrganizationClassificationError(
+                "connector_entity_classification_unavailable"
+            )
+        record.public_configuration = {
+            **record.public_configuration,
+            "department_entity_kinds": result.department_entity_kinds,
+            "organization_classification": {
+                "mode": "organization_unit_llm",
+                "skill_version": result.skill_version,
+                "tree_fingerprint": inspection.tree_fingerprint,
+                "input_hash": result.input_hash,
+                "output_hash": result.output_hash,
+                "attempts": [
+                    attempt.model_dump(mode="json") for attempt in result.attempts
+                ],
+            },
+        }
+        return None
 
     async def rotate(
         self,
@@ -217,10 +310,10 @@ class ApiConnectionService:
                 raise ApiConnectionValidationError(
                     "complete DingTalk configuration is required"
                 )
-            _validate_dingtalk_task_configuration(
-                record.provider_id,
-                public_configuration,
-            )
+            if record.provider_id == "dingtalk":
+                public_configuration = validate_new_task_configuration(
+                    public_configuration
+                )
         _validate_secret_shape(secret, self._manifest(record.provider_id))
         await self._secrets.rotate(
             tenant_id=tenant_id,
@@ -296,42 +389,16 @@ def _validate_secret_shape(
         )
 
 
-def _validate_dingtalk_task_configuration(
-    provider_id: str,
-    configuration: Mapping[str, object],
-) -> None:
-    if provider_id != "dingtalk":
-        return
-    if configuration.get("person_entity_kind") not in {"teacher", "student"}:
-        raise ApiConnectionValidationError(
-            "DingTalk personnel type must be teacher or student"
-        )
-    root_department_id = configuration.get("root_department_id")
-    if (
-        isinstance(root_department_id, bool)
-        or not isinstance(root_department_id, int)
-        or root_department_id <= 0
-    ):
-        raise ApiConnectionValidationError(
-            "DingTalk root department ID must be a positive integer"
-        )
-    for field_name in ("number_field", "class_name_field"):
-        value = configuration.get(field_name)
-        if value is not None and (
-            not isinstance(value, str) or not value.strip()
-        ):
-            raise ApiConnectionValidationError(
-                f"DingTalk {field_name} must be a non-blank string"
-            )
-
-
 def _safe_view(record: ApiConnectionRecord) -> SafeApiConnection:
+    public_configuration = dict(record.public_configuration)
+    if record.provider_id == "dingtalk":
+        public_configuration = redact_server_configuration(public_configuration)
     return SafeApiConnection(
         id=record.id,
         tenant_id=record.tenant_id,
         provider_id=record.provider_id,
         display_name=record.display_name,
-        public_configuration=dict(record.public_configuration),
+        public_configuration=public_configuration,
         manifest_version=record.manifest_version,
         adapter_version=record.adapter_version,
         capabilities=dict(record.capabilities),

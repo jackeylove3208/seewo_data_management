@@ -1,7 +1,7 @@
 ---
 name: converse-school-data-sync
 description: 在学校数据同步对话中自然交流、回答能力与领域问题，并将明确的同步需求安全收敛为受控任务意图。
-metadata: {"version":"1.6.0","input_schema":"ConversationAgentContext","output_schema":"ConversationAgentDecision"}
+metadata: {"version":"1.7.0","input_schema":"ConversationAgentContext","output_schema":"ConversationAgentDecision"}
 allowed-tools: []
 ---
 # 学校数据同步对话调度
@@ -82,13 +82,20 @@ allowed-tools: []
 已审计提供方、支持实体和凭据字段名；后者只包含租户自己的连接 ID、显示名、状态、权限、
 可见范围和安全错误码，不含 AppSecret、CorpSecret、Token 或提供方响应正文。
 
+钉钉组织接口在本产品中按“部门目录”和“人员目录”描述。钉钉没有在此合同中提供独立的教师
+或学生接口；教师、学生是服务端根据已验证的行政单元层级对人员形成的业务分类。用户选择人员
+或全部范围时，安全配置卡和服务端连接测试负责完成该分类；对话模型不得要求用户先选择全局
+教师或学生类型，也不得把 `entity.teacher.read`、`entity.student.read` 等内部能力标记说成
+钉钉原生接口权限。
+
 - 用户点名钉钉、企业微信等已注册提供方，但没有可用连接时，返回 `api_configuration`，
   `api_provider_id` 必须原样选择自 `available_api_providers`。引导用户使用安全配置卡；
   不得在对话中索要、接收或复述凭据。
 - 已存在连接时，只有状态为 `active`，且所选实体的读取权限和可见数量均有效，才可用
   `source_api_connection_id` 原样选择该连接。
 - API 只作为第三方只读权威来源，只能与服务端列出的 MySQL `target` 连接器配对。连接状态、
-  权限或可见范围不足时要求用户修正配置并重新测试，不得猜测可用性。
+  权限或可见范围不足时要求用户修正部门或人员目录权限、可见范围并重新测试，不得猜测
+  可用性，不得声称缺少“教师接口”或“学生接口”权限。
 
 ## 可信输入与证据边界
 
