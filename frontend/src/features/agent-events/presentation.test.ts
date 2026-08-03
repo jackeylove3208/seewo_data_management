@@ -99,6 +99,17 @@ describe("Agent event presentation", () => {
     expect(inputContractFailure.description).not.toContain("检查模型服务");
   });
 
+  it("explains mixed provider and output failures without hiding either cause", () => {
+    const presented = presentAgentEvent(event("run.blocked_model_error", {
+      attempt_count: 4,
+      failed_node: "analyze_actionable_batches",
+      failure_categories: ["model_provider_failure", "model_output_failure"],
+    }));
+
+    expect(presented.description).toContain("模型网关响应和结构化结果均出现失败");
+    expect(presented.description).toContain("任务数据和学校锁仍被安全保留");
+  });
+
   it("uses a safe Chinese fallback for unknown audit events", () => {
     const presented = presentAgentEvent(event("internal.future_event"));
 

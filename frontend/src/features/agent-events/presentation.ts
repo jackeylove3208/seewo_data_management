@@ -306,6 +306,15 @@ function blockedModelDescription(attempts: number, categories: string[]): string
     return `${prefix}后端传给 Agent 的输入合同未通过校验；任务数据和学校锁仍被安全保留，请终止任务后查看失败审计。`;
   }
   if (
+    categories.includes("model_provider_failure")
+    && (
+      categories.includes("model_contract_failure")
+      || categories.includes("model_output_failure")
+    )
+  ) {
+    return `${prefix}模型网关响应和结构化结果均出现失败；任务数据和学校锁仍被安全保留。`;
+  }
+  if (
     categories.includes("model_contract_failure")
     || categories.includes("model_output_failure")
   ) {
