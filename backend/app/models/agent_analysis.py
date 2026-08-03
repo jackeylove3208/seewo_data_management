@@ -229,7 +229,7 @@ class AgentModelBatchRecord(Base, TimestampMixin):
             name="ck_agent_batch_entity_kind",
         ),
         CheckConstraint(
-            "status IN ('pending', 'claimed', 'completed', 'blocked')",
+            "status IN ('pending', 'claimed', 'completed', 'blocked', 'superseded')",
             name="ck_agent_batch_status",
         ),
     )

@@ -47,6 +47,10 @@ The analysis sub-agent SHALL receive no more than 10 distinct persisted work ite
 - **WHEN** one entity group contains 43 terminally constructed work items
 - **THEN** the backend creates five independently retryable batches containing 10, 10, 10, 10, and 3 items
 
+#### Scenario: A pending oversized batch predates the limit
+- **WHEN** an unfinished task already has a pending batch containing more than 10 work items
+- **THEN** the backend retains that batch as a superseded audit record and creates deterministic replacement batches before either runtime sends another model request
+
 #### Scenario: Response omits an item
 - **WHEN** model output lacks one requested work-item ID or duplicates another
 - **THEN** the batch attempt fails validation and no fabricated result is committed for the omitted item

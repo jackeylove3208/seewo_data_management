@@ -131,12 +131,18 @@ class CsvAnalysisHandlerFactory:
 
     async def analyze_batches(self, context: AgentWorkContext) -> AgentWorkResult:
         async with self._session_factory() as session:
+            async with session.begin():
+                await AgentBatchPlanner(
+                    session,
+                    max_items=self._analysis_batch_size,
+                ).create_for_run(run_id=context.run_id)
+        async with self._session_factory() as session:
             batches = tuple(
                 await session.scalars(
                     select(AgentModelBatchRecord)
                     .where(
                         AgentModelBatchRecord.run_id == context.run_id,
-                        AgentModelBatchRecord.status != "completed",
+                        AgentModelBatchRecord.status.not_in(("completed", "superseded")),
                     )
                     .order_by(AgentModelBatchRecord.created_at, AgentModelBatchRecord.id)
                 )

@@ -10,7 +10,11 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.agent_analysis import AgentModelBatchRecord, AgentWorkItemRecord
+from app.models.agent_analysis import (
+    AgentModelBatchItemRecord,
+    AgentModelBatchRecord,
+    AgentWorkItemRecord,
+)
 from app.models.agent_runtime import AgentRunRecord
 from app.repositories.agent_analysis import AgentAnalysisRepository
 from app.schemas.agent_ingestion import AgentEntityKind
@@ -73,6 +77,24 @@ class AgentBatchPlanner:
             raise LookupError(f"agent run not found: {run_id}")
         if work_item_ids is not None and not work_item_ids:
             return ()
+        await self._repository.supersede_oversized_batches(
+            run_id=run_id,
+            max_items=self._max_items,
+        )
+        covered_by_unsuperseded_oversized_batch = tuple(
+            await self._session.scalars(
+                select(AgentModelBatchItemRecord.work_item_id)
+                .join(
+                    AgentModelBatchRecord,
+                    AgentModelBatchRecord.id == AgentModelBatchItemRecord.batch_id,
+                )
+                .where(
+                    AgentModelBatchRecord.run_id == run_id,
+                    AgentModelBatchRecord.item_count > self._max_items,
+                    AgentModelBatchRecord.status != "superseded",
+                )
+            )
+        )
         filters = [
             AgentWorkItemRecord.run_id == run_id,
             AgentWorkItemRecord.kind.not_in(
@@ -81,6 +103,10 @@ class AgentBatchPlanner:
         ]
         if work_item_ids is not None:
             filters.append(AgentWorkItemRecord.id.in_(work_item_ids))
+        if covered_by_unsuperseded_oversized_batch:
+            filters.append(
+                AgentWorkItemRecord.id.not_in(covered_by_unsuperseded_oversized_batch)
+            )
         work_items = tuple(
             await self._session.scalars(
                 select(AgentWorkItemRecord)

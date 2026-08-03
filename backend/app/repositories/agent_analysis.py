@@ -466,6 +466,48 @@ class AgentAnalysisRepository:
         await self.session.flush()
         return batch
 
+    async def supersede_oversized_batches(
+        self,
+        *,
+        run_id: UUID,
+        max_items: int,
+    ) -> tuple[AgentModelBatchRecord, ...]:
+        """Retire replay-safe legacy batches before creating smaller replacements."""
+        run = await self.session.get(AgentRunRecord, run_id)
+        if run is None:
+            raise LookupError(f"agent run not found: {run_id}")
+        batches = tuple(
+            await self.session.scalars(
+                select(AgentModelBatchRecord)
+                .where(
+                    AgentModelBatchRecord.run_id == run_id,
+                    AgentModelBatchRecord.item_count > max_items,
+                    AgentModelBatchRecord.status.in_(("pending", "claimed")),
+                )
+                .with_for_update()
+            )
+        )
+        now = datetime.now(UTC)
+        superseded: list[AgentModelBatchRecord] = []
+        for batch in batches:
+            claim_is_stale = (
+                batch.status == "claimed"
+                and (
+                    batch.lease_expires_at is None
+                    or batch.lease_expires_at <= now
+                    or batch.lease_owner != run.lease_owner
+                )
+            )
+            if batch.status != "pending" and not claim_is_stale:
+                continue
+            batch.status = "superseded"
+            batch.lease_owner = None
+            batch.lease_token = None
+            batch.lease_expires_at = None
+            superseded.append(batch)
+        await self.session.flush()
+        return tuple(superseded)
+
     async def claim_batch(
         self,
         batch_id: UUID,

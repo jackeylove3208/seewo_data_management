@@ -23,6 +23,7 @@ from app.agent_graph.worker import GraphCandidatePlan, GraphWorkContext
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.source_bindings import AgentSourceBinding, load_source_bindings
 from app.agent_runtime.state_machine import AgentPhase
+from app.ai.agent_batching import AgentBatchPlanner
 from app.connectors.configured import ConfiguredApiConnector
 from app.connectors.database_runtime import (
     ConfiguredDatabaseConnectorRuntime,
@@ -395,11 +396,23 @@ class ProductionGraphCandidateProvider:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         database_connectors: DatabaseConnectorResolver | None = None,
+        analysis_batch_size: int = 10,
     ) -> None:
         self._session_factory = session_factory
         self._database_connectors = database_connectors
+        self._analysis_batch_size = analysis_batch_size
 
     async def __call__(self, context: GraphWorkContext) -> GraphCandidatePlan:
+        if context.current_node in {
+            "analyze_actionable_batches",
+            "repair_analysis_batch",
+        }:
+            async with self._session_factory() as recovery_session:
+                async with recovery_session.begin():
+                    await AgentBatchPlanner(
+                        recovery_session,
+                        max_items=self._analysis_batch_size,
+                    ).create_for_run(run_id=context.run_id)
         async with self._session_factory() as session:
             actions = await self._actions(session, context)
         if not actions:

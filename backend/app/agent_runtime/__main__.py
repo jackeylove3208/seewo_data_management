@@ -90,6 +90,7 @@ async def run() -> None:
                 candidate_provider=ProductionGraphCandidateProvider(
                     database.session_factory,
                     database_connectors=database_connector_runtime,
+                    analysis_batch_size=settings.analysis_batch_size,
                 ),
                 executor=ProductionGraphActionExecutor(
                     database.session_factory,

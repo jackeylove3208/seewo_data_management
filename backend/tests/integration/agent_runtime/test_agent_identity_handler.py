@@ -97,8 +97,13 @@ async def test_builder_marks_correct_rows_silent_and_emits_duplicate_extra_and_m
     ]
     assert len(tuple(await session.scalars(select(AgentInputRecord)))) == 5
 
+    legacy_batches = await AgentBatchPlanner(session, max_items=3).create_for_run(
+        run_id=run.id
+    )
     batches = await AgentBatchPlanner(session, max_items=2).create_for_run(run_id=run.id)
 
+    await session.refresh(legacy_batches[0])
+    assert legacy_batches[0].status == "superseded"
     assert [batch.item_count for batch in batches] == [2, 1]
 
 
