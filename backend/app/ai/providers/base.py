@@ -7,6 +7,23 @@ from pydantic import BaseModel, ConfigDict, Field
 class ModelProviderError(RuntimeError):
     """The configured external model provider did not return a usable response."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        safe_code: str = "model_provider_failure",
+        status_class: str | None = None,
+        duration_ms: int | None = None,
+        request_id: str | None = None,
+        transport_attempts: int = 1,
+    ) -> None:
+        super().__init__(message)
+        self.safe_code = safe_code
+        self.status_class = status_class
+        self.duration_ms = duration_ms
+        self.request_id = request_id
+        self.transport_attempts = transport_attempts
+
 
 class TransientModelError(ModelProviderError):
     """A retryable provider failure, such as a timeout, rate limit, or 5xx response."""

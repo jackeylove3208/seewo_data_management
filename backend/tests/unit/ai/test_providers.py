@@ -61,7 +61,7 @@ async def test_llm_retries_transient_failure_and_returns_usage() -> None:
 
 
 @pytest.mark.asyncio
-async def test_llm_single_attempt_mode_does_not_hide_outer_agent_retries() -> None:
+async def test_llm_semantic_turn_retries_transport_without_outer_agent_retry() -> None:
     calls = 0
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -79,12 +79,15 @@ async def test_llm_single_attempt_mode_does_not_hide_outer_agent_retries() -> No
             ),
             client=client,
         )
-        with pytest.raises(TransientModelError):
+        with pytest.raises(TransientModelError) as captured:
             await provider.complete_json_once(
                 LLMRequest(messages=(Message(role="user", content="analyze"),))
             )
 
-    assert calls == 1
+    assert calls == 3
+    assert captured.value.safe_code == "model_upstream_5xx"
+    assert captured.value.status_class == "5xx"
+    assert captured.value.transport_attempts == 3
 
 
 @pytest.mark.asyncio
@@ -122,10 +125,34 @@ async def test_llm_single_attempt_enforces_a_wall_clock_deadline() -> None:
         client=SlowClient(),  # type: ignore[arg-type]
     )
 
-    with pytest.raises(TransientModelError, match="transport failed"):
+    with pytest.raises(TransientModelError, match="transport failed") as captured:
         await provider.complete_json_once(
             LLMRequest(messages=(Message(role="user", content="analyze"),))
         )
+
+    assert captured.value.safe_code == "model_timeout"
+
+
+@pytest.mark.asyncio
+async def test_llm_invalid_json_has_specific_safe_error_code() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"not-json", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = HttpLLMProvider(
+            settings=Settings(
+                llm_url="https://model.example.test/v1/analyze",
+                llm_api_key="secret-token",
+            ),
+            client=client,
+        )
+        with pytest.raises(ModelProviderError) as captured:
+            await provider.complete_json_once(
+                LLMRequest(messages=(Message(role="user", content="analyze"),))
+            )
+
+    assert captured.value.safe_code == "model_response_invalid_json"
+    assert captured.value.status_class == "2xx"
 
 
 @pytest.mark.asyncio

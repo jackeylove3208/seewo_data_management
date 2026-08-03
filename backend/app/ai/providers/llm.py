@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -47,38 +48,14 @@ class HttpLLMProvider(LLMProvider):
                 await client.aclose()
 
     async def complete_json_once(self, request: LLMRequest) -> LLMResponse:
-        """Make one transport attempt for the outer durable Agent retry loop."""
+        """Run one semantic model turn with bounded transport retries."""
         url = self.settings.llm_url
         api_key = self.settings.llm_api_key
         if not url or api_key is None or not api_key.get_secret_value():
             raise ModelProviderError("LLM provider is not configured")
         client = self.client or httpx.AsyncClient()
         try:
-            try:
-                async with asyncio.timeout(self.settings.llm_timeout_seconds):
-                    response = await client.post(
-                        url,
-                        headers=_request_headers(self.settings, api_key),
-                        json=_request_body(self.settings, request),
-                        timeout=self.settings.llm_timeout_seconds,
-                    )
-            except (
-                TimeoutError,
-                httpx.TimeoutException,
-                httpx.TransportError,
-            ) as error:
-                raise TransientModelError("model transport failed") from error
-            if response.status_code in {429, 500, 502, 503, 504}:
-                raise TransientModelError(f"model request returned status {response.status_code}")
-            if response.is_error:
-                raise ModelProviderError(f"model request returned status {response.status_code}")
-            try:
-                payload = response.json()
-            except (json.JSONDecodeError, UnicodeDecodeError) as error:
-                raise ModelProviderError("model response contained invalid JSON") from error
-            if not isinstance(payload, dict):
-                raise ModelProviderError("model response must be a JSON object")
-            return _parse_response(payload, self.settings)
+            return await self._complete_with(client, request, url, api_key)
         finally:
             if self.client is None:
                 await client.aclose()
@@ -90,38 +67,108 @@ class HttpLLMProvider(LLMProvider):
         url: str,
         api_key: SecretStr,
     ) -> LLMResponse:
-        last_error: Exception | None = None
+        last_error: TransientModelError | None = None
         for attempt in range(1, self.settings.model_retry_attempts + 1):
             try:
+                return await self._complete_transport_attempt(
+                    client,
+                    request,
+                    url,
+                    api_key,
+                )
+            except TransientModelError as error:
+                last_error = error
+                if attempt == self.settings.model_retry_attempts:
+                    break
+                await self.sleep(self.settings.model_retry_wait_seconds * attempt)
+        if last_error is None:
+            raise RuntimeError("model transport retry loop completed without a result")
+        last_error.transport_attempts = self.settings.model_retry_attempts
+        raise last_error
+
+    async def _complete_transport_attempt(
+        self,
+        client: httpx.AsyncClient,
+        request: LLMRequest,
+        url: str,
+        api_key: SecretStr,
+    ) -> LLMResponse:
+        started = time.monotonic()
+        try:
+            async with asyncio.timeout(self.settings.llm_timeout_seconds):
                 response = await client.post(
                     url,
                     headers=_request_headers(self.settings, api_key),
                     json=_request_body(self.settings, request),
                     timeout=self.settings.llm_timeout_seconds,
                 )
-                if response.status_code in {429, 500, 502, 503, 504}:
-                    raise TransientModelError(
-                        f"model request returned status {response.status_code}"
-                    )
-                if response.is_error:
-                    raise ModelProviderError(
-                        f"model request returned status {response.status_code}"
-                    )
-                try:
-                    payload = response.json()
-                except (json.JSONDecodeError, UnicodeDecodeError) as error:
-                    raise ModelProviderError("model response contained invalid JSON") from error
-                if not isinstance(payload, dict):
-                    raise ModelProviderError("model response must be a JSON object")
-                return _parse_response(payload, self.settings)
-            except (httpx.TimeoutException, httpx.TransportError, TransientModelError) as error:
-                last_error = error
-                if attempt == self.settings.model_retry_attempts:
-                    break
-                await self.sleep(self.settings.model_retry_wait_seconds * attempt)
-        raise TransientModelError(
-            f"model request failed after {self.settings.model_retry_attempts} attempts"
-        ) from last_error
+        except (TimeoutError, httpx.TimeoutException) as error:
+            raise TransientModelError(
+                "model transport failed",
+                safe_code="model_timeout",
+                duration_ms=_elapsed_ms(started),
+            ) from error
+        except httpx.TransportError as error:
+            raise TransientModelError(
+                "model transport failed",
+                safe_code="model_transport_failure",
+                duration_ms=_elapsed_ms(started),
+            ) from error
+
+        status_class = f"{response.status_code // 100}xx"
+        request_id = _optional_string(
+            response.headers.get("x-request-id")
+            or response.headers.get("request-id")
+        )
+        if response.status_code == 429:
+            raise TransientModelError(
+                "model request was rate limited",
+                safe_code="model_rate_limited",
+                status_class=status_class,
+                duration_ms=_elapsed_ms(started),
+                request_id=request_id,
+            )
+        if 500 <= response.status_code <= 599:
+            raise TransientModelError(
+                f"model request returned status {response.status_code}",
+                safe_code="model_upstream_5xx",
+                status_class=status_class,
+                duration_ms=_elapsed_ms(started),
+                request_id=request_id,
+            )
+        if response.is_error:
+            raise ModelProviderError(
+                f"model request returned status {response.status_code}",
+                safe_code="model_http_rejected",
+                status_class=status_class,
+                duration_ms=_elapsed_ms(started),
+                request_id=request_id,
+            )
+        try:
+            payload = response.json()
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            raise ModelProviderError(
+                "model response contained invalid JSON",
+                safe_code="model_response_invalid_json",
+                status_class=status_class,
+                duration_ms=_elapsed_ms(started),
+                request_id=request_id,
+            ) from error
+        if not isinstance(payload, dict):
+            raise ModelProviderError(
+                "model response must be a JSON object",
+                safe_code="model_response_invalid_json",
+                status_class=status_class,
+                duration_ms=_elapsed_ms(started),
+                request_id=request_id,
+            )
+        try:
+            return _parse_response(payload, self.settings)
+        except ModelProviderError as error:
+            error.status_class = error.status_class or status_class
+            error.duration_ms = error.duration_ms or _elapsed_ms(started)
+            error.request_id = error.request_id or request_id
+            raise
 
 
 def _request_headers(settings: Settings, api_key: SecretStr) -> dict[str, str]:
@@ -200,17 +247,29 @@ def _parse_response(payload: dict[str, Any], settings: Settings) -> LLMResponse:
     if output is None:
         choices = payload.get("choices")
         if not isinstance(choices, list) or not choices:
-            raise ModelProviderError("model response did not contain structured output")
+            raise ModelProviderError(
+                "model response did not contain structured output",
+                safe_code="model_response_contract_missing",
+            )
         message = choices[0].get("message") if isinstance(choices[0], dict) else None
         content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, str):
-            raise ModelProviderError("model response did not contain JSON content")
+            raise ModelProviderError(
+                "model response did not contain JSON content",
+                safe_code="model_response_contract_missing",
+            )
         try:
             output = json.loads(content)
         except json.JSONDecodeError as error:
-            raise ModelProviderError("model response contained invalid JSON") from error
+            raise ModelProviderError(
+                "model response contained invalid JSON",
+                safe_code="model_response_invalid_json",
+            ) from error
     if not isinstance(output, dict):
-        raise ModelProviderError("model response output must be an object")
+        raise ModelProviderError(
+            "model response output must be an object",
+            safe_code="model_response_contract_missing",
+        )
     usage = payload.get("usage")
     usage_values = usage if isinstance(usage, dict) else {}
     return LLMResponse(
@@ -227,6 +286,10 @@ def _parse_response(payload: dict[str, Any], settings: Settings) -> LLMResponse:
 
 def _optional_string(value: object) -> str | None:
     return str(value) if value is not None else None
+
+
+def _elapsed_ms(started: float) -> int:
+    return max(0, round((time.monotonic() - started) * 1000))
 
 
 def _token_count(values: dict[str, Any], *keys: str) -> int:

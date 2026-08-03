@@ -93,13 +93,16 @@ def test_analysis_rejects_forged_evidence_and_compiles_one_ai_solution() -> None
             )
         }
     )
-    with pytest.raises(ValueError, match="evidence manifest"):
+    with pytest.raises(ValueError, match="analysis_evidence_outside_manifest") as captured:
         compile_analysis_payloads(
             expected_work_item_kinds={work_item_id: "field_difference"},
             allowed_evidence_refs=frozenset({"paired-record:1"}),
             findings=forged,
             solutions=solutions,
         )
+    assert captured.value.repair_feedback == (
+        {"path": "findings[0].evidence_refs", "code": "analysis_evidence_outside_manifest"},
+    )
 
 
 def test_correct_rows_are_not_accepted_as_actionable_findings() -> None:
@@ -138,7 +141,7 @@ def test_graph_analysis_rejects_retention_for_target_extra() -> None:
         ),
     )
 
-    with pytest.raises(ValueError, match="operation"):
+    with pytest.raises(ValueError, match="analysis_operation_invalid") as captured:
         compile_analysis_payloads(
             expected_work_item_kinds={work_item_id: "target_extra"},
             allowed_evidence_refs=frozenset({"paired-record:extra"}),
@@ -155,6 +158,9 @@ def test_graph_analysis_rejects_retention_for_target_extra() -> None:
                 ),
             ),
         )
+    assert captured.value.repair_feedback == (
+        {"path": "solutions[0].operation", "code": "analysis_operation_invalid"},
+    )
 
 
 def _target_extra_work_item(*, name: str, number: str) -> IdentityWorkItem:

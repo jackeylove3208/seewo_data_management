@@ -1064,7 +1064,17 @@ async def test_model_exhaustion_records_four_failures_without_legacy_delegate(se
         action_id="inspect_authority:page-1",
     )
     provider = ScriptedProvider(
-        [ModelProviderError("unavailable") for _attempt in range(4)]
+        [
+            ModelProviderError(
+                "unavailable",
+                safe_code="model_timeout",
+                status_class="transport",
+                duration_ms=1_500,
+                request_id=f"timeout-{attempt}",
+                transport_attempts=3,
+            )
+            for attempt in range(1, 5)
+        ]
     )
     runner = GraphSkillModelRunner(
         session,
@@ -1105,12 +1115,16 @@ async def test_model_exhaustion_records_four_failures_without_legacy_delegate(se
             )
         )
 
-    assert captured.value.failure_categories == ("model_provider_failure",)
+    assert captured.value.failure_categories == ("model_timeout",)
     assert captured.value.attempt_count == 4
     assert captured.value.attempt_details == tuple(
         {
             "attempt": attempt,
-            "safe_error_code": "model_provider_failure",
+            "safe_error_code": "model_timeout",
+            "status_class": "transport",
+            "duration_ms": 1_500,
+            "request_id": f"timeout-{attempt}",
+            "transport_attempts": 3,
         }
         for attempt in range(1, 5)
     )
@@ -1153,7 +1167,7 @@ async def test_model_exhaustion_records_four_failures_without_legacy_delegate(se
             )
         )
     assert replay_provider.requests == []
-    assert replay_failure.value.failure_categories == ("model_provider_failure",)
+    assert replay_failure.value.failure_categories == ("model_timeout",)
     assert replay_failure.value.attempt_count == 4
 
     invocations = tuple(

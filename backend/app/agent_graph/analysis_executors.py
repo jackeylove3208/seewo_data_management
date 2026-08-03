@@ -77,10 +77,20 @@ class AnalysisTemplateContext:
     work_items: tuple[IdentityWorkItem, ...]
 
 
-class AnalysisTemplateValidationError(ValueError):
+class AnalysisOutputValidationError(ValueError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.repair_feedback = ({"path": "$", "code": code},)
+
+
+class AnalysisTemplateValidationError(AnalysisOutputValidationError):
+    pass
+
+
+def _analysis_error(code: str, path: str) -> AnalysisOutputValidationError:
+    error = AnalysisOutputValidationError(code)
+    error.repair_feedback = ({"path": path, "code": code},)
+    return error
 
 
 def build_analysis_template_context(
@@ -574,7 +584,7 @@ def compile_analysis_payloads(
     if not expected_work_item_kinds or any(
         kind not in _ACTIONABLE_KINDS for kind in expected_work_item_kinds.values()
     ):
-        raise ValueError("analysis input must contain only actionable work items")
+        raise _analysis_error("analysis_input_not_actionable", "work_items")
     finding_by_id = _validate_finding_membership(
         expected_work_item_kinds=expected_work_item_kinds,
         allowed_evidence_refs=allowed_evidence_refs,
@@ -582,19 +592,26 @@ def compile_analysis_payloads(
     )
 
     solution_by_id = {solution.finding_id: solution for solution in solutions.solutions}
-    if len(solution_by_id) != len(solutions.solutions) or set(solution_by_id) != set(
-        finding_by_id
-    ):
-        raise ValueError("AI solutions must exactly cover analysis findings")
+    if len(solution_by_id) != len(solutions.solutions):
+        raise _analysis_error("analysis_solution_duplicate", "solutions")
+    missing_solution_ids = set(finding_by_id) - set(solution_by_id)
+    if missing_solution_ids:
+        raise _analysis_error("analysis_solution_missing", "solutions")
+    if set(solution_by_id) - set(finding_by_id):
+        raise _analysis_error("analysis_solution_unexpected", "solutions")
 
     payloads: list[AgentFindingPayload] = []
-    for finding in findings.findings:
+    for index, finding in enumerate(findings.findings):
         solution = solution_by_id[finding.finding_id]
         if solution.operation != finding.proposed_operation:
-            raise ValueError("AI solution operation conflicts with analysis finding")
+            raise _analysis_error(
+                "analysis_solution_operation_mismatch",
+                f"solutions[{index}].operation",
+            )
         if not operation_is_allowed(finding.disposition, solution.operation):
-            raise ValueError(
-                "AI solution operation is incompatible with persisted work"
+            raise _analysis_error(
+                "analysis_operation_invalid",
+                f"solutions[{index}].operation",
             )
         payloads.append(
             AgentFindingPayload(
@@ -651,19 +668,31 @@ def _validate_finding_membership(
 ) -> Mapping[UUID, AgentFinding]:
     finding_by_id = {finding.finding_id: finding for finding in findings.findings}
     work_item_ids = tuple(finding.work_item_id for finding in findings.findings)
-    if (
-        len(finding_by_id) != len(findings.findings)
-        or len(set(work_item_ids)) != len(work_item_ids)
-        or set(work_item_ids) != set(expected_work_item_kinds)
-    ):
-        raise ValueError("analysis findings must exactly cover actionable work items")
-    for finding in findings.findings:
+    if len(finding_by_id) != len(findings.findings):
+        raise _analysis_error("analysis_finding_id_duplicate", "findings")
+    if len(set(work_item_ids)) != len(work_item_ids):
+        raise _analysis_error("analysis_work_item_duplicate", "findings")
+    missing_ids = set(expected_work_item_kinds) - set(work_item_ids)
+    if missing_ids:
+        raise _analysis_error("analysis_work_item_missing", "findings")
+    if set(work_item_ids) - set(expected_work_item_kinds):
+        raise _analysis_error("analysis_work_item_unexpected", "findings")
+    for index, finding in enumerate(findings.findings):
         if finding.disposition != expected_work_item_kinds[finding.work_item_id]:
-            raise ValueError("finding disposition does not match persisted work item")
-        if not finding.evidence_refs or not set(finding.evidence_refs).issubset(
-            allowed_evidence_refs
-        ):
-            raise ValueError("finding cites evidence outside evidence manifest")
+            raise _analysis_error(
+                "analysis_disposition_mismatch",
+                f"findings[{index}].disposition",
+            )
+        if not finding.evidence_refs:
+            raise _analysis_error(
+                "analysis_evidence_missing",
+                f"findings[{index}].evidence_refs",
+            )
+        if not set(finding.evidence_refs).issubset(allowed_evidence_refs):
+            raise _analysis_error(
+                "analysis_evidence_outside_manifest",
+                f"findings[{index}].evidence_refs",
+            )
     return finding_by_id
 
 

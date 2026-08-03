@@ -267,6 +267,12 @@ class GraphSkillModelRunner:
                     "attempt": attempt,
                     "request_ids": [],
                 }
+                provider_failure_details = _safe_provider_failure_details(error)
+                failure_provenance.update(provider_failure_details)
+                if provider_failure_details.get("request_id"):
+                    failure_provenance["request_ids"] = [
+                        provider_failure_details["request_id"]
+                    ]
                 if isinstance(error, _RepairableGraphModelOutput):
                     failure_provenance.update(error.model_provenance)
                     failure_provenance["repair_feedback"] = list(
@@ -276,6 +282,7 @@ class GraphSkillModelRunner:
                     "attempt": attempt,
                     "safe_error_code": safe_error_code,
                 }
+                attempt_detail.update(provider_failure_details)
                 if repair_feedback:
                     attempt_detail["repair_feedback"] = list(repair_feedback)
                 attempt_details.append(attempt_detail)
@@ -940,7 +947,7 @@ def _safe_error_code(error: Exception) -> str:
     ):
         return _safe_error_code(error.__cause__)
     if isinstance(error, ModelProviderError):
-        return "model_provider_failure"
+        return error.safe_code
     if isinstance(error, GraphToolArgumentRejected):
         return "tool_argument_rejected"
     if isinstance(error, GraphToolAuthorizationError):
@@ -952,3 +959,21 @@ def _safe_error_code(error: Exception) -> str:
     if isinstance(error, (ValidationError, UnsafeSkillError)):
         return "model_contract_failure"
     return "model_output_failure"
+
+
+def _safe_provider_failure_details(error: Exception) -> dict[str, object]:
+    if isinstance(error, _RepairableGraphModelOutput) and isinstance(
+        error.__cause__,
+        Exception,
+    ):
+        return _safe_provider_failure_details(error.__cause__)
+    if not isinstance(error, ModelProviderError):
+        return {}
+    details: dict[str, object] = {
+        "transport_attempts": error.transport_attempts,
+    }
+    for key in ("status_class", "duration_ms", "request_id"):
+        value = getattr(error, key)
+        if value is not None:
+            details[key] = value
+    return details
