@@ -500,7 +500,9 @@ class GraphSkillModelRunner:
                     resource_id=_optional_argument(arguments, "resource_id"),
                     evidence_ref=_optional_argument(arguments, "evidence_ref"),
                     sensitive_token=_optional_argument(arguments, "sensitive_token"),
-                    model_turn=tool_calls,
+                    model_turn=(
+                        tool_calls if self._durable_tool_recovery else None
+                    ),
                 )
             except GraphToolArgumentRejected as error:
                 raise _RepairableGraphModelOutput(

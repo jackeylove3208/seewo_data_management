@@ -260,7 +260,7 @@ class GraphPhaseToolGateway:
             status="completed",
             trace_id=trace_id,
             model_turn=model_turn,
-            replay_descriptor=dict(arguments),
+            replay_descriptor=(dict(arguments) if model_turn is not None else None),
         )
         return GraphToolResult(payload=payload, trace_id=trace_id)
 

@@ -127,6 +127,33 @@ async def test_graph_tool_reads_only_manifest_members_and_records_audit(session)
 
 
 @pytest.mark.asyncio
+async def test_graph_tool_without_model_turn_does_not_persist_replay_arguments(
+    session,
+) -> None:
+    context = await _tool_fixture(session)
+
+    async def read_work_item(_context, arguments):
+        return {"resource_id": arguments["resource_id"], "safe": True}
+
+    gateway = GraphPhaseToolGateway(
+        session,
+        operator=OperatorContext(operator_id="demo-operator", tenant_id="school-1"),
+        tools={"read_work_item": read_work_item},
+    )
+    await gateway.call(
+        "read_work_item",
+        context=context,
+        arguments={"resource_id": "work-item:1"},
+        resource_id="work-item:1",
+    )
+
+    record = await session.scalar(select(AgentToolCallRecord))
+    assert record is not None
+    assert record.model_turn is None
+    assert record.replay_descriptor is None
+
+
+@pytest.mark.asyncio
 async def test_graph_tool_replay_reauthorizes_without_duplicate_audit(session) -> None:
     context = await _tool_fixture(session)
 
