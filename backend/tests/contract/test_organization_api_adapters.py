@@ -333,6 +333,118 @@ async def test_dingtalk_adapter_rejects_repeated_cursor() -> None:
     assert captured.value.safe_code == "connector_pagination_incomplete"
 
 
+def _dingtalk_hierarchy_handler(request: httpx.Request) -> httpx.Response:
+    if request.url.path == "/v1.0/oauth2/accessToken":
+        return httpx.Response(200, json={"accessToken": "ding-token"})
+    body = json.loads(request.content)
+    departments = {
+        1: {"dept_id": 1, "name": "示例学校", "parent_id": 0},
+        10: {"dept_id": 10, "name": "教职工", "parent_id": 1},
+        11: {"dept_id": 11, "name": "数学组", "parent_id": 10},
+        20: {"dept_id": 20, "name": "学生", "parent_id": 1},
+        21: {"dept_id": 21, "name": "七年级", "parent_id": 20},
+        22: {"dept_id": 22, "name": "一班", "parent_id": 21},
+    }
+    children = {1: [10, 20], 10: [11], 20: [21], 21: [22]}
+    if request.url.path == "/topapi/v2/department/get":
+        return httpx.Response(
+            200,
+            json={"errcode": 0, "result": departments[body["dept_id"]]},
+        )
+    if request.url.path == "/topapi/v2/department/listsub":
+        return httpx.Response(
+            200,
+            json={
+                "errcode": 0,
+                "result": [
+                    departments[department_id]
+                    for department_id in children.get(body["dept_id"], [])
+                ],
+            },
+        )
+    if request.url.path == "/topapi/v2/user/list":
+        users = {
+            11: [
+                {
+                    "userid": "staff-1",
+                    "name": "合成教师",
+                    "mobile": "13800000000",
+                    "email": "staff@example.test",
+                    "dept_id_list": [11],
+                }
+            ],
+            22: [
+                {
+                    "userid": "student-1",
+                    "name": "合成学生",
+                    "mobile": "13900000000",
+                    "email": "student@example.test",
+                    "dept_id_list": [22],
+                }
+            ],
+        }
+        return httpx.Response(
+            200,
+            json={
+                "errcode": 0,
+                "result": {
+                    "has_more": False,
+                    "next_cursor": 0,
+                    "list": users.get(body["dept_id"], []),
+                },
+            },
+        )
+    raise AssertionError(f"unexpected DingTalk path: {request.url.path}")
+
+
+async def test_dingtalk_inspection_returns_only_safe_hierarchy_and_memberships() -> None:
+    adapter, client = _adapter("dingtalk", _dingtalk_hierarchy_handler)
+    try:
+        inspection = await adapter.inspect_organization(
+            {"sync_scope": "people", "root_department_id": 1},
+            _secret("dingtalk"),
+        )
+    finally:
+        await client.aclose()
+
+    nodes = {node.department_id: node for node in inspection.departments}
+    assert set(nodes) == {"1", "10", "11", "20", "21", "22"}
+    assert nodes["11"].parent_id == "10"
+    assert nodes["11"].path == ("示例学校", "教职工", "数学组")
+    assert nodes["22"].path == ("示例学校", "学生", "七年级", "一班")
+    assert inspection.personnel_department_ids == frozenset({"11", "22"})
+    assert inspection.personnel_memberships == (("11",), ("22",))
+    assert inspection.visible_person_count == 2
+    assert len(inspection.tree_fingerprint) == 64
+    serialized = inspection.model_dump_json()
+    assert "staff-1" not in serialized
+    assert "student-1" not in serialized
+    assert "13800000000" not in serialized
+    assert "staff@example.test" not in serialized
+
+
+async def test_dingtalk_department_capture_never_reads_people() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/topapi/v2/user/list":
+            raise AssertionError("department capture must not read people")
+        return _dingtalk_hierarchy_handler(request)
+
+    adapter, client = _adapter("dingtalk", handler)
+    try:
+        pages = [
+            page
+            async for page in adapter.capture(
+                {"sync_scope": "department", "root_department_id": 1},
+                _secret("dingtalk"),
+                frozenset({AgentEntityKind.DEPARTMENT}),
+            )
+        ]
+    finally:
+        await client.aclose()
+
+    assert sum(len(page.records) for page in pages) == 6
+
+
 def _wecom_duplicate_user_handler(request: httpx.Request) -> httpx.Response:
     if request.url.path != "/cgi-bin/user/list":
         return _wecom_handler(request)
