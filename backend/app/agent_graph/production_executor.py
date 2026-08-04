@@ -15,8 +15,8 @@ from app.agent_graph.analysis_executors import (
     GraphAnalysisActionResult,
     GraphAnalysisResultWriter,
     GraphIngestionAnalysisExecutors,
-    build_analysis_template_context,
     instantiate_analysis_template,
+    partition_analysis_template_work,
 )
 from app.agent_graph.analysis_tools import GraphAnalysisEvidenceTools
 from app.agent_graph.contracts import AllowedActionV1
@@ -2298,15 +2298,31 @@ class ProductionGraphActionExecutor:
                     )
                     for work, record in work_rows
                 )
-                template_context = build_analysis_template_context(
+                template_context, fallback_work_items = partition_analysis_template_work(
                     identity_work_items
+                )
+                fallback_action = (
+                    _fallback_analysis_action(
+                        action,
+                        tuple(item.work_item_id for item in fallback_work_items),
+                    )
+                    if template_context is not None and fallback_work_items
+                    else None
                 )
                 input_payload = ReconcileEntityBatchInput(
                     task_id=context.task_id,
                     run_id=context.run_id,
                     phase=AgentPhase.ANALYZE_BATCHES,
-                    evidence_refs=action.required_evidence,
-                    work_items=identity_work_items,
+                    evidence_refs=(
+                        fallback_action.required_evidence
+                        if fallback_action is not None
+                        else action.required_evidence
+                    ),
+                    work_items=(
+                        fallback_work_items
+                        if template_context is not None
+                        else identity_work_items
+                    ),
                 ).model_dump(mode="json")
 
         result = None
@@ -2433,6 +2449,53 @@ class ProductionGraphActionExecutor:
                             },
                         )
                         await model_session.commit()
+                    if fallback_work_items:
+                        if fallback_action is None:
+                            raise RuntimeError(
+                                "analysis fallback action was not prepared"
+                            )
+                        fallback_kinds = {
+                            item.work_item_id: expected_kinds[item.work_item_id]
+                            for item in fallback_work_items
+                        }
+                        (
+                            fallback_tools,
+                            fallback_runner,
+                            fallback_manifest_id,
+                        ) = await self._analysis_runtime(
+                            model_session,
+                            context=context,
+                            action=fallback_action,
+                            durable_tool_recovery=True,
+                        )
+                        fallback_invocation = invocation.model_copy(
+                            update={
+                                "action_id": fallback_action.action_id,
+                                "evidence_manifest_id": fallback_manifest_id,
+                            }
+                        )
+                        fallback_result = await GraphIngestionAnalysisExecutors(
+                            fallback_runner
+                        ).analyze_actionable_batch(
+                            fallback_invocation,
+                            expected_work_item_kinds=fallback_kinds,
+                            allowed_evidence_refs=frozenset(
+                                fallback_action.required_evidence
+                            ),
+                        )
+                        del fallback_tools
+                        if result is None:
+                            result = fallback_result
+                        else:
+                            result = GraphAnalysisActionResult(
+                                payloads=result.payloads + fallback_result.payloads,
+                                reconciliation_invocation_id=(
+                                    fallback_result.reconciliation_invocation_id
+                                ),
+                                solution_invocation_id=(
+                                    fallback_result.solution_invocation_id
+                                ),
+                            )
             except GraphSubAgentFailure as error:
                 model_failure = error
             del tools
@@ -5056,6 +5119,26 @@ def _outcome(action: AllowedActionV1) -> GraphActionOutcome:
     return GraphActionOutcome(
         action_id=action.action_id,
         evidence_refs=action.required_evidence,
+    )
+
+
+def _fallback_analysis_action(
+    action: AllowedActionV1,
+    work_item_ids: tuple[UUID, ...],
+) -> AllowedActionV1:
+    digest = hashlib.sha256(
+        ",".join(str(work_item_id) for work_item_id in work_item_ids).encode()
+    ).hexdigest()[:16]
+    return action.model_copy(
+        update={
+            "action_id": f"fallback_analysis_{digest}",
+            "resource_ids": tuple(
+                f"work-item:{work_item_id}" for work_item_id in work_item_ids
+            ),
+            "required_evidence": tuple(
+                f"paired-record:{work_item_id}" for work_item_id in work_item_ids
+            ),
+        }
     )
 
 

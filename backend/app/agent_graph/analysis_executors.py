@@ -96,14 +96,45 @@ def _analysis_error(code: str, path: str) -> AnalysisOutputValidationError:
 def build_analysis_template_context(
     work_items: Sequence[IdentityWorkItem],
 ) -> AnalysisTemplateContext | None:
-    if not work_items:
+    context, fallback = partition_analysis_template_work(work_items)
+    if fallback:
         return None
-    profiles = tuple(_analysis_template_profile(item) for item in work_items)
-    if any(profile is None for profile in profiles):
-        return None
-    profile = profiles[0]
-    if profile is None or any(candidate != profile for candidate in profiles[1:]):
-        return None
+    return context
+
+
+def partition_analysis_template_work(
+    work_items: Sequence[IdentityWorkItem],
+) -> tuple[AnalysisTemplateContext | None, tuple[IdentityWorkItem, ...]]:
+    grouped: dict[str, tuple[AnalysisTemplateProfile, list[IdentityWorkItem]]] = {}
+    ineligible: list[IdentityWorkItem] = []
+    for item in work_items:
+        profile = _analysis_template_profile(item)
+        if profile is None:
+            ineligible.append(item)
+            continue
+        profile_key = json.dumps(
+            profile.model_dump(mode="json"),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        grouped.setdefault(profile_key, (profile, []))[1].append(item)
+    if not grouped:
+        return None, tuple(ineligible)
+    profile_key, (profile, eligible) = min(
+        grouped.items(),
+        key=lambda entry: (-len(entry[1][1]), entry[0]),
+    )
+    fallback_ids = {
+        item.work_item_id
+        for key, (_candidate, items) in grouped.items()
+        if key != profile_key
+        for item in items
+    }
+    fallback_ids.update(item.work_item_id for item in ineligible)
+    fallback = tuple(
+        item for item in work_items if item.work_item_id in fallback_ids
+    )
     profile_payload = profile.model_dump(mode="json")
     encoded = json.dumps(
         profile_payload,
@@ -111,10 +142,13 @@ def build_analysis_template_context(
         sort_keys=True,
         separators=(",", ":"),
     ).encode()
-    return AnalysisTemplateContext(
-        profile=profile,
-        profile_hash=f"sha256:{hashlib.sha256(encoded).hexdigest()}",
-        work_items=tuple(work_items),
+    return (
+        AnalysisTemplateContext(
+            profile=profile,
+            profile_hash=f"sha256:{hashlib.sha256(encoded).hexdigest()}",
+            work_items=tuple(eligible),
+        ),
+        fallback,
     )
 
 

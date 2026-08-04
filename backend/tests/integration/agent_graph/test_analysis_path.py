@@ -242,6 +242,51 @@ def test_template_instantiation_keeps_each_work_item_and_evidence_reference() ->
     assert all(payload.solutions[0].risk == "high" for payload in payloads)
 
 
+def test_template_partition_keeps_eligible_items_and_isolates_complex_fallback() -> None:
+    eligible = _target_extra_work_item(name="测试学生甲", number="S001")
+    complex_item = _target_extra_work_item(name="测试学生乙", number="S002")
+    complex_item = complex_item.model_copy(
+        update={
+            "paired_evidence": complex_item.paired_evidence.model_copy(
+                update={"allowed_candidates": (f"input:{uuid4()}",)}
+            )
+        }
+    )
+
+    context, fallback = analysis_executors.partition_analysis_template_work(
+        (eligible, complex_item)
+    )
+
+    assert context is not None
+    assert context.work_items == (eligible,)
+    assert fallback == (complex_item,)
+
+
+def test_template_partition_selects_largest_profile_independent_of_item_order() -> None:
+    minority = _target_extra_work_item(name="测试学生甲", number="S001")
+    minority_record = dict(minority.paired_evidence.target_record or {})
+    minority_record.pop("class_name")
+    minority = minority.model_copy(
+        update={
+            "paired_evidence": minority.paired_evidence.model_copy(
+                update={"target_record": minority_record}
+            )
+        }
+    )
+    majority = (
+        _target_extra_work_item(name="测试学生乙", number="S002"),
+        _target_extra_work_item(name="测试学生丙", number="S003"),
+    )
+
+    context, fallback = analysis_executors.partition_analysis_template_work(
+        (minority, *majority)
+    )
+
+    assert context is not None
+    assert context.work_items == majority
+    assert fallback == (minority,)
+
+
 def test_target_missing_template_uses_server_owned_medium_create_risk() -> None:
     work_item_id = uuid4()
     authority_ref = f"input:{uuid4()}"

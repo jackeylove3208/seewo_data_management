@@ -15,6 +15,7 @@ from app.agent_graph.evidence import EvidenceManifestV1
 from app.agent_graph.guards import GraphGuardRejected
 from app.agent_graph.production_executor import (
     ProductionGraphActionExecutor,
+    _fallback_analysis_action,
     _record_manifest,
     _validate_csv_mapping_output,
 )
@@ -85,6 +86,34 @@ class ModelMustNotRun:
     async def complete_json_once(self, _request):
         self.calls += 1
         raise AssertionError("deterministic preflight called a model")
+
+
+def test_fallback_analysis_action_scopes_resources_and_evidence() -> None:
+    selected_id = uuid4()
+    excluded_id = uuid4()
+    action = AllowedActionV1(
+        action_id="analyze_batch_test",
+        graph_action_kind="analyze_next_batch",
+        kind="dispatch_sub_agent",
+        sub_agent="reconciliation-analysis",
+        resource_ids=(
+            f"work-item:{selected_id}",
+            f"work-item:{excluded_id}",
+        ),
+        required_evidence=(
+            f"paired-record:{selected_id}",
+            f"paired-record:{excluded_id}",
+        ),
+        risk="low",
+        requires_human=False,
+        successor_node="analyze_actionable_batches",
+    )
+
+    fallback = _fallback_analysis_action(action, (selected_id,))
+
+    assert fallback.action_id != action.action_id
+    assert fallback.resource_ids == (f"work-item:{selected_id}",)
+    assert fallback.required_evidence == (f"paired-record:{selected_id}",)
 
 
 class TemplateAnalysisProvider:
