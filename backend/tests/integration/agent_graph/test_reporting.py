@@ -1,3 +1,4 @@
+import json
 from uuid import uuid4
 
 import pytest
@@ -10,7 +11,7 @@ from app.agent_graph.report_executors import (
     _included_quality_warning_analyses,
 )
 from app.agent_graph.repository import AgentGraphRepository
-from app.agent_graph.tools import GraphPhaseToolGateway
+from app.agent_graph.tools import GraphPhaseToolGateway, GraphToolContext
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentRunKind
 from app.ai.graph_subagents import GraphSkillInvocation, GraphSkillModelRunner
@@ -32,6 +33,107 @@ class ReportProvider:
             request_id=str(uuid4()),
             usage=ModelUsage(input_tokens=10, output_tokens=10),
         )
+
+
+@pytest.mark.asyncio
+async def test_report_fact_manifest_aggregates_verbose_facts_for_model() -> None:
+    task_id = uuid4()
+    run_id = uuid4()
+    graph_run_id = uuid4()
+    manifest_id = uuid4()
+    resource_id = "report-facts:compact"
+    facts = {
+        "findings": [
+            {
+                "id": str(uuid4()),
+                "kind": "field_difference",
+                "category_zh": "字段差异",
+                "entity_kind": "student",
+                "entity_name": f"synthetic-name-{index}",
+                "entity_number": f"synthetic-number-{index}",
+                "analysis_zh": "synthetic-analysis " * 100,
+                "recommended_operation": "update",
+                "risk": "medium",
+                "operator_decision": "approved",
+                "execution_status": "succeeded",
+            }
+            for index in range(80)
+        ],
+        "mutations": [
+            {
+                "id": str(uuid4()),
+                "status": "succeeded",
+                "operation": "update",
+                "entity_kind": "student",
+                "before": {"name": "synthetic-before"},
+                "after": {"name": "synthetic-after"},
+                "dependencies": [],
+                "verification": {"valid": True},
+            }
+            for _ in range(80)
+        ],
+        "input_diagnostics": {
+            "unique_marked_input_count": 0,
+            "reason_counts": {},
+        },
+        "analysis_progress": {
+            "total_item_count": 80,
+            "completed_item_count": 80,
+        },
+        "rollback_evidence": {
+            "eligible": True,
+            "successful_mutation_ids": [str(uuid4()) for _ in range(80)],
+        },
+    }
+    tools = GraphReportFactTools(
+        task_id=task_id,
+        run_id=run_id,
+        tenant_id="school-report-compact",
+        resource_id=resource_id,
+        facts=facts,
+    )
+    context = GraphToolContext(
+        operator_id="report-operator",
+        tenant_id="school-report-compact",
+        task_id=task_id,
+        run_id=run_id,
+        graph_run_id=graph_run_id,
+        graph_node="generate_terminal_report",
+        graph_cursor=0,
+        action_id="generate_terminal_report",
+        evidence_manifest_id=manifest_id,
+        invocation_id=uuid4(),
+        allowed_tools=frozenset({"read_report_fact_manifest"}),
+    )
+
+    result = await tools.read_report_fact_manifest(
+        context,
+        {"resource_id": resource_id},
+    )
+    model_facts = result["facts"]
+
+    assert "findings" not in model_facts
+    assert "mutations" not in model_facts
+    assert model_facts["finding_summary"] == {
+        "total": 80,
+        "by_kind": {"field_difference": 80},
+        "by_entity_kind": {"student": 80},
+        "by_operation": {"update": 80},
+        "by_risk": {"medium": 80},
+        "by_operator_decision": {"approved": 80},
+        "by_execution_status": {"succeeded": 80},
+    }
+    assert model_facts["mutation_summary"] == {
+        "total": 80,
+        "by_status": {"succeeded": 80},
+        "by_operation": {"update": 80},
+        "by_entity_kind": {"student": 80},
+        "verification": {"valid": 80},
+    }
+    serialized = json.dumps(result, ensure_ascii=False)
+    assert "synthetic-name-" not in serialized
+    assert "synthetic-before" not in serialized
+    assert len(serialized) < len(json.dumps(facts, ensure_ascii=False)) / 4
 
 
 @pytest.mark.asyncio

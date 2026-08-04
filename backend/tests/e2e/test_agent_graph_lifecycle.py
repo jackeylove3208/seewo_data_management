@@ -335,9 +335,8 @@ class ScriptedSkillProvider:
                 )
             facts = latest["authorized_tool_result"]
             fact_ref = facts["resource_id"]
-            rollback_eligible = any(
-                item.get("status") == "succeeded"
-                for item in facts["facts"].get("mutations", [])
+            rollback_eligible = bool(
+                facts["facts"].get("rollback_evidence", {}).get("eligible")
             )
             return _response(
                 {

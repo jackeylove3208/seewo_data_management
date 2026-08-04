@@ -1,5 +1,6 @@
 """Fact-bound model narration for terminal Agent graph reports."""
 
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -41,7 +42,7 @@ class GraphReportFactTools:
         self._run_id = run_id
         self._tenant_id = tenant_id
         self._resource_id = resource_id
-        self._facts = dict(facts)
+        self._facts = _compact_report_facts(facts)
 
     def handlers(self) -> dict[str, GraphToolHandler]:
         return {
@@ -337,3 +338,126 @@ def _redact_phone_values(value: object, *, field: str | None = None) -> object:
     if field is not None and "phone" in field.casefold() and value is not None:
         return "***"
     return value
+
+
+def _compact_report_facts(facts: Mapping[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {
+        "finding_summary": _summarize_records(
+            facts.get("findings"),
+            {
+                "kind": "by_kind",
+                "entity_kind": "by_entity_kind",
+                "recommended_operation": "by_operation",
+                "risk": "by_risk",
+                "operator_decision": "by_operator_decision",
+                "execution_status": "by_execution_status",
+            },
+        ),
+        "mutation_summary": _summarize_mutations(facts.get("mutations")),
+        "excluded_finding_summary": _summarize_excluded_findings(
+            facts.get("excluded_findings")
+        ),
+    }
+    for key in (
+        "input_diagnostics",
+        "analysis_progress",
+        "latest_failure",
+        "publication",
+        "termination_context",
+        "source_task_id",
+        "output_target_path",
+    ):
+        if key in facts:
+            compact[key] = _redact_phone_values(facts[key])
+
+    output_target_version_ids = facts.get("output_target_version_ids")
+    if isinstance(output_target_version_ids, (list, tuple)):
+        compact["output_target_version_count"] = len(output_target_version_ids)
+        if output_target_version_ids:
+            compact["output_target_version_id"] = str(output_target_version_ids[-1])
+    elif facts.get("output_target_version_id") is not None:
+        compact["output_target_version_id"] = _redact_phone_values(
+            facts["output_target_version_id"]
+        )
+
+    rollback_evidence = facts.get("rollback_evidence")
+    if isinstance(rollback_evidence, Mapping):
+        compact["rollback_evidence"] = {
+            key: _redact_phone_values(rollback_evidence[key])
+            for key in ("eligible", "reason")
+            if key in rollback_evidence
+        }
+        successful_mutation_ids = rollback_evidence.get("successful_mutation_ids")
+        if isinstance(successful_mutation_ids, (list, tuple)):
+            compact["rollback_evidence"]["successful_mutation_count"] = len(
+                successful_mutation_ids
+            )
+    return compact
+
+
+def _summarize_records(
+    records: object,
+    fields: Mapping[str, str],
+) -> dict[str, Any]:
+    rows = tuple(item for item in records if isinstance(item, Mapping)) if isinstance(
+        records, (list, tuple)
+    ) else ()
+    summary: dict[str, Any] = {"total": len(rows)}
+    for field, output_key in fields.items():
+        counts = Counter(
+            str(row[field])
+            for row in rows
+            if row.get(field) is not None
+        )
+        summary[output_key] = dict(sorted(counts.items()))
+    return summary
+
+
+def _summarize_mutations(records: object) -> dict[str, Any]:
+    summary = _summarize_records(
+        records,
+        {
+            "status": "by_status",
+            "operation": "by_operation",
+            "entity_kind": "by_entity_kind",
+        },
+    )
+    rows = tuple(item for item in records if isinstance(item, Mapping)) if isinstance(
+        records, (list, tuple)
+    ) else ()
+    verification: Counter[str] = Counter()
+    for row in rows:
+        value = row.get("verification")
+        valid = value.get("valid") if isinstance(value, Mapping) else None
+        verification["valid" if valid is True else "invalid" if valid is False else "unknown"] += 1
+    summary["verification"] = dict(sorted(verification.items()))
+    return summary
+
+
+def _summarize_excluded_findings(records: object) -> dict[str, Any]:
+    summary = _summarize_records(
+        records,
+        {
+            "source_role": "by_source_role",
+            "reason": "by_reason",
+            "inclusion_state": "by_inclusion_state",
+            "disposition": "by_disposition",
+        },
+    )
+    rows = tuple(item for item in records if isinstance(item, Mapping)) if isinstance(
+        records, (list, tuple)
+    ) else ()
+    entity_kinds: Counter[str] = Counter()
+    affected_fields: Counter[str] = Counter()
+    for row in rows:
+        evidence = row.get("safe_evidence")
+        entity_kind = evidence.get("entity_kind") if isinstance(evidence, Mapping) else None
+        if entity_kind is not None:
+            entity_kinds[str(entity_kind)] += 1
+        fields = row.get("affected_fields")
+        if isinstance(fields, (list, tuple)):
+            for field in fields:
+                affected_fields[str(field)] += 1
+    summary["by_entity_kind"] = dict(sorted(entity_kinds.items()))
+    summary["by_affected_field"] = dict(sorted(affected_fields.items()))
+    return summary

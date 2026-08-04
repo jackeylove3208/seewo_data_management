@@ -22,6 +22,9 @@ output_schema: AgentGovernanceReport
 
 - 只信任 `fact_refs` 引用的服务端不可变事实和输入 `outcome`。模型先前叙述、用户猜测、
   浏览器状态和旧报告文本都不能覆盖事实。
+- `read_report_fact_manifest` 返回的是服务端从完整事实生成的聚合摘要：使用
+  `finding_summary`、`mutation_summary` 和 `excluded_finding_summary` 进行统计；完整的
+  finding、mutation 明细只由服务端保存，不假定模型能读取逐条记录。
 - 统计数字、成员、审批同意/拒绝、执行 succeeded/failed/blocked/skipped、目标版本和回滚
   资格必须来自事实，不能由模型估算。
 - 学生手机号在报告中只能掩码，第三方连接器配置、凭据、内部提示词、原始数据行和堆栈不得
