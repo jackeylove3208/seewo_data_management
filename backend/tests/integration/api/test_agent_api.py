@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from app.agent_reporting.rollback_cycles import AgentRollbackCycleService
 from app.agent_reporting.service import AgentReportingService
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.state_machine import AgentRunKind
@@ -1903,6 +1904,53 @@ def test_conversation_recovers_an_abandoned_message_claim(
     assert "_message_in_flight" not in agent_client.portal.call(load_context)
 
 
+def test_conversation_timeout_clears_claim_and_persists_retryable_error(
+    agent_client: TestClient,
+) -> None:
+    agent_client.app.state.settings.conversation_model_timeout_seconds = 0.05
+    agent_client.app.state.settings.conversation_message_lease_seconds = 0.2
+    blocking_provider = BlockingConversationProvider()
+    agent_client.app.state.conversation_provider = blocking_provider
+    conversation = agent_client.post("/api/agent/conversations").json()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        message_future = executor.submit(
+            agent_client.post,
+            f"/api/agent/conversations/{conversation['id']}/messages",
+            json={"message": "超时后仍应可以重试"},
+        )
+        assert blocking_provider.entered.wait(timeout=2)
+        try:
+            response = message_future.result(timeout=3)
+        finally:
+            blocking_provider.release.set()
+
+    assert response.status_code == 504, response.text
+    assert response.json()["detail"] == {
+        "code": "conversation_model_timeout",
+        "message": "对话理解超时，请稍后重试。",
+    }
+    current = agent_client.get("/api/agent/conversations/current")
+    assert current.status_code == 200, current.text
+    assert current.json()["messages"][-1]["kind"] == "error"
+    assert current.json()["messages"][-1]["text"] == "对话理解超时，请稍后重试。"
+
+    async def load_context() -> dict[str, object]:
+        async with agent_client.app.state.database.session_factory() as session:
+            record = await session.get(AgentConversationRecord, UUID(conversation["id"]))
+            assert record is not None
+            return record.context
+
+    assert "_message_in_flight" not in agent_client.portal.call(load_context)
+
+    agent_client.app.state.conversation_provider = ConversationProvider()
+    retry = agent_client.post(
+        f"/api/agent/conversations/{conversation['id']}/messages",
+        json={"message": "再次尝试同步"},
+    )
+    assert retry.status_code == 200, retry.text
+
+
 def test_current_conversation_restores_an_unstarted_confirmation(
     agent_client: TestClient,
     tmp_path: Path,
@@ -2453,7 +2501,7 @@ def test_completed_rollback_disables_same_csv_tasks_without_affecting_mysql(
     csv_task = agent_client.get(f"/api/agent/tasks/{csv_task_id}")
     assert csv_task.status_code == 200, csv_task.text
     assert csv_task.json()["rollback_eligible"] is False
-    assert csv_task.json()["rollback_blocked_reason"] == "already_rolled_back"
+    assert csv_task.json()["rollback_blocked_reason"] == "stale_sync_record"
 
     mysql_task = agent_client.get(f"/api/agent/tasks/{mysql_task_id}")
     assert mysql_task.status_code == 200, mysql_task.text
@@ -2464,7 +2512,97 @@ def test_completed_rollback_disables_same_csv_tasks_without_affecting_mysql(
         f"/api/agent/tasks/{csv_task_id}/rollback-preview"
     )
     assert blocked_preview.status_code == 409, blocked_preview.text
-    assert blocked_preview.json()["detail"]["code"] == "rollback_already_performed"
+    assert blocked_preview.json()["detail"]["code"] == "rollback_sync_record_too_old"
+
+
+def test_started_new_sync_marks_old_rollback_record_as_stale(
+    agent_client: TestClient,
+) -> None:
+    async def seed_tasks() -> tuple[str, str]:
+        async with agent_client.app.state.database.session_factory() as session:
+            target = {"kind": "csv", "upload_id": str(uuid4())}
+            older = ReconciliationTask(
+                tenant_id="school-1",
+                scope_id="all",
+                snapshot_mode="full",
+                entity_types=["student"],
+                status="completed",
+                stage="terminal",
+                workflow_version="new-agent-v1",
+                task_kind="sync",
+                title="旧同步记录",
+                agent_intent={"target": target},
+                idempotency_key=f"stale-old-{uuid4()}",
+                request_hash="a" * 64,
+            )
+            session.add(older)
+            await session.flush()
+            await AgentRuntimeRepository(session).create_run(
+                task_id=older.id,
+                tenant_id=older.tenant_id,
+                conversation_id=None,
+                kind=AgentRunKind.SYNC,
+            )
+            await AgentReportingService(session).generate(
+                task_id=older.id,
+                tenant_id=older.tenant_id,
+                kind="sync",
+                terminal_state="completed",
+                facts={
+                    "output_target_version_id": str(uuid4()),
+                    "mutations": [_verified_mutation_for_api("old-sync")],
+                },
+            )
+            newer = ReconciliationTask(
+                tenant_id="school-1",
+                scope_id="all",
+                snapshot_mode="full",
+                entity_types=["student"],
+                status="created",
+                stage="ingestion",
+                workflow_version="new-agent-v1",
+                task_kind="sync",
+                title="新同步任务",
+                agent_intent={"target": target},
+                idempotency_key=f"stale-new-{uuid4()}",
+                request_hash="b" * 64,
+            )
+            session.add(newer)
+            await session.flush()
+            await AgentRuntimeRepository(session).create_run(
+                task_id=newer.id,
+                tenant_id=newer.tenant_id,
+                conversation_id=None,
+                kind=AgentRunKind.SYNC,
+            )
+            await AgentRollbackCycleService(session).record_sync_started(newer)
+            await session.commit()
+            return str(older.id), str(newer.id)
+
+    def _verified_mutation_for_api(operation_id: str) -> dict[str, object]:
+        return {
+            "id": operation_id,
+            "status": "succeeded",
+            "verification": {"valid": True},
+        }
+
+    older_id, newer_id = agent_client.portal.call(seed_tasks)
+    older = agent_client.get(f"/api/agent/tasks/{older_id}")
+    assert older.status_code == 200, older.text
+    assert older.json()["rollback_eligible"] is False
+    assert older.json()["rollback_blocked_reason"] == "stale_sync_record"
+
+    blocked_preview = agent_client.post(f"/api/agent/tasks/{older_id}/rollback-preview")
+    assert blocked_preview.status_code == 409, blocked_preview.text
+    assert blocked_preview.json()["detail"] == {
+        "code": "rollback_sync_record_too_old",
+        "message": "记录过旧，无法回滚",
+    }
+
+    newest = agent_client.get(f"/api/agent/tasks/{newer_id}")
+    assert newest.status_code == 200, newest.text
+    assert newest.json()["rollback_eligible"] is False
+    assert newest.json()["rollback_blocked_reason"] is None
 
 
 def test_agent_report_api_masks_student_phone_and_is_tenant_scoped(

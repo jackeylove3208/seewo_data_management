@@ -74,6 +74,8 @@ class Settings(BaseSettings):
     llm_max_output_tokens: PositiveInt = 8_192
     conversation_context_max_tokens: PositiveInt = 65_536
     conversation_context_reserved_output_tokens: PositiveInt = 2_048
+    conversation_model_timeout_seconds: PositiveFloat = 180
+    conversation_message_lease_seconds: PositiveFloat = 240
     tokenization_secret: SecretStr | None = None
     proposal_preview_secret: SecretStr | None = None
     analysis_batch_size: PositiveInt = Field(default=10, le=10)
@@ -199,6 +201,10 @@ class Settings(BaseSettings):
         if self.conversation_context_reserved_output_tokens >= self.conversation_context_max_tokens:
             raise ValueError(
                 "conversation reserved output tokens must be smaller than context maximum"
+            )
+        if self.conversation_message_lease_seconds <= self.conversation_model_timeout_seconds:
+            raise ValueError(
+                "conversation message lease must exceed the model timeout"
             )
         for write_root in self.agent_local_write_roots:
             if not any(

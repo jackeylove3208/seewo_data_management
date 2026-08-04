@@ -1,4 +1,6 @@
-import { requestJson } from "./client";
+import { ApiError, requestJson } from "./client";
+
+export const CONVERSATION_REQUEST_TIMEOUT_MS = 195_000;
 
 export type AgentEntityType = "department" | "student" | "teacher";
 export type AgentPhase =
@@ -106,7 +108,7 @@ export interface AgentTask {
   title?: string;
   report_id?: string | null;
   rollback_eligible?: boolean;
-  rollback_blocked_reason?: "already_rolled_back" | null;
+  rollback_blocked_reason?: "already_rolled_back" | "stale_sync_record" | null;
   deletion_eligible?: boolean;
   error?: {
     code: string;
@@ -390,11 +392,33 @@ async function resetConversation(idempotencyKey: string) {
 }
 
 async function sendMessage(conversationId: string, message: string) {
-  return requestJson<AgentMessageResponse>(`/api/agent/conversations/${conversationId}/messages`, {
-    method: "POST",
-    headers: jsonHeaders,
-    body: JSON.stringify({ message }),
-  });
+  const controller = new AbortController();
+  const timeoutId = globalThis.setTimeout(
+    () => controller.abort(),
+    CONVERSATION_REQUEST_TIMEOUT_MS,
+  );
+  try {
+    return await requestJson<AgentMessageResponse>(
+      `/api/agent/conversations/${conversationId}/messages`,
+      {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({ message }),
+        signal: controller.signal,
+      },
+    );
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new ApiError(
+        "对话理解超时，请稍后重试。",
+        504,
+        "conversation_model_timeout",
+      );
+    }
+    throw error;
+  } finally {
+    globalThis.clearTimeout(timeoutId);
+  }
 }
 
 interface ApiConnectionResponse {

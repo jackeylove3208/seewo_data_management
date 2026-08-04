@@ -742,10 +742,16 @@ class AgentGraphWorker:
         context: GraphWorkContext,
         error: Exception,
     ) -> None:
+        safe_error_code = getattr(error, "safe_error_code", None)
+        safe_message = getattr(error, "safe_message", None)
         if isinstance(error, RemoteSourceFailure):
             code = error.code
             message = error.safe_message
             release_reason = "remote_source_failure"
+        elif isinstance(safe_error_code, str) and isinstance(safe_message, str):
+            code = safe_error_code
+            message = safe_message
+            release_reason = "rollback_execution_failure"
         else:
             code = "agent_action_contract_error"
             message = (

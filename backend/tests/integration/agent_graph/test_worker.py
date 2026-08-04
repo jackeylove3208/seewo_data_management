@@ -13,6 +13,7 @@ from app.agent_graph.contracts import (
     SupervisorDecisionV1,
     UnselectedActionReasonV1,
 )
+from app.agent_graph.production_executor import RollbackExecutionFailure
 from app.agent_graph.repository import AgentGraphRepository
 from app.agent_graph.worker import (
     AgentGraphLeaseLost,
@@ -522,6 +523,87 @@ async def test_ambiguous_external_write_error_remains_replayable(
     assert state.current_node == "execute_restore_operations"
     assert failure is None
     assert active_lock is not None
+
+
+@pytest.mark.asyncio
+async def test_wrapped_rollback_execution_failure_is_persisted_as_terminal(
+    database,
+) -> None:
+    task_id, run_id = await _start_graph_run(database)
+    async with database.session_factory() as session:
+        async with session.begin():
+            run = await session.get(AgentRunRecord, run_id)
+            task = await session.get(ReconciliationTask, task_id)
+            state = await AgentGraphRepository(session).get_run_state_for_agent_run(
+                run_id,
+                for_update=True,
+            )
+            assert run is not None and task is not None and state is not None
+            run.kind = "rollback"
+            run.phase = "execute_restore"
+            task.task_kind = "rollback"
+            task.status = "running"
+            state.graph_version = "agent-rollback-graph-v1"
+            state.current_node = "execute_restore_operations"
+
+    candidate = _candidate(
+        "verify_restore_operations",
+        graph_action_kind="verify_restore_operations",
+        resource_id="rollback-operation:1",
+        evidence="rollback-outcomes:v1",
+        successor="verify_restore_operations",
+    )
+
+    async def plan(_context: GraphWorkContext) -> GraphCandidatePlan:
+        return GraphCandidatePlan(
+            candidate_evaluations=(candidate,),
+            single_action_reason_code=SingleActionReasonCode.ONLY_GUARD_SATISFIED,
+        )
+
+    async def execute(
+        _context: GraphWorkContext,
+        _action: AllowedActionV1,
+    ) -> GraphActionOutcome:
+        raise RollbackExecutionFailure(
+            "rollback_target_conflict",
+            "回滚目标在执行期间发生变化，系统已停止自动重试，请先核对当前目标数据。",
+        )
+
+    worker = AgentGraphWorker(
+        database.session_factory,
+        worker_id="graph-worker-terminal-rollback-failure",
+        lease_seconds=60,
+        supervisor=Supervisor("verify_restore_operations"),
+        candidate_provider=plan,
+        executor=execute,
+    )
+
+    assert await worker.run_once() is True
+    assert await worker.run_once() is False
+
+    async with database.session_factory() as session:
+        run = await session.get(AgentRunRecord, run_id)
+        task = await session.get(ReconciliationTask, task_id)
+        state = await AgentGraphRepository(session).get_run_state_for_agent_run(run_id)
+        failure = await session.scalar(
+            select(AgentFailureRecord).where(AgentFailureRecord.run_id == run_id)
+        )
+        active_lock = await session.scalar(
+            select(SchoolTaskLockRecord.id).where(
+                SchoolTaskLockRecord.owner_run_id == run_id,
+                SchoolTaskLockRecord.active.is_(True),
+            )
+        )
+
+    assert run is not None and run.status == "failed"
+    assert task is not None and task.status == "failed"
+    assert task.error == {
+        "code": "rollback_target_conflict",
+        "message": "回滚目标在执行期间发生变化，系统已停止自动重试，请先核对当前目标数据。",
+    }
+    assert state is not None and state.status == "failed"
+    assert failure is not None and failure.code == "rollback_target_conflict"
+    assert active_lock is None
 
 
 @pytest.mark.asyncio

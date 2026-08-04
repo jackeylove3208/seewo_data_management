@@ -54,6 +54,7 @@ from app.agent_runtime.csv_rollback_handlers import (
     CsvRollbackHandlers,
     _rollback_operations,
 )
+from app.agent_runtime.errors import ExternalWriteRecoveryRequired
 from app.agent_runtime.local_publication import publish_local_target
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.source_bindings import AgentSourceBinding, load_source_bindings
@@ -98,6 +99,7 @@ from app.ai.skills.contracts import (
 from app.api_connectors.materializer import ApiAuthorityMaterializer, ApiSourceFailure
 from app.connectors.configured import (
     ConfiguredApiConnector,
+    ConnectorCapabilityError,
     ConnectorConflictError,
     DatabaseConnectorConfiguration,
 )
@@ -145,6 +147,15 @@ class _DatabaseMappingMaterials:
     schema_fingerprints: dict[str, str]
     source_versions: dict[str, str]
     forbidden_source_refs: dict[str, frozenset[str]]
+
+
+class RollbackExecutionFailure(ValueError):
+    """A rollback connector failure that must become a durable terminal state."""
+
+    def __init__(self, safe_error_code: str, safe_message: str) -> None:
+        super().__init__(safe_message)
+        self.safe_error_code = safe_error_code
+        self.safe_message = safe_message
 
 
 class ProductionGraphActionExecutor:
@@ -3565,7 +3576,10 @@ class ProductionGraphActionExecutor:
                 )
                 database_rollback = _task_uses_database(task)
                 if database_rollback and self._sql_rollback is None:
-                    raise RuntimeError("SQL rollback connector runtime is unavailable")
+                    raise RollbackExecutionFailure(
+                        "rollback_connector_unavailable",
+                        "回滚所需的目标连接器不可用，系统已停止自动重试，请检查连接配置。",
+                    )
                 checkpoint_key = (
                     "agent-sql-rollback-execution-v2"
                     if database_rollback
@@ -3580,19 +3594,22 @@ class ProductionGraphActionExecutor:
                         context,
                         AgentPhase.EXECUTE_RESTORE,
                     )
-                    if database_rollback:
-                        assert self._sql_rollback is not None
-                        fact = await self._sql_rollback.execute_operation(
-                            session,
-                            legacy_context,
-                            operation_id,
-                        )
-                    else:
-                        fact = await self._rollback.execute_operation(
-                            session,
-                            legacy_context,
-                            operation_id,
-                        )
+                    try:
+                        if database_rollback:
+                            assert self._sql_rollback is not None
+                            fact = await self._sql_rollback.execute_operation(
+                                session,
+                                legacy_context,
+                                operation_id,
+                            )
+                        else:
+                            fact = await self._rollback.execute_operation(
+                                session,
+                                legacy_context,
+                                operation_id,
+                            )
+                    except RuntimeError as error:
+                        raise _rollback_execution_failure(error) from error
                     mutation_facts.append(fact)
 
         facts: dict[str, object] = {
@@ -3681,26 +3698,32 @@ class ProductionGraphActionExecutor:
                 plan_id = uuid5(NAMESPACE_URL, f"agent-rollback:{task.id}")
                 database_rollback = _task_uses_database(task)
                 if database_rollback and self._sql_rollback is None:
-                    raise RuntimeError("SQL rollback connector runtime is unavailable")
+                    raise RollbackExecutionFailure(
+                        "rollback_connector_unavailable",
+                        "回滚所需的目标连接器不可用，系统已停止自动重试，请检查连接配置。",
+                    )
 
                 async def execute_operation(operation_id: UUID) -> OperationOutcome:
                     legacy_context = _legacy_context(
                         context,
                         AgentPhase.EXECUTE_RESTORE,
                     )
-                    if database_rollback:
-                        assert self._sql_rollback is not None
-                        fact = await self._sql_rollback.execute_operation(
-                            session,
-                            legacy_context,
-                            operation_id,
-                        )
-                    else:
-                        fact = await self._rollback.execute_operation(
-                            session,
-                            legacy_context,
-                            operation_id,
-                        )
+                    try:
+                        if database_rollback:
+                            assert self._sql_rollback is not None
+                            fact = await self._sql_rollback.execute_operation(
+                                session,
+                                legacy_context,
+                                operation_id,
+                            )
+                        else:
+                            fact = await self._rollback.execute_operation(
+                                session,
+                                legacy_context,
+                                operation_id,
+                            )
+                    except RuntimeError as error:
+                        raise _rollback_execution_failure(error) from error
                     status = _operation_status(str(fact["status"]))
                     return OperationOutcome(
                         operation_id=operation_id,
@@ -3793,13 +3816,63 @@ class ProductionGraphActionExecutor:
                         ).model_dump(mode="json"),
                     )
                 )
-                await self._rollback.execute(
-                    session,
-                    _legacy_context(
-                        context,
-                        AgentPhase.EXECUTE_RESTORE,
-                    ),
-                )
+                if database_rollback:
+                    mutation_facts: list[dict[str, object]] = []
+                    for operation_id in operation_ids:
+                        checkpoint = await runtime.get_checkpoint(
+                            context.run_id,
+                            phase=AgentPhase.EXECUTE_RESTORE,
+                            checkpoint_key=(
+                                f"agent-sql-rollback-operation:{operation_id}"
+                            ),
+                        )
+                        if checkpoint is None:
+                            raise RollbackExecutionFailure(
+                                "rollback_execution_incomplete",
+                                "回滚执行结果不完整，系统已停止自动重试，请检查失败记录。",
+                            )
+                        mutation_facts.append(dict(checkpoint.payload))
+                    facts: dict[str, object] = {
+                        "source_task_id": str(task.parent_task_id),
+                        "mutations": mutation_facts,
+                    }
+                    output_fact = next(
+                        (
+                            item
+                            for item in reversed(mutation_facts)
+                            if item.get("output_target_version_id")
+                        ),
+                        None,
+                    )
+                    if output_fact is not None:
+                        facts.update(
+                            {
+                                "output_target_version_id": output_fact[
+                                    "output_target_version_id"
+                                ],
+                                "output_target_path": output_fact[
+                                    "output_target_path"
+                                ],
+                            }
+                        )
+                    await runtime.save_checkpoint(
+                        context.run_id,
+                        phase=AgentPhase.EXECUTE_RESTORE,
+                        checkpoint_key="agent-sql-rollback-execution-v2",
+                        input_hash=str(task.request_hash),
+                        payload=facts,
+                    )
+                else:
+                    try:
+                        await self._rollback.execute(
+                            session,
+                            _legacy_context(
+                                context,
+                                AgentPhase.EXECUTE_RESTORE,
+                            ),
+                        )
+                    except RuntimeError as error:
+                        raise _rollback_execution_failure(error) from error
         return _outcome(action)
 
     async def _generate_rollback_report(
@@ -5186,6 +5259,28 @@ def _operation_status(
     }:
         return status
     return "skipped"
+
+
+def _rollback_execution_failure(error: RuntimeError) -> RollbackExecutionFailure:
+    if isinstance(error, ExternalWriteRecoveryRequired):
+        return RollbackExecutionFailure(
+            "rollback_external_write_recovery_required",
+            "回滚写入结果不确定，系统已停止自动重试，请人工核查目标数据。",
+        )
+    if isinstance(error, ConnectorConflictError):
+        return RollbackExecutionFailure(
+            "rollback_target_conflict",
+            "回滚目标在执行期间发生变化，系统已停止自动重试，请先核对当前目标数据。",
+        )
+    if isinstance(error, ConnectorCapabilityError):
+        return RollbackExecutionFailure(
+            "rollback_connector_unavailable",
+            "回滚所需的目标连接器能力不可用，系统已停止自动重试，请检查连接配置。",
+        )
+    return RollbackExecutionFailure(
+        "rollback_execution_failed",
+        "回滚执行失败，系统已停止自动重试，请查看失败记录后重新发起任务。",
+    )
 
 
 def _source_role(resource_id: str) -> str:

@@ -20,6 +20,7 @@ from app.agent_graph.production_executor import (
     _validate_csv_mapping_output,
 )
 from app.agent_graph.repository import AgentGraphRepository
+from app.agent_graph.rollback_executors import GraphRollbackExecutionExecutor
 from app.agent_graph.runtime import ProductionGraphCandidateProvider
 from app.agent_graph.worker import (
     AgentGraphWorker,
@@ -4132,6 +4133,111 @@ async def test_model_execution_resumes_from_completed_rollback_checkpoint_withou
 
     assert outcome.action_id == action.action_id
     assert outcome.evidence_refs == action.required_evidence
+
+
+@pytest.mark.asyncio
+async def test_model_rollback_routes_database_operations_without_invoking_csv_finalizer(
+    database,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = replace(
+        await _preflight_context(database, tmp_path),
+        current_node="execute_restore_operations",
+        execution_contract_version="model-mediated-execution-v1",
+    )
+    mutation_id = uuid4()
+    async with database.session_factory() as session:
+        async with session.begin():
+            task = await session.get(ReconciliationTask, context.task_id)
+            target = await ExecutionRepository(session).current_target_version(
+                context.task_id
+            )
+            assert task is not None and target is not None
+            task.task_kind = "rollback"
+            task.agent_intent = {
+                "target_version_id": str(target.id),
+                "source_task_id": str(uuid4()),
+                "source_mode": "database",
+                "target": {
+                    "kind": "database",
+                    "configuration_id": "seewo-mysql",
+                },
+                "operations": [
+                    {
+                        "id": str(mutation_id),
+                        "operation": "update",
+                        "entity_kind": "teacher",
+                        "target_source_identifier": "database:teacher:1",
+                        "before": {"name": "旧姓名"},
+                        "after": {"name": "新姓名"},
+                    }
+                ],
+            }
+
+    class FakeSqlRollback:
+        def __init__(self) -> None:
+            self.executed: list[object] = []
+
+        async def execute_operation(self, session, _context, operation_id):
+            self.executed.append(operation_id)
+            fact = {
+                "id": str(operation_id),
+                "status": "succeeded",
+                "verification": {"valid": True},
+            }
+            await AgentRuntimeRepository(session).save_checkpoint(
+                context.run_id,
+                phase=AgentPhase.EXECUTE_RESTORE,
+                checkpoint_key=f"agent-sql-rollback-operation:{operation_id}",
+                input_hash="database-operation",
+                payload=fact,
+            )
+            return fact
+
+    class CsvFinalizerMustNotRun:
+        async def execute(self, *_args, **_kwargs):
+            raise AssertionError("database rollback invoked the CSV finalizer")
+
+    async def run_model(self, _invocation):
+        for operation_id in self._tools.operation_ids:
+            await self._tools._execute_once(operation_id)
+        return SimpleNamespace(outcomes=tuple(self._tools.outcomes.values()))
+
+    monkeypatch.setattr(GraphRollbackExecutionExecutor, "run", run_model)
+    sql_rollback = FakeSqlRollback()
+    executor = ProductionGraphActionExecutor(
+        database.session_factory,
+        provider=ModelMustNotRun(),
+        tokenization_secret="test-tokenization-secret",
+        csv_execution_enabled=True,
+    )
+    executor._sql_rollback = sql_rollback
+    executor._rollback = CsvFinalizerMustNotRun()
+    action = AllowedActionV1(
+        action_id="execute_restore_operations",
+        graph_action_kind="execute_restore_operations",
+        kind="dispatch_sub_agent",
+        sub_agent="rollback-execution",
+        resource_ids=("runtime:execute_restore_operations",),
+        required_evidence=("result:execute_restore_operations",),
+        risk="high",
+        requires_human=False,
+        successor_node="verify_restore_operations",
+    )
+
+    outcome = await executor._execute_rollback(context, action)
+
+    assert outcome.action_id == action.action_id
+    assert len(sql_rollback.executed) == 1
+    async with database.session_factory() as session:
+        checkpoint = await AgentRuntimeRepository(session).get_checkpoint(
+            context.run_id,
+            phase=AgentPhase.EXECUTE_RESTORE,
+            checkpoint_key="agent-sql-rollback-execution-v2",
+        )
+    assert checkpoint is not None
+    assert checkpoint.payload["mutations"][0]["status"] == "succeeded"
 
 
 @pytest.mark.asyncio

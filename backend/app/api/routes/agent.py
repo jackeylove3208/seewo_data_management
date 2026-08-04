@@ -1,7 +1,8 @@
+import asyncio
 import re
 from asyncio import CancelledError
 from collections.abc import Mapping
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Annotated, Any
 from uuid import UUID, uuid4
@@ -22,6 +23,7 @@ from app.agent_reporting.rollback_cycles import (
     AgentRollbackCycleService,
     RollbackAlreadyPerformed,
     RollbackCycleChanged,
+    RollbackSyncRecordTooOld,
     is_fully_successful_sync,
 )
 from app.agent_reporting.service import AgentReportingService
@@ -158,7 +160,6 @@ _ACTIVE_CONVERSATION_RUN_STATUSES = (
 )
 _TERMINAL_CONVERSATION_RUN_STATUSES = ("completed", "terminated", "failed")
 _CONVERSATION_MESSAGE_TOKEN_KEY = "_message_in_flight"
-_CONVERSATION_MESSAGE_LEASE_DURATION = timedelta(minutes=15)
 
 
 def _message_claim(token: str) -> dict[str, str]:
@@ -176,7 +177,10 @@ def _message_claim_token(context: Mapping[str, Any]) -> str | None:
     return token if isinstance(token, str) else None
 
 
-def _message_claim_is_active(context: Mapping[str, Any]) -> bool:
+def _message_claim_is_active(
+    context: Mapping[str, Any],
+    lease_seconds: float,
+) -> bool:
     claim = context.get(_CONVERSATION_MESSAGE_TOKEN_KEY)
     if not isinstance(claim, Mapping):
         return False
@@ -189,9 +193,7 @@ def _message_claim_is_active(context: Mapping[str, Any]) -> bool:
         return False
     if claimed_at_time.tzinfo is None:
         claimed_at_time = claimed_at_time.replace(tzinfo=UTC)
-    return datetime.now(UTC) - claimed_at_time.astimezone(UTC) < (
-        _CONVERSATION_MESSAGE_LEASE_DURATION
-    )
+    return (datetime.now(UTC) - claimed_at_time.astimezone(UTC)).total_seconds() < lease_seconds
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -471,7 +473,10 @@ async def get_current_agent_conversation(
     visible_run = None if terminal_run_superseded else run
     can_confirm = (
         not latest_run_is_active
-        and not _message_claim_is_active(conversation.context)
+        and not _message_claim_is_active(
+            conversation.context,
+            request.app.state.settings.conversation_message_lease_seconds,
+        )
         and conversation.context.get("decision_kind") == "start_confirmation"
         and intent is not None
         and intent.source is not None
@@ -552,7 +557,10 @@ async def send_agent_message(
             409,
             detail=_error("invalid_state", "Conversation is locked by an active task"),
         )
-    if _message_claim_is_active(conversation.context):
+    if _message_claim_is_active(
+        conversation.context,
+        request.app.state.settings.conversation_message_lease_seconds,
+    ):
         raise HTTPException(
             409,
             detail=_error(
@@ -643,52 +651,70 @@ async def send_agent_message(
         return claimed_conversation
 
     try:
-        decision = await ConversationSupervisorAgent(
-            provider,
-            max_context_tokens=(request.app.state.settings.conversation_context_max_tokens),
-            reserved_output_tokens=(
-                request.app.state.settings.conversation_context_reserved_output_tokens
-            ),
-        ).reply(
-            ConversationAgentContext(
-                conversation_id=conversation.id,
-                tenant_id=operator.tenant_id,
-                message=safe_message,
-                history=history,
-                available_source_refs=tuple(source.source_ref for source in sources),
-                conversation_remote_csv_enabled=remote_csv_enabled,
-                remote_link_candidates=tuple(
-                    ConversationLinkBoundaryCandidate(
-                        start=candidate.start,
-                        end=candidate.end,
-                        display_url=candidate.display_url,
-                        trailing_text=candidate.trailing_text,
-                    )
-                    for candidate in link_candidates
+        async with asyncio.timeout(
+            request.app.state.settings.conversation_model_timeout_seconds
+        ):
+            decision = await ConversationSupervisorAgent(
+                provider,
+                max_context_tokens=(request.app.state.settings.conversation_context_max_tokens),
+                reserved_output_tokens=(
+                    request.app.state.settings.conversation_context_reserved_output_tokens
                 ),
-                available_remote_sources=tuple(
-                    ConversationRemoteSource(
-                        remote_source_id=remote_source.id,
-                        display_origin=remote_source.display_origin,
-                    )
-                    for remote_source in remote_sources
-                ),
-                available_database_connectors=tuple(
-                    ConversationDatabaseConnector(
-                        connector_id=connector_id,
-                        dialect=configuration.dialect,
-                        source_role=configuration.source_role,
-                    )
-                    for connector_id, configuration in sorted(
-                        request.app.state.settings.database_connector_configurations.items()
-                    )
-                    if request.app.state.settings.agent_graph_sql_execution_enabled
-                ),
-                available_api_providers=api_catalog.providers,
-                available_api_connections=api_catalog.connections,
-                current_intent=current_intent,
+            ).reply(
+                ConversationAgentContext(
+                    conversation_id=conversation.id,
+                    tenant_id=operator.tenant_id,
+                    message=safe_message,
+                    history=history,
+                    available_source_refs=tuple(source.source_ref for source in sources),
+                    conversation_remote_csv_enabled=remote_csv_enabled,
+                    remote_link_candidates=tuple(
+                        ConversationLinkBoundaryCandidate(
+                            start=candidate.start,
+                            end=candidate.end,
+                            display_url=candidate.display_url,
+                            trailing_text=candidate.trailing_text,
+                        )
+                        for candidate in link_candidates
+                    ),
+                    available_remote_sources=tuple(
+                        ConversationRemoteSource(
+                            remote_source_id=remote_source.id,
+                            display_origin=remote_source.display_origin,
+                        )
+                        for remote_source in remote_sources
+                    ),
+                    available_database_connectors=tuple(
+                        ConversationDatabaseConnector(
+                            connector_id=connector_id,
+                            dialect=configuration.dialect,
+                            source_role=configuration.source_role,
+                        )
+                        for connector_id, configuration in sorted(
+                            request.app.state.settings.database_connector_configurations.items()
+                        )
+                        if request.app.state.settings.agent_graph_sql_execution_enabled
+                    ),
+                    available_api_providers=api_catalog.providers,
+                    available_api_connections=api_catalog.connections,
+                    current_intent=current_intent,
+                )
             )
+    except TimeoutError as error:
+        await clear_message_claim()
+        safe_message = "对话理解超时，请稍后重试。"
+        await repository.append_conversation_message(
+            conversation_id=conversation.id,
+            tenant_id=operator.tenant_id,
+            role="assistant",
+            kind="error",
+            text=safe_message,
         )
+        await session.commit()
+        raise HTTPException(
+            status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=_error("conversation_model_timeout", safe_message),
+        ) from error
     except ConversationContextLimitError as error:
         await clear_message_claim()
         await session.commit()
@@ -2768,6 +2794,14 @@ async def preview_agent_rollback(
                 "已经回滚，若想再次回滚，需下次同步后执行。",
             ),
         ) from error
+    except RollbackSyncRecordTooOld as error:
+        raise HTTPException(
+            409,
+            detail=_error(
+                "rollback_sync_record_too_old",
+                "记录过旧，无法回滚",
+            ),
+        ) from error
     except RollbackCycleChanged as error:
         raise HTTPException(
             409,
@@ -2808,6 +2842,14 @@ async def confirm_agent_rollback(
             detail=_error(
                 "rollback_already_performed",
                 "已经回滚，若想再次回滚，需下次同步后执行。",
+            ),
+        ) from error
+    except RollbackSyncRecordTooOld as error:
+        raise HTTPException(
+            409,
+            detail=_error(
+                "rollback_sync_record_too_old",
+                "记录过旧，无法回滚",
             ),
         ) from error
     except RollbackCycleChanged as error:

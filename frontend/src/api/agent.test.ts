@@ -1,8 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { agentApi } from "./agent";
+import { agentApi, CONVERSATION_REQUEST_TIMEOUT_MS } from "./agent";
 
 describe("Agent API", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
@@ -27,6 +31,26 @@ describe("Agent API", () => {
     expect(calls[1]?.[0]).toBe("/api/agent/conversations/conversation-1/messages");
     expect(calls[2]?.[0]).toBe("/api/agent/conversations/conversation-1/tasks");
     expect((calls[2]?.[1] as RequestInit).headers).toEqual(expect.objectContaining({ "Idempotency-Key": "start-key" }));
+  });
+
+  it("turns a hanging conversation request into a retryable timeout", async () => {
+    vi.useFakeTimers();
+    const abortError = new DOMException("The operation was aborted", "AbortError");
+    vi.stubGlobal("fetch", vi.fn((_input: RequestInfo | URL, init?: RequestInit) => (
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(abortError));
+      })
+    )));
+
+    const pending = agentApi.sendMessage("conversation-1", "同步全校教师");
+    const rejection = expect(pending).rejects.toMatchObject({
+      message: "对话理解超时，请稍后重试。",
+      status: 504,
+      code: "conversation_model_timeout",
+    });
+    await vi.advanceTimersByTimeAsync(CONVERSATION_REQUEST_TIMEOUT_MS);
+
+    await rejection;
   });
 
   it("starts a conversation task with only the registered remote source id", async () => {

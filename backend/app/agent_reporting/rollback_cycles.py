@@ -15,10 +15,16 @@ from app.models.reconciliation import ReconciliationTask
 from app.models.reporting import AgentReportRecord, AgentRollbackCycleRecord
 
 ROLLBACK_ALREADY_PERFORMED = "already_rolled_back"
+ROLLBACK_STALE_SYNC_RECORD = "stale_sync_record"
 
 
 class RollbackAlreadyPerformed(ValueError):
     pass
+
+
+class RollbackSyncRecordTooOld(ValueError):
+    def __init__(self) -> None:
+        super().__init__("记录过旧，无法回滚")
 
 
 class RollbackCycleChanged(ValueError):
@@ -34,12 +40,17 @@ class TargetDataSource:
 class AgentRollbackCycleService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
-        self._historical_status_cache: dict[tuple[str, str], bool] = {}
 
     async def blocked_reason(self, task: ReconciliationTask) -> str | None:
         identity = target_data_source(task)
         if identity is None or task.task_kind == "rollback":
             return None
+        latest_sync_task_id = await self._latest_sync_task_id(
+            task.tenant_id,
+            identity.key,
+        )
+        if latest_sync_task_id is not None and latest_sync_task_id != task.id:
+            return ROLLBACK_STALE_SYNC_RECORD
         cycle = await self._cycle(task.tenant_id, identity.key)
         blocked = (
             cycle.completed_rollback_task_id is not None
@@ -57,8 +68,20 @@ class AgentRollbackCycleService:
         expected_generation: int | None = None,
     ) -> int:
         identity = target_data_source(task)
+        source_task_id = task.id
+        if task.task_kind == "rollback":
+            source_task_id = _source_task_id(task)
+            if identity is None:
+                source = await self.session.get(ReconciliationTask, source_task_id)
+                identity = target_data_source(source) if source is not None else None
         if identity is None:
             return 0
+        latest_sync_task_id = await self._latest_sync_task_id(
+            task.tenant_id,
+            identity.key,
+        )
+        if latest_sync_task_id is not None and latest_sync_task_id != source_task_id:
+            raise RollbackSyncRecordTooOld()
         cycle = await self._cycle(task.tenant_id, identity.key, for_update=True)
         generation = cycle.generation if cycle is not None else 0
         if expected_generation is not None and generation != expected_generation:
@@ -98,11 +121,29 @@ class AgentRollbackCycleService:
             )
         else:
             cycle.target_kind = identity.kind
-            cycle.generation += 1
             cycle.latest_successful_sync_task_id = task.id
             cycle.completed_rollback_task_id = None
             cycle.completed_rollback_at = None
             cycle.updated_at = now
+        await self.session.flush()
+
+    async def record_sync_started(self, task: ReconciliationTask) -> None:
+        if task.task_kind != "sync":
+            return
+        identity = target_data_source(task)
+        if identity is None:
+            return
+        cycle = await self._cycle(task.tenant_id, identity.key, for_update=True)
+        if cycle is None:
+            # There is no safe value for latest_successful_sync_task_id until a
+            # verified report exists. Latest-task queries still make historical
+            # records stale immediately.
+            return
+        cycle.target_kind = identity.kind
+        cycle.generation += 1
+        cycle.completed_rollback_task_id = None
+        cycle.completed_rollback_at = None
+        cycle.updated_at = datetime.now(UTC)
         await self.session.flush()
 
     async def record_completed_rollback(self, task: ReconciliationTask) -> None:
@@ -154,10 +195,6 @@ class AgentRollbackCycleService:
         tenant_id: str,
         data_source_key: str,
     ) -> bool:
-        cache_key = (tenant_id, data_source_key)
-        cached = self._historical_status_cache.get(cache_key)
-        if cached is not None:
-            return cached
         rows = (
             await self.session.execute(
                 select(ReconciliationTask, AgentReportRecord)
@@ -182,8 +219,29 @@ class AgentRollbackCycleService:
                 break
             if is_fully_successful_sync(task, report.terminal_state, report.facts):
                 break
-        self._historical_status_cache[cache_key] = blocked
         return blocked
+
+    async def _latest_sync_task_id(
+        self,
+        tenant_id: str,
+        data_source_key: str,
+    ) -> UUID | None:
+        tasks = await self.session.scalars(
+            select(ReconciliationTask)
+            .where(
+                ReconciliationTask.tenant_id == tenant_id,
+                ReconciliationTask.task_kind == "sync",
+            )
+            .order_by(
+                ReconciliationTask.created_at.desc(),
+                ReconciliationTask.id.desc(),
+            )
+        )
+        for task in tasks:
+            identity = target_data_source(task)
+            if identity is not None and identity.key == data_source_key:
+                return task.id
+        return None
 
 
 def target_data_source(task: ReconciliationTask) -> TargetDataSource | None:

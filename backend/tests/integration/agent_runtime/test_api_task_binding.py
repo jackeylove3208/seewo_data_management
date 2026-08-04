@@ -13,6 +13,7 @@ from app.agent_graph.production_executor import ProductionGraphActionExecutor
 from app.agent_graph.repository import AgentGraphRepository
 from app.agent_graph.runtime import ProductionGraphCandidateProvider
 from app.agent_graph.worker import GraphWorkContext
+from app.agent_reporting.rollback_cycles import AgentRollbackCycleService
 from app.agent_runtime.repository import AgentRuntimeRepository
 from app.agent_runtime.task_service import (
     AgentConnectorCapabilityFailure,
@@ -264,12 +265,23 @@ def _intent(connection_id) -> AgentTaskIntent:
 
 async def test_api_task_binds_resource_and_selects_graph_v2_without_provider_call(
     database,
+    monkeypatch,
 ) -> None:
     key = Fernet.generate_key()
     settings = _settings(key)
     adapter = AdapterMustNotRun()
     registry = ProviderRegistry()
     registry.register(MANIFEST, adapter)
+    started_task_ids: list[object] = []
+
+    async def record_sync_started(_service, task: ReconciliationTask) -> None:
+        started_task_ids.append(task.id)
+
+    monkeypatch.setattr(
+        AgentRollbackCycleService,
+        "record_sync_started",
+        record_sync_started,
+    )
     async with database.session_factory() as session:
         async with session.begin():
             connection = await _seed_connection(session, fernet_key=key)
@@ -328,6 +340,7 @@ async def test_api_task_binds_resource_and_selects_graph_v2_without_provider_cal
     target_binding = role_bindings[1]
     assert target_binding.configuration_id == "seewo-mysql"
     assert target_binding.snapshot_id == snapshots[0].id
+    assert started_task_ids == [task.id]
     assert target_binding.frozen_public_configuration["table_name"] == (
         settings.database_connector_configurations["seewo-mysql"].table_name
     )

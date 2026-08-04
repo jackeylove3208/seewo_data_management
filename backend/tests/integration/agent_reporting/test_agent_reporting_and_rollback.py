@@ -5,6 +5,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 
+from app.agent_reporting.rollback_cycles import AgentRollbackCycleService
 from app.agent_reporting.service import AgentReportingService
 from app.agent_runtime.csv_governance_handlers import build_agent_report_facts
 from app.agent_runtime.csv_rollback_handlers import _rollback_operations
@@ -530,7 +531,7 @@ async def test_completed_rollback_locks_only_the_same_target_data_source(session
         facts={"mutations": [_verified_mutation("rollback-op")]},
     )
 
-    with pytest.raises(ValueError, match="already rolled back"):
+    with pytest.raises(ValueError, match="记录过旧，无法回滚"):
         await service.create_rollback_task(
             source_task_id=older_csv.id,
             tenant_id=older_csv.tenant_id,
@@ -545,6 +546,114 @@ async def test_completed_rollback_locks_only_the_same_target_data_source(session
         target_version_id=uuid4(),
     )
     assert mysql_preview.state == "awaiting_confirmation"
+
+
+@pytest.mark.asyncio
+async def test_new_started_sync_makes_older_verified_sync_stale_before_reporting(
+    session,
+) -> None:
+    target = {"kind": "local", "source_ref": "seewo/students.csv"}
+    older = _task(target=target)
+    session.add(older)
+    await session.flush()
+    service = AgentReportingService(session)
+    await service.generate(
+        task_id=older.id,
+        tenant_id=older.tenant_id,
+        kind="sync",
+        terminal_state="completed",
+        facts={"mutations": [_verified_mutation("older-sync")]},
+    )
+
+    newer = _task(target=target)
+    session.add(newer)
+    await session.flush()
+    await AgentRollbackCycleService(session).record_sync_started(newer)
+
+    assert await AgentRollbackCycleService(session).blocked_reason(older) == (
+        "stale_sync_record"
+    )
+    with pytest.raises(ValueError, match="记录过旧，无法回滚"):
+        await service.create_rollback_task(
+            source_task_id=older.id,
+            tenant_id=older.tenant_id,
+            requested_by="operator-1",
+            target_version_id=uuid4(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_latest_started_partial_sync_blocks_old_rollback_but_successful_latest_is_eligible(
+    session,
+) -> None:
+    target = {"kind": "database", "configuration_id": "seewo-data-mysql"}
+    older = _task(target=target)
+    session.add(older)
+    await session.flush()
+    service = AgentReportingService(session)
+    await service.generate(
+        task_id=older.id,
+        tenant_id=older.tenant_id,
+        kind="sync",
+        terminal_state="completed",
+        facts={"mutations": [_verified_mutation("older-sync")]},
+    )
+
+    partial = _task(target=target)
+    session.add(partial)
+    await session.flush()
+    await AgentRollbackCycleService(session).record_sync_started(partial)
+    await service.generate(
+        task_id=partial.id,
+        tenant_id=partial.tenant_id,
+        kind="sync",
+        terminal_state="partial",
+        facts={
+            "mutations": [
+                _verified_mutation("partial-ok"),
+                {
+                    "id": "partial-failed",
+                    "status": "failed",
+                    "verification": {"valid": False},
+                },
+            ]
+        },
+    )
+
+    with pytest.raises(ValueError, match="记录过旧，无法回滚"):
+        await service.create_rollback_task(
+            source_task_id=older.id,
+            tenant_id=older.tenant_id,
+            requested_by="operator-1",
+            target_version_id=uuid4(),
+        )
+    with pytest.raises(ValueError, match="rollback is not eligible"):
+        await service.create_rollback_task(
+            source_task_id=partial.id,
+            tenant_id=partial.tenant_id,
+            requested_by="operator-1",
+            target_version_id=uuid4(),
+        )
+
+    latest = _task(target=target)
+    session.add(latest)
+    await session.flush()
+    await AgentRollbackCycleService(session).record_sync_started(latest)
+    report = await service.generate(
+        task_id=latest.id,
+        tenant_id=latest.tenant_id,
+        kind="sync",
+        terminal_state="completed",
+        facts={"mutations": [_verified_mutation("latest-sync")]},
+    )
+    assert report.rollback_eligible is True
+    preview = await service.create_rollback_task(
+        source_task_id=latest.id,
+        tenant_id=latest.tenant_id,
+        requested_by="operator-1",
+        target_version_id=uuid4(),
+    )
+    assert preview.state == "awaiting_confirmation"
 
 
 @pytest.mark.asyncio
@@ -578,6 +687,7 @@ async def test_only_a_fully_successful_sync_reopens_the_rollback_cycle(session) 
     partial_sync = _task(target=csv_target)
     session.add(partial_sync)
     await session.flush()
+    await AgentRollbackCycleService(session).record_sync_started(partial_sync)
     await service.generate(
         task_id=partial_sync.id,
         tenant_id=partial_sync.tenant_id,
@@ -594,7 +704,7 @@ async def test_only_a_fully_successful_sync_reopens_the_rollback_cycle(session) 
             ]
         },
     )
-    with pytest.raises(ValueError, match="already rolled back"):
+    with pytest.raises(ValueError, match="not eligible"):
         await service.create_rollback_task(
             source_task_id=partial_sync.id,
             tenant_id=partial_sync.tenant_id,
@@ -605,6 +715,7 @@ async def test_only_a_fully_successful_sync_reopens_the_rollback_cycle(session) 
     successful_sync = _task(target=csv_target)
     session.add(successful_sync)
     await session.flush()
+    await AgentRollbackCycleService(session).record_sync_started(successful_sync)
     successful_report = await service.generate(
         task_id=successful_sync.id,
         tenant_id=successful_sync.tenant_id,
@@ -623,44 +734,33 @@ async def test_only_a_fully_successful_sync_reopens_the_rollback_cycle(session) 
 
 
 @pytest.mark.asyncio
-async def test_stale_rollback_preview_cannot_be_confirmed_after_the_cycle_was_consumed(
+async def test_stale_rollback_preview_cannot_be_confirmed_after_a_new_sync_starts(
     session,
 ) -> None:
     csv_target = {"kind": "csv", "upload_id": str(uuid4())}
     stale_source = _task(target=csv_target)
-    winning_source = _task(target=csv_target)
-    session.add_all([stale_source, winning_source])
+    session.add(stale_source)
     await session.flush()
     service = AgentReportingService(session)
-    for task in (stale_source, winning_source):
-        await service.generate(
-            task_id=task.id,
-            tenant_id=task.tenant_id,
-            kind="sync",
-            terminal_state="completed",
-            facts={"mutations": [_verified_mutation(str(task.id))]},
-        )
+    await service.generate(
+        task_id=stale_source.id,
+        tenant_id=stale_source.tenant_id,
+        kind="sync",
+        terminal_state="completed",
+        facts={"mutations": [_verified_mutation(str(stale_source.id))]},
+    )
     stale_preview = await service.create_rollback_task(
         source_task_id=stale_source.id,
         tenant_id=stale_source.tenant_id,
         requested_by="operator-1",
         target_version_id=uuid4(),
     )
-    winning_preview = await service.create_rollback_task(
-        source_task_id=winning_source.id,
-        tenant_id=winning_source.tenant_id,
-        requested_by="operator-1",
-        target_version_id=uuid4(),
-    )
-    await service.generate(
-        task_id=winning_preview.task_id,
-        tenant_id=winning_source.tenant_id,
-        kind="rollback",
-        terminal_state="completed",
-        facts={"mutations": [_verified_mutation("winning-rollback")]},
-    )
+    newer_source = _task(target=csv_target)
+    session.add(newer_source)
+    await session.flush()
+    await AgentRollbackCycleService(session).record_sync_started(newer_source)
 
-    with pytest.raises(ValueError, match="already rolled back"):
+    with pytest.raises(ValueError, match="记录过旧，无法回滚"):
         await AgentSupervisorService(
             session,
             operator=OperatorContext(
@@ -797,6 +897,7 @@ async def test_rollback_preview_cannot_cross_a_new_successful_sync_generation(
     second_sync = _task(target=csv_target)
     session.add(second_sync)
     await session.flush()
+    await AgentRollbackCycleService(session).record_sync_started(second_sync)
     await reporting.generate(
         task_id=second_sync.id,
         tenant_id=second_sync.tenant_id,
@@ -805,7 +906,7 @@ async def test_rollback_preview_cannot_cross_a_new_successful_sync_generation(
         facts={"mutations": [_verified_mutation("generation-2")]},
     )
 
-    with pytest.raises(ValueError, match="sync cycle changed"):
+    with pytest.raises(ValueError, match="记录过旧，无法回滚"):
         await AgentSupervisorService(
             session,
             operator=OperatorContext(
@@ -885,6 +986,7 @@ async def test_legacy_preview_without_generation_fails_closed_after_new_sync(
     next_sync = _task(target=csv_target)
     session.add(next_sync)
     await session.flush()
+    await AgentRollbackCycleService(session).record_sync_started(next_sync)
     await reporting.generate(
         task_id=next_sync.id,
         tenant_id=next_sync.tenant_id,
@@ -893,14 +995,14 @@ async def test_legacy_preview_without_generation_fails_closed_after_new_sync(
         facts={"mutations": [_verified_mutation("next-sync")]},
     )
 
-    with pytest.raises(ValueError, match="missing sync cycle"):
+    with pytest.raises(ValueError, match="记录过旧，无法回滚"):
         await reporting.create_rollback_task(
             source_task_id=first_sync.id,
             tenant_id=first_sync.tenant_id,
             requested_by="operator-1",
             target_version_id=preview.target_version_id,
         )
-    with pytest.raises(ValueError, match="missing sync cycle"):
+    with pytest.raises(ValueError, match="记录过旧，无法回滚"):
         await AgentSupervisorService(
             session,
             operator=OperatorContext(

@@ -453,6 +453,42 @@ describe("controlled Agent graph task detail", () => {
     client.clear();
   });
 
+  it("explains that an older sync record cannot be rolled back", async () => {
+    vi.mocked(agentApi.task).mockResolvedValue({
+      id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      task_kind: "sync",
+      phase: "terminal",
+      status: "completed",
+      title: "历史同步记录",
+      rollback_eligible: false,
+      rollback_blocked_reason: "stale_sync_record",
+    });
+    vi.mocked(agentApi.graph).mockResolvedValue({
+      task_id: "task-graph-1",
+      workflow_version: "agent-graph-v1",
+      graph_version: "agent-sync-graph-v1",
+      graph_cursor: 20,
+      current_node: "terminal",
+      business_stage: "terminal",
+      current_action_zh: "任务已结束",
+      status: "completed",
+      can_terminate: false,
+      termination_requested: false,
+      human_gates: [],
+    });
+    const preview = vi.spyOn(agentApi, "previewRollback");
+    const { client } = renderPage();
+
+    const lockedButton = await screen.findByRole("button", {
+      name: "记录过旧，无法回滚",
+    });
+    expect(lockedButton).toBeDisabled();
+    expect(lockedButton).toHaveAttribute("title", "记录过旧，无法回滚");
+    expect(preview).not.toHaveBeenCalled();
+    client.clear();
+  });
+
   it("renders legacy Agent events as a Chinese blocked-state timeline", async () => {
     vi.mocked(agentApi.task).mockResolvedValue({
       id: "task-graph-1",

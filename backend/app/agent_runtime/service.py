@@ -266,10 +266,21 @@ class AgentSupervisorService:
             or run.status != AgentRunStatus.PENDING.value
         ):
             raise ValueError("rollback Agent task is already confirmed")
+        rollback_cycle_generation = (
+            task.agent_intent.get("rollback_cycle_generation")
+            if isinstance(task.agent_intent, dict)
+            else None
+        )
         await AgentRollbackCycleService(self.session).ensure_available(
             task,
-            expected_generation=require_rollback_cycle_generation(task),
+            expected_generation=(
+                rollback_cycle_generation
+                if isinstance(rollback_cycle_generation, int)
+                else None
+            ),
         )
+        if not isinstance(rollback_cycle_generation, int):
+            require_rollback_cycle_generation(task)
         run = await self.repository.transition_run(
             run.id, requested_phase=AgentPhase.ACQUIRE_SCHOOL_LOCK
         )

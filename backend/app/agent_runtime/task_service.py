@@ -7,7 +7,10 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent_reporting.rollback_cycles import target_data_source_from_target
+from app.agent_reporting.rollback_cycles import (
+    AgentRollbackCycleService,
+    target_data_source_from_target,
+)
 from app.agent_runtime.observability import agent_observability
 from app.agent_runtime.repository import AgentRuntimeRepository, SchoolLockConflict
 from app.agent_runtime.service import AgentSupervisorService
@@ -145,6 +148,7 @@ class AgentTaskService:
         )
         self.session.add(task)
         await self.session.flush()
+        await AgentRollbackCycleService(self.session).record_sync_started(task)
         if intent.source.kind == "csv" and intent.target.kind == "csv":
             assert intent.source.upload_id is not None
             assert intent.target.upload_id is not None
