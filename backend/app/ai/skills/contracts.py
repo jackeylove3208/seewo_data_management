@@ -12,6 +12,14 @@ ConnectorKind = Literal["csv", "api", "database"]
 SourceRole = Literal["authoritative", "target"]
 RiskLevel = Literal["low", "medium", "high"]
 OperationKind = Literal["create", "update", "delete", "retain", "skip"]
+AnalysisDisposition = Literal[
+    "target_extra",
+    "target_duplicate",
+    "target_missing",
+    "field_difference",
+    "identity_conflict",
+    "authority_invalid",
+]
 FixedContractField = Literal[
     "category",
     "name",
@@ -227,8 +235,17 @@ class DatabaseSchemaMappingOutput(StrictContract):
     unresolved_required_fields: tuple[str, ...] = ()
 
 
+class ServerOwnedWorkItemDisposition(StrictContract):
+    work_item_id: UUID
+    disposition: AnalysisDisposition
+
+
 class ReconcileEntityBatchInput(AgentSkillInput):
     work_items: tuple[IdentityWorkItem, ...] = Field(max_length=50)
+    server_owned_dispositions: tuple[ServerOwnedWorkItemDisposition, ...] = Field(
+        default=(),
+        max_length=50,
+    )
 
 
 class AnalysisTemplateProfile(StrictContract):
@@ -261,14 +278,7 @@ class AnalysisTemplateOutput(AgentSkillOutput):
 class AgentFinding(StrictContract):
     finding_id: UUID
     work_item_id: UUID
-    disposition: Literal[
-        "target_extra",
-        "target_duplicate",
-        "target_missing",
-        "field_difference",
-        "identity_conflict",
-        "authority_invalid",
-    ]
+    disposition: AnalysisDisposition
     category_zh: str = Field(min_length=1)
     analysis_zh: str = Field(min_length=1)
     proposed_operation: OperationKind

@@ -25,6 +25,7 @@ from app.ai.skills.contracts import (
     GovernanceSolutionBatch,
     IdentityWorkItem,
     NormalizedOrganizationBatch,
+    ServerOwnedWorkItemDisposition,
     SourceInspectionResult,
 )
 from app.governance.agent_governance import (
@@ -433,11 +434,28 @@ class GraphIngestionAnalysisExecutors:
             )
             return output
 
+        server_owned_dispositions = tuple(
+            ServerOwnedWorkItemDisposition.model_validate(
+                {
+                    "work_item_id": work_item_id,
+                    "disposition": disposition,
+                }
+            )
+            for work_item_id, disposition in expected_work_item_kinds.items()
+        )
+        input_payload = {
+            **invocation.input_payload,
+            "server_owned_dispositions": [
+                disposition.model_dump(mode="json")
+                for disposition in server_owned_dispositions
+            ],
+        }
         reconciliation = await self._runner.run(
             invocation.model_copy(
                 update={
                     "skill_name": "reconcile-entity-batch",
                     "skill_version": "1.0.0",
+                    "input_payload": input_payload,
                 }
             ),
             result_validator=validate_findings,

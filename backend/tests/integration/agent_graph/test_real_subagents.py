@@ -6,7 +6,11 @@ from sqlalchemy import select
 
 from app.agent_graph.analysis_executors import GraphIngestionAnalysisExecutors
 from app.agent_graph.analysis_tools import GraphAnalysisEvidenceTools
-from app.agent_graph.evidence import build_evidence_manifest
+from app.agent_graph.evidence import (
+    IdentityKeyHitV1,
+    PairedRecordEvidenceV1,
+    build_evidence_manifest,
+)
 from app.agent_graph.repository import AgentGraphRepository
 from app.agent_graph.tools import (
     GraphPhaseToolGateway,
@@ -26,6 +30,7 @@ from app.ai.providers.base import (
     ModelProviderError,
     ModelUsage,
 )
+from app.ai.skills.contracts import IdentityWorkItem
 from app.core.security import OperatorContext
 from app.models.agent_graph import (
     AgentSubAgentInvocationRecord,
@@ -1502,6 +1507,124 @@ async def test_analysis_action_returns_findings_and_solutions_in_one_skill(sessi
     )
     assert reconciliation_attempts == [(1, "failed"), (2, "completed")]
     assert len(provider.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_analysis_preserves_server_owned_disposition_for_ambiguous_missing_authority(
+    session,
+) -> None:
+    task, run, state, manifest = await _graph_invocation_fixture(
+        session,
+        node="analyze_actionable_batches",
+        action_id="analyze_students:ambiguous-missing",
+    )
+    work_item_id = uuid4()
+    authority_a = f"input:{uuid4()}"
+    authority_b = f"input:{uuid4()}"
+    evidence_ref = "source:authoritative:inspection"
+    work_item = IdentityWorkItem(
+        work_item_id=work_item_id,
+        entity_kind="student",
+        target_locator="csv:2",
+        candidate_evidence_refs=(evidence_ref,),
+        paired_evidence=PairedRecordEvidenceV1(
+            evidence_ref=evidence_ref,
+            work_item_id=str(work_item_id),
+            persisted_kind="target_missing",
+            entity_kind="student",
+            target_record=None,
+            authority_record={"input_ref": authority_a},
+            identity_key_hits=(
+                IdentityKeyHitV1(key_kind="number", authority_ref=authority_a),
+                IdentityKeyHitV1(key_kind="email", authority_ref=authority_b),
+            ),
+            allowed_candidates=(authority_a, authority_b),
+            allowed_operations=("create", "retain"),
+            evidence_refs=(evidence_ref,),
+        ),
+    )
+
+    class ServerOwnedDispositionProvider:
+        def __init__(self) -> None:
+            self.requests: list[LLMRequest] = []
+
+        async def complete_json_once(self, request: LLMRequest) -> LLMResponse:
+            self.requests.append(request)
+            prompt = request.messages[-1].content
+            disposition = (
+                "target_missing"
+                if "server_owned_dispositions" in prompt
+                else "identity_conflict"
+            )
+            return LLMResponse(
+                output={
+                    "result": {
+                        "schema_version": "agent-contract-v1",
+                        "findings": [
+                            {
+                                "finding_id": str(uuid4()),
+                                "work_item_id": str(work_item_id),
+                                "disposition": disposition,
+                                "category_zh": "目标端缺少学生",
+                                "analysis_zh": "权威端记录未在目标端找到对应记录。",
+                                "proposed_operation": "retain",
+                                "evidence_refs": [evidence_ref],
+                                "solution_zh": "保留现状并等待后续核验。",
+                                "risk": "low",
+                                "dependency_finding_ids": [],
+                            }
+                        ],
+                    }
+                },
+                provider="scripted",
+                model="scripted-long-context",
+                request_id=f"request-{len(self.requests)}",
+                usage=ModelUsage(input_tokens=10, output_tokens=5),
+            )
+
+    provider = ServerOwnedDispositionProvider()
+    operator = OperatorContext(
+        operator_id="demo-operator",
+        tenant_id=task.tenant_id,
+    )
+    runner = GraphSkillModelRunner(
+        session,
+        provider=provider,
+        tool_gateway=GraphPhaseToolGateway(
+            session,
+            operator=operator,
+            tools={},
+        ),
+        operator=operator,
+    )
+
+    result = await GraphIngestionAnalysisExecutors(runner).analyze_actionable_batch(
+        GraphSkillInvocation(
+            task_id=task.id,
+            run_id=run.id,
+            graph_run_id=state.id,
+            graph_node=state.current_node,
+            graph_cursor=state.cursor,
+            action_id="analyze_students:ambiguous-missing",
+            evidence_manifest_id=manifest.id,
+            skill_name="reconcile-entity-batch",
+            skill_version="1.0.0",
+            input_payload={
+                "task_id": str(task.id),
+                "run_id": str(run.id),
+                "phase": "analyze_batches",
+                "evidence_refs": [evidence_ref],
+                "work_items": [work_item.model_dump(mode="json")],
+            },
+        ),
+        expected_work_item_kinds={work_item_id: "target_missing"},
+        allowed_evidence_refs=frozenset({evidence_ref}),
+    )
+
+    assert result.payloads[0].kind == "target_missing"
+    assert len(provider.requests) == 1
+    assert str(work_item_id) in provider.requests[0].messages[-1].content
+    assert '"disposition": "target_missing"' in provider.requests[0].messages[-1].content
 
 
 @pytest.mark.asyncio
