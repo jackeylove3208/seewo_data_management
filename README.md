@@ -43,43 +43,67 @@ cd ..
 
 ## 配置 `.env`
 
-后端配置文件是 `backend/.env`，不要把真实配置直接写入代码或 README。首次使用时复制模板：
+后端配置文件是 `backend/.env`。下面列出当前项目实际使用的全部 `.env` 字段；复制模板后，按自己的模型服务、目录和连接器信息替换占位符：
 
 ```bash
 cp backend/.env.example backend/.env
 ```
 
-至少需要修改模型服务相关配置。下面是一个最小示例，实际值请替换为自己的配置：
+完整配置示例（真实 API Key、签名密钥、绝对路径和数据库密码不要写入 README）：
 
 ```dotenv
-RECONCILIATION_DATABASE_URL=postgresql+asyncpg://reconcile:reconcile@localhost:5432/reconcile
-RECONCILIATION_LLM_URL=https://your-model-gateway.example.com/v1/chat/completions
-RECONCILIATION_LLM_API_KEY=replace-with-your-real-api-key
-RECONCILIATION_LLM_MODEL=your-model-name
-RECONCILIATION_TOKENIZATION_SECRET=replace-with-a-long-random-secret
+# 模型服务
+RECONCILIATION_LLM_URL=https://api.deepseek.com/chat/completions
+RECONCILIATION_LLM_API_KEY=replace-with-real-secret
+RECONCILIATION_LLM_MODEL=deepseek-v4-flash
+RECONCILIATION_LLM_RESPONSE_MODE=json_object
+
+# 敏感字段处理和建议预览签名
+RECONCILIATION_TOKENIZATION_SECRET=replace-with-at-least-16-characters
 RECONCILIATION_PROPOSAL_PREVIEW_SECRET=replace-with-another-long-random-secret
+
+# Agent 允许访问的本地目录：写目录必须位于读目录内
+RECONCILIATION_AGENT_LOCAL_READ_ROOTS=["/path/to/PythonProject/docs/sample-data"]
+RECONCILIATION_AGENT_LOCAL_WRITE_ROOTS=["/path/to/PythonProject/docs/sample-data/seewo"]
+
+# Agent 和数据源能力开关
+RECONCILIATION_NEW_AGENT_ENABLED=true
+RECONCILIATION_AGENT_GRAPH_ENABLED=true
+RECONCILIATION_SOURCE_INGESTION_V2_ENABLED=true
+RECONCILIATION_SOURCE_INGESTION_V3_ENABLED=true
+RECONCILIATION_AGENT_GRAPH_SQL_EXECUTION_ENABLED=true
+RECONCILIATION_NEW_AGENT_ANALYSIS_ONLY=false
+RECONCILIATION_CONVERSATION_REMOTE_CSV_ENABLED=true
+RECONCILIATION_NEW_AGENT_API_CONNECTOR_ENABLED=true
+
+# API 连接器
+RECONCILIATION_API_CONNECTOR_SECRET_KEY=replace-with-generated-fernet-key
+
+# 数据库连接器
+RECONCILIATION_DATABASE_CONNECTOR_CONFIG_FILE=config/database-connectors.yaml
+RECONCILIATION_DATABASE_CONNECTOR_CONFIGURATIONS={}
+RECONCILIATION_DATABASE_CONNECTOR_CREDENTIALS={"secret://connectors/authority-mysql":"mysql+asyncmy://authority_reader:replace-with-authority-password@localhost:3306/authority_db","secret://connectors/seewo-mysql":"mysql+asyncmy://seewo_writer:replace-with-seewo-password@localhost:3306/seewo_db","secret://connectors/seewo-data-mysql":"mysql+asyncmy://seewo_writer:replace-with-seewo-password@localhost:3306/seewo_data"}
 ```
 
-配置项说明：
+字段说明：
 
-- `RECONCILIATION_DATABASE_URL`：本地 Docker PostgreSQL 使用示例中的连接地址即可。
-- `RECONCILIATION_LLM_URL`：模型服务的 Chat Completions 地址；项目示例默认使用 DeepSeek 兼容地址，也可以替换为其他兼容服务。
-- `RECONCILIATION_LLM_API_KEY`：模型服务 API Key，属于敏感信息，只能保存在本机的 `.env` 中。
-- `RECONCILIATION_LLM_MODEL`：模型服务实际支持的模型名称。
-- `RECONCILIATION_TOKENIZATION_SECRET`：用于敏感字段处理和相关签名的随机密钥，建议使用长度足够的随机字符串，至少 16 个字符。
-- `RECONCILIATION_PROPOSAL_PREVIEW_SECRET`：治理建议预览签名密钥，建议单独生成；留空时应用会回退使用 tokenization secret。
+- `RECONCILIATION_LLM_URL`、`LLM_API_KEY`、`LLM_MODEL` 配置兼容 Chat Completions 的模型服务；`LLM_RESPONSE_MODE` 可使用 `json_schema`、`json_object` 或 `prompt_json`。
+- `RECONCILIATION_TOKENIZATION_SECRET` 至少使用 16 个字符的随机值；`PROPOSAL_PREVIEW_SECRET` 建议单独生成，留空时会回退使用 tokenization secret。
+- `AGENT_LOCAL_READ_ROOTS` 是允许 Agent 读取的本地目录数组；`AGENT_LOCAL_WRITE_ROOTS` 是允许写入的目录数组，且每个写目录必须位于读目录内。
+- `NEW_AGENT_ENABLED` 是新 Agent 总开关；`AGENT_GRAPH_ENABLED` 开启 Graph 工作流；`NEW_AGENT_ANALYSIS_ONLY=false` 才允许执行治理动作。
+- `SOURCE_INGESTION_V2_ENABLED` 开启对话远程 CSV 来源，`SOURCE_INGESTION_V3_ENABLED` 开启 API/数据库来源；远程 CSV 开关必须依赖 v2。
+- `AGENT_GRAPH_SQL_EXECUTION_ENABLED` 开启数据库 Graph 执行；启用前必须准备 `database-connectors.yaml` 和对应凭证。
+- `CONVERSATION_REMOTE_CSV_ENABLED` 允许对话任务读取公开 HTTPS CSV；`NEW_AGENT_API_CONNECTOR_ENABLED` 允许使用已配置的外部 API 连接器。
+- `API_CONNECTOR_SECRET_KEY` 必须是有效 Fernet 密钥。可以使用 `backend/.venv/bin/python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'` 生成。
+- `DATABASE_CONNECTOR_CONFIG_FILE` 指向连接器描述文件；`DATABASE_CONNECTOR_CONFIGURATIONS` 用于覆盖或补充描述；`DATABASE_CONNECTOR_CREDENTIALS` 只存放凭证引用对应的 DSN。
 
-可以使用下面的命令生成随机密钥，再复制输出结果到 `.env`：
+生成普通签名密钥：
 
 ```bash
 openssl rand -hex 32
 ```
 
-`backend/.env.example` 还包含上传目录、超时、重试、Embedding、Agent 开关、API 连接器和数据库连接器等完整配置。没有使用外部连接器时，保持连接器开关为 `false`，相关配置保持为空对象即可。
-
-如果使用数据库连接器，连接描述可以放在 `backend/config/database-connectors.yaml`，账号、密码和其他凭证只放在 `backend/.env` 的凭证配置中。不要把真实数据库密码写入 YAML、代码、日志或截图。
-
-前端通常不需要单独配置，因为 Vite 会把 `/api` 和 `/health` 请求代理到 `http://127.0.0.1:8000`。如果前端需要访问其他 API 地址，可以创建 `frontend/.env`：
+前端通常不需要单独配置，因为 Vite 会把 `/api` 和 `/health` 代理到 `http://127.0.0.1:8000`。如果前端需要访问其他 API 地址，可以创建 `frontend/.env`：
 
 ```dotenv
 VITE_API_BASE_URL=http://127.0.0.1:8000

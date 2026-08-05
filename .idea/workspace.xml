@@ -1,9 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="ChangeListManager">
-    <list default="true" id="01e89e8a-7f35-4c79-ae11-183af0900a56" name="更改" comment="完成数据接入与公共底座 → 实体解析 → 差异检测。部分前端">
-      <change beforePath="$PROJECT_DIR$/docs/sample-data/data/agent_generated_100_third_party_authoritative.csv" beforeDir="false" afterPath="$PROJECT_DIR$/docs/sample-data/data/agent_generated_100_third_party_authoritative.csv" afterDir="false" />
-    </list>
+    <list default="true" id="01e89e8a-7f35-4c79-ae11-183af0900a56" name="更改" comment="完成数据接入与公共底座 → 实体解析 → 差异检测。部分前端" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -122,6 +120,7 @@
       <workItem from="1785286062308" duration="12236000" />
       <workItem from="1785375370154" duration="26172000" />
       <workItem from="1785649648493" duration="42651000" />
+      <workItem from="1785911312548" duration="629000" />
     </task>
     <servers />
   </component>
