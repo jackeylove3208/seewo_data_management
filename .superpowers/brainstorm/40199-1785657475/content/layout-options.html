@@ -1,0 +1,68 @@
+<h2>未创建任务时，聊天区怎样给“任务处理状态”留位？</h2>
+<p class="subtitle">下面只比较空间关系。点击你偏好的方案；我推荐 B，因为右侧用途明确，也不会显得页面缺了一块。</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:14px;background:#eef2f1">
+      <div style="display:grid;grid-template-columns:200px 72px;gap:10px;height:180px">
+        <div style="display:grid;grid-template-rows:1fr 32px;gap:8px;padding:12px;border:1px solid #cfd8d5;border-radius:8px;background:white">
+          <div>
+            <div style="width:72%;height:18px;margin-bottom:10px;border-radius:4px;background:#e4ecf6"></div>
+            <div style="width:55%;height:24px;margin-left:auto;border-radius:6px;background:#edf1ef"></div>
+          </div>
+          <div style="border:1px solid #bfcac6;border-radius:8px"></div>
+        </div>
+        <div style="border:1px dashed #b9c4c0;border-radius:8px;background:rgba(255,255,255,.35)"></div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A · 只保留空白</h3>
+      <p>聊天区固定缩窄，右边单纯留白；任务创建后再出现状态栏。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:14px;background:#eef2f1">
+      <div style="display:grid;grid-template-columns:200px 72px;gap:10px;height:180px">
+        <div style="display:grid;grid-template-rows:1fr 32px;gap:8px;padding:12px;border:1px solid #cfd8d5;border-radius:8px;background:white">
+          <div>
+            <div style="width:72%;height:18px;margin-bottom:10px;border-radius:4px;background:#e4ecf6"></div>
+            <div style="width:55%;height:24px;margin-left:auto;border-radius:6px;background:#edf1ef"></div>
+          </div>
+          <div style="border:1px solid #bfcac6;border-radius:8px"></div>
+        </div>
+        <div style="padding:10px 8px;border:1px solid #d4dcda;border-radius:8px;background:#fafcfb">
+          <div style="height:8px;margin-bottom:13px;border-radius:3px;background:#aebbb7"></div>
+          <div style="display:grid;gap:9px">
+            <div style="height:7px;border-radius:4px;background:#d9dfdd"></div>
+            <div style="height:7px;border-radius:4px;background:#d9dfdd"></div>
+            <div style="height:7px;border-radius:4px;background:#d9dfdd"></div>
+          </div>
+          <div style="margin-top:22px;color:#87938f;font-size:8px;text-align:center">等待创建任务</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B · 显示待机状态栏（推荐）</h3>
+      <p>右侧始终可见；未创建时用弱化步骤和“等待创建任务”说明，创建后原位激活。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:14px;background:#eef2f1">
+      <div style="display:flex;justify-content:center;height:180px">
+        <div style="display:grid;grid-template-rows:1fr 32px;gap:8px;width:205px;padding:12px;border:1px solid #cfd8d5;border-radius:8px;background:white">
+          <div>
+            <div style="width:72%;height:18px;margin-bottom:10px;border-radius:4px;background:#e4ecf6"></div>
+            <div style="width:55%;height:24px;margin-left:auto;border-radius:6px;background:#edf1ef"></div>
+          </div>
+          <div style="border:1px solid #bfcac6;border-radius:8px"></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C · 居中窄聊天区</h3>
+      <p>任务前像普通聊天一样居中；创建任务后整体向左移动并展开右栏。</p>
+    </div>
+  </div>
+</div>

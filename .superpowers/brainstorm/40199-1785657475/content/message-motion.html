@@ -1,0 +1,36 @@
+<style>
+  .motion-demo { height: 128px; padding: 18px; overflow: hidden; border-radius: 10px; background: #eef2f1; }
+  .motion-chat { display: grid; align-content: end; gap: 9px; height: 100%; }
+  .motion-ai { width: 58%; height: 22px; border-radius: 7px; background: #dce6f2; }
+  .motion-user { justify-self: end; min-width: 58%; padding: 9px 12px; border: 1px solid #d7e0dd; border-radius: 8px; color: #53605c; background: #fff; font-size: 11px; }
+  .motion-a { animation: motion-a 2.4s ease-in-out infinite; }
+  .motion-b { transform-origin: right bottom; animation: motion-b 2.4s ease-in-out infinite; }
+  .motion-c { animation: motion-c 2.4s ease-in-out infinite; }
+  @keyframes motion-a { 0%,15% { opacity:0; transform:translateY(8px) } 24%,82% { opacity:1; transform:none } 92%,100% { opacity:0 } }
+  @keyframes motion-b { 0%,15% { opacity:0; transform:scale(.92) } 26% { opacity:1; transform:scale(1.025) } 34%,82% { opacity:1; transform:scale(1) } 92%,100% { opacity:0 } }
+  @keyframes motion-c { 0%,15% { opacity:0; filter:blur(3px); transform:translateX(12px) } 28%,82% { opacity:1; filter:blur(0); transform:none } 92%,100% { opacity:0 } }
+</style>
+
+<h2>用户消息发送后，采用哪种入场动效？</h2>
+<p class="subtitle">动画会自动重复。点击你偏好的方案；我推荐 A，反馈清楚、克制，也更符合当前界面风格。</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image motion-demo">
+      <div class="motion-chat"><div class="motion-ai"></div><div class="motion-user motion-a">只核对七年级老师和学生</div></div>
+    </div>
+    <div class="card-body"><h3>A · 淡入并轻微上移（推荐）</h3><p>约 180ms，稳定自然，不抢内容注意力。</p></div>
+  </div>
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image motion-demo">
+      <div class="motion-chat"><div class="motion-ai"></div><div class="motion-user motion-b">只核对七年级老师和学生</div></div>
+    </div>
+    <div class="card-body"><h3>B · 轻微弹出</h3><p>约 260ms，反馈更活泼，但业务界面里存在感更强。</p></div>
+  </div>
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image motion-demo">
+      <div class="motion-chat"><div class="motion-ai"></div><div class="motion-user motion-c">只核对七年级老师和学生</div></div>
+    </div>
+    <div class="card-body"><h3>C · 从右侧柔化进入</h3><p>方向感明显，但位移和模糊更容易分散注意力。</p></div>
+  </div>
+</div>
